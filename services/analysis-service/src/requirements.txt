@@ -6,6 +6,6 @@ grpcio-health-checking==1.81.1
 protobuf==6.33.5
 prometheus-client==0.26.0
 httpx==0.28.1
-semgrep==1.173.0
+semgrep==1.175.0
 openai==2.54.0
-click==8.4.2
+click==8.5.0
