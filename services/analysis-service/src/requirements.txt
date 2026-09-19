@@ -1,11 +1,11 @@
-fastapi==0.140.6
-uvicorn[standard]==0.52.1
-pydantic==2.13.4
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
 grpcio==1.81.1
 grpcio-health-checking==1.81.1
 protobuf==6.33.5
 prometheus-client==0.26.0
 httpx==0.28.1
-semgrep==1.172.0
-openai==2.48.0
+semgrep==1.173.0
+openai==2.54.0
 click==8.4.2
