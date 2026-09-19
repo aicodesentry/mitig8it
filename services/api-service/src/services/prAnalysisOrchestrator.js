@@ -773,6 +773,49 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
   return { reviewResp, counts, highOrCritical };
 }
 
+// gRPC status codes that describe the transport, not the request.
+const TRANSIENT_GRPC_STATUS = new Set([4, 14]); // DEADLINE_EXCEEDED, UNAVAILABLE
+const TRANSIENT_ERROR_CODES = new Set(['ECONNRESET', 'ETIMEDOUT']);
+const MAX_AUTOMATIC_ANALYSIS_RETRIES = 3;
+const RETRY_BACKOFF_STEP_MS = 30_000;
+const RETRY_BACKOFF_CAP_MS = 5 * 60_000;
+
+// Failures the pipeline raises on purpose. These fail closed whatever the
+// underlying cause was, so they are never eligible for an automatic retry.
+const FAIL_CLOSED_MESSAGE_PREFIXES = [
+  'Required source content',
+  'Incomplete analysis response',
+  'Invalid GitHub file response',
+  'Inline finding publication incomplete',
+];
+
+// Only infrastructure faults qualify. Content, scanner and persistence failures
+// fail closed by design and must never be retried into a passing check run.
+function isTransientInfrastructureError(error) {
+  if (!error) return false;
+
+  const failClosed = FAIL_CLOSED_MESSAGE_PREFIXES.some(
+    (prefix) => String(error.message || '').startsWith(prefix)
+  );
+  if (failClosed) return false;
+
+  if (typeof error.code === 'number' && TRANSIENT_GRPC_STATUS.has(error.code)) return true;
+  if (typeof error.code === 'string' && TRANSIENT_ERROR_CODES.has(error.code)) return true;
+
+  const message = String(error.message || '');
+  if (/\b14 UNAVAILABLE\b/.test(message)) return true;
+  if (/\b4 DEADLINE_EXCEEDED\b/.test(message)) return true;
+  // The observed Cloud Run failure: call credentials could not mint an identity token.
+  if (/\b2 UNKNOWN\b/.test(message) && /metadata token/i.test(message)) return true;
+  if (/ECONNRESET|socket hang up|connection reset/i.test(message)) return true;
+
+  return false;
+}
+
+function transientRetryDelayMs(priorRetries) {
+  return Math.min(RETRY_BACKOFF_CAP_MS, RETRY_BACKOFF_STEP_MS * (priorRetries + 1));
+}
+
 async function runAnalysisJob(payload) {
   const {
     analysis_run_id: runId,
@@ -795,6 +838,9 @@ async function runAnalysisJob(payload) {
   let reviewResp = {};
   let checkRunResp = {};
   let shouldMarkBaselineSet = false;
+  // Once a result exists, persistence and publication have begun; a retry from
+  // that point could duplicate feedback, so only earlier faults are retryable.
+  let analysisResultProduced = false;
 
   try {
     // ── Fetch PR files ────────────────────────────────────────────────
@@ -838,6 +884,7 @@ async function runAnalysisJob(payload) {
     allFindings = [...new Map(tier3.findings.map(finding => [
       finding.fingerprint || calculateFingerprint(normalizeFinding(finding)), finding,
     ])).values()];
+    analysisResultProduced = true;
     const final = await persistAndFilter({
       findings: allFindings, files, runId, pullRequestId, repositoryId, installationId, prNumber, commitSha, baselineSet,
     });
@@ -877,7 +924,35 @@ async function runAnalysisJob(payload) {
       await analysisRunsDb.markBaselineSet(repositoryId);
     }
   } catch (error) {
-    logger.error('PR analysis orchestration failed', { runId, repositoryId, error: error.message });
+    const priorRetries = Number(payload.auto_retry_count || 0);
+    const retryable = !analysisResultProduced
+      && isTransientInfrastructureError(error)
+      && priorRetries < MAX_AUTOMATIC_ANALYSIS_RETRIES;
+
+    if (retryable) {
+      const delayMs = transientRetryDelayMs(priorRetries);
+      try {
+        const requeued = await analysisRunsDb.requeueAfterTransientFailure(runId, {
+          errorMessage: error.message,
+          delayMs,
+        });
+        logger.warn('PR analysis hit a transient infrastructure failure; re-queued', {
+          runId, repositoryId, prNumber, error: error.message,
+          attempt: priorRetries + 1, maxRetries: MAX_AUTOMATIC_ANALYSIS_RETRIES,
+          delayMs, retryRunId: requeued?.id || null,
+        });
+        // The queue poller picks the retry up once not_before elapses.
+        return;
+      } catch (requeueError) {
+        logger.error('Failed to re-queue a transient analysis failure', {
+          runId, repositoryId, error: requeueError.message,
+        });
+      }
+    }
+
+    logger.error('PR analysis orchestration failed', {
+      runId, repositoryId, error: error.message, automaticRetries: priorRetries,
+    });
     await analysisRunsDb.markFailed(runId, error.message);
     try {
       await githubServiceRequest('/internal/github/check-runs', {
@@ -1004,6 +1079,9 @@ module.exports = {
     fileExtension,
     githubServiceRequest,
     hasTier3RenderableSuggestions,
+    isTransientInfrastructureError,
+    transientRetryDelayMs,
+    MAX_AUTOMATIC_ANALYSIS_RETRIES,
     buildSurfaceDecisions,
     explainInlineCommentDecision,
     normalizeSuggestionPatch,

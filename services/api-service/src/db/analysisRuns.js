@@ -130,7 +130,8 @@ async function claimNextQueuedRun(staleAfterMinutes = 20) {
          JOIN repositories candidate_repo ON candidate_repo.id = candidate.repository_id
          WHERE candidate_repo.is_active = true
            AND NOT (candidate.id = ANY($2::uuid[]))
-           AND (candidate.status = 'pending' OR (
+           AND ((candidate.status = 'pending'
+             AND COALESCE(candidate.not_before, candidate.created_at) <= NOW()) OR (
              candidate.status = 'running'
              AND candidate.started_at < NOW() - ($1::int * INTERVAL '1 minute')))
          ORDER BY CASE WHEN candidate.status = 'running' THEN 0 ELSE 1 END,
@@ -159,7 +160,7 @@ async function claimNextQueuedRun(staleAfterMinutes = 20) {
          RETURNING ar.id AS analysis_run_id, ar.repository_id,
            r.github_id AS repository_github_id, r.full_name AS repository_full_name,
            r.installation_id, ar.pull_request_id, ar.pr_number AS pull_request_number,
-           ar.commit_sha, r.baseline_set`, [candidate.analysis_run_id]
+           ar.commit_sha, r.baseline_set, ar.auto_retry_count`, [candidate.analysis_run_id]
       );
       if (!result.rows[0]) throw new Error('Claimed analysis run disappeared');
       await client.query('COMMIT');
@@ -233,6 +234,30 @@ async function markFailed(runId, errorMessage) {
   );
 }
 
+// A transient infrastructure failure is not a verdict about the code. The failed
+// run keeps its evidence and error, and the retry is a new attempt, exactly as a
+// manual retry is, so history stays honest about what was tried and when.
+async function requeueAfterTransientFailure(runId, { errorMessage, delayMs }) {
+  const delay = Number.isFinite(Number(delayMs)) && Number(delayMs) > 0 ? Math.floor(Number(delayMs)) : 0;
+  const result = await pool.query(
+    `WITH failed AS (
+       UPDATE analysis_runs
+       SET status = 'failed', error_message = $2, completed_at = NOW()
+       WHERE id = $1 AND status <> 'failed'
+       RETURNING repository_id, pull_request_id, pr_number, commit_sha, auto_retry_count
+     )
+     INSERT INTO analysis_runs
+       (repository_id, pull_request_id, pr_number, commit_sha, status, triggered_by,
+        auto_retry_count, not_before)
+     SELECT repository_id, pull_request_id, pr_number, commit_sha, 'pending', 'auto_retry',
+       auto_retry_count + 1, NOW() + ($3::bigint * INTERVAL '1 millisecond')
+     FROM failed
+     RETURNING id, auto_retry_count, not_before`,
+    [runId, errorMessage, delay]
+  );
+  return result.rows[0] || null;
+}
+
 async function markBaselineSet(repositoryId) {
   await pool.query(
     'UPDATE repositories SET baseline_set = true, updated_at = NOW() WHERE id = $1',
@@ -243,4 +268,5 @@ async function markBaselineSet(repositoryId) {
 module.exports = {
   querySummary, listAnalyses, getAnalysisById,
   countCompletedRuns, claimNextQueuedRun, getQueueStats, markCompleted, markFailed, markBaselineSet,
+  requeueAfterTransientFailure,
 };
