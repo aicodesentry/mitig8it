@@ -1,5 +1,6 @@
 const grpc = require('@grpc/grpc-js');
 const http = require('http');
+const logger = require('../utils/logger');
 
 const tokenCache = new Map();
 
@@ -48,7 +49,45 @@ function decodeJwtExpiry(token) {
   }
 }
 
-function fetchMetadataIdentityToken(audience) {
+// Metadata server hiccups are common on Cloud Run cold paths. A single short
+// attempt turned one slow metadata response into a terminally failed analysis.
+const retryPolicy = {
+  maxAttempts: 4,
+  baseDelayMs: 250,
+  maxDelayMs: 2000,
+  requestTimeoutMs: 5000,
+  // Cloud Run accepts an identity token until its exp, so a token only marginally
+  // past the early-refresh margin is still worth one last use.
+  staleGraceMs: 5 * 60 * 1000,
+  refreshMarginMs: 60_000,
+};
+
+const inFlightFetches = new Map();
+
+function isRetryableMetadataError(error) {
+  if (!error) return false;
+  if (Number.isInteger(error.statusCode)) {
+    // A 4xx means the request itself is wrong; repeating it cannot help.
+    return error.statusCode >= 500;
+  }
+  // Timeouts, ECONNRESET and other transport faults are worth another attempt.
+  return true;
+}
+
+function backoffDelayMs(attempt) {
+  const exponential = Math.min(
+    retryPolicy.maxDelayMs,
+    retryPolicy.baseDelayMs * 2 ** (attempt - 1)
+  );
+  // Full jitter keeps concurrent instances from retrying in lockstep.
+  return Math.round(exponential * (0.5 + Math.random() * 0.5));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function requestMetadataIdentityToken(audience) {
   const path = `/computeMetadata/v1/instance/service-accounts/default/identity?audience=${encodeURIComponent(audience)}`;
 
   return new Promise((resolve, reject) => {
@@ -57,7 +96,7 @@ function fetchMetadataIdentityToken(audience) {
         hostname: 'metadata.google.internal',
         path,
         headers: { 'Metadata-Flavor': 'Google' },
-        timeout: 3000,
+        timeout: retryPolicy.requestTimeoutMs,
       },
       (response) => {
         let body = '';
@@ -70,7 +109,9 @@ function fetchMetadataIdentityToken(audience) {
             resolve(body);
             return;
           }
-          reject(new Error(`Metadata token request failed with ${response.statusCode}`));
+          const error = new Error(`Metadata token request failed with ${response.statusCode}`);
+          error.statusCode = response.statusCode;
+          reject(error);
         });
       }
     );
@@ -83,16 +124,74 @@ function fetchMetadataIdentityToken(audience) {
   });
 }
 
+async function fetchMetadataIdentityToken(audience) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= retryPolicy.maxAttempts; attempt += 1) {
+    try {
+      return await requestMetadataIdentityToken(audience);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableMetadataError(error) || attempt === retryPolicy.maxAttempts) {
+        break;
+      }
+      logger.warn('Metadata identity token attempt failed; retrying', {
+        audience,
+        attempt,
+        maxAttempts: retryPolicy.maxAttempts,
+        error: error.message,
+      });
+      await sleep(backoffDelayMs(attempt));
+    }
+  }
+
+  throw lastError;
+}
+
+// Concurrent calls for one audience share a single fetch: a metadata server under
+// pressure should not be asked the same question by every in-flight RPC.
+function fetchIdentityTokenOnce(audience) {
+  const existing = inFlightFetches.get(audience);
+  if (existing) {
+    return existing;
+  }
+
+  const pending = fetchMetadataIdentityToken(audience).finally(() => {
+    inFlightFetches.delete(audience);
+  });
+  inFlightFetches.set(audience, pending);
+  return pending;
+}
+
 async function getIdentityToken(audience) {
   const cached = tokenCache.get(audience);
-  if (cached && cached.expiresAt - 60_000 > Date.now()) {
+  if (cached && cached.expiresAt - retryPolicy.refreshMarginMs > Date.now()) {
     return cached.token;
   }
 
-  const token = await fetchMetadataIdentityToken(audience);
+  let token;
+  try {
+    token = await fetchIdentityTokenOnce(audience);
+  } catch (error) {
+    // A token barely past the refresh margin still authenticates. Serving it once
+    // keeps a metadata blip from failing an analysis that is otherwise healthy.
+    if (cached && !cached.staleServed && Date.now() - cached.expiresAt < retryPolicy.staleGraceMs) {
+      cached.staleServed = true;
+      tokenCache.delete(audience);
+      logger.warn('Metadata identity token refresh failed; using cached token once', {
+        audience,
+        expiredForMs: Math.max(0, Date.now() - cached.expiresAt),
+        error: error.message,
+      });
+      return cached.token;
+    }
+    throw error;
+  }
+
   tokenCache.set(audience, {
     token,
     expiresAt: decodeJwtExpiry(token),
+    staleServed: false,
   });
   return token;
 }
@@ -143,4 +242,15 @@ module.exports = {
   createGrpcClientConfig,
   normalizeAudience,
   normalizeGrpcTarget,
+  __private: {
+    fetchMetadataIdentityToken,
+    getIdentityToken,
+    isRetryableMetadataError,
+    resetTokenCache: () => {
+      tokenCache.clear();
+      inFlightFetches.clear();
+    },
+    retryPolicy,
+    seedTokenCache: (audience, entry) => tokenCache.set(audience, { staleServed: false, ...entry }),
+  },
 };
