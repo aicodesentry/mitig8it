@@ -276,3 +276,6 @@ class RepairResponse(StrictModel):
     manifest_digest: str | None = None
     evidence: dict[str, Any]
     reason: dict[str, str] | None = None
+    # Findings the request could not repair automatically, each with a machine readable
+    # reason. Partial coverage is reported here instead of refusing the whole request.
+    skipped: list[dict[str, str]] = Field(default_factory=list)

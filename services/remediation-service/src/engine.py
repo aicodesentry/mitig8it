@@ -56,8 +56,10 @@ def _reason_response(
     request_digest: str,
     context_digest: str | None = None,
     extra_evidence: dict[str, Any] | None = None,
+    skipped: list[dict[str, str]] | None = None,
 ) -> RepairResponse:
     return RepairResponse(
+        skipped=list(skipped or []),
         state=state,
         job_id=request.job_id,
         tenant_id=request.tenant_id,
@@ -292,16 +294,27 @@ class RepairEngine:
                 return _reason_response(request, "unsupported", "invalid_git_tree", str(exc), request_digest, snapshot.manifest_digest)
 
         with telemetry.stage_span("retrieval", **telemetry.request_attributes(request)):
-            families = {_rule_family(finding) for finding in request.findings}
-            if None in families:
-                return _reason_response(request, "unsupported", "unsupported_rule_family", "At least one finding is outside the enabled repair families.", request_digest, snapshot.manifest_digest)
-            if not families.issubset(set(request.policy.allowed_rule_families)):
-                return _reason_response(request, "unsupported", "rule_family_disabled", "The repair family is disabled by policy.", request_digest, snapshot.manifest_digest)
+            # Partial coverage: a finding outside the enabled families, or whose exact source is
+            # absent, is skipped with a reason and the remaining findings are still repaired.
+            skipped: list[dict[str, str]] = []
+            supported = []
+            allowed = set(request.policy.allowed_rule_families)
             for finding in request.findings:
-                if not finding.affected_path or finding.affected_path not in snapshot.paths:
-                    return _reason_response(request, "unsupported", "affected_source_missing", "The exact affected source file is absent from the snapshot.", request_digest, snapshot.manifest_digest)
+                family = _rule_family(finding)
+                if family is None:
+                    skipped.append({"finding_id": str(finding.snapshot_id or finding.id or finding.rule_id or ""), "code": "unsupported_rule_family", "message": "This finding is outside the enabled repair families."})
+                elif family not in allowed:
+                    skipped.append({"finding_id": str(finding.snapshot_id or finding.id or finding.rule_id or ""), "code": "rule_family_disabled", "message": "The repair family is disabled by policy."})
+                elif not finding.affected_path or finding.affected_path not in snapshot.paths:
+                    skipped.append({"finding_id": str(finding.snapshot_id or finding.id or finding.rule_id or ""), "code": "affected_source_missing", "message": "The exact affected source file is absent from the snapshot."})
+                else:
+                    supported.append(finding)
+            if not supported:
+                return _reason_response(request, "unsupported", "unsupported_rule_family", "No selected finding is inside the enabled repair families.", request_digest, snapshot.manifest_digest, skipped=skipped)
+            request = request.model_copy(update={"findings": supported})
+            families = {_rule_family(finding) for finding in request.findings}
             if not any(path.rsplit(".", 1)[-1].lower() in {"js", "jsx", "ts", "tsx", "mjs", "cjs"} for path in snapshot.paths):
-                return _reason_response(request, "unsupported", "unsupported_language", "No JavaScript or TypeScript application source was supplied.", request_digest, snapshot.manifest_digest)
+                return _reason_response(request, "unsupported", "unsupported_language", "No JavaScript or TypeScript application source was supplied.", request_digest, snapshot.manifest_digest, skipped=skipped)
             if "sql_parameterization" in families:
                 pg_present = False
                 for path in snapshot.paths:
@@ -314,14 +327,14 @@ class RepairEngine:
                     dependencies = {**(manifest.get("dependencies") or {}), **(manifest.get("devDependencies") or {})}
                     pg_present = pg_present or "pg" in dependencies
                 if not pg_present:
-                    return _reason_response(request, "unsupported", "pg_dependency_not_proven", "SQL auto-repair requires an exact package manifest proving the pg driver.", request_digest, snapshot.manifest_digest)
+                    return _reason_response(request, "unsupported", "pg_dependency_not_proven", "SQL auto-repair requires an exact package manifest proving the pg driver.", request_digest, snapshot.manifest_digest, skipped=skipped)
             if "command_arguments" in families:
                 for finding in request.findings:
                     if _rule_family(finding) != "command_arguments" or not finding.line_start:
                         continue
                     hit = snapshot.read(finding.affected_path, max(1, finding.line_start - 3), (finding.line_end or finding.line_start) + 3)
                     if re.search(r"\b(?:exec|spawn)\s*\([^\n]*(?:\||shell\s*:\s*true)", hit.content):
-                        return _reason_response(request, "unsupported", "shell_pipeline_unsupported", "Shell pipelines and shell-mode process execution require manual handling.", request_digest, snapshot.manifest_digest)
+                        return _reason_response(request, "unsupported", "shell_pipeline_unsupported", "Shell pipelines and shell-mode process execution require manual handling.", request_digest, snapshot.manifest_digest, skipped=skipped)
 
         groups = group_findings(request.findings)
         group_count = len(groups)
@@ -357,7 +370,7 @@ class RepairEngine:
             try:
                 agent = self.agent_factory(group_request) if self.agent_factory else self._default_agent(group_request, group_checkpoints)
             except (ProviderError, BrokerConfigurationError, ValueError) as exc:
-                return _reason_response(request, "unsupported", "runtime_prerequisite_missing", str(exc), request_digest, snapshot.manifest_digest)
+                return _reason_response(request, "unsupported", "runtime_prerequisite_missing", str(exc), request_digest, snapshot.manifest_digest, skipped=skipped)
             with telemetry.stage_span(
                 "agent_attempt", **telemetry.request_attributes(request), **{"mitig8it.attempt": index + 1}
             ) as span:
@@ -464,6 +477,7 @@ class RepairEngine:
                     {"groups": group_report},
                 )
             return RepairResponse(
+                skipped=skipped,
                 state=primary.state,
                 job_id=request.job_id,
                 tenant_id=request.tenant_id,
@@ -487,9 +501,9 @@ class RepairEngine:
         try:
             batch, combined = await build_verified_batch(request, snapshot, verifier, accepted)
         except PatchPolicyError as exc:
-            return _reason_response(request, "unsupported", "overlapping_candidates" if "overlapping" in str(exc) else "batch_rejected", str(exc), request_digest, snapshot.manifest_digest, {"groups": group_report})
+            return _reason_response(request, "unsupported", "overlapping_candidates" if "overlapping" in str(exc) else "batch_rejected", str(exc), request_digest, snapshot.manifest_digest, {"groups": group_report}, skipped=skipped)
         except BatchPolicyError as exc:
-            return _reason_response(request, "inconclusive", "combined_verification_failed", str(exc), request_digest, snapshot.manifest_digest, {"groups": group_report})
+            return _reason_response(request, "inconclusive", "combined_verification_failed", str(exc), request_digest, snapshot.manifest_digest, {"groups": group_report}, skipped=skipped)
         combined_level = combined.verification.verification_level
         if combined_level not in VERIFICATION_LEVELS or (
             combined_level == DEVELOPMENT_VERIFICATION_LEVEL and not request.policy.allow_development_verification
@@ -507,6 +521,7 @@ class RepairEngine:
             item for item in combined.bundle.limitations if item not in combined.verification.limitations
         ]
         return RepairResponse(
+                skipped=skipped,
             state="ready",
             job_id=request.job_id,
             tenant_id=request.tenant_id,
