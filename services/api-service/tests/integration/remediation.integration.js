@@ -185,6 +185,27 @@ test('intake commits the job and its outbox event atomically and replays a dupli
   assert.equal((await workerQuery('SELECT id FROM remediation_jobs WHERE pull_request_id=$1', [f.pr])).rowCount, 1);
 });
 
+test('a job that ended in a terminal failure does not shadow a fresh identical request, while a ready job still replays', async () => {
+  const f = await fixture();
+  const app = createApp();
+  const first = await request(app).post(`/api/pull-requests/${f.pr}/remediations`).auth(f.token, { type: 'bearer' }).send({});
+  assert.equal(first.status, 202);
+  await workerQuery("UPDATE remediation_jobs SET state='inconclusive', stage='inconclusive', failure_reason='{\"code\":\"ERR_BAD_REQUEST\"}' WHERE id=$1", [first.body.job.id]);
+
+  const retry = await request(app).post(`/api/pull-requests/${f.pr}/remediations`).auth(f.token, { type: 'bearer' }).send({});
+  assert.equal(retry.status, 202);
+  assert.equal(retry.body.replay, false);
+  assert.notEqual(retry.body.job.id, first.body.job.id);
+  assert.equal(retry.body.job.state, 'queued');
+  assert.equal((await workerQuery('SELECT id FROM remediation_jobs WHERE pull_request_id=$1', [f.pr])).rowCount, 2);
+
+  await workerQuery("UPDATE remediation_jobs SET state='ready', stage='ready' WHERE id=$1", [retry.body.job.id]);
+  const replay = await request(app).post(`/api/pull-requests/${f.pr}/remediations`).auth(f.token, { type: 'bearer' }).send({});
+  assert.equal(replay.status, 202);
+  assert.equal(replay.body.replay, true);
+  assert.equal(replay.body.job.id, retry.body.job.id);
+});
+
 test('an expired lease is reclaimed with a new fencing token and the expired worker cannot complete the stage', async () => {
   const f = await fixture();
   const app = createApp();
