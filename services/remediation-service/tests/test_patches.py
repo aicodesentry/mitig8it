@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import whole_file_change
+
 from src.digests import content_sha256
 from src.models import RepairRequest
 from src.patches import PatchPolicyError, build_patch_bundle
@@ -12,7 +14,7 @@ def test_patch_is_exact_immutable_and_content_addressed(request_payload, source)
     request = RepairRequest.model_validate(request_payload)
     snapshot = Snapshot(request)
     replacement = source.replace("db.query(`SELECT * FROM users WHERE id = ${id}`)", "db.query('SELECT * FROM users WHERE id = $1', [id])")
-    bundle = build_patch_bundle(request, snapshot, [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": replacement}])
+    bundle = build_patch_bundle(request, snapshot, [whole_file_change("src/db.ts", source, replacement)])
     assert bundle.patches[0].new_sha256 == content_sha256(replacement)
     assert bundle.patches[0].contents_base64
     assert bundle.artifact_digest.startswith("sha256:")
@@ -21,8 +23,9 @@ def test_patch_is_exact_immutable_and_content_addressed(request_payload, source)
 
 def test_patch_rejects_stale_base(request_payload, source):
     request = RepairRequest.model_validate(request_payload)
-    with pytest.raises(PatchPolicyError, match="stale_file_digest"):
-        build_patch_bundle(request, Snapshot(request), [{"path": "src/db.ts", "base_sha256": "sha256:" + "0" * 64, "replacement_content": source + "\n"}])
+    stale = whole_file_change("src/db.ts", source, source + "\n") | {"replaced_sha256": "sha256:" + "0" * 64}
+    with pytest.raises(PatchPolicyError, match="stale_hunk_digest"):
+        build_patch_bundle(request, Snapshot(request), [stale])
 
 
 def test_patch_rejects_test_tampering(request_payload):
@@ -30,7 +33,7 @@ def test_patch_rejects_test_tampering(request_payload):
     request_payload["files"].append({"path": "tests/db.test.ts", "content": test_content})
     request = RepairRequest.model_validate(request_payload)
     with pytest.raises(PatchPolicyError, match="protected_path"):
-        build_patch_bundle(request, Snapshot(request), [{"path": "tests/db.test.ts", "base_sha256": content_sha256(test_content), "replacement_content": ""}])
+        build_patch_bundle(request, Snapshot(request), [whole_file_change("tests/db.test.ts", test_content, "")])
 
 
 def test_patch_rejects_invalid_javascript_syntax(request_payload):
@@ -41,7 +44,7 @@ def test_patch_rejects_invalid_javascript_syntax(request_payload):
         build_patch_bundle(
             request,
             Snapshot(request),
-            [{"path": "src/app.js", "base_sha256": content_sha256(original), "replacement_content": "module.exports = {;\n"}],
+            [whole_file_change("src/app.js", original, "module.exports = {;\n")],
         )
 
 
@@ -52,7 +55,7 @@ def test_patch_accepts_valid_javascript_and_records_no_syntax_limitation(request
     bundle = build_patch_bundle(
         request,
         Snapshot(request),
-        [{"path": "src/app.js", "base_sha256": content_sha256(original), "replacement_content": "module.exports = { ok: false };\n"}],
+        [whole_file_change("src/app.js", original, "module.exports = { ok: false };\n")],
     )
     assert not any("syntax check skipped" in item for item in bundle.limitations)
 
@@ -63,7 +66,7 @@ def test_typescript_candidates_record_an_explicit_syntax_check_limitation(reques
     bundle = build_patch_bundle(
         request,
         Snapshot(request),
-        [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": replacement}],
+        [whole_file_change("src/db.ts", source, replacement)],
     )
     assert any("syntax check skipped for src/db.ts" in item for item in bundle.limitations)
 
@@ -75,7 +78,7 @@ def test_patch_rejects_an_undeclared_dependency(request_payload, source):
         build_patch_bundle(
             request,
             Snapshot(request),
-            [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": replacement}],
+            [whole_file_change("src/db.ts", source, replacement)],
         )
 
 
@@ -85,6 +88,6 @@ def test_patch_allows_node_builtins_and_declared_dependencies(request_payload, s
     bundle = build_patch_bundle(
         request,
         Snapshot(request),
-        [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": replacement}],
+        [whole_file_change("src/db.ts", source, replacement)],
     )
     assert bundle.patches[0].new_sha256 == content_sha256(replacement)

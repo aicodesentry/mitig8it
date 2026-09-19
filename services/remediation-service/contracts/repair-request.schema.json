@@ -396,11 +396,25 @@
           "title": "Max Tool Calls",
           "type": "integer"
         },
+        "max_tool_result_chars": {
+          "default": 8000,
+          "maximum": 100000,
+          "minimum": 500,
+          "title": "Max Tool Result Chars",
+          "type": "integer"
+        },
         "max_total_tokens": {
           "default": 120000,
           "maximum": 1000000,
           "minimum": 1000,
           "title": "Max Total Tokens",
+          "type": "integer"
+        },
+        "max_working_set_tokens": {
+          "default": 24000,
+          "maximum": 400000,
+          "minimum": 2000,
+          "title": "Max Working Set Tokens",
           "type": "integer"
         },
         "output_usd_per_million_tokens": {

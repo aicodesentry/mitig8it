@@ -25,6 +25,7 @@ from tests.conftest import (
     REPRODUCING_REGRESSION_TEST,
     git_blob,
     regression_test_spec,
+    whole_file_change,
 )
 
 requires_node = pytest.mark.skipif(shutil.which("node") is None, reason="generated regression tests run under node")
@@ -78,7 +79,7 @@ def _run_engine(payload, *, source=JS_SOURCE, replacement=JS_REPAIRED, regressio
         "intended_behavior": "Load the same user by id.",
         "assumptions": ["pg positional parameters are available"],
         "citations": [{"path": "src/db.js", "line_start": 1, "line_end": 4}],
-        "changes": [{"path": "src/db.js", "base_sha256": content_sha256(source), "replacement_content": replacement}],
+        "changes": [whole_file_change("src/db.js", source, replacement)],
     }
     if regression_test is not None:
         arguments["regression_test"] = regression_test
@@ -146,7 +147,7 @@ def test_an_unparseable_candidate_is_rejected_before_any_verification_run(reques
         build_patch_bundle(
             request,
             snapshot,
-            [{"path": "src/db.js", "base_sha256": content_sha256(JS_SOURCE), "replacement_content": JS_BROKEN}],
+            [whole_file_change("src/db.js", JS_SOURCE, JS_BROKEN)],
             [{"path": REGRESSION_TEST_PATH, "content": JS_REGRESSION_TEST}],
         )
 
@@ -161,7 +162,7 @@ async def test_node_check_failure_at_verification_time_is_failed(request_payload
     bundle = build_patch_bundle(
         request,
         snapshot,
-        [{"path": "src/db.js", "base_sha256": content_sha256(JS_SOURCE), "replacement_content": JS_REPAIRED}],
+        [whole_file_change("src/db.js", JS_SOURCE, JS_REPAIRED)],
         [{"path": REGRESSION_TEST_PATH, "content": JS_REGRESSION_TEST}],
     )
     # Replace the validated patch with unparseable content to reach the sandbox `node --check`.
@@ -196,7 +197,7 @@ def test_a_generated_test_outside_its_directory_is_rejected(request_payload, sou
         build_patch_bundle(
             request,
             snapshot,
-            [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": source + "\n"}],
+            [whole_file_change("src/db.ts", source, source + "\n")],
             [{"path": path, "content": REPRODUCING_REGRESSION_TEST}],
         )
 
@@ -213,7 +214,7 @@ def test_a_generated_test_cannot_overwrite_an_application_file(request_payload, 
         build_patch_bundle(
             request,
             snapshot,
-            [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": source + "\n"}],
+            [whole_file_change("src/db.ts", source, source + "\n")],
             [{"path": occupied["path"], "content": REPRODUCING_REGRESSION_TEST}],
         )
 
@@ -225,7 +226,7 @@ def test_a_generated_test_may_not_import_an_undeclared_dependency(request_payloa
         build_patch_bundle(
             request,
             snapshot,
-            [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": source + "\n"}],
+            [whole_file_change("src/db.ts", source, source + "\n")],
             [{"path": REGRESSION_TEST_PATH, "content": "require('supertest');\nprocess.exit(1);\n"}],
         )
 
@@ -236,7 +237,7 @@ def test_policy_supplied_checks_still_run_and_generated_checks_are_additive(requ
     bundle = build_patch_bundle(
         request,
         snapshot,
-        [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": source + "\n"}],
+        [whole_file_change("src/db.ts", source, source + "\n")],
         [regression_test_spec()],
     )
     effective = build_effective_checks(request, snapshot, bundle)
@@ -266,7 +267,7 @@ def test_the_repository_test_script_is_skipped_with_a_recorded_limitation(reques
     bundle = build_patch_bundle(
         request,
         snapshot,
-        [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": source + "\n"}],
+        [whole_file_change("src/db.ts", source, source + "\n")],
         [regression_test_spec()],
     )
     effective = build_effective_checks(request, snapshot, bundle)
@@ -281,7 +282,7 @@ def test_non_reproducing_content_is_still_accepted_by_patch_policy(request_paylo
     bundle = build_patch_bundle(
         request,
         snapshot,
-        [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": source + "\n"}],
+        [whole_file_change("src/db.ts", source, source + "\n")],
         [regression_test_spec(NON_REPRODUCING_REGRESSION_TEST)],
     )
     assert bundle.generated_tests[0].path == REGRESSION_TEST_PATH
