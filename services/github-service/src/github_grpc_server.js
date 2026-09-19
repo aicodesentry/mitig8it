@@ -3,6 +3,7 @@ const githubPb = require('./grpc/generated/github_pb');
 const githubGrpc = require('./grpc/generated/github_grpc_pb');
 const commonPb = require('./grpc/generated/common_pb');
 const {
+  authorizeRemediationActor,
   cancelScheduledMerge,
   commitRemediationAction,
   createCheckRun,
@@ -20,6 +21,7 @@ const {
 } = require('./services/githubInternalOperations');
 
 const HEALTH_SERVING_STATUS = 1;
+const OPERATION_STATUS_METADATA_KEY = 'x-operation-status';
 
 function readVarint(buffer, offset) {
   let result = 0;
@@ -77,25 +79,38 @@ const standardHealthHandlers = {
   },
 };
 
+// gRPC has one FAILED_PRECONDITION for the 409 and 422 the operations distinguish, and
+// callers branch on that difference. The originating status therefore travels in
+// trailing metadata so the gRPC client can rebuild the exact error the HTTP path raises.
+function operationStatusMetadata(statusCode) {
+  if (!Number.isInteger(statusCode)) {
+    return undefined;
+  }
+  const metadata = new grpc.Metadata();
+  metadata.set(OPERATION_STATUS_METADATA_KEY, String(statusCode));
+  return metadata;
+}
+
 function operationErrorToGrpc(error) {
+  const metadata = operationStatusMetadata(error.statusCode);
   if (error.statusCode === 400) {
-    return { code: grpc.status.INVALID_ARGUMENT, message: error.message };
+    return { code: grpc.status.INVALID_ARGUMENT, message: error.message, metadata };
   }
   if (error.statusCode === 502) {
-    return { code: grpc.status.UNAVAILABLE, message: error.message };
+    return { code: grpc.status.UNAVAILABLE, message: error.message, metadata };
   }
   // Remediation operations refuse with these statuses; collapsing them into INTERNAL
   // would hide a permission or precondition failure behind a server fault.
   if (error.statusCode === 403) {
-    return { code: grpc.status.PERMISSION_DENIED, message: error.message };
+    return { code: grpc.status.PERMISSION_DENIED, message: error.message, metadata };
   }
   if (error.statusCode === 404) {
-    return { code: grpc.status.NOT_FOUND, message: error.message };
+    return { code: grpc.status.NOT_FOUND, message: error.message, metadata };
   }
   if (error.statusCode === 409 || error.statusCode === 422) {
-    return { code: grpc.status.FAILED_PRECONDITION, message: error.message };
+    return { code: grpc.status.FAILED_PRECONDITION, message: error.message, metadata };
   }
-  return { code: grpc.status.INTERNAL, message: error.message || 'Internal error' };
+  return { code: grpc.status.INTERNAL, message: error.message || 'Internal error', metadata };
 }
 
 function toChangedFile(file) {
@@ -383,6 +398,22 @@ const remediationService = {
     }
   ),
 
+  authorizeRemediation: unary(
+    async (request) => authorizeRemediationActor(fromRemediationEnvelope(request.getEnvelope())),
+    (result) => {
+      const response = new githubPb.RemediationAuthorizeResponse();
+      response.setState(result.state || '');
+      response.setInstallationActive(Boolean(result.installation_active));
+      response.setRepositoryGranted(Boolean(result.repository_granted));
+      response.setActorWritePermission(Boolean(result.actor_write_permission));
+      response.setHeadSha(result.head_sha || '');
+      response.setBaseSha(result.base_sha || '');
+      response.setHeadBranch(result.head_branch || '');
+      response.setBaseBranch(result.base_branch || '');
+      return response;
+    }
+  ),
+
   createRemediationCheckRun: unary(
     async (request) => createRemediationCheckRun({
       ...fromRemediationEnvelope(request.getEnvelope()),
@@ -497,6 +528,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  OPERATION_STATUS_METADATA_KEY,
   createServer,
   githubService,
   startServer,
