@@ -16,6 +16,14 @@ The policy's `verification_checks` are fixed argv arrays selected by the trusted
 
 ## Generated regression tests
 
+## Agent context and patch shape
+
+`read_file` takes an optional `line_start`/`line_end`. With them null it returns a window of `DEFAULT_READ_CONTEXT_LINES` (30) lines either side of the finding's reported range, clamped to the file. Every tool result is capped at `policy.max_tool_result_chars` characters, and a read never spans more than 400 lines. The snapshot is never injected into the prompt: the agent reaches source only through tools.
+
+Once the message history is estimated above `policy.max_working_set_tokens`, consumed `read_file`, `search_code`, `find_references`, `read_dependency`, and `read_tests` results are replaced with a provenance stub carrying `{path, line_start, line_end, content_digest}` and a note that the content was read. The system prompt, the task message, the result the agent is currently reasoning about, the accepted proposal, and the latest verification result are never evicted.
+
+`propose_patch.changes` are line-range hunks, not whole files. Each is `{path, start_line, end_line, replaced_sha256, replacement_lines}`, where the range is inclusive and 1-based, `replaced_sha256` is the sha256 of exactly those original lines, and `replacement_lines` carry no newline characters. A hunk whose digest no longer matches the snapshot is rejected as `stale_hunk_digest`, overlapping hunks on one file are rejected as `overlapping_hunks`, and the file and changed-line caps apply to the applied result. The response still carries each candidate's full `replacement_content`, because that is what the sandbox materializes and what the apply path writes. The regression test remains a complete small file.
+
 Plan section 8 step 4 requires a reproducer that distinguishes a real repair from disabling the feature. With `require_generated_regression_test: true` the agent's `propose_patch` must supply `regression_test: {path, content}`:
 
 - `path` must be `.mitig8it/regression/<name>.test.{js,cjs,mjs}` and must not name a file the snapshot already carries. Any other path, including a nested subdirectory or an application file, is rejected by patch policy.

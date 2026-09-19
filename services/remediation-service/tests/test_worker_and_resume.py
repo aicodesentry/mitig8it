@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import whole_file_change
+
 import src.worker as worker
 from src.agent import RepairAgent
 from src.digests import content_sha256
@@ -128,7 +130,7 @@ async def test_resumed_proposal_that_violates_patch_policy_is_a_structured_abste
             "intended_behavior": "b",
             "assumptions": [],
             "citations": [{"path": "tests/db.test.ts", "line_start": 1, "line_end": 1}],
-            "changes": [{"path": "tests/db.test.ts", "base_sha256": content_sha256(test_content), "replacement_content": ""}],
+            "changes": [whole_file_change("tests/db.test.ts", test_content, "")],
         },
     }
     agent = RepairAgent(UnusedProvider(), Verifier(UnusedBroker()), ResumeCheckpointStore(checkpoint))

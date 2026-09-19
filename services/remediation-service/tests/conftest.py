@@ -10,6 +10,7 @@ import pytest
 SERVICE_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(SERVICE_ROOT))
 
+from src.digests import content_sha256  # noqa: E402
 from src.git_tree import compute_tree_oid  # noqa: E402
 from src.models import GitTreeEntry  # noqa: E402
 
@@ -31,6 +32,18 @@ NON_REPRODUCING_REGRESSION_TEST = (
 
 def regression_test_spec(content: str = REPRODUCING_REGRESSION_TEST, path: str = REGRESSION_TEST_PATH) -> dict[str, str]:
     return {"path": path, "content": content}
+
+
+def whole_file_change(path: str, original: str, replacement: str) -> dict[str, object]:
+    """One hunk replacing every line of a file, for cases stated as a whole-file replacement."""
+    lines = original.splitlines(keepends=True)
+    return {
+        "path": path,
+        "start_line": 1,
+        "end_line": max(1, len(lines)),
+        "replaced_sha256": content_sha256(original),
+        "replacement_lines": replacement.splitlines(),
+    }
 
 
 def git_blob(content: str) -> str:
