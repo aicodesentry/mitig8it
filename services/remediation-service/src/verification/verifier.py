@@ -11,6 +11,7 @@ from ..patches import PatchBundle, candidate_tree_digest
 from ..retrieval import Snapshot
 from ..sandbox import BrokerEvidenceError, BrokerTransportError, SandboxBroker
 from ..sandbox.broker import evidence_digest
+from .checks import EffectiveChecks, build_effective_checks, generated_snapshot_entries
 
 PRODUCTION_VERIFICATION_LEVEL = "independent_sandbox"
 DEVELOPMENT_VERIFICATION_LEVEL = "development_unverified"
@@ -32,13 +33,27 @@ class Verifier:
         self.broker = broker
 
     async def verify(self, request: RepairRequest, snapshot: Snapshot, bundle: PatchBundle) -> VerificationResult:
-        checks = request.policy.verification_checks
-        check_kinds = {check.kind for check in checks}
         if request.policy.sandbox_image_digest is None and not request.policy.allow_development_verification:
             return self._unsupported("sandbox_image_digest_missing")
+        if request.policy.require_generated_regression_test and not bundle.generated_tests:
+            # Plan section 8 step 4: without a reproducer there is no evidence that separates a
+            # repair from disabling the feature, whatever the other checks report.
+            return VerificationResult(
+                "inconclusive",
+                {"reason_code": "regression_test_not_reproducing"},
+                None,
+                "regression_test_not_reproducing",
+                "none",
+                ["the candidate supplied no generated regression test, so the finding was never reproduced"],
+            )
+        effective = build_effective_checks(request, snapshot, bundle)
+        checks = list(effective.checks)
+        check_kinds = effective.kinds
         if not checks:
             return self._unsupported("verification_profile_missing")
-        if "exploit" not in check_kinds or "behavior" not in check_kinds:
+        if "exploit" not in check_kinds:
+            return self._unsupported("independent_exploit_check_required")
+        if not check_kinds & {"behavior", "existing_test", "typecheck", "build"}:
             return self._unsupported("independent_exploit_and_behavior_checks_required")
 
         candidate_tree = candidate_tree_digest(snapshot, bundle)
@@ -69,9 +84,7 @@ class Verifier:
                 "head_tree_oid": request.head_tree_oid,
                 "verified_tree_oid": verified_tree_oid,
             },
-            "snapshot": [
-                {"path": path, "content": snapshot.full_content(path)} for path in snapshot.paths
-            ],
+            "snapshot": generated_snapshot_entries(snapshot, effective),
             "patches": [patch.model_dump(mode="json") for patch in bundle.patches],
             "execution_policy": {
                 "image_digest": request.policy.sandbox_image_digest,
@@ -96,15 +109,21 @@ class Verifier:
                     level,
                     ["the sandbox reported development-only evidence and policy does not allow it"],
                 )
-            self._validate_evidence(request, snapshot, bundle, evidence, candidate_tree, level)
+            self._validate_evidence(request, snapshot, bundle, evidence, candidate_tree, level, effective)
         except BrokerTransportError:
             return self._inconclusive("sandbox_broker_unavailable")
         except BrokerEvidenceError:
             return self._inconclusive("sandbox_evidence_invalid")
 
-        limitations = self._limitations(request, evidence, level)
+        limitations = self._limitations(effective, evidence, level)
         status = evidence["outcome"]
         digest = evidence_digest(evidence)
+        if self._regression_not_reproducing(effective, evidence):
+            # The reproducer passed on the original code, so it does not demonstrate the
+            # finding. That is an unusable reproducer, not a failing repair.
+            return VerificationResult(
+                "inconclusive", evidence, digest, "regression_test_not_reproducing", level, limitations
+            )
         if status == "passed":
             scanner_status, scanner_reason = self._scanner_verdict(request, evidence)
             if scanner_status != "passed":
@@ -115,6 +134,17 @@ class Verifier:
         if status == "unsupported":
             return VerificationResult("unsupported", evidence, digest, "sandbox_profile_unsupported", level, limitations)
         return VerificationResult("inconclusive", evidence, digest, "verification_inconclusive", level, limitations)
+
+    @staticmethod
+    def _regression_not_reproducing(effective: EffectiveChecks, evidence: dict[str, Any]) -> bool:
+        """True when a generated reproducer completed on the baseline tree without failing."""
+        for result in evidence.get("checks", []):
+            if not isinstance(result, dict) or result.get("check_id") not in effective.regression_check_ids:
+                continue
+            baseline = result.get("baseline") or {}
+            if baseline.get("completed") is True and baseline.get("status") != "failed":
+                return True
+        return False
 
     @staticmethod
     def _verification_level(evidence: dict[str, Any]) -> str:
@@ -142,10 +172,10 @@ class Verifier:
         return "passed", None
 
     @staticmethod
-    def _limitations(request: RepairRequest, evidence: dict[str, Any], level: str) -> list[str]:
+    def _limitations(effective: EffectiveChecks, evidence: dict[str, Any], level: str) -> list[str]:
         """Names every required verification that was not run. Absent evidence is never coverage."""
-        kinds = {check.kind for check in request.policy.verification_checks}
-        limitations: list[str] = []
+        kinds = effective.kinds
+        limitations: list[str] = list(effective.limitations)
         if level == DEVELOPMENT_VERIFICATION_LEVEL:
             limitations.append(
                 "verification ran in the development local sandbox without network, kernel, or filesystem isolation"
@@ -174,6 +204,7 @@ class Verifier:
         evidence: dict[str, Any],
         candidate_tree: str,
         level: str,
+        effective: EffectiveChecks,
     ) -> None:
         if evidence.get("outcome") not in {"passed", "failed", "inconclusive", "unsupported"}:
             raise BrokerEvidenceError("broker outcome is invalid")
@@ -201,7 +232,7 @@ class Verifier:
         results = evidence.get("checks")
         if not isinstance(results, list):
             raise BrokerEvidenceError("broker check evidence is absent")
-        expected = {check.check_id: check for check in request.policy.verification_checks}
+        expected = {check.check_id: check for check in effective.checks}
         actual: dict[str, dict[str, Any]] = {}
         for result in results:
             if not isinstance(result, dict) or not isinstance(result.get("check_id"), str):

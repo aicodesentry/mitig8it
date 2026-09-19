@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,45 @@ def verification_checks(fixture: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return checks
+
+
+GENERATED_TEST_DIRECTORY = ".mitig8it/regression"
+
+GENERATED_TEST_TEMPLATE = """// Generated regression reproducer for %(fixture_id)s.
+// It must exit non-zero on the original tree and zero on the repaired tree. It runs the
+// fixture's audited reproducer from its own file so a development run exercises the
+// generated-test path without inventing a second, unreviewed reproducer.
+const { spawnSync } = require('node:child_process');
+
+const argv = %(argv)s;
+const command = argv[0] === 'node' ? process.execPath : argv[0];
+const result = spawnSync(command, argv.slice(1), { cwd: process.cwd(), stdio: 'inherit' });
+process.exit(result.status === 0 ? 0 : 1);
+"""
+
+
+def fixture_regression_test(fixture: dict[str, Any], suffix: str = "") -> dict[str, str]:
+    """The generated regression test a development or benchmark run proposes for a fixture.
+
+    Real jobs get this file from the agent. Fixtures already ship a reviewed `tests/verify.js`
+    reproducer, so the scripted provider generates a test that re-runs exactly that argv rather
+    than fabricating fixture-specific assertions the benchmark could not audit.
+    """
+    checks = fixture.get("verification_checks")
+    exploit = next(
+        (item for item in checks or [] if isinstance(item, dict) and item.get("kind") == "exploit"), None
+    )
+    if not isinstance(exploit, dict) or not isinstance(exploit.get("argv"), list) or not exploit["argv"]:
+        raise FixtureLoadError(f"{fixture.get('id')}: an exploit check argv is required to generate a regression test")
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", f"{fixture.get('id')}{suffix}").strip("-.") or "finding"
+    return {
+        "path": f"{GENERATED_TEST_DIRECTORY}/{name}.test.js",
+        "content": GENERATED_TEST_TEMPLATE
+        % {
+            "fixture_id": json.dumps(str(fixture.get("id"))),
+            "argv": json.dumps([str(part) for part in exploit["argv"]]),
+        },
+    }
 
 
 def _normalized_finding(fixture_id: Any, finding: Any) -> dict[str, Any]:
