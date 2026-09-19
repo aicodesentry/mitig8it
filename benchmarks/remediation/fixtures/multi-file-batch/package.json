@@ -1,0 +1,9 @@
+{
+  "name": "fixture-orders-service-d",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Benchmark fixture package manifest; it declares the dependencies a repair may rely on.",
+  "dependencies": {
+    "pg": "8.13.0"
+  }
+}

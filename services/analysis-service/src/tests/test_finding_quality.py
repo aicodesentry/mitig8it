@@ -38,3 +38,9 @@ class TestTranscriptFiltering:
         )
         context = extract_match_context(patch, rule.pattern)
         assert context["matched_text"] == "const result = eval(user_input)"
+
+
+def test_source_comments_and_literals_cannot_hide_runtime_eval():
+    rule = _find("code.injection.eval")
+    for suffix in (" # git add .", " # pytest", ' # "diff_hunk"', " # OpenGrep validation failed"):
+        assert pattern_matches_reviewable_content("+eval(user_input)" + suffix, rule.pattern)

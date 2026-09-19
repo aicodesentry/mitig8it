@@ -6,7 +6,7 @@ jest.mock('../src/config/database', () => ({
   transaction: jest.fn(),
 }));
 
-const { pool } = require('../src/config/database');
+const { pool, transaction } = require('../src/config/database');
 const { createApp } = require('../src/app');
 
 const JWT_SECRET = 'test-jwt-secret';
@@ -112,16 +112,30 @@ describe('Repository access control', () => {
   });
 });
 
-describe('PR webhook grants repository access', () => {
-  test('webhook route upserts repository access rows', () => {
-    // Read the actual source to verify the SQL
-    const fs = require('fs');
-    const webhookSource = fs.readFileSync(
-      require.resolve('../src/routes/webhooks.js'),
-      'utf8'
-    );
-
-    expect(webhookSource).toContain('grantRepositoryAccess');
-    expect(webhookSource).toContain('INSERT INTO repository_access');
+describe('PR webhook repository access', () => {
+  test('upserts repository history without granting linked installation users access', async () => {
+    const { createHmac } = require('crypto');
+    process.env.GITHUB_WEBHOOK_SECRET = 'fixture-webhook-secret';
+    const client = { query: jest.fn(async (sql) => {
+      if (sql.includes('INSERT INTO webhook_deliveries')) return { rowCount: 1, rows: [{ delivery_id: 'access-test' }] };
+      if (sql.includes('SELECT id, baseline_set')) return { rowCount: 1, rows: [{ id: 'repo-1', baseline_set: false, is_active: false }] };
+      if (sql.includes('INSERT INTO pull_requests')) return { rowCount: 1, rows: [{ id: 'pr-1' }] };
+      if (sql.includes('user_installations')) return { rowCount: 1, rows: [{ user_id: USER_A }] };
+      return { rowCount: 1, rows: [{ id: 'repo-1' }] };
+    }) };
+    transaction.mockImplementation(fn => fn(client));
+    const payload = JSON.stringify({ action: 'opened', installation: { id: 42 },
+      repository: { id: 999, name: 'private', full_name: 'org/private', private: true },
+      pull_request: { id: 777, number: 1, title: 'Fixture', state: 'open',
+        head: { sha: 'a'.repeat(40), ref: 'branch' }, base: { sha: 'b'.repeat(40), ref: 'main' } } });
+    const response = await request(createApp()).post('/webhooks/github')
+      .set('Content-Type', 'application/json').set('x-github-event', 'pull_request')
+      .set('x-github-delivery', 'access-test')
+      .set('x-hub-signature-256', `sha256=${createHmac('sha256', process.env.GITHUB_WEBHOOK_SECRET).update(payload).digest('hex')}`)
+      .send(payload);
+    expect(response.status).toBe(200);
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO repositories'), expect.any(Array));
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO pull_requests'), expect.any(Array));
+    expect(client.query).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO repository_access'), expect.anything());
   });
 });

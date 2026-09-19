@@ -2,7 +2,6 @@ const express = require('express');
 const axios = require('axios');
 const { pool } = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
-const { getInstallationToken } = require('../services/githubApp');
 const { getGithubAccessTokenForUser } = require('../services/githubUserAuth');
 const installationsDb = require('../db/installations');
 const repositoriesDb = require('../db/repositories');
@@ -84,32 +83,7 @@ async function syncRepoPullRequests({ repoFullName, repoId, githubToken }) {
 async function fetchInstallationRepositories({ installationId, githubToken }) {
   const repositories = [];
 
-  // Prefer GitHub App installation token: this reflects app-granted repo access directly.
-  try {
-    const installationToken = await getInstallationToken(installationId);
-    let page = 1;
-    let hasMore = true;
-    while (hasMore) {
-      const reposResp = await axios.get('https://api.github.com/installation/repositories', {
-        headers: {
-          Authorization: `Bearer ${installationToken}`,
-          Accept: 'application/vnd.github+json',
-        },
-        params: { per_page: 100, page },
-        timeout: 20000,
-      });
-
-      const pageRepos = reposResp.data.repositories || [];
-      repositories.push(...pageRepos);
-      hasMore = pageRepos.length === 100;
-      page += 1;
-    }
-
-    return repositories;
-  } catch (_appTokenError) {
-    // Fall back to user-scoped endpoint when app credentials are unavailable.
-  }
-
+  // This endpoint returns the intersection of app and authenticated user access.
   let page = 1;
   let hasMore = true;
   while (hasMore) {
@@ -139,9 +113,9 @@ async function grantRepositoryAccess(client, repositoryId, userIds) {
   for (const userId of uniqueUserIds) {
     await client.query(
       `INSERT INTO repository_access (user_id, repository_id, role, updated_at)
-       VALUES ($1, $2, 'admin', NOW())
+       VALUES ($1, $2, 'read', NOW())
        ON CONFLICT (user_id, repository_id)
-       DO UPDATE SET updated_at = NOW()`,
+       DO UPDATE SET role = EXCLUDED.role, updated_at = NOW()`,
       [userId, repositoryId]
     );
   }
@@ -173,6 +147,7 @@ router.post('/sync', authenticateToken, async (req, res) => {
     let response;
     try {
       response = await axios.get('https://api.github.com/user/installations', {
+        params: { per_page: 100, page: 1 },
         headers: {
           Authorization: `Bearer ${githubToken}`,
           Accept: 'application/vnd.github+json',
@@ -185,6 +160,7 @@ router.post('/sync', authenticateToken, async (req, res) => {
           const refreshed = await getGithubAccessTokenForUser(req.user.user_id, { forceRefresh: true });
           githubToken = refreshed.token;
           response = await axios.get('https://api.github.com/user/installations', {
+            params: { per_page: 100, page: 1 },
             headers: {
               Authorization: `Bearer ${githubToken}`,
               Accept: 'application/vnd.github+json',
@@ -203,13 +179,29 @@ router.post('/sync', authenticateToken, async (req, res) => {
       }
     }
 
+    const allInstallations = [...(response.data.installations || [])];
+    // Request explicit pages so revocation never uses a truncated membership list.
+    let installationPage = 2;
+    while ((response.data.installations || []).length === 100) {
+      response = await axios.get('https://api.github.com/user/installations', {
+        headers: { Authorization: `Bearer ${githubToken}`, Accept: 'application/vnd.github+json' },
+        params: { per_page: 100, page: installationPage++ },
+        timeout: 20000,
+      });
+      allInstallations.push(...(response.data.installations || []));
+    }
+
     const activeInstallationIds = [];
     let synced = 0;
     let syncedRepos = 0;
     const syncErrors = [];
     const reposToProfile = [];
-    for (const installation of response.data.installations || []) {
+    for (const installation of allInstallations) {
       if (!installationBelongsToUser(installation, githubUsername)) {
+        continue;
+      }
+      if (installation.suspended_at) {
+        await installationsDb.upsertInstallation(pool, installation, 'suspended');
         continue;
       }
       await installationsDb.upsertInstallation(pool, installation, 'active');
@@ -287,6 +279,9 @@ router.post('/sync', authenticateToken, async (req, res) => {
           }
         }
       } catch (repoSyncError) {
+        if ([401, 403, 404].includes(repoSyncError.response?.status)) {
+          await repositoriesDb.revokeMissingAccessForInstallation(req.user.user_id, installation.id, []);
+        }
         syncErrors.push({
           installation_id: installation.id,
           error: repoSyncError.response?.data?.message || repoSyncError.message,

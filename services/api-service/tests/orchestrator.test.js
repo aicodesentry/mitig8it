@@ -1,6 +1,7 @@
 const axios = require('axios');
 
 jest.mock('axios');
+jest.mock('../src/db/repositories', () => ({getProfile: jest.fn().mockResolvedValue({profile_status: 'ready', profile_data: {}}), queueUrgentProfiling: jest.fn()}));
 jest.mock('../src/services/githubApp', () => ({
   getInstallationToken: jest.fn(),
 }));
@@ -875,7 +876,7 @@ describe('PR Analysis Orchestrator — pipeline', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
-  test('individual tier failure does not fail the run', async () => {
+  test('individual required tier failure fails the run', async () => {
     // With progressive posting, a single tier failing is non-blocking
     setupAxiosMocks([
       { pattern: '/pulls/files', data: { files: [{ path: 'app.py', patch: '+x=1', additions: 1 }] } },
@@ -893,15 +894,10 @@ describe('PR Analysis Orchestrator — pipeline', () => {
     });
     await flushAsync();
 
-    // Run should still complete (not fail) — tier failures are non-blocking
     expect(pool.query).toHaveBeenCalledWith(
-      expect.stringContaining("status = 'completed'"),
-      expect.anything()
+      expect.stringContaining("status = 'failed'"), expect.anything()
     );
-    expect(logger.error).toHaveBeenCalledWith(
-      'Tier 1 analysis failed',
-      expect.any(Object)
-    );
+    expect(axios.post.mock.calls.some(([url, body]) => url.includes('/check-runs') && body.conclusion === 'success')).toBe(false);
   });
 
   test('calls GitHub service with correct internal secret header', async () => {
@@ -1001,7 +997,7 @@ describe('PR Analysis Orchestrator — pipeline', () => {
     expect(inlineCall[1].body).toContain('const payload = JSON.parse(req.body.code);');
   });
 
-  test('logs error but does not fail run when review posting fails', async () => {
+  test('fails run when required review publication fails', async () => {
     const routes = [
       { pattern: '/pulls/files', data: { files: [{ path: 'test_vuln.js', patch: '@@ -0,0 +1,2 @@\n+const existing = true;\n+eval(req.body.code);', additions: 2 }] } },
       { pattern: '/files/content', data: { files: [{ path: 'test_vuln.js', content: 'const existing = true;\neval(req.body.code);\n' }] } },
@@ -1039,17 +1035,17 @@ describe('PR Analysis Orchestrator — pipeline', () => {
 
     // Review failure should be logged
     expect(logger.error).toHaveBeenCalledWith(
-      expect.stringContaining('failed to submit PR review'),
+      expect.stringContaining('PR analysis orchestration failed'),
       expect.any(Object)
     );
-    // Run should still complete
+    // Failed publication remains retryable.
     const updateCall = pool.query.mock.calls.find(
-      (call) => typeof call[0] === 'string' && call[0].includes("status = 'completed'")
+      (call) => typeof call[0] === 'string' && call[0].includes("status = 'failed'")
     );
     expect(updateCall).toBeTruthy();
   });
 
-  test('progressive posting: tier2 findings update the review', async () => {
+  test('final publication includes tier2 findings once', async () => {
     const tier2Finding = {
       ...FINDING,
       rule_id: 'opengrep.cwe-89.sql-injection',
@@ -1068,15 +1064,12 @@ describe('PR Analysis Orchestrator — pipeline', () => {
       { pattern: '/check-runs', data: { check_run_id: 2 } },
     ]);
 
-    pool.query.mockResolvedValue({ rowCount: 1, rows: [{ count: 1 }] });
-    // For upsert: findByFingerprint returns empty, insert returns the finding
-    pool.query
-      .mockResolvedValueOnce({ rows: [{ count: 1 }] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [PERSISTED_FINDING] })
-      .mockResolvedValueOnce({ rowCount: 0 })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValue({ rowCount: 1, rows: [{ count: 1 }, PERSISTED_FINDING] });
+    pool.query.mockImplementation(async (sql, values) => {
+      if (sql.includes('COUNT')) return { rows: [{count: 1}] };
+      if (sql.includes('SELECT id FROM findings')) return {rows: [], rowCount: 0};
+      if (sql.includes('INSERT INTO findings')) return {rows: [{...PERSISTED_FINDING, id: values[6], fingerprint: values[6]}]};
+      return {rows: [], rowCount: 0};
+    });
 
     jest.isolateModules(() => {
       const mod = require('../src/services/prAnalysisOrchestrator');
@@ -1088,10 +1081,10 @@ describe('PR Analysis Orchestrator — pipeline', () => {
     const reviewCalls = axios.post.mock.calls.filter(
       (call) => typeof call[0] === 'string' && call[0].includes('reviews/submit')
     );
-    expect(reviewCalls.length).toBeGreaterThanOrEqual(2);
+    expect(reviewCalls).toHaveLength(1);
   });
 
-  test('tier3 republishes when fixes are added without changing finding count', async () => {
+  test('final publication includes tier3 fixes without reposting', async () => {
     const tier1Finding = {
       ...FINDING,
       rule_id: 'sql.injection.raw_query',
@@ -1140,7 +1133,7 @@ describe('PR Analysis Orchestrator — pipeline', () => {
     const reviewCalls = axios.post.mock.calls.filter(
       (call) => typeof call[0] === 'string' && call[0].includes('reviews/submit')
     );
-    expect(reviewCalls.length).toBeGreaterThanOrEqual(2);
+    expect(reviewCalls).toHaveLength(1);
   });
 
   test('tier2 receives enriched files with full content snapshots', async () => {

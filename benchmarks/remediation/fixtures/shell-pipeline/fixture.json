@@ -1,0 +1,53 @@
+{
+  "schema_version": "v1",
+  "id": "shell-pipeline-001",
+  "repository_id": "fixture-pipeline-service-e",
+  "split": "validation",
+  "family": "command_arguments",
+  "kind": "negative",
+  "expected_state": "unsupported",
+  "source": "app.js",
+  "finding": {
+    "id": "pipeline-1",
+    "rule_id": "cwe-78.shell-pipeline",
+    "cwe_id": "CWE-78",
+    "category": "command",
+    "path": "app.js",
+    "line_start": 3,
+    "line_end": 3
+  },
+  "reason": "The existing shell pipeline has undocumented quoting and output semantics; an automatic rewrite may change business behavior.",
+  "budget": {
+    "max_tool_calls": 20,
+    "max_attempts": 3,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 120000,
+    "max_cost_usd": 2.0
+  },
+  "verification_checks": [
+    {
+      "check_id": "exploit",
+      "kind": "exploit",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--exploit"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "failed",
+      "expected_candidate": "passed"
+    },
+    {
+      "check_id": "behavior",
+      "kind": "behavior",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--behavior"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    }
+  ]
+}

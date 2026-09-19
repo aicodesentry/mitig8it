@@ -41,7 +41,7 @@ describe('installation sync', () => {
   let token;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
     process.env.JWT_SECRET = 'test-secret';
     process.env.ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     token = jwt.sign({ user_id: 'user-1' }, process.env.JWT_SECRET);
@@ -71,7 +71,7 @@ describe('installation sync', () => {
     installationsDb.deleteUnreferencedInstallations.mockResolvedValue({});
     repositoriesDb.revokeMissingAccessForInstallation.mockResolvedValue({});
     repositoriesDb.queueTopReposForProfiling.mockResolvedValue(['repo-1']);
-    getInstallationToken.mockRejectedValue(new Error('app token unavailable'));
+    getInstallationToken.mockResolvedValue('installation-wide-token');
     axios.get
       .mockResolvedValueOnce({
         data: {
@@ -108,6 +108,7 @@ describe('installation sync', () => {
       .post('/api/installations/sync')
       .set('Authorization', `Bearer ${token}`);
 
+    expect(getInstallationToken).not.toHaveBeenCalled();
     expect(response.status).toBe(200);
     expect(response.body.success).toBe(true);
     expect(response.body.synced_installations).toBe(1);
@@ -207,6 +208,32 @@ describe('installation sync', () => {
     expect(installationsDb.linkUserInstallation).not.toHaveBeenCalled();
     expect(installationsDb.reconcileUserInstallations).toHaveBeenCalledWith(pool, 'user-1', []);
     expect(installationsDb.deleteUnreferencedInstallations).toHaveBeenCalledWith(pool);
+  });
+
+  test('paginates all installation memberships before revoking missing links', async () => {
+    axios.get.mockReset();
+    const pageOne = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, account: { type: 'Organization', login: `org${i}` } }));
+    axios.get.mockImplementation(async (url, options) => {
+      if (url.endsWith('/user/installations')) {
+        return { data: { installations: options.params.page === 1 ? pageOne : [{ id: 101, account: { type: 'Organization', login: 'last' } }] } };
+      }
+      return { data: { repositories: [] } };
+    });
+    pool.query.mockResolvedValue({ rows: [] });
+    const res = await request(createApp()).post('/api/installations/sync').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(installationsDb.reconcileUserInstallations).toHaveBeenCalledWith(pool, 'user-1', Array.from({ length: 101 }, (_, i) => i + 1));
+    expect(axios.get).toHaveBeenCalledWith('https://api.github.com/user/installations', expect.objectContaining({ params: { per_page: 100, page: 2 } }));
+  });
+
+  test('revokes repository grants when GitHub explicitly denies the user-scoped listing', async () => {
+    axios.get.mockReset();
+    axios.get.mockResolvedValueOnce({ data: { installations: [{ id: 42, account: { type: 'Organization', login: 'org' } }] } })
+      .mockRejectedValueOnce({ response: { status: 403 } });
+    const res = await request(createApp()).post('/api/installations/sync').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(207);
+    expect(repositoriesDb.revokeMissingAccessForInstallation).toHaveBeenCalledWith('user-1', 42, []);
+    expect(getInstallationToken).not.toHaveBeenCalled();
   });
 
   test('returns a reconnect message when the stored GitHub token is invalid', async () => {

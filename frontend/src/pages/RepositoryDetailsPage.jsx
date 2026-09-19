@@ -52,7 +52,7 @@ export default function RepositoryDetailsPage() {
             <div className="flex items-center gap-4">
               <div className="text-right text-sm text-neutral-600 dark:text-neutral-400">
                 <p>Open findings: <span className="font-semibold text-neutral-900 dark:text-white">{pr.open_findings_count}</span></p>
-                <p>Critical/High: <span className="font-semibold text-neutral-900 dark:text-white">{(pr.critical_count || 0) + (pr.high_count || 0)}</span></p>
+                <p>Critical/High: <span className="font-semibold text-neutral-900 dark:text-white">{Number(pr.critical_count || 0) + Number(pr.high_count || 0)}</span></p>
               </div>
               {pr.html_url && (
                 <a

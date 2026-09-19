@@ -1,0 +1,227 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all-ingress-egress
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: remediation-service-to-broker-dns-and-otel-only
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: remediation-service
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sandbox-broker
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: remediation-otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+    # Egress is an approved proxy/gateway CIDR, never a direct public range.
+    # It carries provider/GCS traffic and must authenticate upstream itself.
+    - to:
+        - ipBlock:
+            cidr: __REMEDIATION_EXTERNAL_EGRESS_CIDR__
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: __REMEDIATION_DATABASE_CIDR__
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: remediation-worker-to-broker-dns-and-otel-only
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: remediation-worker
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sandbox-broker
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: remediation-otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+    - to:
+        - ipBlock:
+            cidr: __REMEDIATION_EXTERNAL_EGRESS_CIDR__
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: __REMEDIATION_DATABASE_CIDR__
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-broker-ingress-from-remediation-only
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox-broker
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: remediation-service
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: remediation-worker
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+# Rendered with the private cluster control-plane CIDR only. The broker needs
+# this sole exception to use the Kubernetes API; it does not authorize runners.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-broker-to-kubernetes-api-only
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox-broker
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: __KUBERNETES_API_CIDR__
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: remediation-otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-runner-no-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: mitig8it-sandbox
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-collector-ingress-and-upstream-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: remediation-otel-collector
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: remediation-service
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: remediation-worker
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sandbox-broker
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+  egress:
+    - to:
+        - ipBlock:
+            cidr: __REMEDIATION_EXTERNAL_EGRESS_CIDR__
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

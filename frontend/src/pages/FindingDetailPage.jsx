@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 import { findingAPI } from '../services/api'
+import RemediationPanel from '../components/RemediationPanel'
 
 export default function FindingDetailPage() {
   const { findingId } = useParams()
@@ -58,6 +59,8 @@ export default function FindingDetailPage() {
           </>
         )}
       </div>
+
+      <RemediationPanel pullRequestId={finding.pull_request_id} findingId={finding.id} />
 
       <div className="flex gap-2">
         <button onClick={() => setStatus('open')} className="rounded-lg border border-neutral-300 px-4 py-2 text-sm">Mark Open</button>

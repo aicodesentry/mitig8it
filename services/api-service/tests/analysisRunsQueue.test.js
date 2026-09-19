@@ -1,6 +1,7 @@
 jest.mock('../src/config/database', () => ({
   pool: {
     query: jest.fn(),
+    connect: jest.fn(),
   },
 }));
 
@@ -12,45 +13,81 @@ describe('analysis run queue', () => {
     jest.clearAllMocks();
   });
 
-  test('claims the next pending or stale running analysis with a row lock', async () => {
-    const queuedRun = {
-      analysis_run_id: 'run-1',
-      repository_id: 'repo-1',
-      repository_github_id: 123,
-      repository_full_name: 'acme/app',
-      installation_id: 456,
-      pull_request_id: 'pr-1',
-      pull_request_number: 7,
-      commit_sha: 'abc123',
-      baseline_set: false,
-    };
-    pool.query.mockResolvedValueOnce({ rows: [queuedRun] });
+  const queuedRun = { analysis_run_id: 'run-1', repository_id: 'repo-1', pull_request_number: 7 };
+  let client;
+  const prepare = (candidates = [queuedRun], locks = [true]) => {
+    pool.query.mockResolvedValue({ rows: candidates.length ? [candidates[0]] : [] });
+    client = { query: jest.fn(async (sql) => {
+      if (sql.includes('SELECT candidate.id')) return { rows: candidates.length ? [candidates.shift()] : [] };
+      if (sql.includes('pg_try_advisory_lock')) return { rows: [{ acquired: locks.shift() }] };
+      if (sql.includes('pg_advisory_unlock')) return { rows: [{ unlocked: true }] };
+      if (sql.includes('UPDATE analysis_runs')) return { rows: [{ ...queuedRun }] };
+      return { rows: [] };
+    }), release: jest.fn() };
+    pool.connect.mockResolvedValue(client);
+  };
 
+  test('holds a per-PR session lease after committing the claim until explicitly released', async () => {
+    prepare();
     const result = await analysisRuns.claimNextQueuedRun(10);
-
     expect(result).toEqual(queuedRun);
-    expect(pool.query).toHaveBeenCalledWith(
-      expect.stringContaining('FOR UPDATE OF candidate SKIP LOCKED'),
-      [10]
-    );
-    expect(pool.query.mock.calls[0][0]).toContain("candidate.status = 'pending'");
-    expect(pool.query.mock.calls[0][0]).toContain("candidate.status = 'running'");
-    expect(pool.query.mock.calls[0][0]).toContain("$1::int * INTERVAL '1 minute'");
-    expect(pool.query.mock.calls[0][0]).toContain("SET status = 'running'");
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('FOR UPDATE OF candidate SKIP LOCKED'), [10, []]);
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('pg_try_advisory_lock'), ['analysis-pr:repo-1:7']);
+    expect(client.query).toHaveBeenCalledWith('COMMIT');
+    expect(client.release).not.toHaveBeenCalled();
+    expect(Object.keys(result)).not.toContain('releaseLease');
+    await Promise.all([result.releaseLease(), result.releaseLease()]);
+    expect(client.query.mock.calls.filter(([sql]) => sql.includes('pg_advisory_unlock'))).toHaveLength(1);
+    expect(client.release).toHaveBeenCalledTimes(1);
   });
 
-  test('falls back to the default stale threshold for invalid input', async () => {
-    pool.query.mockResolvedValueOnce({ rows: [] });
-
-    await analysisRuns.claimNextQueuedRun('abc');
-
-    expect(pool.query).toHaveBeenCalledWith(expect.any(String), [20]);
+  test('skips a candidate whose PR is still leased, including stale live runs', async () => {
+    prepare([{ ...queuedRun, analysis_run_id: 'busy' }, queuedRun], [false, true]);
+    const result = await analysisRuns.claimNextQueuedRun();
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('FOR UPDATE OF candidate SKIP LOCKED'), [20, ['busy']]);
+    expect(client.query.mock.calls.filter(([sql]) => sql.includes('UPDATE analysis_runs'))).toHaveLength(1);
+    await result.releaseLease();
   });
 
-  test('returns null when no queued analysis is available', async () => {
-    pool.query.mockResolvedValueOnce({ rows: [] });
+  test('falls back to default threshold and releases an empty queue connection', async () => {
+    prepare([]);
+    await expect(analysisRuns.claimNextQueuedRun('abc')).resolves.toBeNull();
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('FOR UPDATE OF candidate SKIP LOCKED'), [20, []]);
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
 
+  test('destroys the retained connection when unlocking fails', async () => {
+    prepare();
+    const result = await analysisRuns.claimNextQueuedRun();
+    client.query.mockRejectedValueOnce(new Error('connection lost'));
+    await expect(result.releaseLease()).rejects.toThrow('connection lost');
+    expect(client.release).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  test('destroys a connection on claim failure so session locks cannot leak', async () => {
+    prepare();
+    client.query.mockRejectedValueOnce(new Error('claim failed'));
+    await expect(analysisRuns.claimNextQueuedRun()).rejects.toThrow('claim failed');
+    expect(client.release).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  test('destroys the session if updating a locked candidate fails', async () => {
+    prepare();
+    const query = client.query.getMockImplementation();
+    client.query.mockImplementation(async (...args) => {
+      if (args[0].includes('UPDATE analysis_runs')) throw new Error('write failed');
+      return query(...args);
+    });
+    await expect(analysisRuns.claimNextQueuedRun()).rejects.toThrow('write failed');
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('pg_try_advisory_lock'), expect.any(Array));
+    expect(client.release).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  test('releases the empty claim when every candidate belongs to a leased PR', async () => {
+    prepare([queuedRun], [false]);
     await expect(analysisRuns.claimNextQueuedRun()).resolves.toBeNull();
+    expect(client.query.mock.calls.some(([sql]) => sql.includes('UPDATE analysis_runs'))).toBe(false);
+    expect(client.release).toHaveBeenCalledTimes(1);
   });
 
   test('returns normalized queue stats', async () => {

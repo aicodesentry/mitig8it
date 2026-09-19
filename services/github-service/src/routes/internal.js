@@ -4,7 +4,11 @@ const {
   createCheckRun,
   fetchFileContents,
   fetchPullRequestFiles,
+  commitRemediationAction,
+  mergeRemediationAction,
   postInlineComment,
+  prepareRemediationAction,
+  reconcileRemediationAction,
   submitPullRequestReview,
 } = require('../services/githubInternalOperations');
 
@@ -67,6 +71,61 @@ router.post('/github/comments/inline', routeOperation(
 router.post('/github/check-runs', routeOperation(
   createCheckRun,
   'Failed to create check run'
+));
+
+// These are intentionally authenticated internal HTTP endpoints. Their payload is
+// created from a persisted consent/action record by the control plane; no browser
+// client can supply a patch directly to this service.
+router.post('/github/remediation/snapshot', routeOperation(
+  require('../services/githubInternalOperations').fetchRemediationSnapshot,
+  'Failed to retrieve remediation snapshot'
+));
+router.post('/github/remediation/prepare', routeOperation(
+  prepareRemediationAction,
+  'Failed to prepare remediation action'
+));
+
+router.post('/github/remediation/commit', routeOperation(
+  commitRemediationAction,
+  'Failed to create remediation commit'
+));
+
+router.post('/github/remediation/reconcile', routeOperation(
+  reconcileRemediationAction,
+  'Failed to reconcile remediation action'
+));
+
+router.post('/github/remediation/merge', routeOperation(
+  mergeRemediationAction,
+  'Failed to merge remediation action'
+));
+
+router.post('/github/remediation/check-run', routeOperation(
+  require('../services/githubInternalOperations').createRemediationCheckRun,
+  'Failed to publish the remediation verification check run'
+));
+
+router.post('/github/remediation/cancel-merge', routeOperation(
+  require('../services/githubInternalOperations').cancelScheduledMerge,
+  'Failed to cancel the scheduled merge'
+));
+
+// Pre-flight reads. They report blockers and current revisions; they never mutate.
+router.post('/github/remediation/merge-eligibility', routeOperation(
+  require('../services/githubInternalOperations').readMergeEligibility,
+  'Failed to read merge eligibility'
+));
+
+router.post('/github/remediation/pull-head', routeOperation(
+  require('../services/githubInternalOperations').readPullRequestHead,
+  'Failed to read pull request head'
+));
+
+// Live authorization pre-flight. The control plane calls this before persisting an
+// apply intent; it proves current actor write permission and installation grant.
+router.post('/github/remediation/authorize', routeOperation(
+  require('../services/githubInternalOperations').authorizeRemediationActor,
+  'Failed to authorize remediation actor'
 ));
 
 module.exports = router;
