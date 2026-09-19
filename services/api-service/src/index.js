@@ -4,6 +4,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../../../.env'), overr
 
 const { pool } = require('./config/database');
 const logger = require('./utils/logger');
+const { startTelemetry, shutdownTelemetry } = require('./utils/telemetry');
 const { createApp } = require('./app');
 const { ensureDatabaseSchema } = require('./services/schemaBootstrap');
 
@@ -23,6 +24,7 @@ if (missing.length > 0) {
 const PORT = Number(process.env.PORT || 3000);
 
 async function start() {
+  startTelemetry('mitig8it-api');
   await ensureDatabaseSchema();
   const app = createApp();
   const server = app.listen(PORT, () => {
@@ -40,6 +42,7 @@ async function start() {
   const shutdown = async () => {
     logger.info('API service shutting down');
     server.close(async () => {
+      await shutdownTelemetry();
       await pool.end();
       process.exit(0);
     });

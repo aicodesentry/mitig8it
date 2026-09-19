@@ -1,0 +1,62 @@
+# Development-only OpenTelemetry Collector configuration for the local Docker
+# Compose stack. It receives OTLP from the API, worker, and repair services and
+# prints the redacted result to stdout. There is no upstream exporter, no tail
+# sampling, and no persistence: results observed through this collector are
+# development_unverified and are not release evidence.
+#
+# The attributes/redact_source processor is intentionally identical to the one
+# in infrastructure/remediation/kubernetes/otel-collector.yaml so a developer
+# cannot see attributes that the deployed pipeline would strip.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+  attributes/redact_source:
+    actions:
+      - key: code
+        action: delete
+      - key: source
+        action: delete
+      - key: prompt
+        action: delete
+      - key: completion
+        action: delete
+      - key: patch
+        action: delete
+
+exporters:
+  debug:
+    verbosity: detailed
+    sampling_initial: 5
+    sampling_thereafter: 50
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact_source, batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact_source, batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact_source, batch]
+      exporters: [debug]

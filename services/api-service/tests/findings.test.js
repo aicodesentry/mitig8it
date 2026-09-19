@@ -12,6 +12,7 @@ jest.mock('../src/db/findings', () => ({
   getById: jest.fn(),
   updateStatus: jest.fn(),
   listByAnalysisRun: jest.fn(),
+  getPullRequestForUser: jest.fn(),
 }));
 
 const findingsDb = require('../src/db/findings');
@@ -172,8 +173,11 @@ describe('PATCH /api/findings/:id/status', () => {
 });
 
 describe('GET /api/pull-requests/:pullRequestId/findings', () => {
-  test('returns findings for a PR', async () => {
+  test('returns findings for a PR with the exact revision they describe', async () => {
     findingsDb.listByPullRequest.mockResolvedValueOnce([MOCK_FINDING]);
+    findingsDb.getPullRequestForUser.mockResolvedValueOnce({
+      id: 'pr-uuid-1', pr_number: 7, head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40),
+    });
 
     const app = createApp();
     const res = await request(app)
@@ -182,10 +186,27 @@ describe('GET /api/pull-requests/:pullRequestId/findings', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.findings).toHaveLength(1);
+    expect(res.body.pull_request).toEqual({
+      id: 'pr-uuid-1', number: 7, head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40),
+    });
+  });
+
+  test('a pull request the actor cannot reach reports no revision rather than guessing one', async () => {
+    findingsDb.listByPullRequest.mockResolvedValueOnce([]);
+    findingsDb.getPullRequestForUser.mockResolvedValueOnce(null);
+
+    const app = createApp();
+    const res = await request(app)
+      .get('/api/pull-requests/pr-uuid-1/findings')
+      .set('Authorization', `Bearer ${authToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.pull_request).toBeNull();
   });
 
   test('preserves recommendation enrichment fields in PR findings list', async () => {
     findingsDb.listByPullRequest.mockResolvedValueOnce([ENRICHED_FINDING]);
+    findingsDb.getPullRequestForUser.mockResolvedValueOnce(null);
 
     const app = createApp();
     const res = await request(app)

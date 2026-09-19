@@ -300,7 +300,7 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         opengrep_findings = run_opengrep(opengrep_files)
         findings.extend(opengrep_findings)
     except Exception as e:
-        print(f"OpenGrep analysis failed (non-blocking): {e}")
+        raise RuntimeError("Required OpenGrep analysis failed") from e
 
     try:
         file_patches = {f.path: f.patch for f in scannable_files}
@@ -370,7 +370,7 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         ]
         findings = run_opengrep(opengrep_files)
     except Exception as e:
-        print(f"OpenGrep analysis failed (non-blocking): {e}")
+        raise RuntimeError("Required OpenGrep analysis failed") from e
 
     normalized = cluster_findings(findings)
     return {

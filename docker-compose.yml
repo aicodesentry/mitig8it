@@ -1,4 +1,50 @@
+# Mitig8it local development stack.
+#
+# DEVELOPMENT ONLY. This file is not a deployment artifact and has no
+# equivalence to the staging/production definitions in
+# infrastructure/remediation/. It runs the remediation services with
+# REMEDIATION_EXECUTION_BACKEND=local and SANDBOX_DRIVER=local, which means no
+# gVisor runtime class, no Kubernetes NetworkPolicy, no attested sandbox, no
+# CMEK artifact storage, and no upstream telemetry backend.
+#
+# Every remediation result produced by this stack is verification_level
+# development_unverified. It is never release evidence, never a repair-quality
+# measurement, and never sufficient to set SANDBOX_NETWORK_POLICY_ATTESTED or
+# SANDBOX_NODE_LIMITS_ATTESTED to true. See docs/runbooks/remediation.md.
 version: '3.8'
+
+# Shared remediation settings. Anchors keep the API service and its dedicated
+# worker on one definition so a flag can never drift between the two.
+x-remediation-api-env: &remediation-api-env
+  # Global kill switch. Stage flags below have no effect while it is false.
+  REMEDIATION_ENABLED: ${REMEDIATION_ENABLED:-false}
+  REMEDIATION_GENERATE_ENABLED: ${REMEDIATION_GENERATE_ENABLED:-true}
+  REMEDIATION_PUBLISH_ENABLED: ${REMEDIATION_PUBLISH_ENABLED:-false}
+  REMEDIATION_APPLY_ENABLED: ${REMEDIATION_APPLY_ENABLED:-false}
+  REMEDIATION_MERGE_ENABLED: ${REMEDIATION_MERGE_ENABLED:-false}
+  # The local stack has no Cloud Tasks transport and no dispatch endpoint.
+  REMEDIATION_DISPATCH_MODE: ${REMEDIATION_DISPATCH_MODE:-inprocess}
+  REMEDIATION_RECONCILE_INTERVAL_MS: ${REMEDIATION_RECONCILE_INTERVAL_MS:-15000}
+  REMEDIATION_SERVICE_URL: http://remediation-service:8002
+  REMEDIATION_SERVICE_INTERNAL_SECRET: ${REMEDIATION_SERVICE_INTERNAL_SECRET:-dev-remediation-internal-secret}
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+
+x-remediation-service-env: &remediation-service-env
+  # local means development only; results are development_unverified.
+  REMEDIATION_EXECUTION_BACKEND: ${REMEDIATION_EXECUTION_BACKEND:-local}
+  REMEDIATION_DATA_DIR: /var/lib/remediation
+  REMEDIATION_SERVICE_INTERNAL_SECRET: ${REMEDIATION_SERVICE_INTERNAL_SECRET:-dev-remediation-internal-secret}
+  SANDBOX_BROKER_URL: http://sandbox-broker:8003
+  SANDBOX_BROKER_TOKEN: ${SANDBOX_BROKER_TOKEN:-dev-sandbox-broker-token}
+  SANDBOX_BROKER_ATTESTATION_SECRET: ${SANDBOX_BROKER_ATTESTATION_SECRET:-dev-sandbox-attestation-secret}
+  SANDBOX_BROKER_ATTESTATION_KEY_ID: ${SANDBOX_BROKER_ATTESTATION_KEY_ID:-local-dev}
+  # Provider settings are passed through from the host environment and are
+  # unset by default. Without them the repair loop abstains instead of calling
+  # a model.
+  REPAIR_LLM_BASE_URL: ${REPAIR_LLM_BASE_URL:-}
+  REPAIR_LLM_API_KEY: ${REPAIR_LLM_API_KEY:-}
+  REPAIR_LLM_MODEL: ${REPAIR_LLM_MODEL:-}
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
 
 services:
   postgres:
@@ -25,22 +71,52 @@ services:
     build:
       context: ./services/api-service
       dockerfile: Dockerfile
+    image: mitig8it/api-service:dev
     container_name: mitig8it-api
     env_file: [.env]
     ports:
       - "3000:3000"
     environment:
       # Overrides: docker-internal hostnames and ports
+      <<: *remediation-api-env
       PORT: 3000
       DATABASE_URL: postgresql://dev:${POSTGRES_PASSWORD:-devpass123}@postgres:5432/codesentry
       ANALYSIS_SERVICE_URL: http://analysis-service:8001
       GITHUB_SERVICE_URL: http://github-service:3002
+      # Background progress belongs to api-worker, not to the request path.
+      REMEDIATION_WORKER_ENABLED: "false"
     depends_on:
       postgres:
         condition: service_healthy
       github-service:
         condition: service_started
       analysis-service:
+        condition: service_started
+    volumes:
+      - ./services/api-service:/app
+      - /app/node_modules
+    networks:
+      - mitig8it-net
+
+  api-worker:
+    # Reuses the api-service image; only the entry point and the worker flag
+    # differ. It has no build section of its own because two services cannot
+    # export the same tag concurrently; depends_on builds api-service first.
+    image: mitig8it/api-service:dev
+    container_name: mitig8it-api-worker
+    env_file: [.env]
+    command: node src/workers/index.js
+    environment:
+      <<: *remediation-api-env
+      PORT: 3000
+      DATABASE_URL: postgresql://dev:${POSTGRES_PASSWORD:-devpass123}@postgres:5432/codesentry
+      ANALYSIS_SERVICE_URL: http://analysis-service:8001
+      GITHUB_SERVICE_URL: http://github-service:3002
+      REMEDIATION_WORKER_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api-service:
         condition: service_started
     volumes:
       - ./services/api-service:/app
@@ -82,9 +158,80 @@ services:
     environment:
       # Override: port
       PORT: 8001
-    command: uvicorn src.main:app --host 0.0.0.0 --port 8001 --reload
+    command: uvicorn main:app --app-dir src --host 0.0.0.0 --port 8001 --reload
     volumes:
       - ./services/analysis-service:/app
+    networks:
+      - mitig8it-net
+
+  remediation-service:
+    build:
+      context: ./services/remediation-service
+      dockerfile: Dockerfile
+    image: mitig8it/remediation-service:dev
+    container_name: mitig8it-remediation
+    environment:
+      <<: *remediation-service-env
+    ports:
+      - "8002:8002"
+    volumes:
+      - remediation_data:/var/lib/remediation
+    depends_on:
+      sandbox-broker:
+        condition: service_started
+    networks:
+      - mitig8it-net
+
+  remediation-worker:
+    # Reuses the remediation-service image and runs the durable worker loop
+    # instead of the HTTP API. No build section for the same reason as
+    # api-worker: depends_on builds remediation-service first.
+    image: mitig8it/remediation-service:dev
+    container_name: mitig8it-remediation-worker
+    command: python -m src.worker
+    environment:
+      <<: *remediation-service-env
+    volumes:
+      - remediation_data:/var/lib/remediation
+    depends_on:
+      remediation-service:
+        condition: service_started
+    networks:
+      - mitig8it-net
+
+  sandbox-broker:
+    # Development broker. It speaks plain HTTP on 8003; the deployed broker
+    # terminates TLS itself and is never reachable without it. SANDBOX_DRIVER
+    # is local, so there is no gVisor runtime class and no Kubernetes Job
+    # isolation. Both attestation gates stay false and must not be flipped
+    # based on anything this container reports.
+    build:
+      context: ./services/remediation-service
+      dockerfile: Dockerfile.broker
+    image: mitig8it/sandbox-broker:dev
+    container_name: mitig8it-sandbox-broker
+    environment:
+      SANDBOX_DRIVER: ${SANDBOX_DRIVER:-local}
+      SANDBOX_BROKER_ID: local-dev-broker
+      SANDBOX_BROKER_TOKEN: ${SANDBOX_BROKER_TOKEN:-dev-sandbox-broker-token}
+      SANDBOX_BROKER_ATTESTATION_SECRET: ${SANDBOX_BROKER_ATTESTATION_SECRET:-dev-sandbox-attestation-secret}
+      SANDBOX_BROKER_ATTESTATION_KEY_ID: ${SANDBOX_BROKER_ATTESTATION_KEY_ID:-local-dev}
+      SANDBOX_NETWORK_POLICY_ATTESTED: "false"
+      SANDBOX_NODE_LIMITS_ATTESTED: "false"
+    ports:
+      - "8003:8003"
+    networks:
+      - mitig8it-net
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.137.0
+    container_name: mitig8it-otel-collector
+    command: ["--config=/etc/otelcol-contrib/collector-dev.yaml"]
+    volumes:
+      - ./infrastructure/remediation/otel/collector-dev.yaml:/etc/otelcol-contrib/collector-dev.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
     networks:
       - mitig8it-net
 
@@ -134,3 +281,4 @@ networks:
 volumes:
   postgres_data:
   prometheus_data:
+  remediation_data:

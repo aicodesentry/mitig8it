@@ -1,20 +1,42 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { findingAPI, suppressionAPI } from '../services/api'
+import RemediationPanel from '../components/RemediationPanel'
+import { getPrivateCacheEpoch } from '../services/privateCache'
 
 const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 }
 
 export default function PullRequestFindingsPage() {
   const { pullRequestId } = useParams()
   const [findings, setFindings] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [headSha, setHeadSha] = useState(null)
+  const requestVersion = useRef(0)
 
   const load = useCallback(async () => {
-    const data = await findingAPI.listByPR(pullRequestId, { status: 'all', min_confidence: 0 })
-    setFindings(data.findings || [])
+    const version = ++requestVersion.current
+    const epoch = getPrivateCacheEpoch()
+    setLoading(true)
+    setError('')
+    try {
+      const data = await findingAPI.listByPR(pullRequestId, { status: 'all', min_confidence: 0 })
+      if (version === requestVersion.current && epoch === getPrivateCacheEpoch()) {
+        setFindings(data.findings || [])
+        setHeadSha(data.pull_request?.head_sha || null)
+      }
+    } catch (_failure) {
+      if (version === requestVersion.current && epoch === getPrivateCacheEpoch()) setError('Could not load findings. Refresh to try again.')
+    } finally {
+      if (version === requestVersion.current && epoch === getPrivateCacheEpoch()) setLoading(false)
+    }
   }, [pullRequestId])
 
   useEffect(() => {
-    load().catch((err) => console.error(err))
+    setFindings([])
+    setHeadSha(null)
+    load()
+    return () => { requestVersion.current += 1 }
   }, [load])
 
   const ordered = useMemo(() => {
@@ -26,20 +48,27 @@ export default function PullRequestFindingsPage() {
   }, [findings])
 
   const suppress = async (finding) => {
-    await suppressionAPI.create({
+    try {
+      await suppressionAPI.create({
       finding_id: finding.id,
       repository_id: finding.repository_id,
       reason: 'false_positive',
       notes: 'Suppressed from PR findings page'
-    })
-    await load()
+      })
+      await load()
+    } catch (_failure) {
+      setError('Could not suppress this finding. Refresh and check your access before retrying.')
+    }
   }
 
   return (
     <div className="space-y-5">
       <h1 className="text-2xl font-semibold text-neutral-900">Pull Request Findings</h1>
+      <RemediationPanel pullRequestId={pullRequestId} liveHeadSha={headSha} />
 
-      {ordered.length === 0 && (
+      {loading && <p role="status" className="text-sm text-neutral-600">Loading findings…</p>}
+      {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+      {!loading && !error && ordered.length === 0 && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-800">
           No findings detected for this pull request.
         </div>
@@ -77,8 +106,12 @@ export default function PullRequestFindingsPage() {
           <pre className="mt-4 overflow-x-auto rounded-lg bg-neutral-900 p-3 text-xs text-neutral-100">{finding.code_snippet || 'No snippet'}</pre>
           <p className="mt-3 text-sm text-neutral-700">{finding.evidence}</p>
           {finding.remediation && (
-            <p className="mt-3 text-sm text-neutral-700">{finding.remediation}</p>
+            <p className="mt-3 text-sm text-neutral-700"><strong>Recommended fix:</strong> {finding.remediation}</p>
           )}
+          {finding.remediation_patch && <details className="mt-3 text-sm text-neutral-700">
+            <summary className="cursor-pointer">View suggested code (verification required)</summary>
+            <pre className="mt-2 overflow-auto rounded-lg bg-neutral-50 p-3 text-xs">{finding.remediation_patch}</pre>
+          </details>}
         </div>
       ))}
     </div>

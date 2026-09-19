@@ -133,8 +133,9 @@ router.get('/github', (req, res) => {
     return res.status(400).json({ error: 'HTTPS required' });
   }
 
-  // Generate a signed, time-limited CSRF state that survives cross-instance callbacks.
+  // Firebase forwards only __session. A pending state is not a valid JWT session.
   const state = createOAuthState();
+  res.cookie(AUTH_COOKIE_NAME, state, { ...cookieOptions(req), maxAge: STATE_TTL_MS });
   const prompt = req.query.prompt === 'select_account' ? '&prompt=select_account' : '';
 
   const callbackUrl =
@@ -157,10 +158,12 @@ router.get('/github/callback', async (req, res) => {
   }
 
   // Validate state parameter (CSRF protection)
-  if (!isValidOAuthState(state)) {
+  if (!isValidOAuthState(state) || req.cookies?.[AUTH_COOKIE_NAME] !== state) {
     return res.redirect(`${FRONTEND_URL}/?error=invalid_state`);
   }
 
+  // Consume the browser binding even if the token exchange fails.
+  clearAuthCookie(res, req);
   try {
     const tokenResp = await axios.post(
       'https://github.com/login/oauth/access_token',

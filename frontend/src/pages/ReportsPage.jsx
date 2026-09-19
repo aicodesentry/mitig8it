@@ -1,18 +1,30 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { ArrowUpRight, ClipboardList, Clock3, ShieldAlert, Sparkles } from 'lucide-react';
 import { reportsAPI, repositoryAPI } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
+import { getPrivateCacheEpoch } from '../services/privateCache';
 import { Pagination } from '../components/ui/pagination';
 
 const PRAnalysisModal = lazy(() => import('../components/PRAnalysisModal'));
 
 const CACHE_DURATION = 5 * 60 * 1000;
 
-const getCacheKey = (page, repo, status) => {
-  if (page === 1 && !repo && !status) return 'reports_cache_main';
-  return `reports_cache_page_${page}_repo_${repo || 'all'}_status_${status || 'all'}`;
+const getCacheKey = (userId, page, repo, status) => {
+  if (page === 1 && !repo && !status) return `reports_cache_user_${userId}_main`;
+  return `reports_cache_user_${userId}_page_${page}_repo_${repo || 'all'}_status_${status || 'all'}`;
 };
 
 const ReportsPage = () => {
+  const { user } = useAuth();
+  return user?.id == null ? null : <AccountReports key={user.id} userId={user.id} />;
+};
+
+const AccountReports = ({ userId }) => {
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const [analyses, setAnalyses] = useState([]);
   const [repositories, setRepositories] = useState([]);
   const [summary, setSummary] = useState(null);
@@ -26,69 +38,64 @@ const ReportsPage = () => {
   const [totalCount, setTotalCount] = useState(0);
   const itemsPerPage = 10;
 
-  const fetchData = useCallback(async (isBackgroundFetch = false) => {
-    if (!isBackgroundFetch) setLoading(true);
-    setError(null);
-    const cacheKey = getCacheKey(currentPage, selectedRepo, selectedStatus);
-
-    try {
-      const filters = { limit: itemsPerPage, offset: (currentPage - 1) * itemsPerPage };
-      if (selectedRepo) filters.repository_id = selectedRepo;
-      if (selectedStatus) filters.status = selectedStatus;
-
-      const [analysesData, summaryData, reposData] = await Promise.all([
-        reportsAPI.getPRAnalyses(filters),
-        reportsAPI.getSummary(),
-        repositoryAPI.getRepositories()
-      ]);
-
-      setAnalyses(analysesData.analyses);
-      setTotalCount(analysesData.total || 0);
-      setSummary(summaryData.summary);
-      setRepositories(reposData.repositories);
-
-      localStorage.setItem(cacheKey, JSON.stringify({
-        data: analysesData.analyses,
-        total: analysesData.total || 0,
-        repos: reposData.repositories,
-        summaryData: summaryData.summary,
-        timestamp: Date.now()
-      }));
-    } catch (err) {
-      console.error('Failed to fetch reports:', err);
-      setError('Failed to load reports. Please try again.');
-    } finally {
-      if (!isBackgroundFetch) setLoading(false);
-    }
-  }, [currentPage, itemsPerPage, selectedRepo, selectedStatus]);
-
   useEffect(() => {
-    const cacheKey = getCacheKey(currentPage, selectedRepo, selectedStatus);
-    const cached = localStorage.getItem(cacheKey);
-    let hasDisplayedCached = false;
-
-    if (cached) {
+    let active = true;
+    const epoch = getPrivateCacheEpoch();
+    const isCurrent = () => active && epoch === getPrivateCacheEpoch();
+    const cacheKey = getCacheKey(userId, currentPage, selectedRepo, selectedStatus);
+    setLoading(true);
+    setError(null);
+    const load = async () => {
       try {
-        const { data, timestamp, total, repos, summaryData } = JSON.parse(cached);
-        if (Date.now() - timestamp < CACHE_DURATION) {
-          setAnalyses(data);
-          setTotalCount(total);
-          if (repos) setRepositories(repos);
-          if (summaryData) setSummary(summaryData);
-          setLoading(false);
-          hasDisplayedCached = true;
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const { data, timestamp, total, repos, summaryData } = JSON.parse(cached);
+          if (Date.now() - timestamp < CACHE_DURATION) {
+            setAnalyses(data);
+            setTotalCount(total);
+            setRepositories(repos || []);
+            setSummary(summaryData || null);
+            setLoading(false);
+          }
         }
-      } catch (e) {
-        console.error("Failed to parse cache:", e);
-        localStorage.removeItem(cacheKey);
+      } catch (_error) {
+        // Storage may be disabled or contain an obsolete cache; network still works.
       }
-    }
-    fetchData(hasDisplayedCached);
-  }, [currentPage, fetchData, selectedRepo, selectedStatus]);
+      try {
+        const filters = { limit: itemsPerPage, offset: (currentPage - 1) * itemsPerPage };
+        if (selectedRepo) filters.repository_id = selectedRepo;
+        if (selectedStatus) filters.status = selectedStatus;
+        const [analysesData, summaryData, reposData] = await Promise.all([
+          reportsAPI.getPRAnalyses(filters), reportsAPI.getSummary(), repositoryAPI.getRepositories()
+        ]);
+        if (!isCurrent()) return;
+        setAnalyses(analysesData.analyses);
+        setTotalCount(analysesData.total || 0);
+        setSummary(summaryData.summary);
+        setRepositories(reposData.repositories);
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify({
+            data: analysesData.analyses, total: analysesData.total || 0,
+            repos: reposData.repositories, summaryData: summaryData.summary, timestamp: Date.now()
+          }));
+        } catch (_error) { /* Caching is optional. */ }
+      } catch (err) {
+        if (!isCurrent()) return;
+        console.error('Failed to fetch reports:', err);
+        setError('Failed to load reports. Please try again.');
+      } finally {
+        if (isCurrent()) setLoading(false);
+      }
+    };
+    load();
+    return () => { active = false; };
+  }, [userId, currentPage, selectedRepo, selectedStatus]);
 
   const handleViewDetails = async (analysis) => {
+    const epoch = getPrivateCacheEpoch();
     try {
       const detailsData = await reportsAPI.getPRAnalysisDetails(analysis.id);
+      if (!mounted.current || epoch !== getPrivateCacheEpoch()) return;
       setSelectedAnalysis(detailsData.analysis);
       setShowModal(true);
     } catch (err) {

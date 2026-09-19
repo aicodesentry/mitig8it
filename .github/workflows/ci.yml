@@ -156,6 +156,12 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test -- --runInBand
+      - name: Database regression tests
+        run: |
+          psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_access_test'
+          psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_lifecycle_test'
+          DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_access_test npm run test:integration:access
+          DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_lifecycle_test npm run test:integration:lifecycle
       - name: Migration pipeline check
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
@@ -205,19 +211,106 @@ jobs:
       - run: pytest tests -q
 
   docker-build:
-    name: Docker image (${{ matrix.service }})
+    name: Docker image (${{ matrix.name }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        service:
-          - api-service
-          - github-service
-          - analysis-service
+        include:
+          - name: api-service
+            context: services/api-service
+            dockerfile: Dockerfile
+          - name: github-service
+            context: services/github-service
+            dockerfile: Dockerfile
+          - name: analysis-service
+            context: services/analysis-service
+            dockerfile: Dockerfile
+          - name: remediation-service
+            context: services/remediation-service
+            dockerfile: Dockerfile
+          - name: sandbox-broker
+            context: services/remediation-service
+            dockerfile: Dockerfile.broker
+          - name: sandbox-runner
+            context: services/remediation-service
+            dockerfile: Dockerfile.runner
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: docker build
-        run: docker build "./services/${{ matrix.service }}"
+        run: docker build -f "${{ matrix.context }}/${{ matrix.dockerfile }}" "${{ matrix.context }}"
+
+  # Remediation workflow tests against a real disposable PostgreSQL database.
+  # Fixtures and doubles only: no provider, sandbox, or GitHub calls, so a pass
+  # here is pipeline integrity, not repair quality.
+  remediation-integration-tests:
+    name: Remediation integration (API service)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: services/api-service
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: services/api-service/package-lock.json
+      - run: npm ci
+      - name: Remediation integration tests
+        run: |
+          psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_remediation_test'
+          DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_remediation_test npm run test:integration:remediation
+
+  remediation-github-tests:
+    name: Remediation contract (GitHub service)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/github-service
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: services/github-service/package-lock.json
+      - run: npm ci
+      # Contract tests only. The opt-in staging GitHub acceptance suite is not
+      # run here and needs a real installation.
+      - run: npm run test:remediation
+
+  remediation-browser-tests:
+    name: Remediation browser (frontend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # Fixture-driven flows; no API, repair service, or GitHub backend runs.
+      - run: npm run test:remediation-browser
 
   ci-required:
     name: Required CI
@@ -232,6 +325,9 @@ jobs:
       - github-service-tests
       - analysis-tests
       - docker-build
+      - remediation-integration-tests
+      - remediation-github-tests
+      - remediation-browser-tests
     if: ${{ always() }}
     steps:
       - name: Report required job results

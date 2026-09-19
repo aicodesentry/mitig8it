@@ -1,3 +1,4 @@
+const { pool } = require('../config/database');
 const axios = require('axios');
 const logger = require('../utils/logger');
 const { AnalysisGrpcClient } = require('../clients/analysisGrpcClient');
@@ -241,11 +242,10 @@ async function enrichFilesForTier2({ files, repositoryFullName, installationId, 
         contentByPath.set(file.path, file.content);
       }
     } catch (error) {
-      logger.warn('Failed to enrich Tier 2 files with full content', {
-        repositoryFullName,
-        commitSha,
-        error: error.message,
-      });
+      throw new Error(`Required source content retrieval failed: ${error.message}`);
+    }
+    if (candidates.some(file => !contentByPath.has(file.path))) {
+      throw new Error('Required source content response is incomplete');
     }
   }
 
@@ -632,7 +632,7 @@ async function applySuppressions(findingRows, repositoryId) {
   const result = [];
   for (const finding of findingRows) {
     const suppression = byFingerprint.get(finding.fingerprint);
-    if (suppression) {
+    if (suppression && finding.status === 'open') {
       await findingsDb.dismiss(finding.id, suppression.reason);
       result.push({ ...finding, status: 'dismissed', dismissal_reason: suppression.reason });
     } else {
@@ -686,7 +686,7 @@ async function persistAndFilter({ findings, files, runId, pullRequestId, reposit
   await persistSurfaceDecisions(buildSurfaceDecisions({ files, findings: postSuppression }));
   const actionable = postSuppression.filter((f) => f.status === 'open' && !f.is_baseline);
 
-  return { actionable, shouldMarkBaselineSet };
+  return { actionable, shouldMarkBaselineSet, findingRows: postSuppression };
 }
 
 async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, installationId, commitSha, runId, tierLabel, repoProfile }) {
@@ -735,7 +735,7 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
           line: f.line_start || 1,
           severity: f.severity,
           hasSuggestion,
-          body: buildReviewComment(f, {
+          body: `<!-- mitig8it-finding:${f.fingerprint} -->\n` + buildReviewComment(f, {
             filePatch,
             tierLabel,
             repoProfile,
@@ -764,12 +764,10 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
     });
 
     if (inlineResult.attempted > inlineResult.posted) {
-      logger.warn(`${tierLabel}: some inline comments skipped`, {
-        runId, prNumber, attempted: inlineResult.attempted, posted: inlineResult.posted,
-      });
+      throw new Error(`Inline finding publication incomplete: ${inlineResult.posted}/${inlineResult.attempted} posted`);
     }
   } catch (reviewErr) {
-    logger.error(`${tierLabel}: failed to submit PR review`, { runId, error: reviewErr.message });
+    throw reviewErr;
   }
 
   return { reviewResp, counts, highOrCritical };
@@ -804,8 +802,10 @@ async function runAnalysisJob(payload) {
       repository_full_name: repositoryFullName,
       pull_request_number: prNumber,
       installation_id: installationId,
+      commit_sha: commitSha,
     });
-    files = filesResp.files || [];
+    if (!Array.isArray(filesResp?.files)) throw new Error('Invalid GitHub file response');
+    files = filesResp.files;
     tier2Files = await enrichFilesForTier2({
       files,
       repositoryFullName,
@@ -813,103 +813,43 @@ async function runAnalysisJob(payload) {
       commitSha,
     });
 
-    // ── Tier 1: Regex (<100ms) — post initial review immediately ─────
+    // Required analysis and persistence must all succeed before final publication.
+    const requiredTier = async (path, data, timeout) => {
+      const result = await callAnalysisTier(path, data, timeout);
+      if (!result || !Array.isArray(result.findings)) throw new Error(`Incomplete analysis response: ${path}`);
+      return result;
+    };
+    const tier1 = await requiredTier('/analyze/pr/tier1', { ...analysisPayload, files }, 30000);
+    const tier2 = await requiredTier('/analyze/pr/tier2', { ...analysisPayload, files: tier2Files }, 60000);
+    allFindings = [...tier1.findings, ...tier2.findings];
+    let repoProfile = {};
     try {
-      const tier1 = await callAnalysisTier('/analyze/pr/tier1', { ...analysisPayload, files }, 30000);
-      allFindings = tier1.findings || [];
-
-      if (allFindings.length > 0) {
-        const { actionable, shouldMarkBaselineSet: sbs } = await persistAndFilter({
-          findings: allFindings, files, runId, pullRequestId, repositoryId, installationId, prNumber, commitSha, baselineSet,
-        });
-        shouldMarkBaselineSet = sbs;
-
-        const result = await postReviewToGitHub({
-          actionable, files, owner, repo, prNumber, installationId, commitSha, runId, tierLabel: 'Tier 1', repoProfile: null,
-        });
-        reviewResp = result.reviewResp;
-        lastCounts = result.counts;
-        lastHighOrCritical = result.highOrCritical;
-      }
-    } catch (tier1Err) {
-      logger.error('Tier 1 analysis failed', { runId, error: tier1Err.message });
+      const profile = await repositoriesDb.getProfile(repositoryId);
+      if (profile?.profile_status === 'ready') repoProfile = profile.profile_data || {};
+      else await repositoriesDb.queueUrgentProfiling(repositoryId, { run_id: runId, pr_number: prNumber });
+    } catch (error) {
+      logger.warn('Failed to fetch repo profile', { runId, error: error.message });
     }
-
-    // ── Tier 2: OpenGrep (2-5s) — update review with AST findings ────
-    try {
-      const tier2 = await callAnalysisTier('/analyze/pr/tier2', { ...analysisPayload, files: tier2Files }, 60000);
-      const tier2Findings = tier2.findings || [];
-
-      if (tier2Findings.length > 0) {
-        allFindings = allFindings.concat(tier2Findings);
-
-        const { actionable, shouldMarkBaselineSet: sbs } = await persistAndFilter({
-          findings: allFindings, files, runId, pullRequestId, repositoryId, installationId, prNumber, commitSha, baselineSet,
-        });
-        shouldMarkBaselineSet = shouldMarkBaselineSet || sbs;
-
-        const result = await postReviewToGitHub({
-          actionable, files, owner, repo, prNumber, installationId, commitSha, runId, tierLabel: 'Tier 2', repoProfile: null,
-        });
-        reviewResp = result.reviewResp;
-        lastCounts = result.counts;
-        lastHighOrCritical = result.highOrCritical;
-      }
-    } catch (tier2Err) {
-      logger.error('Tier 2 analysis failed (non-blocking)', { runId, error: tier2Err.message });
-    }
-
-    // ── Tier 3: LLM triage (10-30s) — update review with refined findings
-    try {
-      const filePatchMap = {};
-      for (const f of files) { filePatchMap[f.path] = f.patch || ''; }
-
-      // Fetch repo profile if available
-      let repoProfile = {};
-      try {
-        const profileRow = await repositoriesDb.getProfile(repositoryId);
-        if (profileRow && profileRow.profile_status === 'ready') {
-          repoProfile = profileRow.profile_data || {};
-        } else {
-          // No profile — queue urgent profiling for next time
-          await repositoriesDb.queueUrgentProfiling(repositoryId, { run_id: runId, pr_number: prNumber });
-        }
-      } catch (profileErr) {
-        logger.warn('Failed to fetch repo profile', { runId, error: profileErr.message });
-      }
-
-      const tier3 = await callAnalysisTier('/analyze/pr/tier3', {
-        ...analysisPayload,
-        findings: allFindings,
-        file_patches: filePatchMap,
-        repo_profile: repoProfile,
-      }, 120000);
-
-      const triaged = tier3.findings || [];
-      const filteredCount = tier3.filtered_count || 0;
-
-      if (
-        filteredCount > 0
-        || didTier3MeaningfullyChangeFindings(allFindings, triaged)
-        || hasTier3RenderableSuggestions(triaged, files, repoProfile)
-      ) {
-        allFindings = triaged;
-
-        const { actionable, shouldMarkBaselineSet: sbs } = await persistAndFilter({
-          findings: allFindings, files, runId, pullRequestId, repositoryId, installationId, prNumber, commitSha, baselineSet,
-        });
-        shouldMarkBaselineSet = shouldMarkBaselineSet || sbs;
-
-        const result = await postReviewToGitHub({
-          actionable, files, owner, repo, prNumber, installationId, commitSha, runId, tierLabel: 'Tier 3', repoProfile,
-        });
-        reviewResp = result.reviewResp;
-        lastCounts = result.counts;
-        lastHighOrCritical = result.highOrCritical;
-      }
-    } catch (tier3Err) {
-      logger.error('Tier 3 LLM triage failed (non-blocking)', { runId, error: tier3Err.message });
-    }
+    const tier3 = await requiredTier('/analyze/pr/tier3', {
+      ...analysisPayload, findings: allFindings,
+      file_patches: Object.fromEntries(files.map(file => [file.path, file.patch || ''])),
+      repo_profile: repoProfile,
+    }, 120000);
+    allFindings = [...new Map(tier3.findings.map(finding => [
+      finding.fingerprint || calculateFingerprint(normalizeFinding(finding)), finding,
+    ])).values()];
+    const final = await persistAndFilter({
+      findings: allFindings, files, runId, pullRequestId, repositoryId, installationId, prNumber, commitSha, baselineSet,
+    });
+    shouldMarkBaselineSet = final.shouldMarkBaselineSet;
+    await findingsDb.snapshotRun(runId, final.findingRows);
+    const result = await postReviewToGitHub({
+      actionable: final.actionable, files, owner, repo, prNumber, installationId, commitSha, runId,
+      tierLabel: 'Tier 3', repoProfile,
+    });
+    reviewResp = result.reviewResp;
+    lastCounts = result.counts;
+    lastHighOrCritical = result.highOrCritical;
 
     // ── Check run + completion ────────────────────────────────────────
     try {
@@ -922,7 +862,7 @@ async function runAnalysisJob(payload) {
         summary: `Mitig8it found ${finalTotal} finding${finalTotal === 1 ? '' : 's'} (${finalCounts.critical || 0} critical, ${finalCounts.high || 0} high, ${finalCounts.medium || 0} medium, ${finalCounts.low || 0} low).`,
       });
     } catch (checkErr) {
-      logger.error('Failed to create check run', { runId, error: checkErr.message });
+      throw checkErr;
     }
 
     await analysisRunsDb.markCompleted(runId, {
@@ -939,6 +879,15 @@ async function runAnalysisJob(payload) {
   } catch (error) {
     logger.error('PR analysis orchestration failed', { runId, repositoryId, error: error.message });
     await analysisRunsDb.markFailed(runId, error.message);
+    try {
+      await githubServiceRequest('/internal/github/check-runs', {
+        owner, repo, installation_id: installationId, head_sha: commitSha,
+        conclusion: 'failure', title: 'Security analysis incomplete',
+        summary: 'Required analysis or result publication failed. Retry this analysis run.',
+      });
+    } catch (checkError) {
+      logger.error('Failed to publish incomplete analysis check', { runId, error: checkError.message });
+    }
   }
 }
 
@@ -948,7 +897,11 @@ let activeAnalysisWorkers = 0;
 
 function analysisQueueConcurrency() {
   const parsed = Number(process.env.ANALYSIS_QUEUE_CONCURRENCY || 1);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
+  const requested = Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 1;
+  const poolMax = Number(pool.options?.max || 20);
+  // Each scan retains a session lease. Leave connections for persistence and API work.
+  const leaseCapacity = Math.max(0, Math.floor(poolMax) - 2);
+  return Math.min(requested, leaseCapacity);
 }
 
 function analysisQueueStaleMinutes() {
@@ -968,8 +921,12 @@ async function processQueuedAnalysisRun() {
     prNumber: payload.pull_request_number,
   });
 
-  await runAnalysisJob(payload);
-  return { processed: true, runId: payload.analysis_run_id };
+  try {
+    await runAnalysisJob(payload);
+    return { processed: true, runId: payload.analysis_run_id };
+  } finally {
+    await payload.releaseLease?.();
+  }
 }
 
 function drainAnalysisQueue() {
@@ -1032,6 +989,7 @@ function triggerAnalysisJob(payload) {
 }
 
 module.exports = {
+  callAnalysisTier,
   triggerAnalysisJob,
   notifyAnalysisQueued,
   processQueuedAnalysisRun,

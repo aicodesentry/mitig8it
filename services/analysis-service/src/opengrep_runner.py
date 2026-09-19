@@ -452,7 +452,7 @@ def run_opengrep(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         List of finding dicts matching Tier 1 format.
     """
     if not RULES_DIR.exists() or not any(RULES_DIR.glob("*.yml")):
-        return []
+        raise RuntimeError("OpenGrep rules are unavailable")
 
     # Filter to supported file types
     scannable = [
@@ -494,22 +494,23 @@ def run_opengrep(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 timeout=120,
             )
         except subprocess.TimeoutExpired:
-            print("OpenGrep timed out after 120s")
-            return []
+            raise RuntimeError("OpenGrep timed out after 120s")
         except FileNotFoundError:
-            print("OpenGrep not installed — skipping Tier 2 analysis")
-            return []
+            raise RuntimeError("OpenGrep executable is unavailable")
 
         if result.returncode not in (0, 1):
             # returncode 1 = findings found, 0 = no findings
-            print(f"OpenGrep error (rc={result.returncode}): {result.stderr[:500]}")
-            return []
+            raise RuntimeError(f"OpenGrep failed with exit code {result.returncode}")
 
         try:
             output = json.loads(result.stdout)
         except json.JSONDecodeError:
-            print(f"OpenGrep output not valid JSON: {result.stdout[:200]}")
-            return []
+            raise RuntimeError("OpenGrep returned invalid JSON")
+
+        if not isinstance(output, dict) or not isinstance(output.get("results"), list):
+            raise RuntimeError("OpenGrep returned an incomplete result")
+        if output.get("errors"):
+            raise RuntimeError("OpenGrep reported incomplete analysis")
 
         for match in output.get("results", []):
             raw_metadata = match.get("extra", {}).get("metadata", {})

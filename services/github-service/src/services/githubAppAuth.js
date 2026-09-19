@@ -95,8 +95,25 @@ async function healthCheck() {
   return { ok: true };
 }
 
+// Resolve the authenticated app's bot identity; never trust a marker from another bot.
+let appIdentity = null;
+async function getAppBotLogin() {
+  const appId = process.env.GITHUB_APP_ID;
+  if (appIdentity?.appId === appId) return appIdentity.login;
+  const privateKey = normalizePrivateKey(process.env.GITHUB_APP_PRIVATE_KEY);
+  if (!appId || !privateKey) throw new Error('GitHub App identity is not configured');
+  const response = await axios.get('https://api.github.com/app', {
+    timeout: 15000,
+    headers: { Authorization: `Bearer ${buildAppJWT(appId, privateKey)}`, Accept: 'application/vnd.github+json' },
+  });
+  if (!response.data.slug || String(response.data.id) !== String(appId)) throw new Error('GitHub App identity mismatch');
+  appIdentity = { appId, login: `${response.data.slug}[bot]` };
+  return appIdentity.login;
+}
+
 module.exports = {
   getInstallationToken,
+  getAppBotLogin,
   isConfigured,
   healthCheck,
 };

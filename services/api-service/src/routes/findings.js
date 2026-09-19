@@ -12,8 +12,14 @@ router.get('/pull-requests/:pullRequestId/findings', authenticateToken, async (r
     status,
     minConfidence: min_confidence,
   });
+  const pullRequest = await findingsDb.getPullRequestForUser(pullRequestId, req.user.user_id);
 
-  res.json({ findings });
+  res.json({
+    findings,
+    pull_request: pullRequest
+      ? { id: pullRequest.id, number: pullRequest.pr_number, head_sha: pullRequest.head_sha, base_sha: pullRequest.base_sha }
+      : null,
+  });
 });
 
 router.get('/findings', authenticateToken, async (req, res) => {
