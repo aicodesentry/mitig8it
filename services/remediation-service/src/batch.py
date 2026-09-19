@@ -62,6 +62,9 @@ def build_immutable_batch(
         "ordered_candidate_ids": [candidate.candidate_id for candidate in candidates],
         "candidate_artifact_digests": [candidate.artifact_digest for candidate in candidates],
         "verification_evidence_digests": [candidate.verification.evidence_digest for candidate in candidates],
+        # Generated regression tests are reviewed with the batch and tracked apart from the
+        # application files, because they are evidence rather than part of the applied tree.
+        "generated_tests": [entry for candidate in candidates for entry in candidate.generated_tests],
         "head_tree_oid": request.head_tree_oid,
         "verified_tree_oid": combined_tree_oid,
         "combined_verification_evidence_digest": combined_evidence_digest,
