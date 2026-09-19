@@ -221,6 +221,7 @@ def _build_candidate(request: RepairRequest, snapshot: Snapshot, finding_ids: li
         citations=result.proposal["citations"],
         patch=list(result.bundle.patches),
         file_manifest=result.bundle.file_manifest,
+        generated_tests=result.bundle.generated_test_manifest,
         artifact_digest=result.bundle.artifact_digest,
         context_manifest_digest=snapshot.manifest_digest,
         verified_tree_oid=verified_tree_oid,
@@ -246,6 +247,9 @@ def _build_candidate(request: RepairRequest, snapshot: Snapshot, finding_ids: li
                 "status": "passed",
                 "evidence_digest": result.verification.evidence_digest,
                 "verified_tree_oid": verified_tree_oid,
+                # Generated reproducers are verification artifacts: reviewers see them beside
+                # the diff, but they are never part of the tree the batch applies.
+                "generated_tests": result.bundle.generated_test_manifest,
                 # Per-candidate, not per-response: the API persists this level on the
                 # candidate row and the finding view renders this candidate's limitations.
                 "verification_level": result.verification.verification_level,
@@ -523,6 +527,7 @@ class RepairEngine:
                 "agent_trace": agent_trace,
                 "usage": usage,
                 "limitations": limitations,
+                "generated_tests": combined.bundle.generated_test_manifest,
                 "groups": group_report,
             },
         )

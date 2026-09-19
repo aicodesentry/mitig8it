@@ -12,7 +12,30 @@ The JSON request is validated by `src.models.RepairRequest` with unknown fields 
 
 `sha` on a file accepts a 40-hex Git blob SHA-1 or a SHA-256 (64 hex or `sha256:` form). File content is always verified against its matching Git tree blob before generation. A complete tree is required because the applicable response includes an independently attested real Git `verified_tree_oid`; a SHA-256 manifest is never mislabeled as a Git tree OID.
 
-The policy's `verification_checks` are fixed argv arrays selected by the trusted control plane, never model-selected shell strings. A `ready` result requires at least one `exploit` and one `behavior` check plus a digest-pinned sandbox runner image. Other check kinds are `existing_test`, `typecheck`, `build`, and `scanner`.
+The policy's `verification_checks` are fixed argv arrays selected by the trusted control plane, never model-selected shell strings. The list may be empty when `require_generated_regression_test` is true, which is the default; with it false, the policy must supply at least one `exploit` and one `behavior` check. A `ready` result always requires a digest-pinned sandbox runner image. Check kinds are `existing_test`, `typecheck`, `build`, `scanner`, `exploit`, and `behavior`.
+
+## Generated regression tests
+
+Plan section 8 step 4 requires a reproducer that distinguishes a real repair from disabling the feature. With `require_generated_regression_test: true` the agent's `propose_patch` must supply `regression_test: {path, content}`:
+
+- `path` must be `.mitig8it/regression/<name>.test.{js,cjs,mjs}` and must not name a file the snapshot already carries. Any other path, including a nested subdirectory or an application file, is rejected by patch policy.
+- `content` must parse under `node --check` and may import only Node built-ins, the repository's declared dependencies, and relative repository paths. It is at most 64,000 bytes.
+
+The file is written into both the baseline and the candidate workspace and executed as an `exploit` check with argv `["node", "<path>"]` and a 60-second timeout: it must exit non-zero on the original tree and zero on the patched tree. It is never part of the candidate patch set, so it never reaches `verified_tree_oid` or the tree the batch applies.
+
+The engine also derives, from the candidate alone and without any fixture:
+
+| Derived check | Kind | argv | Expectation |
+| --- | --- | --- | --- |
+| `generated_regression_test` | `exploit` | `node <generated test path>` | baseline `failed`, candidate `passed` |
+| `generated_node_syntax` | `typecheck` | `node --check <changed path>` | candidate `passed` |
+| `generated_repository_test_script` | `existing_test` | `npm test --silent` | baseline and candidate equal |
+
+A `generated_node_syntax` check is derived for every changed `.js`, `.cjs`, or `.mjs` file. `generated_repository_test_script` is derived only when `run_repository_tests` is true and the root `package.json` declares `scripts.test`; because the sandbox has no network, a snapshot without installed dependencies records a limitation instead. Policy-supplied checks always run as before, and the derived checks are additive.
+
+A candidate that supplies no regression test, or whose test completes on the baseline tree without failing, is `inconclusive` with reason `regression_test_not_reproducing` and is never `ready`.
+
+Each candidate carries `generated_tests: [{path, new_sha256, bytes, kind}]` alongside its `file_manifest`, whose entries carry `kind: "application"`. The batch manifest carries the union under `generated_tests`. Generated tests are reviewed with the batch and tracked separately from the application files, because they are verification evidence rather than the repair.
 
 ## Verification levels
 
@@ -39,7 +62,7 @@ The verifier compares the sets. A candidate whose findings include any fingerpri
 
 ## Coverage limitations
 
-`evidence.limitations` is an honest list of required verification that did not run. It names, at minimum, an absent `existing_test` check, an absent `typecheck` and `build` pair, an absent `scanner` comparison, any check that did not complete on either tree, and the development verification level when it applies. An empty list means every one of those checks ran.
+`evidence.limitations` is an honest list of required verification that did not run. It names, at minimum, an absent `existing_test` check, an absent `typecheck` and `build` pair, an absent `scanner` comparison, any check that did not complete on either tree, the development verification level when it applies, and why the repository test script was skipped. An empty list means every one of those checks ran. Limitations are computed over the effective check set, so a derived `typecheck` or `existing_test` counts exactly like a policy-supplied one.
 
 The batch manifest binds `verified_tree_oid` to the tree the batch actually applies. A batch of two or more candidates is built from the union of their patches, is rejected as `overlapping_candidates` when two candidates change the same line range of one file, and is verified again on the combined tree; its `combined_verification_evidence_digest` refers to that combined run, not to any single candidate's evidence.
 

@@ -14,6 +14,25 @@ from src.git_tree import compute_tree_oid  # noqa: E402
 from src.models import GitTreeEntry  # noqa: E402
 
 
+REGRESSION_TEST_PATH = ".mitig8it/regression/finding-1.test.js"
+# Fails on the original interpolated SQL and passes once the file is parameterized.
+REPRODUCING_REGRESSION_TEST = (
+    "const fs = require('node:fs');\n"
+    "const source = fs.readFileSync('src/db.ts', 'utf8');\n"
+    "process.exit(source.includes('${id}') ? 1 : 0);\n"
+)
+# Passes on both trees, so it demonstrates nothing about the finding.
+NON_REPRODUCING_REGRESSION_TEST = (
+    "const fs = require('node:fs');\n"
+    "fs.readFileSync('src/db.ts', 'utf8');\n"
+    "process.exit(0);\n"
+)
+
+
+def regression_test_spec(content: str = REPRODUCING_REGRESSION_TEST, path: str = REGRESSION_TEST_PATH) -> dict[str, str]:
+    return {"path": path, "content": content}
+
+
 def git_blob(content: str) -> str:
     raw = content.encode()
     return hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
