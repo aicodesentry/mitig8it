@@ -404,7 +404,12 @@ def load_service_modules() -> dict[str, Any]:
     from src.digests import content_sha256  # noqa: PLC0415
     from src.engine import RepairEngine  # noqa: PLC0415
     from src.executions import LocalExecutionBackend, create_checkpoint_store  # noqa: PLC0415
-    from src.fixtures import build_repair_request, reference_replacement, reference_replacements  # noqa: PLC0415
+    from src.fixtures import (  # noqa: PLC0415
+        build_repair_request,
+        fixture_regression_test,
+        reference_replacement,
+        reference_replacements,
+    )
     from src.sandbox import InProcessSandboxBroker, LocalSubprocessDriver  # noqa: PLC0415
     from src.verification import Verifier  # noqa: PLC0415
 
@@ -418,6 +423,7 @@ def load_service_modules() -> dict[str, Any]:
         "LocalExecutionBackend": LocalExecutionBackend,
         "create_checkpoint_store": create_checkpoint_store,
         "build_repair_request": build_repair_request,
+        "fixture_regression_test": fixture_regression_test,
         "reference_replacement": reference_replacement,
         "reference_replacements": reference_replacements,
         "InProcessSandboxBroker": InProcessSandboxBroker,
@@ -430,10 +436,11 @@ class ScriptedFixtureProvider:
     """A deterministic, free provider double. It is not a model and proves no repair quality.
 
     One instance drives one finding group's bounded agent loop. It reads each of the group's
-    affected files once, replays their reviewed reference repairs as a single `propose_patch`,
-    and requests verification. A group with no reviewed repair abstains. Every graded outcome
-    therefore reflects the service pipeline: intake, grouping, patch policy, sandbox execution,
-    evidence validation, and batch assembly.
+    affected files once, replays their reviewed reference repairs as a single `propose_patch`
+    carrying a generated regression test, and requests verification. A group with no reviewed
+    repair abstains. Every graded outcome therefore reflects the service pipeline: intake,
+    grouping, patch policy, generated-test policy, sandbox execution, evidence validation, and
+    batch assembly.
     """
 
     def __init__(self, modules: dict[str, Any], fixture: dict[str, Any], units: list[dict[str, Any]]):
@@ -476,6 +483,11 @@ class ScriptedFixtureProvider:
                             }
                             for unit in repairable
                         ],
+                        # One reproducer per finding group, so a multi-group fixture proposes a
+                        # distinct generated test per candidate and the combined tree runs both.
+                        "regression_test": modules["fixture_regression_test"](
+                            fixture, suffix=f"-{repairable[0]['path'].replace('/', '-')}"
+                        ),
                     },
                     input_tokens=8,
                     output_tokens=8,

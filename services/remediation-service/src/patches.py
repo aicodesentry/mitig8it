@@ -33,10 +33,42 @@ NODE_BUILTIN_MODULES = frozenset(
 
 SYNTAX_CHECKED_SUFFIXES = {".js", ".cjs", ".mjs"}
 
+# Agent-generated regression tests live in a dedicated directory that no repository file may
+# occupy, so a generated reproducer can never overwrite or shadow application or test code.
+GENERATED_TEST_DIRECTORY = ".mitig8it/regression"
+GENERATED_TEST_SUFFIXES = (".test.js", ".test.cjs", ".test.mjs")
+MAX_GENERATED_TEST_BYTES = 64_000
+MAX_GENERATED_TESTS = 20
+
 _REQUIRE_RE = re.compile(r"""\brequire\s*\(\s*['"]([^'"\n]{1,200})['"]\s*\)""")
 _IMPORT_FROM_RE = re.compile(r"""\b(?:import|export)\b[^;\n]*?\bfrom\s*['"]([^'"\n]{1,200})['"]""")
 _BARE_IMPORT_RE = re.compile(r"""\bimport\s*['"]([^'"\n]{1,200})['"]""")
 _DYNAMIC_IMPORT_RE = re.compile(r"""\bimport\s*\(\s*['"]([^'"\n]{1,200})['"]\s*\)""")
+
+
+@dataclass(frozen=True)
+class GeneratedTest:
+    """One agent-authored regression test: repository-adjacent, never applied to the tree.
+
+    Its content is untrusted model output treated exactly like repository text. It is
+    materialized into the baseline and candidate workspaces and executed only by the sandbox
+    driver, alongside every other verification check.
+    """
+
+    path: str
+    content: str
+    new_sha256: str
+
+    def manifest_entry(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "new_sha256": self.new_sha256,
+            "bytes": len(self.content.encode("utf-8")),
+            "kind": "generated_regression_test",
+        }
+
+    def spec(self) -> dict[str, str]:
+        return {"path": self.path, "content": self.content}
 
 
 @dataclass(frozen=True)
@@ -45,6 +77,7 @@ class PatchBundle:
     artifact_digest: str
     changed_lines: int
     limitations: tuple[str, ...] = ()
+    generated_tests: tuple[GeneratedTest, ...] = ()
 
     @property
     def file_manifest(self) -> list[dict[str, Any]]:
@@ -53,9 +86,15 @@ class PatchBundle:
                 "path": patch.path,
                 "base_sha256": patch.base_sha256,
                 "new_sha256": patch.new_sha256,
+                "kind": "application",
             }
             for patch in self.patches
         ]
+
+    @property
+    def generated_test_manifest(self) -> list[dict[str, Any]]:
+        """Tracked separately from `file_manifest`: these files are evidence, not the repair."""
+        return [test.manifest_entry() for test in self.generated_tests]
 
 
 def module_specifiers(source: str) -> set[str]:
@@ -159,10 +198,62 @@ def _path_forbidden(path: str, request: RepairRequest) -> bool:
     return any(lowered.startswith(prefix.lower().rstrip("/") + "/") for prefix in request.policy.forbidden_path_prefixes)
 
 
+def build_generated_tests(
+    request: RepairRequest,
+    snapshot: Snapshot,
+    specs: list[dict[str, Any]] | None,
+) -> tuple[list[GeneratedTest], list[str]]:
+    """Validates agent-authored regression tests under the same policy as any other file.
+
+    A test is accepted only when it is a new `.mitig8it/regression/*.test.{js,cjs,mjs}` file
+    that no repository path occupies, parses under `node --check`, and imports nothing beyond
+    Node built-ins, the repository's declared dependencies, and relative repository paths.
+    """
+    if not specs:
+        return [], []
+    if len(specs) > MAX_GENERATED_TESTS:
+        raise PatchPolicyError("generated_test_limit_exceeded")
+    tests: list[GeneratedTest] = []
+    limitations: list[str] = []
+    seen: set[str] = set()
+    for spec in specs:
+        if not isinstance(spec, dict) or set(spec) != {"path", "content"}:
+            raise PatchPolicyError("regression_test_schema_invalid")
+        try:
+            path = validate_repo_path(str(spec["path"]))
+        except SnapshotError as exc:
+            raise PatchPolicyError(f"regression_test_path_invalid:{exc}") from exc
+        pure = PurePosixPath(path)
+        if pure.parent.as_posix() != GENERATED_TEST_DIRECTORY:
+            raise PatchPolicyError(f"regression_test_outside_generated_directory:{path}")
+        if not pure.name.endswith(GENERATED_TEST_SUFFIXES) or pure.name.startswith("."):
+            raise PatchPolicyError(f"regression_test_name_invalid:{path}")
+        if path in snapshot.paths:
+            raise PatchPolicyError(f"regression_test_overwrites_repository_file:{path}")
+        if _path_forbidden(path, request):
+            raise PatchPolicyError(f"protected_path:{path}")
+        if path in seen:
+            raise PatchPolicyError("duplicate_regression_test_path")
+        seen.add(path)
+        content = spec["content"]
+        if not isinstance(content, str) or not content.strip():
+            raise PatchPolicyError("regression_test_content_required")
+        if len(content.encode("utf-8")) > MAX_GENERATED_TEST_BYTES:
+            raise PatchPolicyError(f"regression_test_too_large:{path}")
+        _reject_missing_dependencies(path, "", content, snapshot)
+        limitation = _syntax_check(path, content)
+        if limitation:
+            limitations.append(limitation)
+        tests.append(GeneratedTest(path, content, content_sha256(content)))
+    tests.sort(key=lambda item: item.path)
+    return tests, limitations
+
+
 def build_patch_bundle(
     request: RepairRequest,
     snapshot: Snapshot,
     proposed_changes: list[dict[str, Any]],
+    regression_tests: list[dict[str, Any]] | None = None,
 ) -> PatchBundle:
     if not proposed_changes:
         raise PatchPolicyError("proposal_contains_no_changes")
@@ -233,6 +324,8 @@ def build_patch_bundle(
             )
         )
 
+    generated_tests, generated_limitations = build_generated_tests(request, snapshot, regression_tests)
+    limitations.extend(generated_limitations)
     patches.sort(key=lambda item: item.path)
     artifact = {
         "schema_version": "v1",
@@ -245,8 +338,15 @@ def build_patch_bundle(
         "versions": request.versions,
         "policy_version": request.policy.policy_version,
         "patches": [patch.model_dump(mode="json") for patch in patches],
+        "generated_tests": [test.manifest_entry() for test in generated_tests],
     }
-    return PatchBundle(tuple(patches), digest_json(artifact), total_changed, tuple(sorted(set(limitations))))
+    return PatchBundle(
+        tuple(patches),
+        digest_json(artifact),
+        total_changed,
+        tuple(sorted(set(limitations))),
+        tuple(generated_tests),
+    )
 
 
 def candidate_tree_digest(snapshot: Snapshot, bundle: PatchBundle) -> str:
@@ -290,6 +390,9 @@ def combine_patch_bundles(request: RepairRequest, snapshot: Snapshot, bundles: l
         raise PatchPolicyError("batch_contains_no_candidates")
     if len(bundles) == 1:
         return bundles[0]
+    # Every accepted candidate's reproducer runs against the combined tree: a batch must still
+    # demonstrate each finding's vulnerability on the baseline and its repair on the union.
+    combined_tests = {test.path: test.spec() for bundle in bundles for test in bundle.generated_tests}
     by_path: dict[str, list[FilePatch]] = {}
     for bundle in bundles:
         for patch in bundle.patches:
@@ -315,7 +418,7 @@ def combine_patch_bundles(request: RepairRequest, snapshot: Snapshot, bundles: l
             cursor = max(cursor, end)
         merged.extend(original_lines[cursor:])
         changes.append({"path": path, "base_sha256": content_sha256(original), "replacement_content": "".join(merged)})
-    return build_patch_bundle(request, snapshot, changes)
+    return build_patch_bundle(request, snapshot, changes, [combined_tests[path] for path in sorted(combined_tests)])
 
 
 def _bundle_ranges(snapshot: Snapshot, bundles: list[PatchBundle]) -> dict[str, list[tuple[int, int, list[str]]]]:

@@ -10,6 +10,7 @@ from src.patches import build_patch_bundle
 from src.retrieval import Snapshot
 from src.sandbox import InProcessSandboxBroker, LocalSubprocessDriver
 from src.verification import Verifier
+from tests.conftest import regression_test_spec
 
 REPAIRED = "export function loadUser(db, id) {\n  return db.query('SELECT * FROM users WHERE id = $1', [id]);\n}\n"
 
@@ -23,16 +24,18 @@ SCANNER = [
 ]
 
 
-def development_payload(request_payload, checks, *, allow=True, source=None, replacement=REPAIRED):
+def development_payload(request_payload, checks, *, allow=True, source=None, replacement=REPAIRED, regression_test=None):
     request_payload["policy"]["sandbox_image_digest"] = None
     request_payload["policy"]["allow_development_verification"] = allow
     request_payload["policy"]["verification_checks"] = checks
     request = RepairRequest.model_validate(request_payload)
     snapshot = Snapshot(request)
+    supplied = regression_test_spec() if regression_test is None else regression_test
     bundle = build_patch_bundle(
         request,
         snapshot,
         [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": replacement}],
+        [supplied] if supplied else [],
     )
     return request, snapshot, bundle
 

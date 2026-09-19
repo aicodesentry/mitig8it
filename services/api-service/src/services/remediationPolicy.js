@@ -5,6 +5,10 @@ const DEFAULT_POLICY = Object.freeze({
   max_file_bytes: 500000, max_snapshot_bytes: 500000, max_context_chars: 128000,
   max_output_chars: 64000, max_total_tokens: 120000, max_output_tokens_per_call: 16000,
   max_revisions: 2,
+  // The repair service requires an agent-generated regression test per candidate, which is
+  // what lets a repository with no verification fixture still produce an applicable fix.
+  require_generated_regression_test: true,
+  run_repository_tests: false,
   repair_memory_expiry_days: 90,
   request_timeout_seconds: 45, supported_platform: 'node',
   forbidden_path_prefixes: ['.github/', 'infra/', 'infrastructure/', 'deploy/', 'migrations/'],
@@ -21,8 +25,16 @@ const STAGE_SEQUENCE = Object.freeze(['snapshotting', 'retrieving', 'planning', 
 function jsonEnv(name) { try { return JSON.parse(process.env[name] || ''); } catch (_) { return null; } }
 function flagEnv(name) { return process.env[name] === 'true'; }
 
+// Default true: the repair service also defaults it to true, and the two must agree.
+function requireGeneratedRegressionTest() { return process.env.REMEDIATION_REQUIRE_GENERATED_REGRESSION_TEST !== 'false'; }
+
 function getPolicy() {
-  const verificationChecks = jsonEnv('REMEDIATION_VERIFICATION_CHECKS_JSON');
+  const declaredChecks = jsonEnv('REMEDIATION_VERIFICATION_CHECKS_JSON');
+  const requireGeneratedTest = requireGeneratedRegressionTest();
+  // A repository-specific verification profile is optional once the candidate must ship its
+  // own reproducer. An absent profile becomes an empty list rather than "not configured", so
+  // the repair service runs the generated regression test and its generic behavior checks.
+  const verificationChecks = Array.isArray(declaredChecks) ? declaredChecks : (requireGeneratedTest ? [] : null);
   const allowedRuleFamilies = jsonEnv('REMEDIATION_ALLOWED_RULE_FAMILIES_JSON');
   const protectedBranchPatterns = jsonEnv('REMEDIATION_PROTECTED_BRANCH_PATTERNS_JSON');
   const sandboxImage = process.env.REMEDIATION_SANDBOX_IMAGE_DIGEST;
@@ -37,6 +49,8 @@ function getPolicy() {
     policy_version: process.env.REMEDIATION_POLICY_VERSION || DEFAULT_POLICY.version,
     sandbox_image_digest: sandboxImage,
     verification_checks: verificationChecks,
+    require_generated_regression_test: requireGeneratedTest,
+    run_repository_tests: flagEnv('REMEDIATION_RUN_REPOSITORY_TESTS'),
     allowed_rule_families: allowedRuleFamilies,
     // Default allow: an empty or absent list never blocks a branch.
     protected_branch_patterns: Array.isArray(protectedBranchPatterns) ? protectedBranchPatterns.filter((p) => typeof p === 'string' && p) : [],
@@ -158,4 +172,5 @@ module.exports = {
   assertGenerationEnabled: assertGenerateEnabled,
   stageEstimate, branchAllowed, repairMemoryExpiryDays,
   PRODUCTION_VERIFICATION_LEVEL, allowDevelopmentVerification, verificationLevelPermitted,
+  requireGeneratedRegressionTest,
 };

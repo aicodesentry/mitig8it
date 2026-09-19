@@ -120,6 +120,14 @@ class RepairPolicy(StrictModel):
     )
     sandbox_image_digest: str | None = None
     allow_development_verification: bool = False
+    # Plan section 8 step 4: the agent must ship a reproducer that distinguishes a real repair
+    # from disabling the feature. With this set, an empty `verification_checks` is allowed,
+    # because the generated regression test supplies the exploit check.
+    require_generated_regression_test: bool = True
+    # Runs the repository's own `npm test` script as a behavior check when the snapshot proves
+    # one exists. Off by default: the sandbox has no network, so most repositories cannot
+    # install their dependencies and the run would be a recorded limitation instead.
+    run_repository_tests: bool = False
     verification_checks: list[VerificationCheck] = Field(default_factory=list, max_length=20)
     forbidden_path_prefixes: list[str] = Field(
         default_factory=lambda: [
@@ -245,6 +253,9 @@ class Candidate(StrictModel):
     citations: list[dict[str, Any]]
     patch: list[FilePatch]
     file_manifest: list[dict[str, Any]]
+    # Generated regression tests are tracked apart from the application files they exercise:
+    # they are verification artifacts, never part of the tree the batch applies.
+    generated_tests: list[dict[str, Any]] = Field(default_factory=list)
     artifact_digest: str
     context_manifest_digest: str
     verified_tree_oid: str
