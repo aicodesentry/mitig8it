@@ -39,8 +39,25 @@ async function start() {
     startAnalysisQueueWorker();
   }
 
+  // Single-instance deployments run the remediation control-plane loop inside the API
+  // process instead of a separate worker Deployment. Off unless explicitly enabled.
+  let stopRemediationWorker = null;
+  if (process.env.REMEDIATION_WORKER_INPROCESS === 'true') {
+    const { startRemediationWorker } = require('./workers');
+    stopRemediationWorker = startRemediationWorker();
+    logger.info('Remediation worker started in-process');
+  }
+
   const shutdown = async () => {
     logger.info('API service shutting down');
+    if (stopRemediationWorker) {
+      try {
+        stopRemediationWorker();
+      } catch (error) {
+        logger.error('Remediation worker stop failed', { error: error.message });
+      }
+      stopRemediationWorker = null;
+    }
     server.close(async () => {
       await shutdownTelemetry();
       await pool.end();

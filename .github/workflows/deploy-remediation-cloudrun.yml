@@ -1,0 +1,163 @@
+# Deploy the repair (remediation) service to Cloud Run as a single instance.
+#
+# WARNING: this deployment runs untrusted repository checks inside the service container.
+# With SANDBOX_BROKER_MODE=inprocess the local subprocess driver executes a repository's own
+# commands (for example `node tests/verify.js`) in this container, with no kernel, network, or
+# filesystem isolation and no separate broker trust boundary. Every result it produces is
+# labelled `development_unverified`. Use this only for repositories the operator owns and has
+# enrolled as test repositories. It is not a production verification path, and nothing it
+# reports may justify setting SANDBOX_NETWORK_POLICY_ATTESTED or SANDBOX_NODE_LIMITS_ATTESTED.
+#
+# Configuration this deployment sets (see docs/runbooks/remediation.md). No secret value is
+# embedded here; every credential is a Secret Manager reference resolved by Cloud Run.
+#
+#   Repository variables (vars.*)
+#     GCP_PROJECT_ID                     target project
+#     GCP_REGION                         Cloud Run region
+#     GAR_REPOSITORY                     Artifact Registry repository, shared with the API image
+#     GCP_WORKLOAD_IDENTITY_PROVIDER     preferred auth; falls back to secrets.GCP_SA_KEY
+#     GCP_SERVICE_ACCOUNT_EMAIL          service account impersonated by workload identity
+#
+#   Plain environment variables set on the service
+#     REMEDIATION_EXECUTION_BACKEND=local      development-only SQLite/file execution store
+#     REMEDIATION_LOCAL_STATE_DIR=/tmp/remediation   writable on the Cloud Run instance
+#     REMEDIATION_WORKER_INPROCESS=true        the durable worker loop runs in this process
+#     REMEDIATION_WORKER_POLL_SECONDS=2        worker idle poll interval
+#     SANDBOX_BROKER_MODE=inprocess            no separate broker deployment
+#     SANDBOX_DRIVER=local                     local subprocess driver
+#     SANDBOX_LOCAL_WORKSPACE_ROOT=/tmp/sandbox     scratch root for check workspaces
+#     SANDBOX_NETWORK_POLICY_ATTESTED=false    must stay false for this deployment
+#     SANDBOX_NODE_LIMITS_ATTESTED=false       must stay false for this deployment
+#     OTEL_SERVICE_NAME=remediation-service    tracing is inert unless an OTLP endpoint is set
+#
+#   Secret Manager references set on the service (--set-secrets, latest version)
+#     REMEDIATION_SERVICE_INTERNAL_SECRET  codesentry-remediation-internal-secret
+#     REPAIR_LLM_BASE_URL                  codesentry-repair-llm-base-url
+#     REPAIR_LLM_API_KEY                   codesentry-repair-llm-api-key
+#     REPAIR_LLM_MODEL                     codesentry-repair-llm-model
+#
+#   Set on the API service, not here (deploy-api-cloudrun.yml or the console)
+#     REMEDIATION_SERVICE_URL              this service's Cloud Run URL
+#     REMEDIATION_SERVICE_AUDIENCE         the same URL; makes the API send an identity token
+#     REMEDIATION_SERVICE_INTERNAL_SECRET  the same shared secret, sent as x-internal-secret
+#     REMEDIATION_WORKER_INPROCESS=true    control-plane worker loop inside the API process
+#     REMEDIATION_WORKER_ENABLED, REMEDIATION_ENABLED and the capability flags
+#
+# The service is deployed --no-allow-unauthenticated: the API calls it with a Cloud Run
+# identity token for REMEDIATION_SERVICE_AUDIENCE, and the API's service account needs
+# roles/run.invoker on it. Grant that separately; this workflow does not change IAM.
+
+name: Deploy Remediation (Cloud Run)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/remediation-service/**'
+      - '.github/workflows/deploy-remediation-cloudrun.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudrun-deploy-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Authenticate to Google Cloud (Workload Identity)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: '${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}'
+          service_account: '${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}'
+
+      - name: Authenticate to Google Cloud (service account key)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER == ''
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          project_id: '${{ vars.GCP_PROJECT_ID }}'
+
+      - name: Reset Docker auth
+        run: |
+          rm -f "$HOME/.docker/config.json"
+          docker logout docker.io || true
+          docker logout registry-1.docker.io || true
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Set release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT="${GITHUB_SHA:0:12}"
+          echo "IMAGE=us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/remediation:remediation-${SHORT}" >> "$GITHUB_ENV"
+
+      - name: Build repair image
+        run: |
+          docker build -f ./services/remediation-service/Dockerfile -t "$IMAGE" ./services/remediation-service
+
+      - name: Assert the pinned Node runtime is in the release image
+        run: |
+          docker run --rm --entrypoint node "$IMAGE" --version
+
+      - name: Push repair image
+        run: |
+          docker push "$IMAGE"
+
+      # One instance, one concurrent request: the local execution store is a per-instance
+      # SQLite file and the local sandbox driver runs checks on this container's CPU.
+      - name: Deploy repair service
+        run: |
+          gcloud run deploy codesentry-remediation \
+            --image "$IMAGE" \
+            --region '${{ vars.GCP_REGION }}' \
+            --project '${{ vars.GCP_PROJECT_ID }}' \
+            --platform managed \
+            --max-instances 1 \
+            --min-instances 0 \
+            --concurrency 1 \
+            --memory 1Gi \
+            --cpu 1 \
+            --timeout 900 \
+            --update-env-vars "\
+              REMEDIATION_EXECUTION_BACKEND=local,\
+              REMEDIATION_LOCAL_STATE_DIR=/tmp/remediation,\
+              REMEDIATION_WORKER_INPROCESS=true,\
+              REMEDIATION_WORKER_POLL_SECONDS=2,\
+              SANDBOX_BROKER_MODE=inprocess,\
+              SANDBOX_DRIVER=local,\
+              SANDBOX_LOCAL_WORKSPACE_ROOT=/tmp/sandbox,\
+              SANDBOX_NETWORK_POLICY_ATTESTED=false,\
+              SANDBOX_NODE_LIMITS_ATTESTED=false,\
+              OTEL_SERVICE_NAME=remediation-service" \
+            --set-secrets "\
+              REMEDIATION_SERVICE_INTERNAL_SECRET=codesentry-remediation-internal-secret:latest,\
+              REPAIR_LLM_BASE_URL=codesentry-repair-llm-base-url:latest,\
+              REPAIR_LLM_API_KEY=codesentry-repair-llm-api-key:latest,\
+              REPAIR_LLM_MODEL=codesentry-repair-llm-model:latest" \
+            --no-allow-unauthenticated
+
+      - name: Smoke (authenticated /health)
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL=$(gcloud run services describe codesentry-remediation \
+            --region '${{ vars.GCP_REGION }}' \
+            --project '${{ vars.GCP_PROJECT_ID }}' \
+            --format='value(status.url)')
+          TOKEN=$(gcloud auth print-identity-token --audiences="$URL")
+          curl -sfS --connect-timeout 15 --max-time 45 -H "Authorization: Bearer ${TOKEN}" "${URL}/health"
