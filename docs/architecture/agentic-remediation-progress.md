@@ -36,7 +36,7 @@ All commands run from the named service directory unless stated. Disposable data
 | Compose | `docker compose config`; `docker compose build` of repair service, worker, broker | valid; images built; repair service container answered `/health` 200 |
 | Kubernetes | `render_kubernetes.py` with non-production values, then `kubectl kustomize` | 26 documents rendered |
 | Terraform | `fmt -check`; `init -backend=false` and `validate` under Terraform 1.11.3 | clean; valid |
-| Analysis service Python tests | not rerun this session | last recorded 274 passed in `HARDENING-HANDOFF.md`; no analysis-service files changed by the remediation work |
+| Analysis service Python tests | `python -m pytest src/tests -q` (Python 3.11, native Semgrep on PATH) | 274 passed, zero skipped |
 
 ## Work package status
 
