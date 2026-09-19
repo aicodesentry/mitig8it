@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: remediation-bounded-execution
+spec:
+  hard:
+    pods: "20"
+    count/jobs.batch: "20"
+    requests.cpu: "6"
+    requests.memory: 8Gi
+    limits.cpu: "12"
+    limits.memory: 16Gi
+    requests.ephemeral-storage: 8Gi
+    limits.ephemeral-storage: 16Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: remediation-default-limits
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+        ephemeral-storage: 128Mi
+      default:
+        cpu: "1"
+        memory: 1Gi
+        ephemeral-storage: 1Gi

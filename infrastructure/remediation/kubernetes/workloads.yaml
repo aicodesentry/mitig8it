@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: remediation-service
+  labels:
+    app.kubernetes.io/name: remediation-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: remediation-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: remediation-service
+    spec:
+      serviceAccountName: remediation-service
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: remediation-service
+          image: __REMEDIATION_SERVICE_IMAGE__
+          ports: [{name: http, containerPort: 8002}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi, ephemeral-storage: 256Mi}
+            limits: {cpu: "2", memory: 2Gi, ephemeral-storage: 1Gi}
+          envFrom:
+            - secretRef: {name: remediation-service-secrets}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 128Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: remediation-worker
+  labels:
+    app.kubernetes.io/name: remediation-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: remediation-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: remediation-worker
+    spec:
+      serviceAccountName: remediation-worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: remediation-worker
+          image: __REMEDIATION_WORKER_IMAGE__
+          command: ["python", "-m", "src.worker"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi, ephemeral-storage: 256Mi}
+            limits: {cpu: "2", memory: 2Gi, ephemeral-storage: 1Gi}
+          envFrom:
+            - secretRef: {name: remediation-service-secrets}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 128Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-broker
+  labels:
+    app.kubernetes.io/name: sandbox-broker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox-broker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sandbox-broker
+    spec:
+      serviceAccountName: sandbox-broker
+      # Required by KubernetesJobDriver's in-cluster API client; never grant this
+      # account to runner pods.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: sandbox-broker
+          image: __SANDBOX_BROKER_IMAGE__
+          command: ["uvicorn", "src.sandbox.broker_app:app", "--host", "0.0.0.0", "--port", "8443", "--no-access-log", "--ssl-keyfile", "/tls/tls.key", "--ssl-certfile", "/tls/tls.crt"]
+          ports: [{name: https, containerPort: 8443}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi, ephemeral-storage: 256Mi}
+            limits: {cpu: "2", memory: 1Gi, ephemeral-storage: 1Gi}
+          env:
+            - name: SANDBOX_K8S_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - name: SANDBOX_K8S_SERVICE_ACCOUNT
+              value: sandbox-no-access
+            - name: SANDBOX_K8S_RUNTIME_CLASS
+              value: gvisor
+            - name: SANDBOX_NETWORK_POLICY_ATTESTED
+              value: "false"
+            - name: SANDBOX_NODE_LIMITS_ATTESTED
+              value: "false"
+          envFrom:
+            - secretRef: {name: sandbox-broker-secrets}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: tls, mountPath: /tls, readOnly: true}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 128Mi}
+        - name: tls
+          secret:
+            secretName: sandbox-broker-tls
