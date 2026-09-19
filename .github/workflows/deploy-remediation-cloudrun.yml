@@ -149,6 +149,7 @@ jobs:
               REPAIR_LLM_BASE_URL=codesentry-repair-llm-base-url:latest,\
               REPAIR_LLM_API_KEY=codesentry-repair-llm-api-key:latest,\
               REPAIR_LLM_MODEL=codesentry-repair-llm-model:latest" \
+            --port 8002 \
             --no-allow-unauthenticated
 
       - name: Smoke (authenticated /health)
