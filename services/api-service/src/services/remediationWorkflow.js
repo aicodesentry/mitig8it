@@ -48,7 +48,8 @@ function repairPolicy(policy) {
   const names = ['policy_version', 'max_files', 'max_changed_lines', 'max_snapshot_files', 'max_file_bytes', 'max_snapshot_bytes',
     'max_tool_calls', 'max_attempts', 'max_context_chars', 'max_output_chars', 'max_total_tokens', 'max_output_tokens_per_call',
     'max_spend_usd', 'input_usd_per_million_tokens', 'output_usd_per_million_tokens', 'request_timeout_seconds', 'supported_platform',
-    'allowed_rule_families', 'sandbox_image_digest', 'verification_checks', 'forbidden_path_prefixes', 'forbidden_filenames'];
+    'allowed_rule_families', 'sandbox_image_digest', 'verification_checks', 'forbidden_path_prefixes', 'forbidden_filenames',
+    'require_generated_regression_test', 'run_repository_tests'];
   const selected = Object.fromEntries(names.filter((name) => policy[name] !== undefined).map((name) => [name, policy[name]]));
   selected.allow_development_verification = require('./remediationPolicy').allowDevelopmentVerification();
   return selected;

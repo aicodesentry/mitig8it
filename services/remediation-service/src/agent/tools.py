@@ -33,7 +33,10 @@ def tool_definitions() -> list[dict[str, Any]]:
         tool("read_tests", "Find tests nearest to an application source path.", {"source_path": {"type": "string"}}, ["source_path"]),
         tool(
             "propose_patch",
-            "Propose exact whole-file replacements bound to source digests. This does not verify a patch.",
+            (
+                "Propose exact whole-file replacements bound to source digests, together with the "
+                "regression test that reproduces the finding. This does not verify a patch."
+            ),
             {
                 "hypothesis": {"type": "string", "maxLength": 4000},
                 "intended_behavior": {"type": "string", "maxLength": 4000},
@@ -58,8 +61,24 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "additionalProperties": False,
                     },
                 },
+                "regression_test": {
+                    "type": "object",
+                    "description": (
+                        "A self-contained Node regression test that exits non-zero on the original "
+                        "code and zero on the patched code. Its path must be "
+                        "'.mitig8it/regression/<finding-id>.test.js' and must not already exist in "
+                        "the repository. Use only Node built-ins and the repository's declared "
+                        "dependencies, and import the changed module by relative path."
+                    ),
+                    "properties": {
+                        "path": {"type": "string", "maxLength": 512},
+                        "content": {"type": "string", "maxLength": 64000},
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": False,
+                },
             },
-            ["hypothesis", "intended_behavior", "assumptions", "citations", "changes"],
+            ["hypothesis", "intended_behavior", "assumptions", "citations", "changes", "regression_test"],
         ),
         tool("request_verification", "Request independent broker verification of the current proposal.", {}, []),
         tool("inspect_failure", "Read bounded structured evidence from the last verification failure.", {}, []),

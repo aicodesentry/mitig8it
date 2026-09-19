@@ -19,7 +19,7 @@ from src import main as main_module
 from src import sandbox as sandbox_module
 from src.agent import ProviderAction
 from src.digests import content_sha256
-from src.fixtures import build_repair_request, read_fixture, reference_replacements
+from src.fixtures import build_repair_request, fixture_regression_test, read_fixture, reference_replacements
 from src.sandbox import (
     BrokerConfigurationError,
     HttpSandboxBroker,
@@ -95,7 +95,14 @@ async def test_inprocess_broker_evidence_is_development_unverified_and_policy_ga
         payload["policy"] = {**request_payload["policy"], "sandbox_image_digest": None, "allow_development_verification": allow, "verification_checks": checks}
         parsed = RepairRequest.model_validate(payload)
         snapshot = Snapshot(parsed)
-        bundle = build_patch_bundle(parsed, snapshot, [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": repaired}])
+        from tests.conftest import regression_test_spec
+
+        bundle = build_patch_bundle(
+            parsed,
+            snapshot,
+            [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": repaired}],
+            [regression_test_spec()],
+        )
         return parsed, snapshot, bundle
 
     allowed = await Verifier(create_sandbox_broker()).verify(*build(True))
@@ -210,6 +217,7 @@ def test_one_container_drives_a_posted_repair_to_a_terminal_state(monkeypatch, t
                 "assumptions": ["the fixture's reference repair is the reviewed expected patch"],
                 "citations": [{"path": path, "line_start": 1, "line_end": max(1, len(originals[path].splitlines()))} for path in replacements],
                 "changes": [{"path": path, "base_sha256": content_sha256(originals[path]), "replacement_content": content} for path, content in replacements.items()],
+                "regression_test": fixture_regression_test(fixture),
             },
             input_tokens=8,
             output_tokens=8,

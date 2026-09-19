@@ -142,10 +142,43 @@ python -m pytest tests
 
 The deterministic suite injects scripted provider and broker doubles; those tests prove bounds, contracts, Git identity, and fail-closed decisions, not model quality or real sandbox isolation.
 
+## Generated regression tests
+
+Most repositories ship no verification fixture, so `policy.verification_checks` is often empty.
+Every candidate must instead carry an agent-generated regression test, and the engine derives
+the rest of the check set from the candidate itself.
+
+- `propose_patch` requires a `regression_test` of `{path, content}`. The path must be
+  `.mitig8it/regression/<name>.test.{js,cjs,mjs}`, must not already exist in the snapshot, and
+  is rejected outright anywhere else, so a generated test can never overwrite repository code.
+  The content must parse under `node --check` and may import only Node built-ins, the
+  repository's declared dependencies, and relative repository paths.
+- The file is materialized into both the baseline and the candidate workspace and executed as
+  an `exploit` check with a 60-second timeout: it must fail on the original tree and pass on
+  the patched one. Its content is untrusted repository-adjacent code and runs only inside the
+  sandbox driver, exactly like any other check.
+- Every changed `.js`, `.cjs`, and `.mjs` file also gets a `node --check` `typecheck` check.
+  It needs no fixture and no installed dependency, so it is the one behavior check every Node
+  repository can always run.
+- With `run_repository_tests: true` and a root `package.json` `scripts.test`, the repository's
+  own suite runs as an `existing_test` check on both trees. The sandbox has no network, so a
+  snapshot without installed dependencies records a limitation instead of running it.
+- Policy-supplied `verification_checks` still run exactly as before; the generated checks are
+  additive.
+
+A candidate with no generated regression test, or whose test also passes on the baseline, is
+`inconclusive` with `regression_test_not_reproducing` and is never `ready`. The generated test
+is recorded on the candidate as `generated_tests` and in the batch manifest, separately from
+the application `file_manifest`: it is verification evidence, never part of the applied tree.
+
+Set `require_generated_regression_test: false` to restore the previous behavior, in which a
+non-empty policy `verification_checks` with an `exploit` and a `behavior` check is mandatory.
+
 ## External prerequisites and accurate limitations
 
 - The local execution backend and the local sandbox driver are development adapters. They satisfy no isolation, durability, or retention gate, and results from them are labelled `development_unverified`.
-- Candidate syntax validation runs `node --check` for `.js`, `.cjs`, and `.mjs` files. TypeScript and JSX candidates and hosts without a Node toolchain record an explicit limitation instead of a silent pass.
+- Candidate syntax validation runs `node --check` for `.js`, `.cjs`, and `.mjs` files. TypeScript and JSX candidates and hosts without a Node toolchain record an explicit limitation instead of a silent pass. A TypeScript-only patch therefore derives no generic behavior check, and without a policy-supplied one the result is `unsupported`.
+- A generated regression test is model-written code. It proves that the candidate changes the behavior the test names on this exact snapshot; it is not a reviewed test suite and does not prove the repair is complete.
 - No real-model quality or real GKE isolation claim is made by local tests. Promotion requires the versioned repository evaluation suite and deployed attack fixtures.
 - The included broker supports inline immutable-Secret payloads up to 700 KB. A production one-use encrypted object transport is still required for larger snapshots; it must not expose credentials or signed URLs to the untrusted process.
 - Cluster NetworkPolicy, dedicated sandbox nodes, gVisor availability, pod/process quotas, orphan reconciliation, image build/signing, and workload identity are deployment responsibilities. `SANDBOX_NETWORK_POLICY_ATTESTED` is a gate, not proof.
