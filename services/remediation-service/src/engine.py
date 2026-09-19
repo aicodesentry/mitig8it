@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Callable
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 
 from .agent import OpenAICompatibleProvider, ProviderError, RepairAgent
 from .agent.checkpoint import AgentCheckpointStore, GroupScopedCheckpointStore
@@ -87,15 +87,20 @@ class GroupOutcome:
     trace: list[dict[str, Any]]
     usage: dict[str, Any]
     agent_ran: bool
+    # Numeric evidence the agent attached to its reason, such as a denied budget reservation.
+    evidence: dict[str, Any] = dataclass_field(default_factory=dict)
 
     def report(self) -> dict[str, Any]:
-        return {
+        report: dict[str, Any] = {
             "group_index": self.index,
             "finding_ids": self.finding_ids,
             "state": self.state,
             "reason": None if self.reason_code is None else {"code": self.reason_code, "message": self.message},
             "candidate_id": self.candidate.candidate_id if self.candidate else None,
         }
+        if self.evidence:
+            report["reason_evidence"] = self.evidence
+        return report
 
 
 def _split_budget(total: int, groups: int, remaining: int, floor: int) -> int:
@@ -414,6 +419,7 @@ class RepairEngine:
                         result.trace,
                         result.usage,
                         True,
+                        dict(result.evidence),
                     )
                 )
                 continue
@@ -494,6 +500,7 @@ class RepairEngine:
                     "usage": usage,
                     "verification": primary.verification.evidence if primary.verification else None,
                     "groups": group_report,
+                    **primary.evidence,
                 },
                 reason={"code": primary.reason_code or "no_verified_candidate", "message": primary.message or "No verified repair was produced."},
             )
