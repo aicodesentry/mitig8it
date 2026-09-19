@@ -24,8 +24,16 @@ def tool_definitions() -> list[dict[str, Any]]:
         tool("search_code", "Literal search of the authorized exact-head snapshot.", {"query": {"type": "string", "maxLength": 200}}, ["query"]),
         tool(
             "read_file",
-            "Read a bounded line range from one snapshot file.",
-            {"path": {"type": "string"}, "line_start": {"type": "integer", "minimum": 1}, "line_end": {"type": "integer", "minimum": 1}},
+            (
+                "Read a bounded line range from one snapshot file. Leave line_start and line_end "
+                "null to read a window around the reported finding lines. Results are capped, so "
+                "request the narrowest range that answers the question."
+            ),
+            {
+                "path": {"type": "string"},
+                "line_start": {"type": ["integer", "null"], "minimum": 1},
+                "line_end": {"type": ["integer", "null"], "minimum": 1},
+            },
             ["path", "line_start", "line_end"],
         ),
         tool("find_references", "Find lexical references to a JS/TS identifier.", {"symbol": {"type": "string"}}, ["symbol"]),
@@ -34,8 +42,9 @@ def tool_definitions() -> list[dict[str, Any]]:
         tool(
             "propose_patch",
             (
-                "Propose exact whole-file replacements bound to source digests, together with the "
-                "regression test that reproduces the finding. This does not verify a patch."
+                "Propose the smallest line-range replacements bound to the digest of exactly the "
+                "lines they replace, together with the regression test that reproduces the "
+                "finding. This does not verify a patch."
             ),
             {
                 "hypothesis": {"type": "string", "maxLength": 4000},
@@ -54,10 +63,23 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "changes": {
                     "type": "array",
                     "minItems": 1,
+                    "maxItems": 50,
+                    "description": (
+                        "Line-range hunks against the exact snapshot. start_line and end_line are "
+                        "inclusive and 1-based, replaced_sha256 is the sha256 of exactly those "
+                        "lines as read, and replacement_lines are the new lines without newline "
+                        "characters. An empty replacement_lines deletes the range."
+                    ),
                     "items": {
                         "type": "object",
-                        "properties": {"path": {"type": "string"}, "base_sha256": {"type": "string"}, "replacement_content": {"type": "string"}},
-                        "required": ["path", "base_sha256", "replacement_content"],
+                        "properties": {
+                            "path": {"type": "string"},
+                            "start_line": {"type": "integer", "minimum": 1},
+                            "end_line": {"type": "integer", "minimum": 1},
+                            "replaced_sha256": {"type": "string"},
+                            "replacement_lines": {"type": "array", "items": {"type": "string", "maxLength": 4000}, "maxItems": 400},
+                        },
+                        "required": ["path", "start_line", "end_line", "replaced_sha256", "replacement_lines"],
                         "additionalProperties": False,
                     },
                 },

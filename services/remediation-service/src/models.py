@@ -107,6 +107,12 @@ class RepairPolicy(StrictModel):
     max_tool_calls: int = Field(default=20, ge=1, le=50)
     max_attempts: int = Field(default=3, ge=1, le=5)
     max_context_chars: int = Field(default=128_000, ge=1000, le=1_000_000)
+    # One tool result never returns more than this many characters, so a single read cannot
+    # dominate the prompt.
+    max_tool_result_chars: int = Field(default=8_000, ge=500, le=100_000)
+    # Once the message history is estimated above this, consumed read and search results are
+    # replaced with provenance stubs.
+    max_working_set_tokens: int = Field(default=24_000, ge=2_000, le=400_000)
     max_output_chars: int = Field(default=2_000_000, ge=10_000, le=10_000_000)
     max_total_tokens: int = Field(default=120_000, ge=1_000, le=1_000_000)
     max_output_tokens_per_call: int = Field(default=4_096, ge=256, le=32_000)
