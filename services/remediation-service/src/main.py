@@ -75,8 +75,10 @@ def require_internal_auth(
     bearer = ""
     if authorization and authorization.startswith("Bearer "):
         bearer = authorization.removeprefix("Bearer ")
-    supplied = bearer or (x_internal_secret or "")
-    if not supplied or not secrets.compare_digest(supplied, expected):
+    # Behind Cloud Run the Authorization bearer is the caller's Google identity token, so
+    # the shared secret arrives in x-internal-secret. Accept the secret from either header.
+    candidates = [value for value in (x_internal_secret or "", bearer) if value]
+    if not any(secrets.compare_digest(value, expected) for value in candidates):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
