@@ -10,7 +10,7 @@ const DEFAULT_POLICY = Object.freeze({
   require_generated_regression_test: true,
   run_repository_tests: false,
   repair_memory_expiry_days: 90,
-  request_timeout_seconds: 45, supported_platform: 'node',
+  request_timeout_seconds: 45, supported_platform: 'linux',
   forbidden_path_prefixes: ['.github/', 'infra/', 'infrastructure/', 'deploy/', 'migrations/'],
   forbidden_filenames: ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'],
   // Per-stage reservations. Reserving the whole ceiling for every stage would

@@ -62,7 +62,10 @@ async function loadSnapshot(job) {
   if (snapshot.head_sha !== job.head_sha || snapshot.base_sha !== job.base_sha || !Array.isArray(snapshot.files) || !Array.isArray(snapshot.tree_entries) || !snapshot.head_tree_oid) {
     const error = new Error('Immutable snapshot response is incomplete or stale'); error.code = 'SNAPSHOT_UNAVAILABLE'; throw error;
   }
-  return { files: snapshot.files.map((file) => ({ path: file.path, content: file.content, sha: file.sha || sha256(file.content) })), treeEntries: snapshot.tree_entries, headTreeOid: snapshot.head_tree_oid };
+  // The repair service's tree entry contract is exactly path, mode, type, sha; the adapter may
+  // carry extra fields such as size that the strict model rejects.
+  const treeEntries = snapshot.tree_entries.map((entry) => ({ path: entry.path, mode: entry.mode, type: entry.type, sha: entry.sha }));
+  return { files: snapshot.files.map((file) => ({ path: file.path, content: file.content, sha: file.sha || sha256(file.content) })), treeEntries, headTreeOid: snapshot.head_tree_oid };
 }
 
 async function selectedFindings(job) {
@@ -77,7 +80,7 @@ function buildPayload(job, snapshot, findings) {
   return { schema_version: 'v1', job_id: job.id, tenant_id: String(job.installation_id), installation_id: String(job.installation_id), repository_id: job.repository_id,
     repository_full_name: job.repository_full_name, pull_request_id: job.pull_request_id, pull_request_number: job.pr_number,
     head_sha: job.head_sha, base_sha: job.base_sha, analysis_run_id: job.analysis_run_id, stage: job.stage,
-    fencing_token: job.fencing_token, attempt: job.attempt_count, findings, files: snapshot.files,
+    fencing_token: job.fencing_token, attempt: Number(job.attempt_count || 0) + 1, findings, files: snapshot.files,
     tree_entries: snapshot.treeEntries, head_tree_oid: snapshot.headTreeOid,
     profile: { snapshot_coverage: { provided_paths: snapshot.files.map((file) => file.path) } }, policy: repairPolicy(job.policy_manifest), versions: { policy_version: job.policy_version },
     limits: { max_files: job.policy_manifest.max_files, max_changed_lines: job.policy_manifest.max_changed_lines, max_attempts: job.policy_manifest.max_attempts, max_tool_calls: job.policy_manifest.max_tool_calls, max_context_tokens: job.policy_manifest.max_context_tokens, max_spend_usd: job.policy_manifest.max_spend_usd } };
