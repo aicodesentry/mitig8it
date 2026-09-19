@@ -8,7 +8,7 @@ from src.engine import RepairEngine
 from src.git_tree import compute_tree_oid
 from src.models import GitTreeEntry, RepairRequest
 from src.verification import Verifier
-from tests.conftest import regression_test_spec
+from tests.conftest import regression_test_spec, whole_file_change
 
 
 class ScriptedProvider:
@@ -57,7 +57,7 @@ async def _ready_engine(request_payload, source):
                 "intended_behavior": "Load the same user by id.",
                 "assumptions": ["pg positional parameters are available"],
                 "citations": [{"path": "src/db.ts", "line_start": 1, "line_end": 3}],
-                "changes": [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": replacement}],
+                "changes": [whole_file_change("src/db.ts", source, replacement)],
                 "regression_test": regression_test_spec(),
             },
         ),
@@ -145,7 +145,7 @@ async def _engine_with_broker(request_payload, source, broker):
                 "intended_behavior": "Load the same user by id.",
                 "assumptions": ["pg positional parameters are available"],
                 "citations": [{"path": "src/db.ts", "line_start": 1, "line_end": 3}],
-                "changes": [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": replacement}],
+                "changes": [whole_file_change("src/db.ts", source, replacement)],
                 "regression_test": regression_test_spec(),
             },
         ),
@@ -224,7 +224,7 @@ def _propose(path, original, replacement, hypothesis):
             "intended_behavior": "Preserve the documented behavior for legitimate input.",
             "assumptions": ["the snapshot proves the required dependency"],
             "citations": [{"path": path, "line_start": 1, "line_end": 3}],
-            "changes": [{"path": path, "base_sha256": content_sha256(original), "replacement_content": replacement}],
+            "changes": [whole_file_change(path, original, replacement)],
             "regression_test": regression_test_spec(path=f".mitig8it/regression/{path.replace('/', '-')}.test.js"),
         },
     )

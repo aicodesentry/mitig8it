@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from src.agent import ProviderAction, RepairAgent
-from src.agent.loop import estimate_history_tokens, estimate_tokens, output_reservation_tokens
+from src.agent.loop import estimate_history_tokens, estimate_tokens, output_reservation_tokens, with_headroom
 from src.engine import RepairEngine
 from src.git_tree import compute_tree_oid
 from src.models import GitTreeEntry, RepairRequest
@@ -26,9 +26,11 @@ class RecordingProvider:
         self.calls = 0
         self.reported_input_tokens = reported_input_tokens
         self.histories: list[int] = []
+        self.last_messages: list[dict[str, Any]] = []
 
     async def next_action(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ProviderAction:
         self.histories.append(len(json.dumps(messages, ensure_ascii=False).encode("utf-8")))
+        self.last_messages = [dict(message) for message in messages]
         action = self.actions[min(self.calls, len(self.actions) - 1)]
         self.calls += 1
         reported = self.reported_input_tokens
@@ -44,12 +46,73 @@ class RecordingProvider:
         )
 
 
+class DenseProvider:
+    """Reports usage the way a real provider does: the tool schemas count, and code is dense."""
+
+    def __init__(self, actions: list[ProviderAction], bytes_per_token: float = 3.2):
+        self.actions = list(actions)
+        self.calls = 0
+        self.bytes_per_token = bytes_per_token
+        self.total_input = 0
+        self.total_output = 0
+        self.last_messages: list[dict[str, Any]] = []
+
+    async def next_action(self, messages, tools):
+        action = self.actions[min(self.calls, len(self.actions) - 1)]
+        self.calls += 1
+        self.last_messages = [dict(message) for message in messages]
+        billed = len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) + len(
+            json.dumps(tools, ensure_ascii=False).encode("utf-8")
+        )
+        input_tokens = int(billed / self.bytes_per_token)
+        self.total_input += input_tokens
+        self.total_output += action.output_tokens
+        return ProviderAction(
+            action.name,
+            action.arguments,
+            call_id=f"call-{self.calls}",
+            input_tokens=input_tokens,
+            output_tokens=action.output_tokens,
+        )
+
+
+class SettlingCheckpointStore:
+    """Encodes the durable store's rule: reported usage above the reservation cannot settle.
+
+    `ExecutionCheckpointStore.save_provider_action` raises when `actual_tokens` exceeds
+    `pending_reserved_tokens`, which surfaces as `checkpoint_unavailable` and ends the job.
+    """
+
+    def __init__(self):
+        self.reserved_tokens: int | None = None
+        self.reserved_usd: float = 0.0
+        self.settled: list[int] = []
+
+    async def load(self):
+        return None
+
+    async def reserve_provider_call(self, sequence: int, tokens: int, usd: float) -> bool:
+        self.reserved_tokens = tokens
+        self.reserved_usd = usd
+        return True
+
+    async def save_provider_action(self, state, action, actual_tokens: int, actual_usd: float) -> None:
+        from src.agent.checkpoint import CheckpointError
+
+        if self.reserved_tokens is None or actual_tokens > self.reserved_tokens or actual_usd > self.reserved_usd:
+            raise CheckpointError("provider usage exceeds reservation or reservation is absent")
+        self.settled.append(actual_tokens)
+
+    async def save_completed_step(self, state) -> None:
+        return None
+
+
 class FailingVerifier(Verifier):
     def __init__(self):  # pragma: no cover - never invoked in these tests
         pass
 
 
-def _read(line_start: int, line_end: int, output_tokens: int = 64) -> ProviderAction:
+def _read(line_start: int | None, line_end: int | None, output_tokens: int = 64) -> ProviderAction:
     return ProviderAction(
         "read_file",
         {"path": "src/db.ts", "line_start": line_start, "line_end": line_end},
@@ -77,23 +140,24 @@ def _large_payload(request_payload: dict[str, Any], source: str, pad_lines: int)
     return request_payload
 
 
-def test_output_reservation_tracks_the_largest_file_not_the_policy_cap(request_payload, source):
+def test_output_reservation_follows_the_change_size_not_the_policy_cap(request_payload, source):
     request = RepairRequest.model_validate(_large_payload(request_payload, source, 640))
     snapshot = Snapshot(request)
     assert snapshot.largest_file_bytes >= 40_000
     request.policy.max_output_tokens_per_call = 16_000
-    reservation = output_reservation_tokens(request.policy, snapshot)
-    assert reservation == estimate_tokens("x" * snapshot.largest_file_bytes) + 512
+    request.policy.max_changed_lines = 200
+    reservation = output_reservation_tokens(request.policy)
+    # Bounded by the policy's own limit on a patch, not by the size of the file it edits.
+    assert reservation == with_headroom(estimate_tokens("x" * (200 * 80))) + 1_024 + 512
     assert reservation < request.policy.max_output_tokens_per_call
-    # The policy cap still bounds the reservation when the snapshot is larger than the cap allows.
     request.policy.max_output_tokens_per_call = 4_096
-    assert output_reservation_tokens(request.policy, snapshot) == 4_096
+    assert output_reservation_tokens(request.policy) == 4_096
 
 
-def test_small_snapshots_still_reserve_a_floor(request_payload):
+def test_small_change_budgets_still_reserve_a_floor(request_payload):
     request = RepairRequest.model_validate(request_payload)
-    snapshot = Snapshot(request)
-    assert output_reservation_tokens(request.policy, snapshot) == 1_024
+    request.policy.max_changed_lines = 1
+    assert output_reservation_tokens(request.policy) >= 1_024
 
 
 @pytest.mark.asyncio
@@ -111,15 +175,15 @@ async def test_forty_kilobyte_snapshot_history_allows_at_least_eight_provider_ca
 
     assert provider.calls >= 8
     assert result.reason_code == "no_repair"
-    # The snapshot really was in the history, which is what the old byte-based estimate over-charged.
-    assert max(provider.histories) > 40_000
 
 
 @pytest.mark.asyncio
 async def test_reported_usage_shrinks_the_next_reservation(request_payload, source):
     request = RepairRequest.model_validate(_large_payload(request_payload, source, 640))
-    request.policy.max_total_tokens = 12_000
+    request.policy.max_total_tokens = 16_000
     request.policy.max_output_tokens_per_call = 4_096
+    request.policy.max_tool_result_chars = 20_000
+    request.policy.max_working_set_tokens = 400_000
     snapshot = Snapshot(request)
     # The first tool result puts about 20 KB in the history. A byte-length estimate would reserve
     # more than 20k tokens and deny the second call; the reported 100 prompt tokens do not.
@@ -138,14 +202,14 @@ async def test_denied_reservation_reports_the_numbers_as_evidence(request_payloa
     request.policy.max_output_tokens_per_call = 4_096
     snapshot = Snapshot(request)
     # A large reported prompt makes the second reservation exceed what is left of the ceiling.
-    provider = RecordingProvider([_read(1, 320), _abstain()], reported_input_tokens=7_000)
+    provider = RecordingProvider([_read(1, 320), _abstain()], reported_input_tokens=7_500)
     result = await RepairAgent(provider, FailingVerifier()).run(request, snapshot)
 
     assert provider.calls == 1
     assert result.state == "inconclusive"
     assert result.reason_code == "provider_budget_reservation_denied"
     reservation = result.evidence["budget_reservation"]
-    assert reservation["estimated_input_tokens"] >= 7_000
+    assert reservation["estimated_input_tokens"] >= 7_500
     assert reservation["reserved_output_tokens"] == 4_096
     assert reservation["estimated_total_tokens"] == reservation["estimated_input_tokens"] + 4_096
     assert reservation["remaining_tokens"] == 12_000 - reservation["spent_input_tokens"] - reservation["spent_output_tokens"]
@@ -168,6 +232,19 @@ async def test_engine_response_carries_the_denied_reservation_numbers(request_pa
     assert reservation["estimated_total_tokens"] > reservation["remaining_tokens"]
     assert reservation["remaining_tokens"] == 1_000
     assert response.evidence["groups"][0]["reason_evidence"]["budget_reservation"] == reservation
+
+
+@pytest.mark.asyncio
+async def test_reservation_covers_the_tool_schemas_the_provider_bills_for(request_payload, source):
+    """The live regression: the tool definitions are billed but are not in the message history."""
+    request = RepairRequest.model_validate(_large_payload(request_payload, source, 16))
+    snapshot = Snapshot(request)
+    store = SettlingCheckpointStore()
+    provider = DenseProvider([_read(1, 8), _read(1, 8), _abstain()])
+    result = await RepairAgent(provider, FailingVerifier(), store).run(request, snapshot)
+
+    assert result.reason_code == "no_repair"
+    assert len(store.settled) == provider.calls
 
 
 class _NullBroker:

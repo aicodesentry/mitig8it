@@ -1,5 +1,7 @@
 import pytest
 
+from tests.conftest import whole_file_change
+
 from src.batch import BatchPolicyError, build_immutable_batch
 from src.models import Candidate, FilePatch, RepairRequest, VerificationSummary
 
@@ -48,7 +50,7 @@ def _bundle(request, snapshot, replacement):
     return build_patch_bundle(
         request,
         snapshot,
-        [{"path": "src/db.ts", "base_sha256": content_sha256(snapshot.full_content("src/db.ts")), "replacement_content": replacement}],
+        [whole_file_change("src/db.ts", snapshot.full_content("src/db.ts"), replacement)],
     )
 
 
