@@ -44,6 +44,7 @@ class GitHubGrpcClient {
     const request = new githubPb.FetchPullRequestFilesRequest();
     request.setRepositoryFullName(payload.repository_full_name || '');
     request.setPullRequestNumber(Number(payload.pull_request_number || 0));
+    request.setCommitSha(payload.commit_sha || '');
     request.setInstallationId(Number(payload.installation_id || 0));
     const response = await unary(this.client, 'fetchPullRequestFiles', request);
     return { files: response.getFilesList().map(changedFileToPlain) };

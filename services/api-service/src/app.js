@@ -1,4 +1,5 @@
 const express = require('express');
+const { requestTracing } = require('./utils/telemetry');
 const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
@@ -17,10 +18,12 @@ const webhookRoutes = require('./routes/webhooks');
 const webhookEventsRoutes = require('./routes/webhookEvents');
 const healthRoutes = require('./routes/health');
 const internalRoutes = require('./routes/internal');
+const remediationRoutes = require('./routes/remediation');
 const logger = require('./utils/logger');
 
 function createApp() {
   const app = express();
+  app.use(requestTracing);
   const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
   app.set('trust proxy', 1);
 
@@ -37,6 +40,7 @@ function createApp() {
 
   const CORS_ORIGINS = [
     FRONTEND_URL,
+    'https://codesentry-260311-9f2b.web.app',
     'http://localhost:5173',
     'http://localhost:3001',
     ...(process.env.FIREBASE_HOSTING_URL ? [process.env.FIREBASE_HOSTING_URL] : []),
@@ -47,7 +51,6 @@ function createApp() {
       origin &&
       (
         CORS_ORIGINS.includes(origin) ||
-        (origin.endsWith('.web.app') && origin.includes('codesentry')) ||
         origin === 'https://mitig8it.com' ||
         origin === 'https://www.mitig8it.com'
       )
@@ -143,10 +146,12 @@ function createApp() {
     }),
     authRoutes
   );
+  app.use('/api/analysis', require('./routes/playground'));
   app.use('/api/installations', installationRoutes);
   app.use('/api/repositories', repositoryRoutes);
   app.use('/api', prRoutes);
   app.use('/api', findingRoutes);
+  app.use('/api', remediationRoutes);
   app.use('/api', suppressionRoutes);
   app.use('/api/reports', reportsRoutes);
   app.use('/api/webhooks', webhookEventsRoutes);
@@ -162,7 +167,7 @@ function createApp() {
     }
 
     res.set('Content-Type', metricsRegister.contentType);
-    res.end(await metricsRegister.metrics());
+    res.end(await client.Registry.merge([metricsRegister, client.register]).metrics());
   });
 
   app.get('/', (_req, res) => {

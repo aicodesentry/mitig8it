@@ -1,4 +1,5 @@
 const express = require('express');
+const { startTelemetry, requestTracing } = require('./utils/telemetry');
 const cors = require('cors');
 const helmet = require('helmet');
 const client = require('prom-client');
@@ -33,6 +34,8 @@ if (missingEnvVars.length > 0) {
 console.log('✓ All required environment variables are set');
 
 const app = express();
+startTelemetry('mitig8it-github');
+app.use(requestTracing);
 const PORT = process.env.PORT || 3002;
 const metricsRegister = new client.Registry();
 

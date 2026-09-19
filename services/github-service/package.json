@@ -6,6 +6,7 @@
   "scripts": {
     "lint": "eslint \"src/**/*.js\"",
     "test": "jest --detectOpenHandles",
+    "test:remediation": "jest --runInBand src/__tests__/remediationOperations.test.js src/__tests__/internalRoutes.test.js",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js"
   },
@@ -15,6 +16,9 @@
   "type": "commonjs",
   "dependencies": {
     "@grpc/grpc-js": "^1.14.4",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.222.0",
+    "@opentelemetry/sdk-node": "0.222.0",
     "axios": "^1.17.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",

@@ -18,7 +18,7 @@ const { persistGithubTokens } = require('../src/services/githubUserAuth');
 const ORIGINAL_ENV = { ...process.env };
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  jest.resetAllMocks();
   process.env = { ...ORIGINAL_ENV };
   process.env.GITHUB_CLIENT_ID = 'test-client-id';
   process.env.GITHUB_CLIENT_SECRET = 'test-client-secret';
@@ -114,8 +114,10 @@ describe('GET /auth/github/callback', () => {
     persistGithubTokens.mockResolvedValue({});
   }
 
+  let oauthCookie;
   async function getValidState(app) {
     const res = await request(app).get('/auth/github');
+    oauthCookie = res.headers['set-cookie']?.[0]?.split(';')[0] || '';
     const location = res.headers.location || '';
     const redirectUrl = new URL(location);
     return redirectUrl.searchParams.get('state');
@@ -147,15 +149,29 @@ describe('GET /auth/github/callback', () => {
     expect(res.headers.location).toContain('error=invalid_state');
   });
 
-  test('sets cookie-backed session and redirects straight to dashboard', async () => {
+  test('rejects state transferred to a browser without the initiating cookie', async () => {
     setupSuccessfulOAuth();
     const app = createApp();
     const state = await getValidState(app);
     const res = await request(app).get(`/auth/github/callback?code=test-code&state=${state}`);
+    expect(res.headers.location).toContain('error=invalid_state');
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  test('rejects unrelated Firebase origins', async () => {
+    const res = await request(createApp()).get('/').set('Origin', 'https://codesentry-attacker-owned.web.app');
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  test('sets cookie-backed session and redirects straight to dashboard', async () => {
+    setupSuccessfulOAuth();
+    const app = createApp();
+    const state = await getValidState(app);
+    const res = await request(app).get(`/auth/github/callback?code=test-code&state=${state}`).set('Cookie', oauthCookie);
 
     expect(res.status).toBe(302);
     expect(res.headers.location).toBe('http://localhost:5173/dashboard');
-    const authCookie = res.headers['set-cookie']?.find((cookie) => cookie.startsWith('__session='));
+    const authCookie = res.headers['set-cookie']?.findLast((cookie) => cookie.startsWith('__session='));
     expect(authCookie).toBeDefined();
     const cookieToken = decodeURIComponent(authCookie.split(';')[0].split('=')[1]);
     const decoded = jwt.verify(cookieToken, 'test-jwt-secret');
@@ -200,7 +216,7 @@ describe('GET /auth/github/callback', () => {
 
     const app = createApp();
     const state = await getValidState(app);
-    await request(app).get(`/auth/github/callback?code=test-code&state=${state}`);
+    await request(app).get(`/auth/github/callback?code=test-code&state=${state}`).set('Cookie', oauthCookie);
 
     expect(axios.get).toHaveBeenCalledWith(
       'https://api.github.com/user/emails',
@@ -219,7 +235,7 @@ describe('GET /auth/github/callback', () => {
 
     const app = createApp();
     const state = await getValidState(app);
-    const res = await request(app).get(`/auth/github/callback?code=bad-code&state=${state}`);
+    const res = await request(app).get(`/auth/github/callback?code=bad-code&state=${state}`).set('Cookie', oauthCookie);
 
     expect(res.status).toBe(302);
     expect(res.headers.location).toContain('error=oauth_exchange_failed');
@@ -233,7 +249,7 @@ describe('GET /auth/github/callback', () => {
 
     const app = createApp();
     const state = await getValidState(app);
-    const res = await request(app).get(`/auth/github/callback?code=test-code&state=${state}`);
+    const res = await request(app).get(`/auth/github/callback?code=test-code&state=${state}`).set('Cookie', oauthCookie);
 
     expect(res.status).toBe(302);
     expect(res.headers.location).toContain('error=oauth_callback_failed');
@@ -248,7 +264,7 @@ describe('GET /auth/github/callback', () => {
 
     const app = createApp();
     const state = await getValidState(app);
-    const res = await request(app).get(`/auth/github/callback?code=test-code&state=${state}`);
+    const res = await request(app).get(`/auth/github/callback?code=test-code&state=${state}`).set('Cookie', oauthCookie);
 
     expect(res.status).toBe(302);
     expect(res.headers.location).toContain('error=oauth_callback_failed');
@@ -273,7 +289,7 @@ describe('GET /auth/github/callback', () => {
 
     const app = createApp();
     const state = await getValidState(app);
-    const res = await request(app).get(`/auth/github/callback?code=test-code&state=${state}`);
+    const res = await request(app).get(`/auth/github/callback?code=test-code&state=${state}`).set('Cookie', oauthCookie);
 
     expect(res.status).toBe(302);
     expect(pool.query).toHaveBeenCalledWith(
@@ -426,7 +442,7 @@ describe('POST /auth/logout', () => {
     const app = createApp();
     const res = await request(app).post('/auth/logout');
 
-    const authCookie = res.headers['set-cookie']?.find((cookie) => cookie.startsWith('__session='));
+    const authCookie = res.headers['set-cookie']?.findLast((cookie) => cookie.startsWith('__session='));
     expect(authCookie).toBeDefined();
     expect(authCookie).toContain('__session=;');
     expect(authCookie).toContain('Path=/');
@@ -442,7 +458,7 @@ describe('POST /auth/logout', () => {
       .post('/auth/logout')
       .set('X-Forwarded-Proto', 'https');
 
-    const authCookie = res.headers['set-cookie']?.find((cookie) => cookie.startsWith('__session='));
+    const authCookie = res.headers['set-cookie']?.findLast((cookie) => cookie.startsWith('__session='));
     expect(authCookie).toBeDefined();
     expect(authCookie).toContain('__session=;');
     expect(authCookie).toContain('Path=/');
