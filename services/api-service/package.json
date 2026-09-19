@@ -27,7 +27,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.1.0",
     "express-rate-limit": "^8.5.2",
-    "google-protobuf": "^4.0.2",
+    "google-protobuf": "^3.21.4",
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.21.0",
