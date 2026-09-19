@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: mitig8it-remediation
+resources:
+  - namespace.yaml
+  # Cluster-scoped prerequisite; see runtime-class.yaml before applying.
+  - runtime-class.yaml
+  - service-accounts-rbac.yaml
+  - resource-quotas.yaml
+  - network-policies.yaml
+  - services.yaml
+  - workloads.yaml
+  - otel-collector.yaml

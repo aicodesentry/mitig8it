@@ -1,0 +1,95 @@
+# Alert rules for the remediation workflow.
+#
+# Rules in the mitig8it-remediation group query metrics that the control plane
+# emits today. Rules in mitig8it-remediation-pending query metric names that are
+# specified but not yet emitted by any service; they are kept here so the names
+# are fixed before instrumentation, and they cannot fire until the counters and
+# gauges exist. Treat a silent pending rule as no data, never as a healthy
+# system, and use database and audit evidence in the meantime.
+groups:
+  - name: mitig8it-remediation
+    rules:
+      - alert: Mitig8itRemediationAmbiguousWrite
+        expr: increase(mitig8it_remediation_action_transitions_total{state="reconciling"}[5m]) > 0
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "A remediation GitHub write needs reconciliation"
+          runbook_url: "docs/runbooks/remediation.md#ambiguous-github-write"
+      - alert: Mitig8itRemediationLeaseReclaim
+        expr: increase(mitig8it_remediation_lease_reclaims_total[15m]) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "A remediation worker lease was reclaimed"
+          runbook_url: "docs/runbooks/remediation.md#expired-worker-lease"
+      - alert: Mitig8itRemediationInconclusiveVerification
+        expr: sum(increase(mitig8it_remediation_stage_attempts_total{outcome="inconclusive"}[15m])) > 5
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Remediation verification is repeatedly inconclusive"
+          runbook_url: "docs/runbooks/remediation.md#sandbox-or-verification-failure"
+      - alert: Mitig8itRemediationProviderStageFailures
+        expr: sum(increase(mitig8it_remediation_stage_attempts_total{stage="generating", outcome=~"error|failed|inconclusive"}[15m])) > 10
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Generation stage errors suggest a provider outage or a spend anomaly"
+          runbook_url: "docs/runbooks/remediation.md#provider-outage"
+
+  - name: mitig8it-remediation-pending
+    rules:
+      # metric not yet emitted: mitig8it_remediation_queue_age_seconds. The
+      # stage duration histogram has no queued stage, so queue wait cannot be
+      # derived from the metrics that exist today.
+      - alert: Mitig8itRemediationQueueBacklog
+        expr: max(mitig8it_remediation_queue_age_seconds) > 60
+        for: 15m
+        labels: {severity: warning, metric_status: not_yet_emitted}
+        annotations:
+          summary: "Remediation queue age is above the 60 second objective"
+          runbook_url: "docs/runbooks/remediation.md#queue-backlog"
+      # metric not yet emitted: mitig8it_remediation_spend_reserved_usd_total,
+      # mitig8it_remediation_spend_settled_usd_total.
+      - alert: Mitig8itRemediationSpendReservationDrift
+        expr: (sum(increase(mitig8it_remediation_spend_reserved_usd_total[1h])) - sum(increase(mitig8it_remediation_spend_settled_usd_total[1h]))) > 5
+        for: 30m
+        labels: {severity: warning, metric_status: not_yet_emitted}
+        annotations:
+          summary: "Reserved remediation spend is not being settled; orphan reservations are accumulating"
+          runbook_url: "docs/runbooks/remediation.md#provider-outage"
+      # metric not yet emitted: mitig8it_remediation_budget_stops_total.
+      - alert: Mitig8itRemediationBudgetStop
+        expr: sum(increase(mitig8it_remediation_budget_stops_total[15m])) > 0
+        for: 5m
+        labels: {severity: warning, metric_status: not_yet_emitted}
+        annotations:
+          summary: "The remediation budget ceiling stopped work; confirm the ceiling and not a runaway loop"
+          runbook_url: "docs/runbooks/remediation.md#provider-outage"
+      # metric not yet emitted:
+      # mitig8it_remediation_github_stale_head_rejections_total.
+      - alert: Mitig8itRemediationStaleHeadRejections
+        expr: sum(increase(mitig8it_remediation_github_stale_head_rejections_total[15m])) > 20
+        for: 15m
+        labels: {severity: warning, metric_status: not_yet_emitted}
+        annotations:
+          summary: "Remediation applications are repeatedly rejected for a stale head"
+          runbook_url: "docs/runbooks/remediation.md#ambiguous-github-write"
+      # metric not yet emitted: mitig8it_remediation_reconciliation_age_seconds.
+      - alert: Mitig8itRemediationReconciliationAge
+        expr: max(mitig8it_remediation_reconciliation_age_seconds) > 300
+        for: 5m
+        labels: {severity: page, metric_status: not_yet_emitted}
+        annotations:
+          summary: "A remediation GitHub mutation has been unreconciled for more than 5 minutes"
+          runbook_url: "docs/runbooks/remediation.md#restore-reconciliation-after-a-database-restore"
+      # metric not yet emitted:
+      # mitig8it_remediation_evaluation_suite_pass_ratio.
+      - alert: Mitig8itRemediationEvaluationRegression
+        expr: min by (suite) (mitig8it_remediation_evaluation_suite_pass_ratio{suite="release"}) < 0.95
+        for: 30m
+        labels: {severity: warning, metric_status: not_yet_emitted}
+        annotations:
+          summary: "The remediation release suite pass rate dropped below the promotion gate"
+          runbook_url: "docs/runbooks/remediation.md#model-or-prompt-regression"

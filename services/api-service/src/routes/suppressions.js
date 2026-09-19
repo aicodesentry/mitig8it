@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
+const findingsDb = require('../db/findings');
 
 const router = express.Router();
 
@@ -49,13 +50,16 @@ router.post('/suppressions', authenticateToken, async (req, res) => {
   let resolvedFindingId = finding_id || null;
   let resolvedFingerprint = fingerprint || null;
 
-  if (!resolvedFingerprint && resolvedFindingId) {
+  if (resolvedFindingId) {
     const finding = await pool.query(
       'SELECT fingerprint FROM findings WHERE id = $1 AND repository_id = $2',
       [resolvedFindingId, repository_id]
     );
     if (finding.rowCount === 0) {
       return res.status(404).json({ error: 'Finding not found' });
+    }
+    if (resolvedFingerprint && resolvedFingerprint !== finding.rows[0]?.fingerprint) {
+      return res.status(400).json({ error: 'Fingerprint does not match finding' });
     }
     resolvedFingerprint = finding.rows[0]?.fingerprint;
   }
@@ -108,6 +112,8 @@ router.delete('/suppressions/:id', authenticateToken, async (req, res) => {
   if (suppression.rowCount === 0) {
     return res.status(404).json({ error: 'Suppression not found' });
   }
+
+  await findingsDb.restoreExpiredSuppressions(suppression.rows[0].repository_id);
 
   await pool.query(
     `INSERT INTO audit_logs (user_id, repository_id, action, resource_type, resource_id, details)

@@ -14,72 +14,31 @@ const CodeAnalysisTest = () => {
 
   const MAX_DAILY_USES = 5;
 
-  // Check and update daily usage limit
-  const checkDailyLimit = () => {
-    const today = new Date().toDateString();
-    const stored = localStorage.getItem('code_analysis_usage');
-
-    if (stored) {
-      const { date, count } = JSON.parse(stored);
-      if (date === today) {
-        setUsageCount(count);
-        setRemainingUses(Math.max(0, MAX_DAILY_USES - count));
-        return count < MAX_DAILY_USES;
-      }
-    }
-
-    // New day or first time
-    localStorage.setItem('code_analysis_usage', JSON.stringify({ date: today, count: 0 }));
-    setUsageCount(0);
-    setRemainingUses(MAX_DAILY_USES);
-    return true;
-  };
-
-  const incrementUsage = () => {
-    const today = new Date().toDateString();
-    const stored = localStorage.getItem('code_analysis_usage');
-    const { count } = stored ? JSON.parse(stored) : { count: 0 };
-    const newCount = count + 1;
-
-    localStorage.setItem('code_analysis_usage', JSON.stringify({ date: today, count: newCount }));
-    setUsageCount(newCount);
-    setRemainingUses(Math.max(0, MAX_DAILY_USES - newCount));
-  };
-
-  // Check service health on mount
+  // The API enforces the per-account quota using UTC days.
   useEffect(() => {
-    checkHealth();
-    checkDailyLimit();
-    loadHistory();
-  }, []);
-
-  const checkHealth = async () => {
-    try {
-      const health = await analysisAPI.healthCheck();
+    let active = true;
+    analysisAPI.healthCheck().then(health => {
+      if (!active) return;
       setServiceHealth(health);
-    } catch (err) {
-      console.error('Health check failed:', err);
-    }
-  };
+      setRemainingUses(health.remaining_uses);
+      setUsageCount(MAX_DAILY_USES - health.remaining_uses);
+    }).catch(() => { if (active) setServiceHealth({ status: 'error' }); });
+    analysisAPI.getHistory(5).then(data => {
+      if (active) setHistory(data.analyses || []);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
 
   const loadHistory = async () => {
     try {
       const data = await analysisAPI.getHistory(5);
       setHistory(data.analyses || []);
-    } catch (err) {
-      console.error('Failed to load history:', err);
-    }
+    } catch (_error) { /* Analysis results remain usable if history is unavailable. */ }
   };
 
   const analyzeCode = async () => {
     if (!code.trim()) {
       setError('Please enter some code to analyze');
-      return;
-    }
-
-    // Check daily limit
-    if (!checkDailyLimit()) {
-      setError(`Daily limit reached. You've used all ${MAX_DAILY_USES} analyses for today. Please try again tomorrow!`);
       return;
     }
 
@@ -92,14 +51,19 @@ const CodeAnalysisTest = () => {
         code: code,
         language: language,
         repository: 'playground',
-        file_path: `playground.${language === 'python' ? 'py' : language === 'javascript' ? 'js' : 'txt'}`,
+        file_path: `playground.${({ python: 'py', javascript: 'js', typescript: 'ts', java: 'java', go: 'go', php: 'php' })[language]}`,
       });
 
       setResult(analysisResult);
-      incrementUsage(); // Increment after successful analysis
+      setRemainingUses(analysisResult.remaining_uses);
+      setUsageCount(MAX_DAILY_USES - analysisResult.remaining_uses);
       loadHistory(); // Refresh history
     } catch (err) {
-      setError(err.response?.data?.detail || 'Analysis failed. Please try again.');
+      if (err.response?.data?.remaining_uses != null) {
+        setRemainingUses(err.response.data.remaining_uses);
+        setUsageCount(MAX_DAILY_USES - err.response.data.remaining_uses);
+      }
+      setError(err.response?.data?.error || err.response?.data?.detail || 'Analysis failed. Please try again.');
     } finally {
       setAnalyzing(false);
     }
@@ -154,7 +118,7 @@ const CodeAnalysisTest = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <span className="font-medium text-sm">
-                {remainingUses}/{MAX_DAILY_USES} analyses left today ({usageCount} used)
+                {remainingUses}/{MAX_DAILY_USES} analyses left today (UTC) ({usageCount} used)
               </span>
             </div>
           </div>

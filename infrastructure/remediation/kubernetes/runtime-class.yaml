@@ -1,0 +1,23 @@
+# gVisor RuntimeClass used by sandbox runner Jobs.
+#
+# This is a cluster prerequisite. render_kubernetes.py copies this manifest but
+# provisions nothing underneath it: it does not create a cluster, a sandboxed
+# node pool, node labels, or a runsc installation. Applying it against a
+# cluster whose nodes do not run the runsc handler produces runner pods that
+# never start, which the broker must report as inconclusive rather than passed.
+#
+# On GKE Sandbox the cluster already owns an equivalent `gvisor` RuntimeClass
+# created with the sandboxed node pool. Where that is true, leave this resource
+# out of the applied set instead of overwriting the cluster-managed object.
+#
+# The only consumer is the sandbox runner Job created by the broker
+# (SANDBOX_K8S_RUNTIME_CLASS=gvisor). The repair service, worker, broker, and
+# collector Deployments deliberately run on the default runtime; widening this
+# handler to a control-plane workload is not an isolation improvement.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+  labels:
+    app.kubernetes.io/part-of: mitig8it-remediation
+handler: runsc

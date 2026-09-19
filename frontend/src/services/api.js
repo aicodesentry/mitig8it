@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { clearPrivateCaches } from './privateCache'
 
 const DEFAULT_LOCAL_API_URL = 'http://localhost:3000'
 const isBrowser = typeof window !== 'undefined'
@@ -6,7 +7,6 @@ const isLocalHost =
   isBrowser && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
 const API_BASE_URL =
   import.meta.env.VITE_API_URL || (isLocalHost ? DEFAULT_LOCAL_API_URL : '')
-const ANALYSIS_BASE_URL = import.meta.env.VITE_ANALYSIS_SERVICE_URL || API_BASE_URL
 const FORCE_REAUTH_KEY = 'codesentry_force_github_reauth'
 
 const api = axios.create({
@@ -59,6 +59,7 @@ api.interceptors.response.use(
       !requestUrl.includes('/api/installations/sync') &&
       (window.location.pathname.startsWith('/app') || window.location.pathname.startsWith('/dashboard'))
     ) {
+      clearPrivateCaches()
       clearAuthToken()
       window.location.href = '/'
     }
@@ -86,6 +87,7 @@ export const authAPI = {
   },
   logout: async () => {
     await api.post('/auth/logout')
+    clearPrivateCaches()
     markGithubReauthRequired()
   }
 }
@@ -139,6 +141,18 @@ export const repositoryAPI = {
     const { data } = await api.get('/api/reports/summary')
     return data
   }
+}
+
+export const remediationAPI = {
+  latest: async (pullRequestId) => (await api.get(`/api/pull-requests/${pullRequestId}/remediations`)).data,
+  generate: async (pullRequestId, payload) => (await api.post(`/api/pull-requests/${pullRequestId}/remediations`, payload)).data,
+  get: async (id) => (await api.get(`/api/remediations/${id}`)).data,
+  preview: async (id) => (await api.get(`/api/remediations/${id}/preview`)).data,
+  apply: async (id, payload) => (await api.post(`/api/remediations/${id}/apply`, payload)).data,
+  cancel: async (id) => (await api.post(`/api/remediations/${id}/cancel`, {})).data,
+  action: async (id) => (await api.get(`/api/remediation-actions/${id}`)).data,
+  cancelMerge: async (id) => (await api.post(`/api/remediation-actions/${id}/cancel-merge`, {})).data,
+  feedback: async (id, payload) => (await api.post(`/api/remediations/${id}/feedback`, payload)).data,
 }
 
 export const findingAPI = {
@@ -199,12 +213,12 @@ export const reportsAPI = {
 
 export const analysisAPI = {
   healthCheck: async () => {
-    const { data } = await axios.get(`${ANALYSIS_BASE_URL}/health`)
+    const { data } = await api.get('/api/analysis/health')
     return data
   },
   getHistory: async (limit = 10) => {
     try {
-      const { data } = await axios.get(`${ANALYSIS_BASE_URL}/api/analysis/history?limit=${limit}`)
+      const { data } = await api.get(`/api/analysis/history?limit=${limit}`)
       return data
     } catch (_error) {
       return { analyses: [], total: 0 }
@@ -212,7 +226,7 @@ export const analysisAPI = {
   },
   analyzeCode: async (payload) => {
     try {
-      const { data } = await axios.post(`${ANALYSIS_BASE_URL}/api/analysis/analyze`, payload)
+      const { data } = await api.post('/api/analysis/analyze', payload)
       return data
     } catch (error) {
       if (error?.response?.status === 404) {

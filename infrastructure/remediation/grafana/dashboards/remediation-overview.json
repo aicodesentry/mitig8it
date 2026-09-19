@@ -1,0 +1,28 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {"type": "row", "title": "Reliability"},
+    {"type": "timeseries", "title": "Remediation stages by outcome", "description": "Emitted by services/api-service/src/services/remediationMetrics.js.", "targets": [{"expr": "sum by (stage, outcome) (rate(mitig8it_remediation_stage_attempts_total[5m]))", "legendFormat": "{{stage}} {{outcome}}"}]},
+    {"type": "timeseries", "title": "Stage latency p95", "description": "Emitted by services/api-service/src/services/remediationMetrics.js.", "targets": [{"expr": "histogram_quantile(0.95, sum by (le, stage) (rate(mitig8it_remediation_stage_duration_seconds_bucket[5m])))", "legendFormat": "{{stage}}"}]},
+    {"type": "timeseries", "title": "Lease reclaims", "description": "metric not yet emitted: mitig8it_remediation_lease_reclaims_total is declared but never incremented. Use database and audit evidence until the counter is wired.", "targets": [{"expr": "rate(mitig8it_remediation_lease_reclaims_total[5m])", "legendFormat": "reclaims/s"}]},
+
+    {"type": "row", "title": "Spend and fairness"},
+    {"type": "timeseries", "title": "Spend: reservations vs settled", "description": "metric not yet emitted: mitig8it_remediation_spend_reserved_usd_total and mitig8it_remediation_spend_settled_usd_total do not exist yet. Reservation minus settled is the drift that reconciliation must clear; a persistent gap means orphan reservations, not saved money.", "targets": [{"expr": "sum(increase(mitig8it_remediation_spend_reserved_usd_total[1h]))", "legendFormat": "reserved USD/h"}, {"expr": "sum(increase(mitig8it_remediation_spend_settled_usd_total[1h]))", "legendFormat": "settled USD/h"}]},
+    {"type": "timeseries", "title": "Unsettled spend reservations", "description": "metric not yet emitted: mitig8it_remediation_spend_reserved_usd_total and mitig8it_remediation_spend_settled_usd_total do not exist yet.", "targets": [{"expr": "sum(increase(mitig8it_remediation_spend_reserved_usd_total[1h])) - sum(increase(mitig8it_remediation_spend_settled_usd_total[1h]))", "legendFormat": "unsettled USD/h"}]},
+    {"type": "stat", "title": "Budget stops", "description": "metric not yet emitted: mitig8it_remediation_budget_stops_total does not exist yet. A non-zero value means the hard spend ceiling refused work, which is correct behaviour and not an outage.", "targets": [{"expr": "sum(increase(mitig8it_remediation_budget_stops_total[24h]))"}]},
+
+    {"type": "row", "title": "GitHub delivery"},
+    {"type": "stat", "title": "Ambiguous GitHub writes awaiting reconciliation", "description": "Emitted: action transitions into the reconciling state. Any non-zero value blocks the action until reconciliation records applied, not_applied, or unresolved.", "targets": [{"expr": "sum(increase(mitig8it_remediation_action_transitions_total{state=\"reconciling\"}[1h]))"}]},
+    {"type": "timeseries", "title": "Stale-head rejections", "description": "metric not yet emitted: mitig8it_remediation_github_stale_head_rejections_total does not exist yet. A rejection is the expected-head guard working; a sudden rise usually means a busy PR, not a defect.", "targets": [{"expr": "sum(rate(mitig8it_remediation_github_stale_head_rejections_total[15m]))", "legendFormat": "rejections/s"}]},
+    {"type": "timeseries", "title": "Oldest unreconciled GitHub mutation age", "description": "metric not yet emitted: mitig8it_remediation_reconciliation_age_seconds does not exist yet. The operational objective is to reconcile within 5 minutes.", "targets": [{"expr": "max(mitig8it_remediation_reconciliation_age_seconds)", "legendFormat": "oldest unreconciled (s)"}]},
+
+    {"type": "row", "title": "Evaluation releases"},
+    {"type": "timeseries", "title": "Evaluation suite pass rate", "description": "metric not yet emitted: mitig8it_remediation_evaluation_suite_pass_ratio does not exist yet. The release evaluator writes a JSON report; nothing publishes it to Prometheus. A pass rate from the seed or scripted-provider suite is a pipeline-integrity signal, not repair quality.", "targets": [{"expr": "max by (suite, manifest_version) (mitig8it_remediation_evaluation_suite_pass_ratio)", "legendFormat": "{{suite}} {{manifest_version}}"}]}
+  ],
+  "schemaVersion": 39,
+  "tags": ["mitig8it", "remediation"],
+  "title": "Mitig8it Remediation Reliability",
+  "uid": "mitig8it-remediation-overview",
+  "version": 2
+}

@@ -10,6 +10,15 @@ service GitHubService {
   rpc SubmitPullRequestReview(SubmitPullRequestReviewRequest) returns (SubmitPullRequestReviewResponse);
   rpc PostInlineComment(PostInlineCommentRequest) returns (PostInlineCommentResponse);
   rpc CreateCheckRun(CreateCheckRunRequest) returns (CreateCheckRunResponse);
+  rpc PrepareRemediation(RemediationPrepareRequest) returns (RemediationPrepareResponse);
+  rpc SnapshotRemediation(RemediationSnapshotRequest) returns (RemediationSnapshotResponse);
+  rpc CommitRemediation(RemediationCommitRequest) returns (RemediationCommitResponse);
+  rpc ReconcileRemediation(RemediationReconcileRequest) returns (RemediationReconcileResponse);
+  rpc MergeRemediation(RemediationMergeRequest) returns (RemediationMergeResponse);
+  rpc CancelScheduledMerge(CancelScheduledMergeRequest) returns (CancelScheduledMergeResponse);
+  rpc ReadMergeEligibility(MergeEligibilityRequest) returns (MergeEligibilityResponse);
+  rpc ReadPullRequestHead(PullRequestHeadRequest) returns (PullRequestHeadResponse);
+  rpc CreateRemediationCheckRun(RemediationCheckRunRequest) returns (RemediationCheckRunResponse);
   rpc HealthCheck(mitig8it.common.v1.HealthCheckRequest) returns (mitig8it.common.v1.HealthCheckResponse);
 }
 
@@ -17,6 +26,7 @@ message FetchPullRequestFilesRequest {
   string repository_full_name = 1;
   int32 pull_request_number = 2;
   int64 installation_id = 3;
+  string commit_sha = 4;
 }
 
 message FetchPullRequestFilesResponse {
@@ -84,4 +94,196 @@ message CreateCheckRunRequest {
 
 message CreateCheckRunResponse {
   int64 check_run_id = 1;
+}
+
+// Agentic remediation operations. Every request carries the same consent envelope the
+// HTTP endpoints validate, so both transports reach one shared operations module.
+message RemediationEnvelope {
+  string repository_full_name = 1;
+  string actor_login = 2;
+  int64 installation_id = 3;
+  int32 pr_number = 4;
+  string head_sha = 5;
+  string base_sha = 6;
+  string action_id = 7;
+  string idempotency_key = 8;
+  string manifest_digest = 9;
+}
+
+message RemediationPrepareRequest {
+  RemediationEnvelope envelope = 1;
+}
+
+message RemediationPrepareResponse {
+  string state = 1;
+  string operation_id = 2;
+  string branch = 3;
+  string expected_head_oid = 4;
+  string marker = 5;
+}
+
+message RemediationSnapshotRequest {
+  RemediationEnvelope envelope = 1;
+  repeated string finding_paths = 2;
+}
+
+message RemediationSourceFile {
+  string path = 1;
+  string content = 2;
+  string sha = 3;
+}
+
+message RemediationTreeEntry {
+  string path = 1;
+  string mode = 2;
+  string type = 3;
+  string sha = 4;
+}
+
+message RemediationSnapshotResponse {
+  repeated RemediationSourceFile files = 1;
+  repeated RemediationTreeEntry tree_entries = 2;
+  string head_tree_oid = 3;
+  string head_sha = 4;
+  string base_sha = 5;
+  repeated string omitted_source_paths = 6;
+}
+
+message RemediationFileChange {
+  string path = 1;
+  string contents_base64 = 2;
+}
+
+message RemediationCommitRequest {
+  RemediationEnvelope envelope = 1;
+  string branch = 2;
+  string expected_head_oid = 3;
+  string verified_tree_oid = 4;
+  string commit_message = 5;
+  repeated RemediationFileChange changes = 6;
+}
+
+message RemediationCommitResponse {
+  string state = 1;
+  string operation_id = 2;
+  string commit_sha = 3;
+  string tree_oid = 4;
+  string reason = 5;
+}
+
+message RemediationReconcileRequest {
+  RemediationEnvelope envelope = 1;
+  string verified_tree_oid = 2;
+}
+
+message RemediationReconcileResponse {
+  string state = 1;
+  string operation_id = 2;
+  string commit_sha = 3;
+  string tree_oid = 4;
+  string reason = 5;
+}
+
+message RemediationMergeRequest {
+  RemediationEnvelope envelope = 1;
+  string expected_head_sha = 2;
+  string expected_base_sha = 3;
+  string merge_method = 4;
+  string verification_check_name = 5;
+}
+
+message RemediationMergeResponse {
+  string state = 1;
+  string operation_id = 2;
+  string commit_sha = 3;
+  string reason = 4;
+}
+
+message CancelScheduledMergeRequest {
+  RemediationEnvelope envelope = 1;
+  int32 pull_number = 2;
+  string expected_head_sha = 3;
+}
+
+message CancelScheduledMergeResponse {
+  string state = 1;
+  string operation_id = 2;
+  string head_sha = 3;
+  bool merged = 4;
+  string reason = 5;
+}
+
+message MergeEligibilityRequest {
+  RemediationEnvelope envelope = 1;
+  int32 pull_number = 2;
+  string expected_head_sha = 3;
+  string verification_check_name = 4;
+}
+
+message RequiredCheck {
+  string context = 1;
+  int64 app_id = 2;
+}
+
+message CheckRunSummary {
+  int64 id = 1;
+  string name = 2;
+  int64 app_id = 3;
+  string status = 4;
+  string conclusion = 5;
+}
+
+message ReviewSummary {
+  int32 required = 1;
+  int32 approvals = 2;
+  bool changes_requested = 3;
+}
+
+message MergeEligibilityResponse {
+  bool eligible = 1;
+  repeated string blockers = 2;
+  repeated RequiredCheck required_checks = 3;
+  repeated CheckRunSummary check_runs = 4;
+  ReviewSummary reviews = 5;
+  string protection_source = 6;
+  string mergeable_state = 7;
+  string head_sha = 8;
+  string base_sha = 9;
+  string verification_check_name = 10;
+}
+
+message PullRequestHeadRequest {
+  RemediationEnvelope envelope = 1;
+  int32 pull_number = 2;
+}
+
+message PullRequestHeadResponse {
+  string head_sha = 1;
+  string base_sha = 2;
+  string state = 3;
+  bool draft = 4;
+  bool merged = 5;
+  string mergeable_state = 6;
+  bool fork = 7;
+}
+
+message RemediationCheckRunRequest {
+  RemediationEnvelope envelope = 1;
+  string head_sha = 2;
+  string name = 3;
+  string status = 4;
+  string conclusion = 5;
+  string title = 6;
+  string summary = 7;
+  string external_id = 8;
+}
+
+message RemediationCheckRunResponse {
+  string state = 1;
+  string operation_id = 2;
+  int64 check_run_id = 3;
+  string name = 4;
+  string external_id = 5;
+  bool updated = 6;
+  string reason = 7;
 }

@@ -101,7 +101,7 @@ router.post('/pr-analyses/:analysisId/retry', authenticateToken, async (req, res
     }
 
     const runData = await pool.query(
-      `SELECT ar.*, r.full_name AS repository_full_name, r.installation_id, r.baseline_set
+      `SELECT ar.*, r.full_name AS repository_full_name, r.installation_id, r.baseline_set, r.is_active
        FROM analysis_runs ar
        JOIN repositories r ON r.id = ar.repository_id
        WHERE ar.id = $1`,
@@ -112,19 +112,19 @@ router.post('/pr-analyses/:analysisId/retry', authenticateToken, async (req, res
       return res.status(404).json({ error: 'Analysis run not found' });
     }
 
-    await pool.query(
-      `UPDATE analysis_runs
-       SET status = 'pending',
-           error_message = NULL,
-           started_at = NULL,
-           completed_at = NULL
-       WHERE id = $1`,
-      [analysisId]
+    if (!run.is_active) {
+      return res.status(400).json({ error: 'Reconnect the repository before retrying analysis' });
+    }
+    // A retry is a new attempt; preserve the failed run and its historical evidence.
+    const retry = await pool.query(
+      `INSERT INTO analysis_runs (repository_id, pull_request_id, pr_number, commit_sha, status, triggered_by)
+       VALUES ($1, $2, $3, $4, 'pending', 'retry') RETURNING id`,
+      [run.repository_id, run.pull_request_id, run.pr_number, run.commit_sha]
     );
 
     notifyAnalysisQueued();
 
-    res.json({ success: true, message: 'Analysis retry triggered' });
+    res.json({ success: true, message: 'Analysis retry triggered', analysis_run_id: retry.rows[0].id });
   } catch (error) {
     console.error('Error retrying analysis:', error);
     res.status(500).json({ error: 'Failed to retry analysis' });

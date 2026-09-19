@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Mitig8it remediation fixture v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "repository_id",
+    "split",
+    "family",
+    "kind",
+    "expected_state",
+    "budget",
+    "verification_checks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "v1"
+    },
+    "split": {
+      "enum": [
+        "train",
+        "validation",
+        "holdout"
+      ]
+    },
+    "kind": {
+      "enum": [
+        "supported",
+        "negative",
+        "adversarial"
+      ]
+    },
+    "expected_state": {
+      "enum": [
+        "ready",
+        "unsupported",
+        "inconclusive"
+      ]
+    },
+    "budget": {
+      "type": "object",
+      "required": [
+        "max_tool_calls",
+        "max_attempts",
+        "max_input_tokens",
+        "max_output_tokens",
+        "max_cost_usd"
+      ]
+    },
+    "trusted_fixture_test": {
+      "type": "object",
+      "required": [
+        "runtime",
+        "path",
+        "timeout_seconds"
+      ]
+    },
+    "additional_units": {
+      "type": "array",
+      "maxItems": 20,
+      "description": "Extra affected files in the same job, each with its own finding and reviewed repair. The engine groups findings into connected components by shared file paths, so a fixture with additional units in other files exercises several finding groups and the combined verified batch.",
+      "items": {
+        "type": "object",
+        "required": [
+          "source",
+          "reference_repair",
+          "finding"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "reference_repair": {
+            "type": "string"
+          },
+          "finding": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "verification_checks": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 20,
+      "description": "Fixed argv checks the sandbox runs on the baseline and candidate trees. At least one exploit and one behavior check are required. The expected_* fields record the outcome the fixture asserts, where failed means a non-zero exit.",
+      "items": {
+        "type": "object",
+        "required": [
+          "check_id",
+          "kind",
+          "argv",
+          "timeout_seconds",
+          "expected_baseline",
+          "expected_candidate"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "check_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+          },
+          "kind": {
+            "enum": [
+              "existing_test",
+              "typecheck",
+              "build",
+              "scanner",
+              "exploit",
+              "behavior"
+            ]
+          },
+          "argv": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "items": {
+              "type": "string"
+            }
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 900
+          },
+          "expected_baseline": {
+            "enum": [
+              "passed",
+              "failed",
+              "inconclusive"
+            ]
+          },
+          "expected_candidate": {
+            "enum": [
+              "passed",
+              "failed",
+              "inconclusive"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

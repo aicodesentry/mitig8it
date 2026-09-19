@@ -1,0 +1,135 @@
+name: Remediation safety checks
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_gate:
+        description: 'Run the non-deploying remediation release-evidence gate; it succeeds only with the full reviewed corpus.'
+        required: true
+        default: false
+        type: boolean
+  pull_request:
+    paths:
+      - 'benchmarks/remediation/**'
+      - 'services/remediation-service/**'
+      - 'services/api-service/src/services/remediation*.js'
+      - 'services/api-service/src/workers/**'
+      - 'services/api-service/src/routes/remediation.js'
+      - 'services/api-service/src/clients/**'
+      - 'services/api-service/src/utils/telemetry.js'
+      - 'services/github-service/src/services/githubInternalOperations.js'
+      - 'services/github-service/src/routes/internal.js'
+      - 'infrastructure/remediation/**'
+      - 'docs/runbooks/remediation.md'
+      - '.github/workflows/remediation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'benchmarks/remediation/**'
+      - 'services/remediation-service/**'
+      - 'services/api-service/src/services/remediation*.js'
+      - 'services/api-service/src/workers/**'
+      - 'services/api-service/src/routes/remediation.js'
+      - 'services/api-service/src/clients/**'
+      - 'services/api-service/src/utils/telemetry.js'
+      - 'services/github-service/src/services/githubInternalOperations.js'
+      - 'services/github-service/src/routes/internal.js'
+      - 'infrastructure/remediation/**'
+      - 'docs/runbooks/remediation.md'
+      - '.github/workflows/remediation.yml'
+
+permissions:
+  contents: read
+
+# Python 3.12 matches services/remediation-service/Dockerfile (python:3.12.12-slim).
+# Frontend remediation coverage is not filtered here: npm run test:remediation-browser
+# runs on every pull request in the CI workflow.
+jobs:
+  remediation-service-tests:
+    name: Repair service unit and broker contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/remediation-service/requirements-test.txt
+      - run: pip install -r services/remediation-service/requirements-test.txt
+      - run: pytest services/remediation-service/tests -q
+
+  remediation-evaluation:
+    name: Offline remediation fixture gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/remediation-service/requirements.txt
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '20'
+      # The fixture gate imports the remediation service in-process, so it needs
+      # the service runtime dependencies (pydantic, fastapi, httpx, ...).
+      - run: pip install -r services/remediation-service/requirements.txt
+      - run: python -m unittest benchmarks.remediation.tests.test_evaluate
+      - run: python benchmarks/remediation/evaluate.py --suite seed --output /tmp/remediation-seed.json
+      - name: Evaluate release evidence without deploying
+        env:
+          RELEASE_GATE_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.release_gate || 'false' }}
+        run: |
+          if [ "$RELEASE_GATE_REQUESTED" = "true" ]; then
+            # This only validates evidence; it neither enables flags nor deploys.
+            python benchmarks/remediation/evaluate.py --suite release --output /tmp/remediation-release.json
+          else
+            set +e
+            python benchmarks/remediation/evaluate.py --suite release --output /tmp/remediation-release.json
+            evaluation_exit_code=$?
+            set -e
+            test "$evaluation_exit_code" -eq 2
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: remediation-evaluation-reports
+          path: /tmp/remediation-*.json
+
+  remediation-infrastructure-validation:
+    name: Remediation infrastructure syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: '1.11.3'
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+      - run: terraform fmt -check -recursive infrastructure/remediation/terraform
+      - run: terraform -chdir=infrastructure/remediation/terraform init -backend=false -input=false
+      - run: terraform -chdir=infrastructure/remediation/terraform validate
+      - name: Render deployable Kubernetes template with non-production values
+        run: |
+          python infrastructure/remediation/render_kubernetes.py \
+            --output /tmp/remediation-kubernetes \
+            --remediation-service-image registry.example/mitig8it/remediation@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --remediation-worker-image registry.example/mitig8it/remediation@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --sandbox-broker-image registry.example/mitig8it/remediation@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --otel-collector-image registry.example/otel/collector@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --remediation-api-gcp-service-account remediation-api-art-staging@example-project.iam.gserviceaccount.com \
+            --remediation-worker-gcp-service-account remediation-worker-art-staging@example-project.iam.gserviceaccount.com \
+            --kubernetes-api-cidr 10.0.0.0/28 \
+            --remediation-external-egress-cidr 10.1.0.0/28 \
+            --remediation-database-cidr 10.2.0.0/28
+          kubectl kustomize /tmp/remediation-kubernetes >/tmp/remediation-kubernetes.yaml
+      - name: Parse all remediation YAML
+        run: |
+          python -m pip install --disable-pip-version-check PyYAML==6.0.3
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in Path("infrastructure/remediation").rglob("*.yaml"):
+              list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
+          list(yaml.safe_load_all(Path("/tmp/remediation-kubernetes.yaml").read_text(encoding="utf-8")))
+          PY
