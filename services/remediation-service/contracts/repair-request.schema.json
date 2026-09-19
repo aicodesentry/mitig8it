@@ -1,0 +1,760 @@
+{
+  "$defs": {
+    "FindingSnapshot": {
+      "additionalProperties": true,
+      "properties": {
+        "category": {
+          "default": "",
+          "maxLength": 120,
+          "title": "Category",
+          "type": "string"
+        },
+        "cwe_id": {
+          "default": "",
+          "maxLength": 40,
+          "title": "Cwe Id",
+          "type": "string"
+        },
+        "file_path": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File Path"
+        },
+        "finding_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finding Id"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "line_end": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line End"
+        },
+        "line_start": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line Start"
+        },
+        "message": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Message",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "rule_id": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snapshot Id"
+        },
+        "title": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Title",
+          "type": "string"
+        },
+        "trace": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "maxItems": 100,
+          "title": "Trace",
+          "type": "array"
+        }
+      },
+      "title": "FindingSnapshot",
+      "type": "object"
+    },
+    "GitTreeEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "040000",
+            "100644",
+            "100755",
+            "120000",
+            "160000"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Sha",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "blob",
+            "tree",
+            "commit"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "mode",
+        "type",
+        "sha"
+      ],
+      "title": "GitTreeEntry",
+      "type": "object"
+    },
+    "RepairLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": {
+          "anyOf": [
+            {
+              "maximum": 5,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Attempts"
+        },
+        "max_changed_lines": {
+          "anyOf": [
+            {
+              "maximum": 2000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Changed Lines"
+        },
+        "max_context_tokens": {
+          "anyOf": [
+            {
+              "maximum": 200000,
+              "minimum": 1000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Context Tokens"
+        },
+        "max_files": {
+          "anyOf": [
+            {
+              "maximum": 20,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Files"
+        },
+        "max_spend_usd": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Spend Usd"
+        },
+        "max_tool_calls": {
+          "anyOf": [
+            {
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tool Calls"
+        }
+      },
+      "title": "RepairLimits",
+      "type": "object"
+    },
+    "RepairPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_development_verification": {
+          "default": false,
+          "title": "Allow Development Verification",
+          "type": "boolean"
+        },
+        "allowed_rule_families": {
+          "items": {
+            "enum": [
+              "sql_parameterization",
+              "command_arguments",
+              "path_containment"
+            ],
+            "type": "string"
+          },
+          "title": "Allowed Rule Families",
+          "type": "array"
+        },
+        "forbidden_filenames": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Filenames",
+          "type": "array"
+        },
+        "forbidden_path_prefixes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Path Prefixes",
+          "type": "array"
+        },
+        "input_usd_per_million_tokens": {
+          "default": 0,
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Input Usd Per Million Tokens",
+          "type": "number"
+        },
+        "max_attempts": {
+          "default": 3,
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "max_changed_lines": {
+          "default": 200,
+          "maximum": 2000,
+          "minimum": 1,
+          "title": "Max Changed Lines",
+          "type": "integer"
+        },
+        "max_context_chars": {
+          "default": 128000,
+          "maximum": 1000000,
+          "minimum": 1000,
+          "title": "Max Context Chars",
+          "type": "integer"
+        },
+        "max_file_bytes": {
+          "default": 512000,
+          "maximum": 5000000,
+          "minimum": 1,
+          "title": "Max File Bytes",
+          "type": "integer"
+        },
+        "max_files": {
+          "default": 5,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Max Files",
+          "type": "integer"
+        },
+        "max_output_chars": {
+          "default": 2000000,
+          "maximum": 10000000,
+          "minimum": 10000,
+          "title": "Max Output Chars",
+          "type": "integer"
+        },
+        "max_output_tokens_per_call": {
+          "default": 4096,
+          "maximum": 32000,
+          "minimum": 256,
+          "title": "Max Output Tokens Per Call",
+          "type": "integer"
+        },
+        "max_snapshot_bytes": {
+          "default": 10000000,
+          "maximum": 100000000,
+          "minimum": 1,
+          "title": "Max Snapshot Bytes",
+          "type": "integer"
+        },
+        "max_snapshot_files": {
+          "default": 500,
+          "maximum": 5000,
+          "minimum": 1,
+          "title": "Max Snapshot Files",
+          "type": "integer"
+        },
+        "max_spend_usd": {
+          "default": 2.0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Max Spend Usd",
+          "type": "number"
+        },
+        "max_tool_calls": {
+          "default": 20,
+          "maximum": 50,
+          "minimum": 1,
+          "title": "Max Tool Calls",
+          "type": "integer"
+        },
+        "max_total_tokens": {
+          "default": 120000,
+          "maximum": 1000000,
+          "minimum": 1000,
+          "title": "Max Total Tokens",
+          "type": "integer"
+        },
+        "output_usd_per_million_tokens": {
+          "default": 0,
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Output Usd Per Million Tokens",
+          "type": "number"
+        },
+        "policy_version": {
+          "default": "v1",
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Policy Version",
+          "type": "string"
+        },
+        "request_timeout_seconds": {
+          "default": 900,
+          "maximum": 1800,
+          "minimum": 10,
+          "title": "Request Timeout Seconds",
+          "type": "integer"
+        },
+        "require_generated_regression_test": {
+          "default": true,
+          "title": "Require Generated Regression Test",
+          "type": "boolean"
+        },
+        "run_repository_tests": {
+          "default": false,
+          "title": "Run Repository Tests",
+          "type": "boolean"
+        },
+        "sandbox_image_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sandbox Image Digest"
+        },
+        "supported_platform": {
+          "const": "linux",
+          "default": "linux",
+          "title": "Supported Platform",
+          "type": "string"
+        },
+        "verification_checks": {
+          "items": {
+            "$ref": "#/$defs/VerificationCheck"
+          },
+          "maxItems": 20,
+          "title": "Verification Checks",
+          "type": "array"
+        }
+      },
+      "title": "RepairPolicy",
+      "type": "object"
+    },
+    "SnapshotFile": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "title": "SnapshotFile",
+      "type": "object"
+    },
+    "VerificationCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Argv",
+          "type": "array"
+        },
+        "check_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+          "title": "Check Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "existing_test",
+            "typecheck",
+            "build",
+            "scanner",
+            "exploit",
+            "behavior"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 120,
+          "maximum": 900,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "check_id",
+        "kind",
+        "argv"
+      ],
+      "title": "VerificationCheck",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "analysis_run_id": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Analysis Run Id"
+    },
+    "attempt": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Attempt"
+    },
+    "base_sha": {
+      "title": "Base Sha",
+      "type": "string"
+    },
+    "fencing_token": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Fencing Token",
+      "type": "integer"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/SnapshotFile"
+      },
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/FindingSnapshot"
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "title": "Findings",
+      "type": "array"
+    },
+    "head_sha": {
+      "title": "Head Sha",
+      "type": "string"
+    },
+    "head_tree_oid": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Head Tree Oid"
+    },
+    "installation_id": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Installation Id"
+    },
+    "job_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Job Id",
+      "type": "string"
+    },
+    "limits": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RepairLimits"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "policy": {
+      "$ref": "#/$defs/RepairPolicy"
+    },
+    "profile": {
+      "additionalProperties": true,
+      "title": "Profile",
+      "type": "object"
+    },
+    "pull_request_id": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pull Request Id"
+    },
+    "pull_request_number": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pull Request Number"
+    },
+    "repository_full_name": {
+      "anyOf": [
+        {
+          "maxLength": 300,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Repository Full Name"
+    },
+    "repository_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Repository Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "v1",
+      "default": "v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stage": {
+      "anyOf": [
+        {
+          "maxLength": 40,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stage"
+    },
+    "tenant_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "tree_entries": {
+      "items": {
+        "$ref": "#/$defs/GitTreeEntry"
+      },
+      "maxItems": 100000,
+      "title": "Tree Entries",
+      "type": "array"
+    },
+    "tree_truncated": {
+      "default": false,
+      "title": "Tree Truncated",
+      "type": "boolean"
+    },
+    "versions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "minProperties": 1,
+      "title": "Versions",
+      "type": "object"
+    }
+  },
+  "required": [
+    "job_id",
+    "tenant_id",
+    "repository_id",
+    "head_sha",
+    "base_sha",
+    "findings",
+    "files",
+    "versions"
+  ],
+  "title": "RepairRequest",
+  "type": "object"
+}
