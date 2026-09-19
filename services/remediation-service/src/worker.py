@@ -55,12 +55,28 @@ async def run_once(backend: Backend, worker_id: str) -> bool:
     return True
 
 
-async def main() -> None:
-    backend = create_execution_backend()
-    worker_id = f"{socket.gethostname()}-{uuid.uuid4()}"
+def new_worker_id() -> str:
+    return f"{socket.gethostname()}-{uuid.uuid4()}"
+
+
+def inprocess_enabled() -> bool:
+    """True when the worker loop runs inside the API process instead of its own Deployment.
+
+    A single-instance deployment has no separate worker container, so the API process owns
+    the loop. It is off by default: the dedicated `python -m src.worker` Deployment stays
+    the production arrangement.
+    """
+    return os.getenv("REMEDIATION_WORKER_INPROCESS", "").strip().lower() == "true"
+
+
+async def run_worker_loop(backend: Backend, worker_id: str | None = None) -> None:
+    """The claim/execute/publish loop. Cancellation stops it; nothing else does."""
+    identity = worker_id or new_worker_id()
     while True:
         try:
-            worked = await run_once(backend, worker_id)
+            worked = await run_once(backend, identity)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             # The lease expires and the bounded recovery budget handles retry/dead-letter.
             # Do not log arbitrary exception text because provider/artifact errors may contain source.
@@ -68,6 +84,10 @@ async def main() -> None:
             await asyncio.sleep(2)
         if not worked:
             await asyncio.sleep(float(os.getenv("REMEDIATION_WORKER_POLL_SECONDS", "2")))
+
+
+async def main() -> None:
+    await run_worker_loop(create_execution_backend())
 
 
 if __name__ == "__main__":
