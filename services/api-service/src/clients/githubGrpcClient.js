@@ -1,8 +1,48 @@
+const grpc = require('@grpc/grpc-js');
 const githubPb = require('../grpc/generated/github_pb');
 const githubGrpc = require('../grpc/generated/github_grpc_pb');
 const commonPb = require('../grpc/generated/common_pb');
 const { createGrpcClientConfig } = require('./grpcConnection');
 const { changedFileToPlain } = require('./grpcConverters');
+
+// The GitHub service reports the originating internal HTTP status in this trailing
+// metadata entry, because gRPC collapses the 409 and 422 that callers branch on into
+// one FAILED_PRECONDITION.
+const OPERATION_STATUS_METADATA_KEY = 'x-operation-status';
+
+// Remediation callers were written against the REST client and read error.response.status
+// and the axios-style string error.code. Rebuilding that exact shape here keeps
+// remediationWorkflow, remediationActionWorker, mergeController and routes/remediation
+// classifying failures the same way on either transport.
+const GRPC_STATUS_TO_HTTP = new Map([
+  [grpc.status.INVALID_ARGUMENT, { status: 400 }],
+  [grpc.status.NOT_FOUND, { status: 404 }],
+  [grpc.status.PERMISSION_DENIED, { status: 403 }],
+  [grpc.status.FAILED_PRECONDITION, { status: 409 }],
+  [grpc.status.UNAUTHENTICATED, { status: 401 }],
+  [grpc.status.RESOURCE_EXHAUSTED, { status: 429 }],
+  [grpc.status.UNIMPLEMENTED, { status: 501 }],
+  [grpc.status.UNAVAILABLE, { status: 502, code: 'ECONNREFUSED' }],
+  [grpc.status.DEADLINE_EXCEEDED, { status: 504, code: 'ECONNABORTED' }],
+]);
+
+function originatingStatus(error) {
+  const raw = error?.metadata?.get?.(OPERATION_STATUS_METADATA_KEY);
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isInteger(parsed) && parsed >= 100 && parsed < 600 ? parsed : null;
+}
+
+function toRemediationTransportError(error) {
+  const mapped = GRPC_STATUS_TO_HTTP.get(error?.code) || { status: 500 };
+  const status = originatingStatus(error) || mapped.status;
+  const message = error?.details || error?.message || 'GitHub remediation call failed';
+  const transportError = new Error(message);
+  transportError.code = mapped.code || error?.code;
+  transportError.grpcCode = error?.code;
+  transportError.response = { status, data: { error: message } };
+  return transportError;
+}
 
 function unary(client, method, request, timeoutMs = 45000) {
   return new Promise((resolve, reject) => {
@@ -15,6 +55,32 @@ function unary(client, method, request, timeoutMs = 45000) {
       resolve(response);
     });
   });
+}
+
+const REMEDIATION_TIMEOUT_MS = Number(process.env.GITHUB_REMEDIATION_TIMEOUT_MS || 30000);
+
+async function remediationUnary(client, method, request) {
+  try {
+    return await unary(client, method, request, REMEDIATION_TIMEOUT_MS);
+  } catch (error) {
+    throw toRemediationTransportError(error);
+  }
+}
+
+// Every remediation RPC carries the same consent envelope, built from the flat JSON
+// payload the control plane already assembles for the REST endpoints.
+function buildRemediationEnvelope(payload = {}) {
+  const envelope = new githubPb.RemediationEnvelope();
+  envelope.setRepositoryFullName(payload.repository_full_name || '');
+  envelope.setActorLogin(payload.actor_login || '');
+  envelope.setInstallationId(Number(payload.installation_id || 0));
+  envelope.setPrNumber(Number(payload.pr_number || 0));
+  envelope.setHeadSha(payload.head_sha || '');
+  envelope.setBaseSha(payload.base_sha || '');
+  envelope.setActionId(payload.action_id || '');
+  envelope.setIdempotencyKey(payload.idempotency_key || '');
+  envelope.setManifestDigest(payload.manifest_digest || '');
+  return envelope;
 }
 
 function buildReviewComments(comments = []) {
@@ -100,6 +166,200 @@ class GitHubGrpcClient {
     };
   }
 
+  async authorizeRemediation(payload) {
+    const request = new githubPb.RemediationAuthorizeRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    const response = await remediationUnary(this.client, 'authorizeRemediation', request);
+    return {
+      state: response.getState(),
+      installation_active: response.getInstallationActive(),
+      repository_granted: response.getRepositoryGranted(),
+      actor_write_permission: response.getActorWritePermission(),
+      head_sha: response.getHeadSha(),
+      base_sha: response.getBaseSha(),
+      head_branch: response.getHeadBranch(),
+      base_branch: response.getBaseBranch(),
+    };
+  }
+
+  async prepareRemediation(payload) {
+    const request = new githubPb.RemediationPrepareRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    const response = await remediationUnary(this.client, 'prepareRemediation', request);
+    return {
+      state: response.getState(),
+      operation_id: response.getOperationId(),
+      branch: response.getBranch(),
+      expected_head_oid: response.getExpectedHeadOid(),
+      marker: response.getMarker(),
+    };
+  }
+
+  async snapshotRemediation(payload) {
+    const request = new githubPb.RemediationSnapshotRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    request.setFindingPathsList(payload.finding_paths || []);
+    const response = await remediationUnary(this.client, 'snapshotRemediation', request);
+    return {
+      files: response.getFilesList().map((file) => ({
+        path: file.getPath(),
+        content: file.getContent(),
+        sha: file.getSha(),
+      })),
+      tree_entries: response.getTreeEntriesList().map((entry) => ({
+        path: entry.getPath(),
+        mode: entry.getMode(),
+        type: entry.getType(),
+        sha: entry.getSha(),
+      })),
+      head_tree_oid: response.getHeadTreeOid(),
+      head_sha: response.getHeadSha(),
+      base_sha: response.getBaseSha(),
+      omitted_source_paths: response.getOmittedSourcePathsList(),
+    };
+  }
+
+  async commitRemediation(payload) {
+    const request = new githubPb.RemediationCommitRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    request.setBranch(payload.branch || '');
+    request.setExpectedHeadOid(payload.expected_head_oid || '');
+    request.setVerifiedTreeOid(payload.verified_tree_oid || '');
+    request.setCommitMessage(payload.commit_message || '');
+    request.setChangesList((payload.changes || []).map((change) => {
+      const message = new githubPb.RemediationFileChange();
+      message.setPath(change.path || '');
+      message.setContentsBase64(change.contents_base64 || '');
+      return message;
+    }));
+    const response = await remediationUnary(this.client, 'commitRemediation', request);
+    return {
+      state: response.getState(),
+      operation_id: response.getOperationId(),
+      commit_sha: response.getCommitSha(),
+      tree_oid: response.getTreeOid(),
+      reason: response.getReason(),
+    };
+  }
+
+  async reconcileRemediation(payload) {
+    const request = new githubPb.RemediationReconcileRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    request.setVerifiedTreeOid(payload.verified_tree_oid || '');
+    const response = await remediationUnary(this.client, 'reconcileRemediation', request);
+    return {
+      state: response.getState(),
+      operation_id: response.getOperationId(),
+      commit_sha: response.getCommitSha(),
+      tree_oid: response.getTreeOid(),
+      reason: response.getReason(),
+    };
+  }
+
+  async mergeRemediation(payload) {
+    const request = new githubPb.RemediationMergeRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    request.setExpectedHeadSha(payload.expected_head_sha || '');
+    request.setExpectedBaseSha(payload.expected_base_sha || '');
+    request.setMergeMethod(payload.merge_method || '');
+    request.setVerificationCheckName(payload.verification_check_name || '');
+    const response = await remediationUnary(this.client, 'mergeRemediation', request);
+    return {
+      state: response.getState(),
+      operation_id: response.getOperationId(),
+      commit_sha: response.getCommitSha(),
+      reason: response.getReason(),
+    };
+  }
+
+  async cancelScheduledMerge(payload) {
+    const request = new githubPb.CancelScheduledMergeRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    request.setPullNumber(Number(payload.pull_number || 0));
+    request.setExpectedHeadSha(payload.expected_head_sha || '');
+    const response = await remediationUnary(this.client, 'cancelScheduledMerge', request);
+    return {
+      state: response.getState(),
+      operation_id: response.getOperationId(),
+      head_sha: response.getHeadSha(),
+      merged: response.getMerged(),
+      reason: response.getReason(),
+    };
+  }
+
+  async readMergeEligibility(payload) {
+    const request = new githubPb.MergeEligibilityRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    request.setPullNumber(Number(payload.pull_number || 0));
+    request.setExpectedHeadSha(payload.expected_head_sha || '');
+    request.setVerificationCheckName(payload.verification_check_name || '');
+    const response = await remediationUnary(this.client, 'readMergeEligibility', request);
+    const reviews = response.getReviews();
+    return {
+      eligible: response.getEligible(),
+      blockers: response.getBlockersList(),
+      required_checks: response.getRequiredChecksList().map((check) => ({
+        context: check.getContext(),
+        app_id: check.getAppId(),
+      })),
+      check_runs: response.getCheckRunsList().map((check) => ({
+        id: check.getId(),
+        name: check.getName(),
+        app_id: check.getAppId(),
+        status: check.getStatus(),
+        conclusion: check.getConclusion(),
+      })),
+      reviews: {
+        required: reviews ? reviews.getRequired() : 0,
+        approvals: reviews ? reviews.getApprovals() : 0,
+        changes_requested: reviews ? reviews.getChangesRequested() : false,
+      },
+      protection_source: response.getProtectionSource(),
+      mergeable_state: response.getMergeableState(),
+      head_sha: response.getHeadSha(),
+      base_sha: response.getBaseSha(),
+      verification_check_name: response.getVerificationCheckName(),
+    };
+  }
+
+  async readPullRequestHead(payload) {
+    const request = new githubPb.PullRequestHeadRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    request.setPullNumber(Number(payload.pull_number || 0));
+    const response = await remediationUnary(this.client, 'readPullRequestHead', request);
+    return {
+      head_sha: response.getHeadSha(),
+      base_sha: response.getBaseSha(),
+      state: response.getState(),
+      draft: response.getDraft(),
+      merged: response.getMerged(),
+      mergeable_state: response.getMergeableState(),
+      fork: response.getFork(),
+    };
+  }
+
+  async createRemediationCheckRun(payload) {
+    const request = new githubPb.RemediationCheckRunRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    request.setHeadSha(payload.head_sha || '');
+    request.setName(payload.name || '');
+    request.setStatus(payload.status || '');
+    request.setConclusion(payload.conclusion || '');
+    request.setTitle(payload.title || '');
+    request.setSummary(payload.summary || '');
+    request.setExternalId(payload.external_id || '');
+    const response = await remediationUnary(this.client, 'createRemediationCheckRun', request);
+    return {
+      state: response.getState(),
+      operation_id: response.getOperationId(),
+      check_run_id: response.getCheckRunId(),
+      name: response.getName(),
+      external_id: response.getExternalId(),
+      updated: response.getUpdated(),
+      reason: response.getReason(),
+    };
+  }
+
   async createCheckRun(payload) {
     const request = new githubPb.CreateCheckRunRequest();
     request.setOwner(payload.owner || '');
@@ -116,4 +376,6 @@ class GitHubGrpcClient {
 
 module.exports = {
   GitHubGrpcClient,
+  OPERATION_STATUS_METADATA_KEY,
+  __private: { toRemediationTransportError },
 };

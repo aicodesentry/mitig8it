@@ -19,6 +19,7 @@ service GitHubService {
   rpc ReadMergeEligibility(MergeEligibilityRequest) returns (MergeEligibilityResponse);
   rpc ReadPullRequestHead(PullRequestHeadRequest) returns (PullRequestHeadResponse);
   rpc CreateRemediationCheckRun(RemediationCheckRunRequest) returns (RemediationCheckRunResponse);
+  rpc AuthorizeRemediation(RemediationAuthorizeRequest) returns (RemediationAuthorizeResponse);
   rpc HealthCheck(mitig8it.common.v1.HealthCheckRequest) returns (mitig8it.common.v1.HealthCheckResponse);
 }
 
@@ -286,4 +287,21 @@ message RemediationCheckRunResponse {
   string external_id = 5;
   bool updated = 6;
   string reason = 7;
+}
+
+// Live authorization pre-flight. The control plane calls this before persisting an
+// apply intent; it proves current actor write permission and installation grant.
+message RemediationAuthorizeRequest {
+  RemediationEnvelope envelope = 1;
+}
+
+message RemediationAuthorizeResponse {
+  string state = 1;
+  bool installation_active = 2;
+  bool repository_granted = 3;
+  bool actor_write_permission = 4;
+  string head_sha = 5;
+  string base_sha = 6;
+  string head_branch = 7;
+  string base_branch = 8;
 }
