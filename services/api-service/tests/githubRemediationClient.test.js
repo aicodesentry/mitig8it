@@ -17,6 +17,7 @@ beforeEach(() => {
   process.env.GITHUB_SERVICE_INTERNAL_SECRET = 'internal-secret';
   delete process.env.GITHUB_SERVICE_AUDIENCE;
   delete process.env.GITHUB_GRPC_AUDIENCE;
+  delete process.env.INTERNAL_SERVICE_TRANSPORT;
 });
 
 afterEach(() => {

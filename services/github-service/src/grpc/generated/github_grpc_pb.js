@@ -181,6 +181,28 @@ function deserialize_mitig8it_github_v1_PullRequestHeadResponse(buffer_arg) {
   return github_pb.PullRequestHeadResponse.deserializeBinary(new Uint8Array(buffer_arg));
 }
 
+function serialize_mitig8it_github_v1_RemediationAuthorizeRequest(arg) {
+  if (!(arg instanceof github_pb.RemediationAuthorizeRequest)) {
+    throw new Error('Expected argument of type mitig8it.github.v1.RemediationAuthorizeRequest');
+  }
+  return Buffer.from(arg.serializeBinary());
+}
+
+function deserialize_mitig8it_github_v1_RemediationAuthorizeRequest(buffer_arg) {
+  return github_pb.RemediationAuthorizeRequest.deserializeBinary(new Uint8Array(buffer_arg));
+}
+
+function serialize_mitig8it_github_v1_RemediationAuthorizeResponse(arg) {
+  if (!(arg instanceof github_pb.RemediationAuthorizeResponse)) {
+    throw new Error('Expected argument of type mitig8it.github.v1.RemediationAuthorizeResponse');
+  }
+  return Buffer.from(arg.serializeBinary());
+}
+
+function deserialize_mitig8it_github_v1_RemediationAuthorizeResponse(buffer_arg) {
+  return github_pb.RemediationAuthorizeResponse.deserializeBinary(new Uint8Array(buffer_arg));
+}
+
 function serialize_mitig8it_github_v1_RemediationCheckRunRequest(arg) {
   if (!(arg instanceof github_pb.RemediationCheckRunRequest)) {
     throw new Error('Expected argument of type mitig8it.github.v1.RemediationCheckRunRequest');
@@ -490,6 +512,17 @@ var GitHubServiceService = exports.GitHubServiceService = {
     requestDeserialize: deserialize_mitig8it_github_v1_RemediationCheckRunRequest,
     responseSerialize: serialize_mitig8it_github_v1_RemediationCheckRunResponse,
     responseDeserialize: deserialize_mitig8it_github_v1_RemediationCheckRunResponse,
+  },
+  authorizeRemediation: {
+    path: '/mitig8it.github.v1.GitHubService/AuthorizeRemediation',
+    requestStream: false,
+    responseStream: false,
+    requestType: github_pb.RemediationAuthorizeRequest,
+    responseType: github_pb.RemediationAuthorizeResponse,
+    requestSerialize: serialize_mitig8it_github_v1_RemediationAuthorizeRequest,
+    requestDeserialize: deserialize_mitig8it_github_v1_RemediationAuthorizeRequest,
+    responseSerialize: serialize_mitig8it_github_v1_RemediationAuthorizeResponse,
+    responseDeserialize: deserialize_mitig8it_github_v1_RemediationAuthorizeResponse,
   },
   healthCheck: {
     path: '/mitig8it.github.v1.GitHubService/HealthCheck',
