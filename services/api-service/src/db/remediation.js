@@ -73,6 +73,7 @@ async function createJob({ pullRequestId, userId, findingIds, policy }) {
         selection_hash, finding_snapshot_ids, state, stage, deadline_at, policy_version, policy_manifest, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued','snapshotting',NOW() + ($9::int * INTERVAL '1 minute'),$10,$11,$12)
        ON CONFLICT (repository_id, pull_request_id, analysis_run_id, head_sha, selection_hash, policy_version)
+       WHERE state NOT IN ('cancelled','superseded','unsupported','inconclusive','failed','dead_letter')
        DO UPDATE SET updated_at = remediation_jobs.updated_at
        RETURNING *, (xmax = 0) AS created`,
       [pr.installation_id, pr.repository_id, pr.id, run.rows[0].id, pr.head_sha, pr.base_sha, selectionHash, selected.map((row) => row.finding_id),
