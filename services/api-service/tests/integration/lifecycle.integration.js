@@ -109,6 +109,34 @@ test('retry allocates a new queued attempt while leaving failed evidence intact'
   await pool.query("UPDATE analysis_runs SET status='completed' WHERE id=$1", [res.body.analysis_run_id]);
 });
 
+test('a transient failure re-queues a delayed attempt that the queue withholds until it is due', async () => {
+  const f = await fixture();
+  await pool.query("UPDATE analysis_runs SET status='running' WHERE id=$1", [f.run]);
+  const retry = await runs.requeueAfterTransientFailure(f.run, {
+    errorMessage: '2 UNKNOWN: Metadata token request timed out',
+    delayMs: 60_000,
+  });
+  assert.ok(retry && retry.id !== f.run);
+  assert.equal(retry.auto_retry_count, 1);
+
+  const failed = (await pool.query('SELECT status,error_message FROM analysis_runs WHERE id=$1', [f.run])).rows[0];
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error_message, /Metadata token/);
+
+  // The retry is pending but not yet due, so no worker may claim it.
+  const queued = (await pool.query('SELECT status,triggered_by FROM analysis_runs WHERE id=$1', [retry.id])).rows[0];
+  assert.equal(queued.status, 'pending');
+  assert.equal(queued.triggered_by, 'auto_retry');
+  assert.equal(await runs.claimNextQueuedRun(), null);
+
+  await pool.query("UPDATE analysis_runs SET not_before = NOW()-INTERVAL '1 second' WHERE id=$1", [retry.id]);
+  const claimed = await runs.claimNextQueuedRun();
+  assert.equal(claimed.analysis_run_id, retry.id);
+  assert.equal(claimed.auto_retry_count, 1);
+  try { await runs.markCompleted(retry.id, { findingsCount: 0, counts: {}, filesAnalyzed: 0 }); }
+  finally { await claimed.releaseLease(); }
+});
+
 test('expired automatic suppression reopens; manual dismissal survives expiration', async () => {
   const f = await fixture();
   const auto = await findings.upsert(findingParams(f));
