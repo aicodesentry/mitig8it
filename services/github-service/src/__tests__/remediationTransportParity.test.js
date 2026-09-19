@@ -2,6 +2,7 @@
 // routes and over gRPC. Both transports are driven here against the same mocked
 // operations module, so a divergence in payload shape or result mapping fails the build.
 const OPERATION_NAMES = [
+  'authorizeRemediationActor',
   'cancelScheduledMerge',
   'commitRemediationAction',
   'createCheckRun',
@@ -379,6 +380,38 @@ const cases = [
       reason: response.getReason(),
     }),
   },
+  {
+    name: 'authorize',
+    path: '/github/remediation/authorize',
+    rpc: 'authorizeRemediation',
+    operation: 'authorizeRemediationActor',
+    body: { ...envelopeBody },
+    request: () => {
+      const request = new githubPb.RemediationAuthorizeRequest();
+      request.setEnvelope(buildEnvelope());
+      return request;
+    },
+    result: {
+      state: 'authorized',
+      installation_active: true,
+      repository_granted: true,
+      actor_write_permission: true,
+      head_sha: head,
+      base_sha: base,
+      head_branch: 'feature-branch',
+      base_branch: 'main',
+    },
+    read: (response) => ({
+      state: response.getState(),
+      installation_active: response.getInstallationActive(),
+      repository_granted: response.getRepositoryGranted(),
+      actor_write_permission: response.getActorWritePermission(),
+      head_sha: response.getHeadSha(),
+      base_sha: response.getBaseSha(),
+      head_branch: response.getHeadBranch(),
+      base_branch: response.getBaseBranch(),
+    }),
+  },
 ];
 
 function callGrpc(rpc, request) {
@@ -395,7 +428,7 @@ test('the operations module exposes every function both transports dispatch to',
   for (const name of OPERATION_NAMES) {
     expect(typeof require('../services/githubInternalOperations')[name]).toBe('function');
   }
-  expect(cases).toHaveLength(9);
+  expect(cases).toHaveLength(10);
 });
 
 test.each(cases)('$name reaches the same operation with the same payload over HTTP and gRPC', async (testCase) => {
