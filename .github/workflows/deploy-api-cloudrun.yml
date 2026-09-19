@@ -147,7 +147,8 @@ jobs:
               GITHUB_APP_PRIVATE_KEY=codesentry-github-app-private-key:latest,\
               GITHUB_WEBHOOK_SECRET=codesentry-webhook-secret:latest,\
               GITHUB_CLIENT_ID=codesentry-github-client-id:latest,\
-              GITHUB_CLIENT_SECRET=codesentry-github-client-secret:latest" \
+              GITHUB_CLIENT_SECRET=codesentry-github-client-secret:latest,\
+              REMEDIATION_SERVICE_INTERNAL_SECRET=codesentry-remediation-internal-secret:latest" \
             --allow-unauthenticated
 
       - name: Smoke (Cloud Run URL → /health)
