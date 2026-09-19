@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import os
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 
@@ -14,10 +18,39 @@ from .executions import (
     create_execution_backend,
 )
 from .models import RepairRequest
+from .worker import inprocess_enabled, run_worker_loop
 from . import telemetry
 
-app = FastAPI(title="Mitig8it Remediation Service", version="1.0.0")
+logger = logging.getLogger("mitig8it.remediation.api")
+
 execution_backend = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Optionally owns the durable worker loop so one container is a complete deployment.
+
+    The task shares this process's backend instance, so the HTTP handlers and the worker
+    read and write one execution store. Cancellation on shutdown releases the current lease
+    rather than publishing under it; the lease then expires and the recovery budget applies.
+    """
+    task: asyncio.Task[None] | None = None
+    if inprocess_enabled():
+        logger.warning(
+            "REMEDIATION_WORKER_INPROCESS=true runs the durable worker loop inside the API process. "
+            "It is intended for a single-instance development deployment, not for production."
+        )
+        task = asyncio.create_task(run_worker_loop(get_execution_backend()))
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+app = FastAPI(title="Mitig8it Remediation Service", version="1.0.0", lifespan=lifespan)
 
 
 def get_execution_backend() -> PostgresExecutionBackend | LocalExecutionBackend:

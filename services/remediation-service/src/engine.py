@@ -15,7 +15,7 @@ from .grouping import group_findings
 from .models import Candidate, FindingSnapshot, RepairPolicy, RepairRequest, RepairResponse, VerificationSummary
 from .patches import PatchBundle, PatchPolicyError, bundles_conflict, combine_patch_bundles
 from .retrieval import Snapshot, SnapshotError
-from .sandbox import BrokerConfigurationError, HttpSandboxBroker
+from .sandbox import BrokerConfigurationError, create_sandbox_broker
 from . import telemetry
 from .verification import VerificationResult, Verifier
 from .verification.verifier import DEVELOPMENT_VERIFICATION_LEVEL, VERIFICATION_LEVELS
@@ -264,7 +264,7 @@ class RepairEngine:
         expected_model = request.versions.get("repair_model")
         provider = OpenAICompatibleProvider.from_env(expected_model)
         provider.max_output_tokens = min(provider.max_output_tokens, request.policy.max_output_tokens_per_call)
-        broker = HttpSandboxBroker.from_env()
+        broker = create_sandbox_broker()
         return RepairAgent(provider, Verifier(broker), checkpoints)
 
     async def repair(self, request: RepairRequest, checkpoints: AgentCheckpointStore | None = None) -> RepairResponse:
