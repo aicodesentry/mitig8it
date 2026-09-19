@@ -327,3 +327,30 @@ async def test_a_later_group_that_edits_an_accepted_line_range_is_rejected_as_ov
     second = response.evidence["groups"][1]
     assert second["state"] == "unsupported"
     assert second["reason"]["code"] == "overlapping_candidates"
+
+
+@pytest.mark.asyncio
+async def test_unsupported_findings_are_skipped_with_reasons_and_the_rest_are_repaired(request_payload):
+    payload = _two_file_payload(request_payload)
+    payload["findings"].append(
+        {"snapshot_id": "finding-xss", "rule_id": "js.xss", "cwe_id": "CWE-79", "file_path": "src/db.ts", "line_start": 1, "line_end": 1}
+    )
+    scripts = {
+        "src/db.ts": [_propose("src/db.ts", SQL_SOURCE, SQL_REPAIRED, "Untrusted id is interpolated into SQL."), ProviderAction("request_verification", {})],
+        "src/cmd.ts": [_propose("src/cmd.ts", CMD_SOURCE, CMD_REPAIRED, "Untrusted name is interpolated into a command."), ProviderAction("request_verification", {})],
+    }
+    response = await RepairEngine(_per_path_agent_factory(scripts)).repair(RepairRequest.model_validate(payload))
+    assert response.state == "ready"
+    assert [candidate.finding_ids for candidate in response.candidates] == [["finding-sql"], ["finding-cmd"]]
+    assert response.skipped == [
+        {"finding_id": "finding-xss", "code": "unsupported_rule_family", "message": "This finding is outside the enabled repair families."}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_request_with_no_supported_finding_is_unsupported_and_lists_every_skip(request_payload):
+    request_payload["findings"][0].update({"rule_id": "xss", "cwe_id": "CWE-79"})
+    response = await RepairEngine().repair(RepairRequest.model_validate(request_payload))
+    assert response.state == "unsupported"
+    assert response.reason["code"] == "unsupported_rule_family"
+    assert [entry["code"] for entry in response.skipped] == ["unsupported_rule_family"]
