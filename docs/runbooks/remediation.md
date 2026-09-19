@@ -100,6 +100,91 @@ For telemetry, inspect the collector's upstream endpoint and redaction processor
 6. Confirm fencing tokens and lease state are consistent before the first worker starts. A restored fencing token that is lower than one already observed by GitHub allows a stale writer to act.
 7. `mitig8it_remediation_reconciliation_age_seconds` is specified but not yet emitted, so track reconciliation age from the action table during the drill.
 
+## Single-instance development deployment
+
+One Cloud Run instance per service, no separate worker and no separate broker. It exists so the
+feature can be enabled on a repository the operator owns, in development-verification mode. It is
+not a production configuration and produces no release evidence.
+
+API service (`codesentry-api`):
+
+```text
+REMEDIATION_ENABLED=true
+REMEDIATION_GENERATE_ENABLED=true
+REMEDIATION_PUBLISH_ENABLED=true
+REMEDIATION_APPLY_ENABLED=true                  # omit to leave apply off
+REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION=true # required: the only level this stack produces
+REMEDIATION_DISPATCH_MODE=inprocess
+REMEDIATION_WORKER_INPROCESS=true               # runs the control-plane worker in the API process
+REMEDIATION_SERVICE_URL=https://codesentry-remediation-....run.app
+REMEDIATION_SERVICE_AUDIENCE=https://codesentry-remediation-....run.app
+REMEDIATION_SERVICE_INTERNAL_SECRET=...
+REMEDIATION_SANDBOX_IMAGE_DIGEST=...            # policy input; unused by the local driver
+REMEDIATION_VERIFICATION_CHECKS_JSON=[...]
+REMEDIATION_ALLOWED_RULE_FAMILIES_JSON=[...]
+REMEDIATION_INPUT_USD_PER_MILLION_TOKENS=...
+REMEDIATION_OUTPUT_USD_PER_MILLION_TOKENS=...
+REMEDIATION_POLICY_VERSION=...                  # optional
+REMEDIATION_WORKER_POLL_MS=5000                 # optional, minimum 1000
+REMEDIATION_RECONCILE_INTERVAL_MS=60000         # optional, minimum 1000
+```
+
+`REMEDIATION_WORKER_INPROCESS` is the API's own switch and does not read
+`REMEDIATION_WORKER_ENABLED`, which still guards the standalone `node src/workers/index.js`
+process. The in-process loop stops on SIGTERM with the rest of the API shutdown.
+
+Repair service (`codesentry-remediation`):
+
+```text
+REMEDIATION_SERVICE_INTERNAL_SECRET=...         # the same value the API sends
+REMEDIATION_EXECUTION_BACKEND=local
+REMEDIATION_LOCAL_STATE_DIR=/tmp/remediation
+REMEDIATION_WORKER_INPROCESS=true               # runs the durable worker loop in the API process
+REMEDIATION_WORKER_POLL_SECONDS=2               # optional
+SANDBOX_BROKER_MODE=inprocess                   # no separate broker service
+SANDBOX_DRIVER=local
+SANDBOX_LOCAL_WORKSPACE_ROOT=/tmp/sandbox       # optional
+SANDBOX_NETWORK_POLICY_ATTESTED=false           # must stay false
+SANDBOX_NODE_LIMITS_ATTESTED=false              # must stay false
+REPAIR_LLM_BASE_URL=...
+REPAIR_LLM_API_KEY=...
+REPAIR_LLM_MODEL=...                            # must equal the request's versions.repair_model
+```
+
+`SANDBOX_BROKER_URL`, `SANDBOX_BROKER_TOKEN`, `SANDBOX_BROKER_ATTESTATION_SECRET`, and
+`SANDBOX_BROKER_ATTESTATION_KEY_ID` are not read while `SANDBOX_BROKER_MODE=inprocess`. The
+repair image carries a pinned Node 20 LTS runtime because the local driver runs the repository's
+own checks (`node tests/verify.js`, `node --check`) as subprocesses in the service container.
+
+Authentication: the repair service is deployed `--no-allow-unauthenticated`. When
+`REMEDIATION_SERVICE_AUDIENCE` is set, the API attaches a Cloud Run identity token for that
+audience as `Authorization: Bearer <id token>` and moves the shared internal secret to the
+`x-internal-secret` header, which the repair service accepts as an alternative to the bearer.
+With the audience unset the header layout is unchanged and the secret stays in `Authorization`.
+The API's service account needs `roles/run.invoker` on the repair service.
+
+Deploy with [.github/workflows/deploy-remediation-cloudrun.yml](../../.github/workflows/deploy-remediation-cloudrun.yml).
+
+What a developer sees on a pull request in this mode:
+
+| Step | What appears |
+| --- | --- |
+| Finding view | An amber warning on each candidate: "Verification level: development unverified. This fix was not verified in an isolated sandbox.", with the driver's limitations listed beside it. |
+| Generate | A "Generate fixes" button starts one bounded agent loop per finding group; the panel shows the diff and the verification outcome when it finishes. |
+| Apply | An "Apply N verified fixes" button writes the batch against the exact verified tree with an expected-head check. It is disabled when apply is off, when the head moved, or when the batch no longer matches its evidence. |
+| After apply | A fresh analysis runs on the resulting commit, and a verification check is published on the pull request; only then is the action completed. |
+
+Limits of this mode:
+
+- Every result is `development_unverified`. It is a pipeline integrity signal, not repair quality
+  and not release evidence.
+- No isolation. Repository checks run as ordinary subprocesses in the repair container: no gVisor,
+  no NetworkPolicy, no read-only root, no resource limits beyond a wall-clock timeout.
+- One instance and one concurrent request per service. The execution store is a per-instance SQLite
+  file on ephemeral storage and does not survive a revision or an instance replacement.
+- Owned test repositories only. Do not enable it on a repository whose contents the operator does
+  not control, because the repository's own commands execute inside the service container.
+
 ## Local development stack
 
 `docker-compose.yml` runs the remediation services locally: `remediation-service` on 8002, `remediation-worker` running `python -m src.worker`, `sandbox-broker` on 8003, `api-worker` running `node src/workers/index.js`, and `otel-collector` configured by `infrastructure/remediation/otel/collector-dev.yaml`.

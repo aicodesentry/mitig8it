@@ -92,7 +92,22 @@ REMEDIATION_LOCAL_STATE_DIR=/path/to/state     # required when the backend is lo
 REMEDIATION_DATA_DIR=/var/lib/remediation      # accepted instead; the container's mounted data directory
 SANDBOX_DRIVER=local|kubernetes                # default kubernetes
 SANDBOX_LOCAL_WORKSPACE_ROOT=/path/to/scratch  # optional parent for local check workspaces
+SANDBOX_BROKER_MODE=http|inprocess             # default http
+REMEDIATION_WORKER_INPROCESS=true|false        # default false
 ```
+
+`SANDBOX_BROKER_MODE=inprocess` replaces the HTTPS broker client with `InProcessSandboxBroker`
+over `LocalSubprocessDriver`, so no separate broker service is deployed. There is then no
+transport trust boundary and no attestation; the evidence still carries the driver's honest
+`development_unverified` level, which a policy without `allow_development_verification` refuses.
+The four `SANDBOX_BROKER_*` settings are not read in this mode.
+
+`REMEDIATION_WORKER_INPROCESS=true` runs the durable worker loop as an asyncio task in the
+FastAPI lifespan, sharing this process's execution backend with the HTTP handlers, so one
+container accepts a request and drives it to a terminal state without `python -m src.worker`.
+Shutdown cancels the task; the lease then expires and the usual recovery budget applies. Both
+switches are development-only and each logs a warning when selected. The image carries a pinned
+Node 20 LTS runtime so the local driver can run a repository's `node` checks as subprocesses.
 
 The image creates `REMEDIATION_DATA_DIR` (default `/var/lib/remediation`) owned by uid 65532 before the volume is mounted, so a named-volume mount inherits that ownership and the service can write its SQLite database and artifacts without a manual `chown`.
 

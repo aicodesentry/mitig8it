@@ -240,6 +240,7 @@ function createGrpcClientConfig({ target, fallbackTarget, audience }) {
 
 module.exports = {
   createGrpcClientConfig,
+  getIdentityToken,
   normalizeAudience,
   normalizeGrpcTarget,
   __private: {
