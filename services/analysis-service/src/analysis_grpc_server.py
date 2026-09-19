@@ -43,11 +43,15 @@ def _drop_none(value):
 
 
 def _analysis_request_from_proto(request) -> AnalyzePRRequest:
-    return AnalyzePRRequest(**_message_to_dict(request))
+    payload = _message_to_dict(request)
+    # Proto3 omits default scalars from JSON; zero identifies a playground scan.
+    payload["pull_request_number"] = request.pull_request_number
+    return AnalyzePRRequest(**payload)
 
 
 def _triage_request_from_proto(request) -> TriageRequest:
     payload = _message_to_dict(request)
+    payload["pull_request_number"] = request.pull_request_number
     repo_profile = payload.get("repo_profile") or {}
     if isinstance(repo_profile, dict) and "data" in repo_profile:
         payload["repo_profile"] = repo_profile.get("data") or {}
