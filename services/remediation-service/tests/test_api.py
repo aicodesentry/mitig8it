@@ -46,6 +46,16 @@ def test_repair_requires_configured_auth(monkeypatch, request_payload):
     assert response.status_code == 401
 
 
+def test_internal_secret_header_is_accepted_when_bearer_is_an_identity_token(monkeypatch, request_payload):
+    monkeypatch.setenv("REMEDIATION_SERVICE_INTERNAL_SECRET", "secret")
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer google-identity-token", "x-internal-secret": "secret"}
+    response = client.post("/v1/repair", json=request_payload, headers=headers)
+    assert response.status_code != 401
+    wrong = client.post("/v1/repair", json=request_payload, headers={"Authorization": "Bearer token", "x-internal-secret": "nope"})
+    assert wrong.status_code == 401
+
+
 def test_invalid_payload_is_422_after_auth(monkeypatch):
     monkeypatch.setenv("REMEDIATION_SERVICE_INTERNAL_SECRET", "secret")
     response = TestClient(app).post("/v1/repair", json={}, headers={"Authorization": "Bearer secret"})
