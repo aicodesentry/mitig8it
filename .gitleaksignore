@@ -1,0 +1,7 @@
+# False positives: the generic-api-key rule matches the deterministic
+# idempotency_key fixture value used by the github-service remediation tests.
+# These are request de-duplication identifiers in test payloads, not credentials.
+7129addd3e68e1cf7c52e0f85e176c0338a47deb:services/github-service/src/__tests__/remediationAuthorize.test.js:generic-api-key:21
+7129addd3e68e1cf7c52e0f85e176c0338a47deb:services/github-service/src/__tests__/remediationOperations.test.js:generic-api-key:35
+7129addd3e68e1cf7c52e0f85e176c0338a47deb:services/github-service/src/__tests__/remediationTransportParity.test.js:generic-api-key:63
+7129addd3e68e1cf7c52e0f85e176c0338a47deb:services/github-service/src/__tests__/internalRoutes.test.js:generic-api-key:83

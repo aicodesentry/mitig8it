@@ -14,6 +14,12 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "jest": {
+    "moduleDirectories": [
+      "node_modules",
+      "<rootDir>/node_modules"
+    ]
+  },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.4",
     "@opentelemetry/api": "1.9.1",
