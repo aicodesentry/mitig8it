@@ -1,0 +1,12 @@
+FROM node:22.20.0-bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 65532 --no-create-home --shell /usr/sbin/nologin runner
+
+WORKDIR /runner
+COPY src/sandbox/runner.py /runner/runner.py
+RUN chmod 0555 /runner/runner.py
+USER 65532:65532
+ENTRYPOINT ["python3", "/runner/runner.py"]
