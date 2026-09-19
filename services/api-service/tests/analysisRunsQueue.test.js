@@ -90,6 +90,38 @@ describe('analysis run queue', () => {
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
+  test('only claims a pending run once its retry delay has elapsed', async () => {
+    prepare();
+    await analysisRuns.claimNextQueuedRun();
+    const [candidateSql] = client.query.mock.calls.find(([sql]) => sql.includes('SELECT candidate.id'));
+    expect(candidateSql).toContain("candidate.status = 'pending'");
+    expect(candidateSql).toContain('COALESCE(candidate.not_before, candidate.created_at) <= NOW()');
+  });
+
+  test('re-queues a transient failure as a new delayed attempt without losing the failed run', async () => {
+    pool.query.mockResolvedValueOnce({ rows: [{ id: 'retry-1', auto_retry_count: 2, not_before: null }] });
+
+    await expect(analysisRuns.requeueAfterTransientFailure('run-1', {
+      errorMessage: 'Metadata token request timed out',
+      delayMs: 60_000,
+    })).resolves.toEqual({ id: 'retry-1', auto_retry_count: 2, not_before: null });
+
+    const [sql, params] = pool.query.mock.calls[0];
+    expect(sql).toContain("SET status = 'failed'");
+    expect(sql).toContain('INSERT INTO analysis_runs');
+    expect(sql).toContain("'pending', 'auto_retry'");
+    expect(sql).toContain('auto_retry_count + 1');
+    expect(params).toEqual(['run-1', 'Metadata token request timed out', 60_000]);
+  });
+
+  test('re-queue reports nothing when the run was already failed', async () => {
+    pool.query.mockResolvedValueOnce({ rows: [] });
+    await expect(analysisRuns.requeueAfterTransientFailure('run-1', {
+      errorMessage: 'gone', delayMs: 'not-a-number',
+    })).resolves.toBeNull();
+    expect(pool.query.mock.calls[0][1][2]).toBe(0);
+  });
+
   test('returns normalized queue stats', async () => {
     pool.query.mockResolvedValueOnce({
       rows: [{
