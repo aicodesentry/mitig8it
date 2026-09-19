@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from math import ceil
 from typing import Any, Literal
 
 from ..models import RepairRequest
@@ -32,6 +33,46 @@ def _regression_tests(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     return [supplied] if supplied is not None else []
 
 
+# A byte-per-token proxy is what this service can compute without shipping a tokenizer for every
+# provider. Four bytes per token is the usual ratio for source text and JSON tool output, and the
+# per-message overhead covers the role and tool-call envelope the provider adds around content.
+BYTES_PER_TOKEN = 4
+MESSAGE_TOKEN_OVERHEAD = 8
+# The largest honest response is a propose_patch carrying one full file replacement plus a
+# regression test, so the reservation tracks the biggest snapshot file rather than the policy cap.
+MIN_OUTPUT_RESERVATION_TOKENS = 1_024
+OUTPUT_RESERVATION_MARGIN_TOKENS = 512
+
+
+def estimate_tokens(text: str) -> int:
+    return ceil(len(text.encode("utf-8")) / BYTES_PER_TOKEN)
+
+
+def estimate_message_tokens(message: dict[str, Any]) -> int:
+    return estimate_tokens(json.dumps(message, ensure_ascii=False)) + MESSAGE_TOKEN_OVERHEAD
+
+
+def estimate_history_tokens(messages: list[dict[str, Any]]) -> int:
+    return sum(estimate_message_tokens(message) for message in messages)
+
+
+def output_reservation_tokens(policy: Any, snapshot: Snapshot) -> int:
+    """Reserve a realistic largest response, never more than the policy's hard per-call cap.
+
+    The cap still travels to the provider as `max_completion_tokens`; this number only sizes the
+    budget reservation, so a 16k cap no longer consumes a sixth of the job budget per call.
+    """
+    realistic = max(
+        MIN_OUTPUT_RESERVATION_TOKENS,
+        estimate_tokens_from_bytes(snapshot.largest_file_bytes) + OUTPUT_RESERVATION_MARGIN_TOKENS,
+    )
+    return min(policy.max_output_tokens_per_call, realistic)
+
+
+def estimate_tokens_from_bytes(size: int) -> int:
+    return ceil(max(0, size) / BYTES_PER_TOKEN)
+
+
 @dataclass(frozen=True)
 class AgentResult:
     state: Literal["ready", "unsupported", "inconclusive"]
@@ -42,6 +83,7 @@ class AgentResult:
     explanation: str | None
     trace: list[dict[str, Any]]
     usage: dict[str, Any]
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 class RepairAgent:
@@ -102,6 +144,11 @@ class RepairAgent:
         proposal_arguments: dict[str, Any] | None = None
         pending_action = None
         start_index = 0
+        reserved_output = output_reservation_tokens(request.policy, snapshot)
+        # Once the provider reports prompt_tokens, that actual count plus the messages appended
+        # since is a far tighter estimate than re-measuring the whole history's bytes every turn.
+        last_prompt_tokens: int | None = None
+        appended_since_usage = 0
 
         if self.checkpoint_store:
             try:
@@ -159,16 +206,22 @@ class RepairAgent:
                 start_index = len(trace)
 
         for index in range(start_index, request.policy.max_tool_calls):
-            estimated_next_input = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
-            reserved_total = input_tokens + output_tokens + estimated_next_input + request.policy.max_output_tokens_per_call
+            if last_prompt_tokens is None:
+                estimated_next_input = estimate_history_tokens(messages)
+            else:
+                estimated_next_input = last_prompt_tokens + appended_since_usage
+            reserved_total = input_tokens + output_tokens + estimated_next_input + reserved_output
             reserved_usd = (
                 (input_tokens + estimated_next_input) * request.policy.input_usd_per_million_tokens
-                + (output_tokens + request.policy.max_output_tokens_per_call) * request.policy.output_usd_per_million_tokens
+                + (output_tokens + reserved_output) * request.policy.output_usd_per_million_tokens
             ) / 1_000_000
             next_reserved_usd = (
                 estimated_next_input * request.policy.input_usd_per_million_tokens
-                + request.policy.max_output_tokens_per_call * request.policy.output_usd_per_million_tokens
+                + reserved_output * request.policy.output_usd_per_million_tokens
             ) / 1_000_000
+            reservation_evidence = self._reservation_evidence(
+                request.policy, index + 1, estimated_next_input, reserved_output, next_reserved_usd, input_tokens, output_tokens
+            )
             if reserved_total > request.policy.max_total_tokens or reserved_usd > request.policy.max_spend_usd:
                 return self._result(
                     "inconclusive",
@@ -176,11 +229,16 @@ class RepairAgent:
                     bundle,
                     last_verification,
                     "provider_budget_reservation_denied",
-                    "The next provider call could not be reserved within the configured token and spend limits.",
+                    "The next provider call needs about "
+                    f"{estimated_next_input + reserved_output} tokens and "
+                    f"${next_reserved_usd:.4f}, and only "
+                    f"{reservation_evidence['budget_reservation']['remaining_tokens']} tokens and "
+                    f"${reservation_evidence['budget_reservation']['remaining_usd']:.4f} remain.",
                     trace,
                     input_tokens,
                     output_tokens,
                     provider_request_ids,
+                    reservation_evidence,
                 )
             if pending_action is not None:
                 action = pending_action
@@ -188,17 +246,33 @@ class RepairAgent:
             else:
                 if self.checkpoint_store:
                     try:
-                        reserved = await self.checkpoint_store.reserve_provider_call(index + 1, estimated_next_input + request.policy.max_output_tokens_per_call, next_reserved_usd)
+                        reserved = await self.checkpoint_store.reserve_provider_call(index + 1, estimated_next_input + reserved_output, next_reserved_usd)
                     except CheckpointError:
                         reserved = False
                     if not reserved:
-                        return self._result("inconclusive", proposal, bundle, last_verification, "provider_budget_reservation_denied", "The durable provider reservation was denied.", trace, input_tokens, output_tokens, provider_request_ids)
+                        return self._result(
+                            "inconclusive",
+                            proposal,
+                            bundle,
+                            last_verification,
+                            "provider_budget_reservation_denied",
+                            "The durable provider reservation was denied for an estimated "
+                            f"{estimated_next_input + reserved_output} tokens and ${next_reserved_usd:.4f}.",
+                            trace,
+                            input_tokens,
+                            output_tokens,
+                            provider_request_ids,
+                            reservation_evidence,
+                        )
                 try:
                     action = await self.provider.next_action(messages, tool_definitions())
                 except ProviderError:
                     return self._result("inconclusive", None, None, last_verification, "provider_error", "Repair provider failed safely.", trace, input_tokens, output_tokens, provider_request_ids)
                 input_tokens += action.input_tokens
                 output_tokens += action.output_tokens
+                if action.input_tokens > 0:
+                    last_prompt_tokens = action.input_tokens
+                    appended_since_usage = 0
             estimated_usd = (
                 input_tokens * request.policy.input_usd_per_million_tokens
                 + output_tokens * request.policy.output_usd_per_million_tokens
@@ -309,23 +383,25 @@ class RepairAgent:
                     raise SnapshotError("unknown_tool")
             except (KeyError, TypeError, ValueError, SnapshotError, PatchPolicyError) as exc:
                 output = {"error": type(exc).__name__, "reason": str(exc)[:500]}
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": action.call_id,
-                            "type": "function",
-                            "function": {"name": action.name, "arguments": json.dumps(action.arguments, sort_keys=True)},
-                        }
-                    ],
-                }
-            )
+            assistant_message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": action.call_id,
+                        "type": "function",
+                        "function": {"name": action.name, "arguments": json.dumps(action.arguments, sort_keys=True)},
+                    }
+                ],
+            }
+            messages.append(assistant_message)
+            appended_since_usage += estimate_message_tokens(assistant_message)
             remaining_context = max(0, request.policy.max_context_chars - context_chars_used)
             rendered_output = self._bounded_json(output, remaining_context)
             context_chars_used += len(rendered_output)
-            messages.append({"role": "tool", "tool_call_id": action.call_id, "content": rendered_output})
+            tool_message = {"role": "tool", "tool_call_id": action.call_id, "content": rendered_output}
+            messages.append(tool_message)
+            appended_since_usage += estimate_message_tokens(tool_message)
             if self.checkpoint_store:
                 try:
                     await self.checkpoint_store.save_completed_step(
@@ -401,6 +477,37 @@ class RepairAgent:
         }
 
     @staticmethod
+    def _reservation_evidence(
+        policy: Any,
+        call_index: int,
+        estimated_input_tokens: int,
+        reserved_output_tokens: int,
+        estimated_usd: float,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> dict[str, Any]:
+        """The numbers an operator needs to see why a call was refused, carried as evidence."""
+        spent_usd = (
+            input_tokens * policy.input_usd_per_million_tokens + output_tokens * policy.output_usd_per_million_tokens
+        ) / 1_000_000
+        return {
+            "budget_reservation": {
+                "call_index": call_index,
+                "estimated_input_tokens": estimated_input_tokens,
+                "reserved_output_tokens": reserved_output_tokens,
+                "estimated_total_tokens": estimated_input_tokens + reserved_output_tokens,
+                "estimated_usd": round(estimated_usd, 6),
+                "spent_input_tokens": input_tokens,
+                "spent_output_tokens": output_tokens,
+                "remaining_tokens": max(0, policy.max_total_tokens - input_tokens - output_tokens),
+                "remaining_usd": round(max(0.0, policy.max_spend_usd - spent_usd), 6),
+                "max_total_tokens": policy.max_total_tokens,
+                "max_spend_usd": policy.max_spend_usd,
+                "max_output_tokens_per_call": policy.max_output_tokens_per_call,
+            }
+        }
+
+    @staticmethod
     def _result(
         state: Literal["ready", "unsupported", "inconclusive"],
         proposal: dict[str, Any] | None,
@@ -412,6 +519,7 @@ class RepairAgent:
         input_tokens: int,
         output_tokens: int,
         provider_request_ids: list[str],
+        evidence: dict[str, Any] | None = None,
     ) -> AgentResult:
         return AgentResult(
             state,
@@ -422,4 +530,5 @@ class RepairAgent:
             explanation,
             trace,
             {"input_tokens": input_tokens, "output_tokens": output_tokens, "provider_request_ids": provider_request_ids},
+            dict(evidence or {}),
         )

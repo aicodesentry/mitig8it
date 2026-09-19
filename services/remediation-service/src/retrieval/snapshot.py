@@ -94,6 +94,11 @@ class Snapshot:
     def paths(self) -> tuple[str, ...]:
         return tuple(sorted(self._files))
 
+    @property
+    def largest_file_bytes(self) -> int:
+        """Byte size of the biggest snapshot file, which bounds a full-file replacement."""
+        return max((int(entry["bytes"]) for entry in self.manifest["files"]), default=0)
+
     def read(self, path: str, start: int = 1, end: int | None = None, max_chars: int = 20_000) -> ContextHit:
         normalized = validate_repo_path(path)
         if normalized not in self._files:
