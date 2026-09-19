@@ -17,15 +17,6 @@ TRANSCRIPT_LINE_RE = re.compile(
     r"Ready for PR"
     r")"
 )
-TRANSCRIPT_INLINE_MARKERS = (
-    '"patch": "+',
-    '"diff_hunk"',
-    "OpenGrep validation failed",
-    "pytest",
-    "gh pr create",
-    "git add ",
-    "git checkout ",
-)
 
 SEVERITY_RANK = {
     "critical": 4,
@@ -51,7 +42,7 @@ def is_transcript_artifact_line(line: str) -> bool:
         return False
     if TRANSCRIPT_LINE_RE.search(text):
         return True
-    return any(marker in text for marker in TRANSCRIPT_INLINE_MARKERS)
+    return False
 
 
 def parse_patch_entries(patch: str) -> List[Dict[str, Any]]:

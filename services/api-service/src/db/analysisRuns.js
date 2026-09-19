@@ -116,47 +116,79 @@ function positiveInteger(value, fallback) {
 
 async function claimNextQueuedRun(staleAfterMinutes = 20) {
   const staleMinutes = positiveInteger(staleAfterMinutes, 20);
-  const result = await pool.query(
-    `UPDATE analysis_runs ar
-     SET status = 'running',
-         started_at = NOW(),
-         completed_at = NULL,
-         error_message = NULL
-     FROM repositories r
-     WHERE ar.id = (
-       SELECT candidate.id
-       FROM analysis_runs candidate
-       JOIN repositories candidate_repo ON candidate_repo.id = candidate.repository_id
-       WHERE candidate_repo.is_active = true
-         AND (
-           candidate.status = 'pending'
-           OR (
+  // Session ownership spans the scan, but the row-lock transaction ends at claim.
+  // A crashed connection releases its lease; a slow live worker cannot be reclaimed.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const skipped = [];
+    while (true) {
+      const candidates = await client.query(
+        `SELECT candidate.id AS analysis_run_id, candidate.repository_id,
+           candidate.pr_number AS pull_request_number
+         FROM analysis_runs candidate
+         JOIN repositories candidate_repo ON candidate_repo.id = candidate.repository_id
+         WHERE candidate_repo.is_active = true
+           AND NOT (candidate.id = ANY($2::uuid[]))
+           AND (candidate.status = 'pending' OR (
              candidate.status = 'running'
-             AND candidate.started_at < NOW() - ($1::int * INTERVAL '1 minute')
-           )
-         )
-       ORDER BY
-         CASE WHEN candidate.status = 'running' THEN 0 ELSE 1 END,
-         COALESCE(candidate.started_at, candidate.created_at) ASC,
-         candidate.created_at ASC
-       LIMIT 1
-       FOR UPDATE OF candidate SKIP LOCKED
-     )
-       AND r.id = ar.repository_id
-     RETURNING
-       ar.id AS analysis_run_id,
-       ar.repository_id,
-       r.github_id AS repository_github_id,
-       r.full_name AS repository_full_name,
-       r.installation_id,
-       ar.pull_request_id,
-       ar.pr_number AS pull_request_number,
-       ar.commit_sha,
-       r.baseline_set`,
-    [staleMinutes]
-  );
-
-  return result.rows[0] || null;
+             AND candidate.started_at < NOW() - ($1::int * INTERVAL '1 minute')))
+         ORDER BY CASE WHEN candidate.status = 'running' THEN 0 ELSE 1 END,
+           COALESCE(candidate.started_at, candidate.created_at), candidate.created_at
+         LIMIT 1 FOR UPDATE OF candidate SKIP LOCKED`,
+        [staleMinutes, [...skipped]]
+      );
+      const candidate = candidates.rows[0];
+      if (!candidate) {
+        await client.query('COMMIT');
+        client.release();
+        return null;
+      }
+      const leaseKey = `analysis-pr:${candidate.repository_id}:${candidate.pull_request_number}`;
+      const lock = await client.query(
+        'SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired', [leaseKey]
+      );
+      if (!lock.rows[0].acquired) {
+        skipped.push(candidate.analysis_run_id);
+        continue;
+      }
+      const result = await client.query(
+        `UPDATE analysis_runs ar
+         SET status = 'running', started_at = NOW(), completed_at = NULL, error_message = NULL
+         FROM repositories r WHERE ar.id = $1 AND r.id = ar.repository_id
+         RETURNING ar.id AS analysis_run_id, ar.repository_id,
+           r.github_id AS repository_github_id, r.full_name AS repository_full_name,
+           r.installation_id, ar.pull_request_id, ar.pr_number AS pull_request_number,
+           ar.commit_sha, r.baseline_set`, [candidate.analysis_run_id]
+      );
+      if (!result.rows[0]) throw new Error('Claimed analysis run disappeared');
+      await client.query('COMMIT');
+      let releasePromise;
+      Object.defineProperty(result.rows[0], 'releaseLease', {
+        enumerable: false,
+        value: () => {
+          if (!releasePromise) releasePromise = (async () => {
+            try {
+              const unlocked = await client.query(
+                'SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS unlocked', [leaseKey]
+              );
+              if (!unlocked.rows[0]?.unlocked) throw new Error('Analysis lease was not held');
+            } catch (error) {
+              client.release(error); // Destroy: never return a possibly locked session to the pool.
+              throw error;
+            }
+            client.release();
+          })();
+          return releasePromise;
+        },
+      });
+      return result.rows[0];
+    }
+  } catch (error) {
+    // Destroying the connection rolls back the claim and releases any session lock.
+    client.release(error);
+    throw error;
+  }
 }
 
 async function getQueueStats() {

@@ -116,3 +116,8 @@ railway-env-variables.txt
 .deployment-credentials.example
 .deploy-credentials
 frontend/.env.production
+
+# Terraform provider cache and state
+**/.terraform/
+*.tfstate
+*.tfstate.*

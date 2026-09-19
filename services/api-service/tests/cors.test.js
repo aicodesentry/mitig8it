@@ -8,7 +8,7 @@ jest.mock('../src/config/database', () => ({
 const { createApp } = require('../src/app');
 
 describe('CORS configuration', () => {
-  test('allows codesentry .web.app origins', async () => {
+  test('allows the exact existing Firebase deployment origin', async () => {
     const app = createApp();
 
     const response = await request(app)
@@ -45,6 +45,13 @@ describe('CORS configuration', () => {
     expect(response.headers['access-control-allow-origin']).toBe(
       'http://localhost:5173'
     );
+  });
+
+  test('rejects unrelated Firebase sites containing the legacy product name', async () => {
+    const response = await request(createApp()).options('/health')
+      .set('Origin', 'https://codesentry-attacker-owned.web.app')
+      .set('Access-Control-Request-Method', 'GET');
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
   });
 
   test('rejects unknown origins', async () => {

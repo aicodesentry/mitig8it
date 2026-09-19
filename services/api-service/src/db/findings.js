@@ -1,6 +1,7 @@
 const { pool, transaction } = require('../config/database');
 
 async function listByPullRequest(pullRequestId, userId, { status = 'open', minConfidence = 0 }) {
+  await restoreExpiredSuppressions(null, userId);
   const result = await pool.query(
     `SELECT f.*
      FROM findings f
@@ -22,7 +23,22 @@ async function listByPullRequest(pullRequestId, userId, { status = 'open', minCo
   return result.rows;
 }
 
+// The pull request the findings belong to, scoped by the same repository access the
+// findings query uses. The client needs the exact revision the findings describe.
+async function getPullRequestForUser(pullRequestId, userId) {
+  const result = await pool.query(
+    `SELECT pr.id, pr.pr_number, pr.head_sha, pr.base_sha
+       FROM pull_requests pr
+       JOIN repository_access ra ON ra.repository_id = pr.repository_id
+      WHERE pr.id = $1 AND ra.user_id = $2
+      LIMIT 1`,
+    [pullRequestId, userId]
+  );
+  return result.rows[0] || null;
+}
+
 async function listAll(userId, { repositoryId, status = 'open', severity, category }) {
+  await restoreExpiredSuppressions(null, userId);
   const params = [userId];
   const clauses = ['ra.user_id = $1'];
 
@@ -57,6 +73,7 @@ async function listAll(userId, { repositoryId, status = 'open', severity, catego
 }
 
 async function getById(findingId, userId) {
+  await restoreExpiredSuppressions(null, userId);
   const result = await pool.query(
      `SELECT f.*, r.full_name AS repository_full_name, pr.pr_number
      FROM findings f
@@ -84,7 +101,7 @@ async function updateStatus(findingId, userId, { status, dismissalReason }) {
 
     const statusResult = await client.query(
       `UPDATE findings
-       SET status = $1, dismissal_reason = $2, updated_at = NOW(), last_seen_at = NOW()
+       SET status = $1, dismissal_reason = $2, suppression_applied = FALSE, updated_at = NOW(), last_seen_at = NOW()
        WHERE id = $3
        RETURNING *`,
       [status, dismissalReason || null, findingId]
@@ -103,14 +120,14 @@ async function updateStatus(findingId, userId, { status, dismissalReason }) {
 
 async function listByAnalysisRun(analysisRunId) {
   const result = await pool.query(
-    `SELECT * FROM findings
+    `SELECT snapshot FROM analysis_run_findings
      WHERE analysis_run_id = $1
      ORDER BY
-       CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-       confidence DESC`,
+       CASE snapshot->>'severity' WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+       (snapshot->>'confidence')::numeric DESC`,
     [analysisRunId]
   );
-  return result.rows;
+  return result.rows.map(row => row.snapshot);
 }
 
 // --- Internal (used by orchestrator, no user-scoped auth) ---
@@ -145,7 +162,9 @@ async function upsert(params) {
            code_snippet = $19, evidence_details = $20, evidence = $21, exploit_scenario = $22,
            remediation = $23, remediation_patch = $24, is_baseline = $25,
            last_seen_at = NOW(), updated_at = NOW(),
-           status = CASE WHEN status = 'fixed' THEN 'open' ELSE status END
+           status = CASE WHEN status = 'fixed' OR suppression_applied THEN 'open' ELSE status END,
+           dismissal_reason = CASE WHEN suppression_applied THEN NULL ELSE dismissal_reason END,
+           suppression_applied = FALSE
        WHERE id = $26
        RETURNING *`,
       [runId, pullRequestId, prNumber, commitSha, internalType, title, description, category,
@@ -184,7 +203,7 @@ async function upsert(params) {
 
 async function dismiss(findingId, reason) {
   await pool.query(
-    `UPDATE findings SET status = 'dismissed', dismissal_reason = $1, updated_at = NOW() WHERE id = $2`,
+    `UPDATE findings SET status = 'dismissed', suppression_applied = TRUE, dismissal_reason = $1, updated_at = NOW() WHERE id = $2`,
     [reason, findingId]
   );
 }
@@ -192,15 +211,15 @@ async function dismiss(findingId, reason) {
 async function markFixed({ repositoryId, pullRequestId, activeFingerprints }) {
   if (activeFingerprints.length === 0) {
     await pool.query(
-      `UPDATE findings SET status = 'fixed', updated_at = NOW()
-       WHERE repository_id = $1 AND pull_request_id = $2 AND status = 'open'`,
+      `UPDATE findings SET status = 'fixed', suppression_applied = FALSE, dismissal_reason = NULL, updated_at = NOW()
+       WHERE repository_id = $1 AND pull_request_id = $2 AND (status = 'open' OR suppression_applied)`,
       [repositoryId, pullRequestId]
     );
     return;
   }
   await pool.query(
-    `UPDATE findings SET status = 'fixed', updated_at = NOW()
-     WHERE repository_id = $1 AND pull_request_id = $2 AND status = 'open'
+    `UPDATE findings SET status = 'fixed', suppression_applied = FALSE, dismissal_reason = NULL, updated_at = NOW()
+     WHERE repository_id = $1 AND pull_request_id = $2 AND (status = 'open' OR suppression_applied)
        AND fingerprint <> ALL($3::text[])`,
     [repositoryId, pullRequestId, activeFingerprints]
   );
@@ -225,7 +244,40 @@ async function getActiveSuppressions(repositoryId) {
   return result.rows;
 }
 
+async function restoreExpiredSuppressions(repositoryId = null, userId = null) {
+  await pool.query(
+    `UPDATE findings f SET status = 'open', suppression_applied = FALSE,
+       dismissal_reason = NULL, updated_at = NOW()
+     WHERE f.suppression_applied AND f.status = 'dismissed'
+       AND ($1::uuid IS NULL OR f.repository_id = $1)
+       AND ($2::uuid IS NULL OR EXISTS (SELECT 1 FROM repository_access ra
+         WHERE ra.repository_id = f.repository_id AND ra.user_id = $2))
+       AND NOT EXISTS (SELECT 1 FROM suppressions s
+         WHERE s.repository_id = f.repository_id AND s.fingerprint = f.fingerprint
+           AND (s.expires_at IS NULL OR s.expires_at > NOW()))`,
+    [repositoryId, userId]
+  );
+}
+
+async function snapshotRun(runId, findingRows) {
+  return transaction(async (client) => {
+    // Reclaimed workers may replace partial evidence only while an attempt is
+    // running. Locking the run also serializes this with terminal state changes.
+    const run = await client.query('SELECT status FROM analysis_runs WHERE id = $1 FOR UPDATE', [runId]);
+    if (!run.rows[0]) throw new Error('Analysis run not found while snapshotting evidence');
+    if (run.rows[0].status !== 'running') return;
+    await client.query('DELETE FROM analysis_run_findings WHERE analysis_run_id = $1', [runId]);
+    await client.query(
+      `INSERT INTO analysis_run_findings (analysis_run_id, finding_id, snapshot)
+       SELECT $1, (item->>'id')::uuid, item FROM jsonb_array_elements($2::jsonb) item`,
+      [runId, JSON.stringify(findingRows)]
+    );
+  });
+}
+
 module.exports = {
+  getPullRequestForUser,
+  restoreExpiredSuppressions, snapshotRun,
   listByPullRequest, listAll, getById, updateStatus, listByAnalysisRun,
   findByFingerprint, upsert, dismiss, markFixed, mergeEvidenceDetails, getActiveSuppressions,
 };

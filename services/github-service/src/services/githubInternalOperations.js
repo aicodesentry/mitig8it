@@ -55,7 +55,7 @@ async function githubRequest(method, url, token, data) {
   }
 }
 
-async function fetchPullRequestFiles({ repository_full_name, pull_request_number, installation_id }) {
+async function fetchPullRequestFiles({ repository_full_name, pull_request_number, installation_id, commit_sha }) {
   if (!repository_full_name || !pull_request_number || !installation_id) {
     throw badRequest('repository_full_name, pull_request_number and installation_id are required');
   }
@@ -64,6 +64,12 @@ async function fetchPullRequestFiles({ repository_full_name, pull_request_number
 
   try {
     const token = await githubAppAuth.getInstallationToken(installation_id);
+    if (!commit_sha) throw badRequest('commit_sha is required for immutable analysis');
+    const assertHead = async () => {
+      const pull = await githubRequest('get', `https://api.github.com/repos/${owner}/${repo}/pulls/${pull_request_number}`, token);
+      if (pull.data.head?.sha !== commit_sha) throw new OperationError('Analysis run superseded by another PR head', 409);
+    };
+    await assertHead();
     const files = [];
     let page = 1;
 
@@ -78,12 +84,13 @@ async function fetchPullRequestFiles({ repository_full_name, pull_request_number
       page += 1;
     }
 
-    return {
-      files: files
+    await assertHead();
+    const scoped = files
         .filter((f) => ['added', 'modified', 'renamed'].includes(f.status))
-        .filter((f) => !f.filename.startsWith('dist/') && !f.filename.includes('node_modules'))
-        .slice(0, 200)
-        .map((f) => ({
+        .filter((f) => !f.filename.startsWith('dist/') && !f.filename.includes('node_modules'));
+    if (scoped.length > 200) throw new OperationError('PR exceeds the 200-file analysis limit; split the change before retrying', 422);
+    return {
+      files: scoped.map((f) => ({
           path: f.filename,
           patch: f.patch || '',
           additions: f.additions,
@@ -140,24 +147,27 @@ async function submitPullRequestReview({ owner, repo, pr_number, installation_id
 
   try {
     const token = await githubAppAuth.getInstallationToken(installation_id);
-    const existingReviews = await githubRequest(
-      'get',
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/reviews?per_page=100`,
-      token
-    );
-
-    for (const review of existingReviews.data) {
-      if (review.body?.includes('<!-- mitig8it-review -->') && review.state === 'CHANGES_REQUESTED') {
-        try {
-          await githubRequest(
-            'put',
-            `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/reviews/${review.id}/dismissals`,
-            token,
-            { message: 'Superseded by new analysis run.' }
-          );
-        } catch (_) { /* best effort */ }
+    const pull = await githubRequest('get', `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}`, token);
+    if (pull.data.head?.sha !== commit_sha) throw new OperationError('Analysis run superseded by another PR head', 409);
+    const reviews = [];
+    for (let page = 1; ; page += 1) {
+      const response = await githubRequest('get',
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/reviews?per_page=100&page=${page}`, token);
+      reviews.push(...response.data);
+      if (response.data.length < 100) break;
+    }
+    const botLogin = await githubAppAuth.getAppBotLogin();
+    const owned = reviews.filter(review => review.user?.login === botLogin && review.body?.includes('<!-- mitig8it-review -->'));
+    const expectedState = event === 'REQUEST_CHANGES' ? 'CHANGES_REQUESTED' : 'COMMENTED';
+    const existing = owned.find(review => review.commit_id === commit_sha && review.body === body && review.state === expectedState);
+    for (const review of owned) {
+      if (review.id !== existing?.id && review.state === 'CHANGES_REQUESTED') {
+        await githubRequest('put',
+          `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/reviews/${review.id}/dismissals`,
+          token, { message: 'Superseded by new analysis run.' });
       }
     }
+    if (existing) return { review_id: existing.id, comments_posted: 0 };
 
     const reviewPayload = {
       commit_id: commit_sha,
@@ -196,6 +206,24 @@ async function postInlineComment({ owner, repo, pr_number, installation_id, comm
 
   try {
     const token = await githubAppAuth.getInstallationToken(installation_id);
+    // Stable finding markers make retries and later tiers reconcile the same thread.
+    const marker = body.match(/<!-- mitig8it-finding:[^>]+ -->/)?.[0];
+    if (marker) {
+      const pull = await githubRequest('get', `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}`, token);
+      if (pull.data.head?.sha !== commit_sha) throw new OperationError('Analysis run superseded by another PR head', 409);
+      const botLogin = await githubAppAuth.getAppBotLogin();
+      for (let page = 1; ; page += 1) {
+        const existing = await githubRequest('get',
+          `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/comments?per_page=100&page=${page}`, token);
+        const comment = existing.data.find(c => c.user?.login === botLogin && c.path === path && c.body?.includes(marker));
+        if (comment) {
+          if (comment.body !== body) await githubRequest('patch',
+            `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${comment.id}`, token, { body });
+          return { comment_id: comment.id, url: comment.html_url, success: true };
+        }
+        if (existing.data.length < 100) break;
+      }
+    }
     const response = await githubRequest(
       'post',
       `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/comments`,
@@ -227,9 +255,19 @@ async function createCheckRun({ owner, repo, installation_id, head_sha, conclusi
 
   try {
     const token = await githubAppAuth.getInstallationToken(installation_id);
+    let existing = null;
+    for (let page = 1; ; page += 1) {
+      const response = await githubRequest('get',
+        `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(head_sha)}/check-runs?check_name=Mitig8it%20Security%20Review&per_page=100&page=${page}`, token);
+      const checks = response.data.check_runs;
+      if (!Array.isArray(checks)) throw new OperationError('Invalid check run response', 502);
+      existing = checks.find(check => check.head_sha === head_sha && check.name === 'Mitig8it Security Review'
+        && String(check.app?.id) === String(process.env.GITHUB_APP_ID));
+      if (existing || checks.length < 100) break;
+    }
     const response = await githubRequest(
-      'post',
-      `https://api.github.com/repos/${owner}/${repo}/check-runs`,
+      existing ? 'patch' : 'post',
+      `https://api.github.com/repos/${owner}/${repo}/check-runs${existing ? `/${existing.id}` : ''}`,
       token,
       {
         name: 'Mitig8it Security Review',
@@ -246,12 +284,801 @@ async function createCheckRun({ owner, repo, installation_id, head_sha, conclusi
   }
 }
 
+// Remediation writes are deliberately kept separate from githubRequest. That helper
+// retries transient REST failures, which is appropriate for reads but unsafe for a
+// mutation whose response may have been lost after GitHub accepted it.
+function isAmbiguousWriteError(error) {
+  const status = error.response?.status;
+  return !status || [429, 500, 502, 503, 504].includes(status);
+}
+
+async function githubGraphqlMutation(token, query, variables) {
+  return axios({
+    method: 'post',
+    url: 'https://api.github.com/graphql',
+    data: { query, variables },
+    timeout: 25000,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+}
+
+function requireString(value, name, maxLength = 255) {
+  if (typeof value !== 'string' || !value || value.length > maxLength) throw badRequest(`${name} is required`);
+  return value;
+}
+
+function validateSha(value, name) {
+  const sha = requireString(value, name, 64);
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) throw badRequest(`${name} must be a Git object ID`);
+  return sha;
+}
+
+function validateActionEnvelope(payload) {
+  const repositoryFullName = requireString(payload.repository_full_name, 'repository_full_name');
+  const [owner, repo] = validateRepositoryFullName(repositoryFullName);
+  const actorLogin = requireString(payload.actor_login, 'actor_login');
+  if (!/^[a-zA-Z0-9-]+$/.test(actorLogin)) throw badRequest('Invalid actor_login');
+  if (!Number.isInteger(Number(payload.installation_id)) || Number(payload.installation_id) <= 0) {
+    throw badRequest('installation_id must be a positive integer');
+  }
+  if (!Number.isInteger(Number(payload.pr_number)) || Number(payload.pr_number) <= 0) {
+    throw badRequest('pr_number must be a positive integer');
+  }
+  const actionId = requireString(payload.action_id, 'action_id', 128);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{7,127}$/.test(actionId)) throw badRequest('Invalid action_id');
+  const idempotencyKey = requireString(payload.idempotency_key, 'idempotency_key', 255);
+  const manifestDigest = requireString(payload.manifest_digest, 'manifest_digest', 64);
+  if (!/^[0-9a-f]{64}$/i.test(manifestDigest)) throw badRequest('manifest_digest must be a SHA-256 digest');
+  return {
+    owner,
+    repo,
+    repository_full_name: repositoryFullName,
+    actor_login: actorLogin,
+    installation_id: Number(payload.installation_id),
+    pr_number: Number(payload.pr_number),
+    head_sha: validateSha(payload.head_sha, 'head_sha'),
+    base_sha: validateSha(payload.base_sha, 'base_sha'),
+    action_id: actionId,
+    idempotency_key: idempotencyKey,
+    manifest_digest: manifestDigest.toLowerCase(),
+  };
+}
+
+function remediationMarker(actionId, manifestDigest) {
+  return `<!-- mitig8it-remediation:${actionId}:${manifestDigest} -->`;
+}
+
+function isAllowedRemediationPath(filePath) {
+  if (typeof filePath !== 'string' || !filePath || filePath.length > 1024
+    || filePath.startsWith('/') || filePath.includes('\\') || /[\x00-\x1f]/.test(filePath)
+    || filePath.split('/').some(part => !part || part === '.' || part === '..')) return false;
+  const blocked = ['.github/', 'dist/', 'node_modules/'];
+  const blockedNames = ['package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml'];
+  return !blocked.some((prefix) => filePath.startsWith(prefix)) && !blockedNames.includes(filePath);
+}
+
+function validateFileChanges(changes) {
+  if (!Array.isArray(changes) || changes.length < 1 || changes.length > 5) {
+    throw new OperationError('A remediation batch must contain one to five file additions', 422);
+  }
+  const paths = new Set();
+  const additions = changes.map((change) => {
+    if (!change || !isAllowedRemediationPath(change.path) || paths.has(change.path)) {
+      throw new OperationError('Remediation contains an unsupported or duplicate path', 422);
+    }
+    paths.add(change.path);
+    if (typeof change.contents_base64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(change.contents_base64)) {
+      throw new OperationError('Remediation contents must be canonical base64', 422);
+    }
+    const decoded = Buffer.from(change.contents_base64, 'base64');
+    if (decoded.toString('base64') !== change.contents_base64 || decoded.length > 500000) {
+      throw new OperationError('Remediation contents are invalid or too large', 422);
+    }
+    if (decoded.includes(0) || !Buffer.from(decoded.toString('utf8')).equals(decoded)) {
+      throw new OperationError('Remediation requires UTF-8 source files', 422);
+    }
+    return { path: change.path, contents: change.contents_base64 };
+  });
+  // Changed-line limits are checked against source in the trusted verifier.
+  // Counting whole replacement files here would reject a one-line fix in a large file.
+  return additions;
+}
+
+async function assertInstallationRepositoryAndActor(envelope, requireActorWritePermission = true) {
+  const token = await githubAppAuth.getInstallationToken(envelope.installation_id);
+  const repository = await githubRequest('get', `https://api.github.com/repos/${envelope.owner}/${envelope.repo}`, token);
+  if (repository.data?.full_name?.toLowerCase() !== envelope.repository_full_name.toLowerCase()) {
+    throw new OperationError('Repository is not accessible through this installation', 403);
+  }
+  // The installation token is scoped to the claimed installation. Enumerating its
+  // accessible repositories protects against a caller mixing repository IDs across
+  // installations, including selected-repository installations.
+  let repositoryFound = false;
+  for (let page = 1; page <= 10; page += 1) {
+    const response = await githubRequest('get',
+      `https://api.github.com/installation/repositories?per_page=100&page=${page}`, token);
+    const repositories = response.data?.repositories;
+    if (!Array.isArray(repositories)) throw new OperationError('Invalid installation repository response', 502);
+    repositoryFound = repositories.some((candidate) => candidate.full_name?.toLowerCase() === envelope.repository_full_name.toLowerCase());
+    if (repositoryFound || repositories.length < 100) break;
+  }
+  if (!repositoryFound) throw new OperationError('Repository is not enabled for this installation', 403);
+
+  if (requireActorWritePermission) {
+    const permission = await githubRequest('get',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/collaborators/${encodeURIComponent(envelope.actor_login)}/permission`, token);
+    if (!['write', 'admin'].includes(permission.data?.permission)) {
+      throw new OperationError('Actor does not currently have write permission for this repository', 403);
+    }
+  }
+  return token;
+}
+
+async function loadExactSameRepositoryPull(envelope, token) {
+  const response = await githubRequest('get',
+    `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}`, token);
+  const pull = response.data;
+  if (pull?.state !== 'open' || pull.draft || pull.merged) {
+    throw new OperationError('Remediation requires an open, non-draft pull request', 409);
+  }
+  if (pull?.head?.sha !== envelope.head_sha || pull?.base?.sha !== envelope.base_sha) {
+    throw new OperationError('Remediation action is superseded by a changed pull request revision', 409);
+  }
+  if (!pull.head?.ref || !pull.base?.ref || pull.head?.repo?.full_name?.toLowerCase() !== envelope.repository_full_name.toLowerCase()
+    || pull.base?.repo?.full_name?.toLowerCase() !== envelope.repository_full_name.toLowerCase()) {
+    throw new OperationError('Fork pull requests are unsupported for automated remediation', 422);
+  }
+  return pull;
+}
+
+async function prepareRemediationAction(payload) {
+  const envelope = validateActionEnvelope(payload);
+  try {
+    const token = await assertInstallationRepositoryAndActor(envelope);
+    const pull = await loadExactSameRepositoryPull(envelope, token);
+    return {
+      state: 'ready',
+      operation_id: envelope.action_id,
+      branch: pull.head.ref,
+      expected_head_oid: envelope.head_sha,
+      marker: remediationMarker(envelope.action_id, envelope.manifest_digest),
+    };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    throw externalError('Failed to prepare remediation action', error);
+  }
+}
+
+async function fetchRemediationSnapshot(payload) {
+  const envelope = validateActionEnvelope(payload);
+  const token = await assertInstallationRepositoryAndActor(envelope);
+  await loadExactSameRepositoryPull(envelope, token);
+  const commit = await githubRequest('get',
+    `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/git/commits/${envelope.head_sha}`, token);
+  const treeOid = validateSha(commit.data?.tree?.sha, 'head_tree_oid');
+  const tree = await githubRequest('get',
+    `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/git/trees/${treeOid}?recursive=1`, token);
+  if (tree.data?.truncated !== false || !Array.isArray(tree.data?.tree) || tree.data.tree.length > 20000) {
+    throw new OperationError('Repository tree exceeds supported snapshot limits', 422);
+  }
+  const entries = tree.data.tree.map(({ path, mode, type, sha }) => ({ path, mode, type, sha }));
+  const sources = tree.data.tree.filter(entry => entry.type === 'blob' && ['100644', '100755'].includes(entry.mode)
+    && !/(^|\/)(node_modules|dist|vendor|\.git|coverage)\//.test(entry.path)
+    && (/\.(js|jsx|ts|tsx|json)$/.test(entry.path))
+    && !/(^|\/)(\.env|credentials|secrets)(\.|\/|$)/i.test(entry.path));
+  const requiredPaths = new Set(Array.isArray(payload.finding_paths) ? payload.finding_paths : []);
+  if (requiredPaths.size > 200 || [...requiredPaths].some(path => typeof path !== 'string' || !sources.some(source => source.path === path))) {
+    throw new OperationError('Finding source is unsupported or missing from the immutable tree', 422);
+  }
+  const directories = [...requiredPaths].map(path => path.slice(0, path.lastIndexOf('/') + 1));
+  const rank = entry => requiredPaths.has(entry.path) ? 0
+    : /(^|\/)(package\.json|tsconfig[^/]*\.json)$/.test(entry.path) ? 1
+      : directories.some(directory => entry.path.startsWith(directory)) ? 2 : 3;
+  const ranked = [...sources].sort((left, right) => rank(left) - rank(right) || left.path.localeCompare(right.path));
+  const selected = [];
+  let sourceBytes = 0;
+  for (const entry of ranked) {
+    const size = Number(entry.size);
+    if (!Number.isSafeInteger(size) || size < 0 || size > 500000 || sourceBytes + size > 500000 || selected.length >= 120) {
+      if (requiredPaths.has(entry.path)) throw new OperationError('Finding source exceeds the repair snapshot budget', 422);
+      continue;
+    }
+    selected.push(entry);
+    sourceBytes += size;
+  }
+  const files = [];
+  for (const entry of selected) {
+    const blob = await githubRequest('get',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/git/blobs/${entry.sha}`, token);
+    if (blob.data?.encoding !== 'base64' || typeof blob.data.content !== 'string') {
+      throw new OperationError('GitHub did not return the requested source blob', 502);
+    }
+    const bytes = Buffer.from(blob.data.content, 'base64');
+    if (bytes.length > 500000 || bytes.includes(0) || !Buffer.from(bytes.toString('utf8')).equals(bytes)) {
+      throw new OperationError('Repair snapshot contains unsupported binary or oversized source', 422);
+    }
+    const actual = require('crypto').createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+    if (actual !== entry.sha) throw new OperationError('GitHub source blob hash mismatch', 502);
+    files.push({ path: entry.path, content: bytes.toString('utf8'), sha: entry.sha });
+  }
+  await loadExactSameRepositoryPull(envelope, token);
+  const selectedPaths = new Set(selected.map(entry => entry.path));
+  return { files, tree_entries: entries, head_tree_oid: treeOid, head_sha: envelope.head_sha, base_sha: envelope.base_sha,
+    omitted_source_paths: sources.filter(entry => !selectedPaths.has(entry.path)).map(entry => entry.path) };
+}
+
+async function commitRemediationAction(payload) {
+  const envelope = validateActionEnvelope(payload);
+  const additions = validateFileChanges(payload.changes);
+  const branch = requireString(payload.branch, 'branch');
+  const expectedHeadOid = validateSha(payload.expected_head_oid, 'expected_head_oid');
+  const verifiedTreeOid = validateSha(payload.verified_tree_oid, 'verified_tree_oid');
+  if (expectedHeadOid !== envelope.head_sha) throw new OperationError('expected_head_oid must match the consented head_sha', 409);
+  const headline = requireString(payload.commit_message, 'commit_message', 200);
+  if (headline.includes('<!-- mitig8it-remediation:')) throw badRequest('commit_message must not include a remediation marker');
+
+  try {
+    const token = await assertInstallationRepositoryAndActor(envelope);
+    const pull = await loadExactSameRepositoryPull(envelope, token);
+    if (pull.head.ref !== branch) throw new OperationError('Branch changed after preparation', 409);
+    const response = await githubGraphqlMutation(token, `mutation CreateRemediationCommit($input: CreateCommitOnBranchInput!) {
+      createCommitOnBranch(input: $input) { commit { oid tree { oid } } }
+    }`, {
+      input: {
+        branch: { repositoryNameWithOwner: envelope.repository_full_name, branchName: branch },
+        expectedHeadOid,
+        message: { headline, body: remediationMarker(envelope.action_id, envelope.manifest_digest) },
+        fileChanges: { additions },
+      },
+    });
+    if (response.data?.errors?.length || !response.data?.data?.createCommitOnBranch?.commit?.oid) {
+      throw new OperationError('GitHub rejected the atomic remediation commit', 409, response.data?.errors || null);
+    }
+    const commit = response.data.data.createCommitOnBranch.commit;
+    if (commit.tree?.oid !== verifiedTreeOid) {
+      throw new OperationError('GitHub commit tree does not match the verified tree', 502, { commit_sha: commit.oid });
+    }
+    return { state: 'applied', operation_id: envelope.action_id, commit_sha: commit.oid, tree_oid: commit.tree.oid };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    if (isAmbiguousWriteError(error)) {
+      // Do not retry and do not inspect-and-write here. The durable control plane
+      // must persist this state and invoke reconciliation with the same identity.
+      return { state: 'reconciling', operation_id: envelope.action_id, reason: 'github_write_outcome_ambiguous' };
+    }
+    throw externalError('Failed to create atomic remediation commit', error);
+  }
+}
+
+async function reconcileRemediationAction(payload) {
+  const envelope = validateActionEnvelope(payload);
+  const expectedTree = validateSha(payload.verified_tree_oid, 'verified_tree_oid');
+  try {
+    // Reconciliation is read-only. It remains available after a user loses write
+    // access so the control plane can truthfully settle an in-flight action.
+    const token = await assertInstallationRepositoryAndActor(envelope, false);
+    const pull = await githubRequest('get',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}`, token);
+    if (pull.data?.base?.sha !== envelope.base_sha || pull.data?.base?.ref === undefined || pull.data?.head?.repo?.full_name?.toLowerCase() !== envelope.repository_full_name.toLowerCase()) {
+      throw new OperationError('Pull request no longer matches the remediation scope', 409);
+    }
+    const commits = await githubRequest('get',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/commits?sha=${encodeURIComponent(pull.data.head.ref)}&per_page=100`, token);
+    if (!Array.isArray(commits.data)) throw new OperationError('Invalid commit reconciliation response', 502);
+    const marker = remediationMarker(envelope.action_id, envelope.manifest_digest);
+    const found = commits.data.find((commit) => commit.commit?.message?.includes(marker)
+      && commit.parents?.[0]?.sha === envelope.head_sha);
+    if (found) {
+      const detail = await githubRequest('get',
+        `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/git/commits/${encodeURIComponent(found.sha)}`, token);
+      if (detail.data?.tree?.sha !== expectedTree) {
+        throw new OperationError('Found remediation marker with a non-verified tree', 409, { commit_sha: found.sha });
+      }
+      return { state: 'applied', operation_id: envelope.action_id, commit_sha: found.sha, tree_oid: expectedTree };
+    }
+    if (pull.data?.head?.sha === envelope.head_sha) return { state: 'not_applied', operation_id: envelope.action_id };
+    return { state: 'unresolved', operation_id: envelope.action_id, reason: 'head_changed_without_matching_marker' };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    throw externalError('Failed to reconcile remediation action', error);
+  }
+}
+
+// Merge capability is evaluated once and reported two ways. `assertMergeCapability`
+// stops at the first blocker so a guarded merge never issues avoidable GitHub reads,
+// while `readMergeEligibility` gathers every blocker for a pre-flight report.
+const MERGE_BLOCKERS = {
+  ruleset_capability_unavailable: { status: 422, message: 'Repository ruleset capability is unavailable; automatic merge is disabled' },
+  ruleset_response_unknown: { status: 422, message: 'Repository ruleset response is unknown; automatic merge is disabled' },
+  rulesets_unsupported: { status: 422, message: 'Repositories with rulesets are unsupported for automatic merge' },
+  branch_protection_unavailable: { status: 422, message: 'Branch protection capability is unavailable; automatic merge is disabled' },
+  app_bypasses_required_reviews: { status: 422, message: 'The remediation app must not bypass required reviews' },
+  verification_check_not_required: { status: 422, message: 'The app-specific remediation verification check is not required by branch protection' },
+  required_reviews_not_configured: { status: 422, message: 'Required pull request reviews are not configured; automatic merge is disabled' },
+  review_response_invalid: { status: 502, message: 'Invalid pull request review response' },
+  review_pagination_exceeded: { status: 422, message: 'Review pagination exceeds supported limit' },
+  required_approvals_missing: { status: 409, message: 'Required pull request approvals are not currently satisfied' },
+  changes_requested: { status: 409, message: 'Outstanding review requests changes' },
+  check_state_incomplete: { status: 409, message: 'Required check state is incomplete' },
+  check_state_unavailable: { status: 409, message: 'Required check state could not be read; automatic merge is disabled' },
+  review_state_unavailable: { status: 409, message: 'Pull request reviews could not be read; automatic merge is disabled' },
+  verification_check_not_successful: { status: 409, message: 'Current remediation verification check is missing or not successful' },
+  protection_source_unknown: { status: 422, message: 'Branch protection source is unknown; automatic merge is disabled' },
+  base_branch_unknown: { status: 409, message: 'Pull request base branch is unknown' },
+  pull_request_not_open: { status: 409, message: 'Pull request is not open' },
+  pull_request_draft: { status: 409, message: 'Pull request is a draft' },
+  pull_request_already_merged: { status: 409, message: 'Pull request is already merged' },
+  pull_request_head_changed: { status: 409, message: 'Pull request head does not match the consented revision' },
+  pull_request_base_changed: { status: 409, message: 'Pull request base does not match the consented revision' },
+  fork_pull_request_unsupported: { status: 422, message: 'Fork pull requests are unsupported for automated remediation' },
+  pull_request_not_mergeable: { status: 409, message: 'Pull request is not currently mergeable' },
+};
+
+class BlockerSignal extends Error {
+  constructor(report) {
+    super('Merge capability blocked');
+    this.report = report;
+  }
+}
+
+function createMergeReport(mergeableState) {
+  return {
+    eligible: false,
+    blockers: [],
+    required_checks: [],
+    check_runs: [],
+    reviews: { required: null, approvals: 0, changes_requested: false },
+    protection_source: 'unknown',
+    mergeable_state: mergeableState || 'unknown',
+    failure: null,
+  };
+}
+
+function addMergeBlocker(report, code, stopOnFirstBlocker, detail) {
+  const entry = MERGE_BLOCKERS[code] || { status: 422, message: code };
+  if (!report.blockers.includes(code)) report.blockers.push(code);
+  if (!report.failure) report.failure = new OperationError(entry.message, entry.status, detail === undefined ? null : detail);
+  if (stopOnFirstBlocker) throw new BlockerSignal(report);
+}
+
+async function evaluateMergeCapability(envelope, pull, token, verificationCheckName, stopOnFirstBlocker) {
+  const report = createMergeReport(pull?.mergeable_state);
+  const block = (code, detail) => addMergeBlocker(report, code, stopOnFirstBlocker, detail);
+  const baseRef = pull?.base?.ref;
+  if (!baseRef) {
+    block('base_branch_unknown');
+    return report;
+  }
+
+  let rules = null;
+  try {
+    rules = await githubRequest('get',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/rules/branches/${encodeURIComponent(baseRef)}`, token);
+  } catch (error) {
+    block('ruleset_capability_unavailable', error.response?.data || error.message);
+  }
+  if (rules && !Array.isArray(rules.data)) block('ruleset_response_unknown');
+  if (Array.isArray(rules?.data) && rules.data.length > 0) {
+    report.protection_source = 'rulesets';
+    block('rulesets_unsupported');
+  }
+
+  let protection = null;
+  try {
+    protection = await githubRequest('get',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/branches/${encodeURIComponent(baseRef)}/protection`, token);
+  } catch (error) {
+    block('branch_protection_unavailable', error.response?.data || error.message);
+  }
+  const checks = protection?.data?.required_status_checks?.checks;
+  const appId = Number(process.env.GITHUB_APP_ID);
+  const bypassApps = protection?.data?.required_pull_request_reviews?.bypass_pull_request_allowances?.apps || [];
+  if (Array.isArray(checks)) {
+    report.required_checks = checks.map((check) => ({ context: String(check.context || ''), app_id: Number(check.app_id || 0) }));
+  }
+  if (report.protection_source === 'unknown' && protection && Array.isArray(rules?.data)) {
+    report.protection_source = 'branch_protection';
+  }
+  if (report.protection_source === 'unknown') block('protection_source_unknown');
+  if (bypassApps.some(app => Number(app.id) === appId)) block('app_bypasses_required_reviews');
+  if (!Number.isInteger(appId) || !Array.isArray(checks)
+    || !checks.some((check) => check.context === verificationCheckName && Number(check.app_id) === appId)) {
+    block('verification_check_not_required');
+  }
+  const reviewCount = protection?.data?.required_pull_request_reviews?.required_approving_review_count;
+  if (!Number.isInteger(reviewCount) || reviewCount < 1) block('required_reviews_not_configured');
+  report.reviews.required = Number.isInteger(reviewCount) ? reviewCount : null;
+
+  const latestReviewByActor = new Map();
+  let reviewsComplete = true;
+  for (let page = 1; page <= 10; page += 1) {
+    let reviews;
+    try {
+      reviews = await githubRequest('get',
+        `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}/reviews?per_page=100&page=${page}`, token);
+    } catch (error) {
+      if (stopOnFirstBlocker) throw error;
+      reviewsComplete = false;
+      block('review_state_unavailable', error.response?.data || error.message);
+      break;
+    }
+    if (!Array.isArray(reviews.data)) {
+      reviewsComplete = false;
+      block('review_response_invalid');
+      break;
+    }
+    for (const review of reviews.data) {
+      // A later COMMENTED review does not dismiss an earlier approval/request.
+      if (review.user?.login && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state)) {
+        latestReviewByActor.set(review.user.login, review.state);
+      }
+    }
+    if (page === 10 && reviews.data.length === 100) {
+      reviewsComplete = false;
+      block('review_pagination_exceeded');
+      break;
+    }
+    if (reviews.data.length < 100) break;
+  }
+  if (reviewsComplete) {
+    const appBotLogin = await githubAppAuth.getAppBotLogin();
+    const approvals = [...latestReviewByActor.entries()]
+      .filter(([login, state]) => login !== appBotLogin && state === 'APPROVED').length;
+    report.reviews.approvals = approvals;
+    report.reviews.changes_requested = [...latestReviewByActor.values()].includes('CHANGES_REQUESTED');
+    if (approvals < (Number.isInteger(reviewCount) && reviewCount > 0 ? reviewCount : 1)) block('required_approvals_missing');
+    if (report.reviews.changes_requested) block('changes_requested');
+  }
+
+  let checkRuns = null;
+  try {
+    checkRuns = await githubRequest('get',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/commits/${encodeURIComponent(envelope.head_sha)}/check-runs?per_page=100`, token);
+  } catch (error) {
+    if (stopOnFirstBlocker) throw error;
+    block('check_state_unavailable', error.response?.data || error.message);
+  }
+  if (checkRuns) {
+    if (!Array.isArray(checkRuns.data?.check_runs) || checkRuns.data.total_count > 100) {
+      block('check_state_incomplete');
+    } else {
+      report.check_runs = checkRuns.data.check_runs.slice(0, 100).map((check) => ({
+        id: Number(check.id || 0),
+        name: String(check.name || ''),
+        app_id: Number(check.app?.id || 0),
+        status: String(check.status || ''),
+        conclusion: String(check.conclusion || ''),
+      }));
+      // Only a run published by this app under the protected name counts as verification;
+      // a same-named run from another app proves nothing about this remediation.
+      const matching = checkRuns.data.check_runs.filter(check => check.name === verificationCheckName && Number(check.app?.id) === appId)
+        .sort((a, b) => Number(b.id) - Number(a.id));
+      const verified = matching[0]?.status === 'completed' && matching[0]?.conclusion === 'success';
+      if (!verified) block('verification_check_not_successful');
+    }
+  }
+  report.eligible = report.blockers.length === 0;
+  return report;
+}
+
+async function assertMergeCapability(envelope, pull, token, verificationCheckName) {
+  let report;
+  try {
+    report = await evaluateMergeCapability(envelope, pull, token, verificationCheckName, true);
+  } catch (error) {
+    if (error instanceof BlockerSignal) throw error.report.failure;
+    throw error;
+  }
+  if (report.failure) throw report.failure;
+}
+
+async function mergeRemediationAction(payload) {
+  const envelope = validateActionEnvelope(payload);
+  const expectedHead = validateSha(payload.expected_head_sha, 'expected_head_sha');
+  const expectedBase = validateSha(payload.expected_base_sha, 'expected_base_sha');
+  const mergeMethod = requireString(payload.merge_method, 'merge_method', 16);
+  const verificationCheckName = remediationVerificationCheckName(payload.verification_check_name);
+  if (!['merge', 'squash', 'rebase'].includes(mergeMethod)) throw badRequest('Unsupported merge_method');
+  if (expectedHead !== envelope.head_sha || expectedBase !== envelope.base_sha) throw new OperationError('Merge revisions do not match the consented action', 409);
+  try {
+    const token = await assertInstallationRepositoryAndActor(envelope);
+    const pull = await loadExactSameRepositoryPull(envelope, token);
+    if (pull.mergeable !== true || pull.mergeable_state !== 'clean') {
+      throw new OperationError('Pull request is not currently mergeable', 409);
+    }
+    await assertMergeCapability(envelope, pull, token, verificationCheckName);
+    const response = await axios({
+      method: 'put',
+      url: `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}/merge`,
+      data: { sha: expectedHead, merge_method: mergeMethod },
+      timeout: 25000,
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+    });
+    if (!response.data?.merged || !response.data?.sha) throw new OperationError('GitHub did not merge the expected pull request head', 409, response.data);
+    return { state: 'merged', operation_id: envelope.action_id, commit_sha: response.data.sha };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    if (isAmbiguousWriteError(error)) return { state: 'reconciling', operation_id: envelope.action_id, reason: 'github_merge_outcome_ambiguous' };
+    throw externalError('Failed to merge remediation action', error);
+  }
+}
+
+const DEFAULT_REMEDIATION_CHECK_NAME = 'Mitig8it Remediation Verification';
+const CHECK_RUN_STATUSES = ['queued', 'in_progress', 'completed'];
+const CHECK_RUN_CONCLUSIONS = ['success', 'failure', 'neutral', 'cancelled', 'timed_out', 'action_required', 'skipped'];
+
+// One source for the remediation verification check name. The publisher and the merge
+// gate must agree, otherwise a merge could pass on a check nobody publishes.
+function remediationVerificationCheckName(explicit) {
+  const name = typeof explicit === 'string' && explicit
+    ? explicit
+    : (process.env.REMEDIATION_VERIFICATION_CHECK_NAME || DEFAULT_REMEDIATION_CHECK_NAME);
+  if (typeof name !== 'string' || !name.trim() || name.length > 100) {
+    throw badRequest('verification_check_name is invalid');
+  }
+  return name;
+}
+
+// gRPC leaves an unset int32 at 0, so an absent pull_number is not a mismatch.
+function assertPullNumberMatches(payload, envelope) {
+  if (!payload.pull_number) return;
+  if (Number(payload.pull_number) !== envelope.pr_number) {
+    throw new OperationError('pull_number does not match the consented pr_number', 409);
+  }
+}
+
+// A remediation REST write is issued exactly once. githubRequest retries transient
+// failures, which is unsafe when GitHub may already have accepted the mutation.
+async function githubRestMutation(method, url, token, data) {
+  return axios({
+    method,
+    url,
+    data,
+    timeout: 25000,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+}
+
+async function createRemediationCheckRun(payload) {
+  const envelope = validateActionEnvelope(payload);
+  const name = remediationVerificationCheckName(payload.name);
+  const headSha = validateSha(payload.head_sha || envelope.head_sha, 'head_sha');
+  if (headSha !== envelope.head_sha) {
+    throw new OperationError('Check run head_sha must match the consented head_sha', 409);
+  }
+  const externalId = requireString(payload.external_id, 'external_id', 255);
+  const status = payload.status ? requireString(payload.status, 'status', 32) : 'completed';
+  if (!CHECK_RUN_STATUSES.includes(status)) throw badRequest('Unsupported check run status');
+  const conclusion = status === 'completed' ? requireString(payload.conclusion, 'conclusion', 32) : null;
+  if (conclusion && !CHECK_RUN_CONCLUSIONS.includes(conclusion)) throw badRequest('Unsupported check run conclusion');
+  const title = requireString(payload.title, 'title', 255);
+  const summary = requireString(payload.summary, 'summary', 65000);
+
+  try {
+    // Publishing the verification result is system initiated. It runs after verification
+    // completes, when no human actor is present, so actor write permission is not
+    // required for this operation; it writes only this app's own check run.
+    const token = await assertInstallationRepositoryAndActor(envelope, false);
+    let existing = null;
+    for (let page = 1; page <= 10; page += 1) {
+      const response = await githubRequest('get',
+        `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/commits/${encodeURIComponent(headSha)}`
+        + `/check-runs?check_name=${encodeURIComponent(name)}&per_page=100&page=${page}`, token);
+      const checks = response.data?.check_runs;
+      if (!Array.isArray(checks)) throw new OperationError('Invalid check run response', 502);
+      // Only this app's own run for this external id may be updated; a same-named run
+      // owned by another app belongs to that app.
+      existing = checks.find(check => check.head_sha === headSha && check.name === name
+        && String(check.app?.id) === String(process.env.GITHUB_APP_ID)
+        && check.external_id === externalId) || null;
+      if (existing || checks.length < 100) break;
+    }
+    const body = { name, head_sha: headSha, status, external_id: externalId, output: { title, summary } };
+    if (conclusion) body.conclusion = conclusion;
+    const response = await githubRestMutation(
+      existing ? 'patch' : 'post',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/check-runs${existing ? `/${existing.id}` : ''}`,
+      token,
+      body
+    );
+    if (!response.data?.id) throw new OperationError('GitHub did not return the published check run', 502);
+    return {
+      state: 'published',
+      operation_id: envelope.action_id,
+      check_run_id: Number(response.data.id),
+      name,
+      external_id: externalId,
+      updated: Boolean(existing),
+    };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    if (isAmbiguousWriteError(error)) {
+      return { state: 'reconciling', operation_id: envelope.action_id, reason: 'github_check_run_outcome_ambiguous' };
+    }
+    throw externalError('Failed to publish the remediation verification check run', error);
+  }
+}
+
+async function cancelScheduledMerge(payload) {
+  const envelope = validateActionEnvelope(payload);
+  assertPullNumberMatches(payload, envelope);
+  const expectedHead = validateSha(payload.expected_head_sha || envelope.head_sha, 'expected_head_sha');
+  if (expectedHead !== envelope.head_sha) {
+    throw new OperationError('expected_head_sha must match the consented head_sha', 409);
+  }
+  try {
+    // Cancelling merge intent stays available after the actor loses write access so a
+    // scheduled merge can always be withdrawn. This operation never merges.
+    const token = await assertInstallationRepositoryAndActor(envelope, false);
+    const lookup = await githubGraphqlMutation(token, `query RemediationAutoMerge($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) { id state merged headRefOid autoMergeRequest { enabledBy { login } } }
+      }
+    }`, { owner: envelope.owner, name: envelope.repo, number: envelope.pr_number });
+    if (lookup.data?.errors?.length) {
+      throw new OperationError('GitHub rejected the scheduled merge lookup', 502, lookup.data.errors);
+    }
+    const pull = lookup.data?.data?.repository?.pullRequest;
+    if (!pull?.id) throw new OperationError('Pull request is not accessible for merge cancellation', 404);
+    const observedHead = typeof pull.headRefOid === 'string' ? pull.headRefOid : '';
+    if (pull.merged) {
+      return { state: 'already_merged', operation_id: envelope.action_id, head_sha: observedHead, merged: true };
+    }
+    if (!pull.autoMergeRequest) {
+      return { state: 'not_scheduled', operation_id: envelope.action_id, head_sha: observedHead, merged: false,
+        reason: 'auto_merge_not_enabled' };
+    }
+    const appBotLogin = await githubAppAuth.getAppBotLogin();
+    if (pull.autoMergeRequest.enabledBy?.login !== appBotLogin) {
+      // Another account scheduled this merge. Disabling it is not this app's decision and
+      // reporting it as cancelled would be untrue.
+      return { state: 'not_scheduled', operation_id: envelope.action_id, head_sha: observedHead, merged: false,
+        reason: 'auto_merge_enabled_by_another_actor' };
+    }
+    const disabled = await githubGraphqlMutation(token, `mutation DisableRemediationAutoMerge($input: DisablePullRequestAutoMergeInput!) {
+      disablePullRequestAutoMerge(input: $input) { pullRequest { id autoMergeRequest { enabledBy { login } } } }
+    }`, { input: { pullRequestId: pull.id } });
+    if (disabled.data?.errors?.length || !disabled.data?.data?.disablePullRequestAutoMerge?.pullRequest?.id) {
+      throw new OperationError('GitHub rejected the scheduled merge cancellation', 409, disabled.data?.errors || null);
+    }
+    const after = await githubRequest('get',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}`, token);
+    const merged = Boolean(after.data?.merged);
+    return {
+      state: merged ? 'already_merged' : 'cancelled',
+      operation_id: envelope.action_id,
+      head_sha: after.data?.head?.sha || observedHead,
+      merged,
+    };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    if (isAmbiguousWriteError(error)) {
+      return { state: 'reconciling', operation_id: envelope.action_id, reason: 'github_cancel_outcome_ambiguous' };
+    }
+    throw externalError('Failed to cancel the scheduled merge', error);
+  }
+}
+
+async function readMergeEligibility(payload) {
+  const envelope = validateActionEnvelope(payload);
+  assertPullNumberMatches(payload, envelope);
+  const expectedHead = validateSha(payload.expected_head_sha || envelope.head_sha, 'expected_head_sha');
+  const verificationCheckName = remediationVerificationCheckName(payload.verification_check_name);
+  try {
+    // Pre-flight eligibility is read only. It reports blockers and never merges, but it
+    // still requires the same live actor permission the guarded merge requires so that a
+    // caller without write access cannot enumerate protection configuration.
+    const token = await assertInstallationRepositoryAndActor(envelope);
+    const response = await githubRequest('get',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}`, token);
+    const pull = response.data || {};
+    const report = await evaluateMergeCapability(envelope, pull, token, verificationCheckName, false);
+    const pullBlockers = [];
+    if (pull.state !== 'open') pullBlockers.push('pull_request_not_open');
+    if (pull.draft) pullBlockers.push('pull_request_draft');
+    if (pull.merged) pullBlockers.push('pull_request_already_merged');
+    if (pull.head?.sha !== expectedHead) pullBlockers.push('pull_request_head_changed');
+    if (pull.base?.sha !== envelope.base_sha) pullBlockers.push('pull_request_base_changed');
+    if (pull.head?.repo?.full_name?.toLowerCase() !== envelope.repository_full_name.toLowerCase()) {
+      pullBlockers.push('fork_pull_request_unsupported');
+    }
+    if (pull.mergeable !== true || pull.mergeable_state !== 'clean') pullBlockers.push('pull_request_not_mergeable');
+    const blockers = [...new Set([...pullBlockers, ...report.blockers])];
+    return {
+      eligible: blockers.length === 0,
+      blockers,
+      required_checks: report.required_checks,
+      check_runs: report.check_runs,
+      reviews: report.reviews,
+      protection_source: report.protection_source,
+      mergeable_state: typeof pull.mergeable_state === 'string' ? pull.mergeable_state : 'unknown',
+      head_sha: pull.head?.sha || '',
+      base_sha: pull.base?.sha || '',
+      verification_check_name: verificationCheckName,
+    };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    throw externalError('Failed to read merge eligibility', error);
+  }
+}
+
+async function readPullRequestHead(payload) {
+  const envelope = validateActionEnvelope(payload);
+  assertPullNumberMatches(payload, envelope);
+  try {
+    // Reading current pull request state is used for polling and reconciliation, which
+    // must keep working after an actor loses write permission. It never mutates.
+    const token = await assertInstallationRepositoryAndActor(envelope, false);
+    const response = await githubRequest('get',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}`, token);
+    const pull = response.data || {};
+    const headRepo = pull.head?.repo?.full_name;
+    return {
+      head_sha: pull.head?.sha || '',
+      base_sha: pull.base?.sha || '',
+      state: typeof pull.state === 'string' ? pull.state : 'unknown',
+      draft: Boolean(pull.draft),
+      merged: Boolean(pull.merged),
+      mergeable_state: typeof pull.mergeable_state === 'string' ? pull.mergeable_state : 'unknown',
+      // An unreadable head repository is treated as a fork, never as same repository.
+      fork: typeof headRepo !== 'string' || headRepo.toLowerCase() !== envelope.repository_full_name.toLowerCase(),
+    };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    throw externalError('Failed to read pull request head', error);
+  }
+}
+
+// Live authorization pre-flight for the control plane's apply route. It proves the
+// installation is active, the repository is still granted to it, and the actor holds
+// write permission right now. It never mutates anything.
+async function authorizeRemediationActor(payload) {
+  const envelope = validateActionEnvelope(payload);
+  try {
+    const token = await assertInstallationRepositoryAndActor(envelope, true);
+    const pull = await loadExactSameRepositoryPull(envelope, token);
+    return {
+      state: 'authorized',
+      installation_active: true,
+      repository_granted: true,
+      actor_write_permission: true,
+      head_sha: pull.head.sha,
+      base_sha: pull.base.sha,
+      head_branch: pull.head.ref,
+      base_branch: pull.base.ref,
+    };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    throw externalError('Failed to authorize remediation actor', error);
+  }
+}
+
 module.exports = {
   OperationError,
+  authorizeRemediationActor,
+  cancelScheduledMerge,
   createCheckRun,
+  createRemediationCheckRun,
   fetchFileContents,
   fetchPullRequestFiles,
+  fetchRemediationSnapshot,
   githubRequest,
+  commitRemediationAction,
+  mergeRemediationAction,
   postInlineComment,
+  prepareRemediationAction,
+  readMergeEligibility,
+  readPullRequestHead,
+  reconcileRemediationAction,
+  remediationMarker,
+  remediationVerificationCheckName,
   submitPullRequestReview,
 };

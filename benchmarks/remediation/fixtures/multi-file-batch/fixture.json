@@ -1,0 +1,75 @@
+{
+  "schema_version": "v1",
+  "id": "multi-file-batch-001",
+  "repository_id": "fixture-orders-service-d",
+  "split": "train",
+  "family": "sql_parameterization",
+  "kind": "supported",
+  "expected_state": "ready",
+  "source": "orders.js",
+  "reference_repair": "expected/orders.js",
+  "finding": {
+    "id": "orders-1",
+    "rule_id": "cwe-89.sql-query",
+    "cwe_id": "CWE-89",
+    "category": "sql",
+    "message": "The order lookup interpolates the customer email into SQL text.",
+    "path": "orders.js",
+    "line_start": 4,
+    "line_end": 4
+  },
+  "additional_units": [
+    {
+      "source": "customers.js",
+      "reference_repair": "expected/customers.js",
+      "finding": {
+        "id": "customers-1",
+        "rule_id": "cwe-89.sql-query",
+        "cwe_id": "CWE-89",
+        "category": "sql",
+        "message": "The customer email normalizer returns untrusted input unchecked into a SQL filter.",
+        "path": "customers.js",
+        "line_start": 3,
+        "line_end": 3
+      }
+    }
+  ],
+  "trusted_fixture_test": {
+    "runtime": "node",
+    "path": "tests/verify.js",
+    "timeout_seconds": 5
+  },
+  "budget": {
+    "max_tool_calls": 20,
+    "max_attempts": 3,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 120000,
+    "max_cost_usd": 2.0
+  },
+  "verification_checks": [
+    {
+      "check_id": "exploit",
+      "kind": "exploit",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--exploit"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "failed",
+      "expected_candidate": "passed"
+    },
+    {
+      "check_id": "behavior",
+      "kind": "behavior",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--behavior"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    }
+  ]
+}

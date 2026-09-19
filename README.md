@@ -10,6 +10,11 @@ The repository is still named `codesentry` and some environment variables, packa
 - `services/api-service/` - Node.js/Express control plane on port `3000`; handles auth, webhooks, repository/PR/finding APIs, orchestration, and migrations.
 - `services/github-service/` - Node.js/Express GitHub adapter on port `3002`; fetches PR files and posts comments/check runs through the GitHub App.
 - `services/analysis-service/` - FastAPI analysis engine on port `8001`; runs regex rules, dependency checks, OpenGrep rules, and optional LLM triage.
+- `services/remediation-service/` - FastAPI repair service on port `8002`; turns an exact-commit snapshot and a confirmed finding into a bounded candidate. It proposes patches only and never writes to GitHub.
+- `remediation-worker` - The same image as the repair service running `python -m src.worker`; owns durable job execution, leases, and spend accounting.
+- `sandbox-broker` - Sandbox broker on port `8003` (`Dockerfile.broker`); creates one-use isolated verification jobs and returns authenticated evidence. Deployed it terminates TLS itself; the local stack runs it as plain HTTP.
+- `api-worker` - The api-service image running `node src/workers/index.js`; background remediation progress lives here instead of in the API request path.
+- `otel-collector` - OpenTelemetry Collector for remediation traces, metrics, and logs, with source, prompts, completions, and patches stripped before export.
 - `postgres` - PostgreSQL 15 system of record.
 - `prometheus` - Local metrics scrape target on port `9090`.
 
@@ -79,7 +84,7 @@ npm run dev
 # Analysis service
 cd services/analysis-service
 pip install -r src/requirements.txt
-uvicorn src.main:app --reload --port 8001
+uvicorn main:app --app-dir src --reload --port 8001
 
 # Frontend
 cd frontend
@@ -115,6 +120,47 @@ pytest tests -q
 ```
 
 CI also runs Gitleaks, dependency review on PRs, npm audits, Python `pip-audit`, Bandit, and Docker image builds for the backend services.
+
+## Remediation
+
+Agentic PR remediation turns a confirmed finding into a repository-aware repair, verifies it in an isolated sandbox, and presents it below the finding for an authorized developer to apply.
+
+Status: behind feature flags and off by default. The only verification available in this repository today is `development_unverified`. Local Docker Compose results, fixture suites, and scripted-provider benchmark runs are pipeline integrity checks. They are not repair quality measurements and they are not release evidence. Promotion requires the staging gates recorded in [docs/runbooks/remediation.md](docs/runbooks/remediation.md), including an exploit and behavior check through a real GKE Sandbox runner with signed broker evidence.
+
+Services: `remediation-service` (port 8002), `remediation-worker`, `sandbox-broker` (port 8003), `api-worker`, and `otel-collector`. Deployment definitions live in `infrastructure/remediation/`; nothing there has been applied.
+
+Flags on the API service, all false unless set:
+
+| Flag | Effect |
+| --- | --- |
+| `REMEDIATION_ENABLED` | Global kill switch. Every capability below stays off while it is false. |
+| `REMEDIATION_GENERATE_ENABLED` | Generate repair candidates. Defaults to true in the local compose stack. |
+| `REMEDIATION_PUBLISH_ENABLED` | Show candidates and evidence to developers. |
+| `REMEDIATION_APPLY_ENABLED` | Apply a verified batch through an expected-head write. |
+| `REMEDIATION_MERGE_ENABLED` | Record merge intent and merge after checks and approvals. |
+| `REMEDIATION_DISPATCH_MODE` | `inprocess` (outbox polling) or `cloud_tasks`. The Cloud Tasks control-plane endpoints are not implemented. |
+| `REMEDIATION_WORKER_ENABLED` | Runs the control-plane polling worker. Set on `api-worker`, not on `api-service`. |
+
+The repair service takes `REMEDIATION_EXECUTION_BACKEND=local|postgres` and the broker takes `SANDBOX_DRIVER=local|kubernetes`. `local` is development only.
+
+Local flow:
+
+```bash
+docker compose build remediation-service remediation-worker sandbox-broker
+docker compose up api-service api-worker remediation-service remediation-worker sandbox-broker otel-collector
+```
+
+The compose stack runs without a gVisor runtime class, without NetworkPolicy, without CMEK artifact storage, and with both sandbox attestation gates false. `SANDBOX_NETWORK_POLICY_ATTESTED` and `SANDBOX_NODE_LIMITS_ATTESTED` must not be set to true based on anything it reports. Provider credentials are passed through from the host environment and are unset by default, so the repair loop abstains rather than calling a model.
+
+Remediation tests:
+
+```bash
+cd services/api-service && npm run test:integration:remediation   # needs a disposable _test database
+cd services/github-service && npm run test:remediation
+cd frontend && npm run test:remediation-browser                   # Playwright, fixtures only
+cd services/remediation-service && python -m pytest tests
+python benchmarks/remediation/evaluate.py --suite seed
+```
 
 ## Deployment
 
