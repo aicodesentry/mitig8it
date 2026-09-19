@@ -143,7 +143,7 @@ class Snapshot:
                     return hits
         return hits
 
-    def nearest_tests(self, source_path: str, max_results: int = 20) -> list[ContextHit]:
+    def nearest_tests(self, source_path: str, max_results: int = 20, max_chars: int = 12_000) -> list[ContextHit]:
         source_path = validate_repo_path(source_path)
         stem = PurePosixPath(source_path).stem.lower()
         candidates = [
@@ -153,14 +153,14 @@ class Snapshot:
         ][:max_results]
         hits = []
         for path in candidates:
-            hit = self.read(path, max_chars=12_000)
+            hit = self.read(path, max_chars=max_chars)
             hits.append(ContextHit(hit.path, hit.line_start, hit.line_end, hit.content, "nearest_test", hit.content_digest))
         return hits
 
-    def symbol_references(self, symbol: str, max_results: int = 20) -> list[ContextHit]:
+    def symbol_references(self, symbol: str, max_results: int = 20, max_chars: int = 24_000) -> list[ContextHit]:
         if not re.fullmatch(r"[$A-Za-z_][$\w]{0,127}", symbol):
             raise SnapshotError("symbol must be a JavaScript/TypeScript identifier")
         return [
             ContextHit(hit.path, hit.line_start, hit.line_end, hit.content, "symbol_reference", hit.content_digest)
-            for hit in self.search(symbol, max_results=max_results)
+            for hit in self.search(symbol, max_results=max_results, max_chars=max_chars)
         ]

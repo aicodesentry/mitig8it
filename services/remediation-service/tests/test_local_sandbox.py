@@ -10,7 +10,7 @@ from src.patches import build_patch_bundle
 from src.retrieval import Snapshot
 from src.sandbox import InProcessSandboxBroker, LocalSubprocessDriver
 from src.verification import Verifier
-from tests.conftest import regression_test_spec
+from tests.conftest import regression_test_spec, whole_file_change
 
 REPAIRED = "export function loadUser(db, id) {\n  return db.query('SELECT * FROM users WHERE id = $1', [id]);\n}\n"
 
@@ -34,7 +34,7 @@ def development_payload(request_payload, checks, *, allow=True, source=None, rep
     bundle = build_patch_bundle(
         request,
         snapshot,
-        [{"path": "src/db.ts", "base_sha256": content_sha256(source), "replacement_content": replacement}],
+        [whole_file_change("src/db.ts", source, replacement)],
         [supplied] if supplied else [],
     )
     return request, snapshot, bundle

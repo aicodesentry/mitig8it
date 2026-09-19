@@ -9,6 +9,7 @@ environment before they can be called independently verified.
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import math
@@ -218,6 +219,35 @@ def run_trusted_fixture_test(fixture_dir: Path, fixture: dict[str, Any]) -> dict
     else:
         report["passed"] = True
     return report
+
+
+def reference_hunks(modules: dict[str, Any], path: str, original: str, replacement: str) -> list[dict[str, Any]]:
+    """The reviewed repair expressed as the line-range hunks `propose_patch` now takes.
+
+    The reference repair is stored as a whole file, so the changed ranges are recovered with a
+    diff. This replays exactly the reviewed patch while exercising the hunk path end to end.
+    """
+    original_lines = original.splitlines(keepends=True)
+    replacement_lines = replacement.splitlines(keepends=True)
+    matcher = difflib.SequenceMatcher(a=original_lines, b=replacement_lines, autojunk=False)
+    hunks: list[dict[str, Any]] = []
+    for tag, start_a, end_a, start_b, end_b in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        # A pure insertion has no replaced lines, so it rewrites the line before it instead.
+        start, end = (start_a, end_a) if end_a > start_a else (max(0, start_a - 1), start_a)
+        replaced = "".join(original_lines[start:end])
+        new_lines = original_lines[start:start_a] + replacement_lines[start_b:end_b]
+        hunks.append(
+            {
+                "path": path,
+                "start_line": start + 1,
+                "end_line": end,
+                "replaced_sha256": modules["content_sha256"](replaced),
+                "replacement_lines": "".join(new_lines).splitlines(),
+            }
+        )
+    return hunks
 
 
 def reference_adapter(fixture_dir: Path, fixture: dict[str, Any]) -> dict[str, Any]:
@@ -476,12 +506,9 @@ class ScriptedFixtureProvider:
                             for unit in repairable
                         ],
                         "changes": [
-                            {
-                                "path": unit["path"],
-                                "base_sha256": modules["content_sha256"](unit["original"]),
-                                "replacement_content": unit["replacement"],
-                            }
+                            hunk
                             for unit in repairable
+                            for hunk in reference_hunks(modules, unit["path"], unit["original"], unit["replacement"])
                         ],
                         # One reproducer per finding group, so a multi-group fixture proposes a
                         # distinct generated test per candidate and the combined tree runs both.

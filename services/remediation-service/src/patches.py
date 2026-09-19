@@ -249,41 +249,100 @@ def build_generated_tests(
     return tests, limitations
 
 
+HUNK_FIELDS = {"path", "start_line", "end_line", "replaced_sha256", "replacement_lines"}
+
+
+def _hunk_text(replacement_lines: Any, replaced_block: str) -> str:
+    """Renders a hunk's replacement lines, preserving the replaced block's trailing newline."""
+    if not isinstance(replacement_lines, list) or any(not isinstance(line, str) for line in replacement_lines):
+        raise PatchPolicyError("replacement_lines_must_be_a_list_of_strings")
+    if any("\n" in line or "\r" in line for line in replacement_lines):
+        raise PatchPolicyError("replacement_lines_must_not_contain_newlines")
+    if not replacement_lines:
+        return ""
+    trailing = "\n" if replaced_block.endswith(("\n", "\r")) else ""
+    return "\n".join(replacement_lines) + trailing
+
+
+def apply_hunks(snapshot: Snapshot, proposed_changes: list[dict[str, Any]]) -> dict[str, str]:
+    """Applies line-range hunks to the exact snapshot and returns each file's new content.
+
+    A hunk names the lines it replaces and the digest of exactly those lines. A digest that no
+    longer matches the snapshot is stale and rejects the whole proposal, so the agent can never
+    edit a range it did not read. Hunks are applied bottom-up so earlier line numbers stay valid.
+    """
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for change in proposed_changes:
+        if not isinstance(change, dict) or set(change) != HUNK_FIELDS:
+            raise PatchPolicyError("change_schema_invalid")
+        try:
+            path = validate_repo_path(str(change["path"]))
+            snapshot.full_content(path)
+        except SnapshotError as exc:
+            raise PatchPolicyError(str(exc)) from exc
+        by_path.setdefault(path, []).append(change)
+
+    contents: dict[str, str] = {}
+    for path, hunks in by_path.items():
+        original_lines = snapshot.full_content(path).splitlines(keepends=True)
+        prepared: list[tuple[int, int, str]] = []
+        for hunk in hunks:
+            try:
+                start = int(hunk["start_line"])
+                end = int(hunk["end_line"])
+            except (TypeError, ValueError) as exc:
+                raise PatchPolicyError("hunk_line_range_invalid") from exc
+            if start < 1 or end < start or end > len(original_lines):
+                raise PatchPolicyError(f"hunk_line_range_out_of_bounds:{path}@{start}-{end}")
+            replaced_block = "".join(original_lines[start - 1 : end])
+            if str(hunk["replaced_sha256"]) != content_sha256(replaced_block):
+                raise PatchPolicyError(f"stale_hunk_digest:{path}@{start}-{end}")
+            prepared.append((start, end, _hunk_text(hunk["replacement_lines"], replaced_block)))
+        prepared.sort(key=lambda item: (item[0], item[1]))
+        for earlier, later in zip(prepared, prepared[1:]):
+            if later[0] <= earlier[1]:
+                raise PatchPolicyError(f"overlapping_hunks:{path}")
+        updated = list(original_lines)
+        for start, end, text in reversed(prepared):
+            updated[start - 1 : end] = [text] if text else []
+        contents[path] = "".join(updated)
+    return contents
+
+
 def build_patch_bundle(
     request: RepairRequest,
     snapshot: Snapshot,
     proposed_changes: list[dict[str, Any]],
     regression_tests: list[dict[str, Any]] | None = None,
 ) -> PatchBundle:
+    """Builds a bundle from the agent's line-range hunks against the exact snapshot."""
     if not proposed_changes:
         raise PatchPolicyError("proposal_contains_no_changes")
-    if len(proposed_changes) > request.policy.max_files:
+    return _build_bundle_from_contents(request, snapshot, apply_hunks(snapshot, proposed_changes), regression_tests)
+
+
+def _build_bundle_from_contents(
+    request: RepairRequest,
+    snapshot: Snapshot,
+    replacements: dict[str, str],
+    regression_tests: list[dict[str, Any]] | None = None,
+) -> PatchBundle:
+    if not replacements:
+        raise PatchPolicyError("proposal_contains_no_changes")
+    if len(replacements) > request.policy.max_files:
         raise PatchPolicyError("changed_file_limit_exceeded")
 
-    seen: set[str] = set()
     patches: list[FilePatch] = []
     limitations: list[str] = []
     total_changed = 0
-    for change in proposed_changes:
-        if set(change) != {"path", "base_sha256", "replacement_content"}:
-            raise PatchPolicyError("change_schema_invalid")
-        try:
-            path = validate_repo_path(str(change["path"]))
-            original = snapshot.full_content(path)
-        except SnapshotError as exc:
-            raise PatchPolicyError(str(exc)) from exc
-        if path in seen:
-            raise PatchPolicyError("duplicate_patch_path")
-        seen.add(path)
+    for path, replacement in sorted(replacements.items()):
+        original = snapshot.full_content(path)
         if _path_forbidden(path, request):
             raise PatchPolicyError(f"protected_path:{path}")
         if PurePosixPath(path).suffix.lower() not in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
             raise PatchPolicyError(f"unsupported_application_file:{path}")
 
         base_digest = content_sha256(original)
-        if change["base_sha256"] != base_digest:
-            raise PatchPolicyError(f"stale_file_digest:{path}")
-        replacement = change["replacement_content"]
         if not isinstance(replacement, str):
             raise PatchPolicyError("replacement_content_must_be_string")
         if replacement == original:
@@ -382,7 +441,7 @@ def _ranges_conflict(first: tuple[int, int, list[str]], second: tuple[int, int, 
 def combine_patch_bundles(request: RepairRequest, snapshot: Snapshot, bundles: list[PatchBundle]) -> PatchBundle:
     """Unions candidate patches into one tree, rejecting candidates that edit the same range.
 
-    Whole-file replacements are reduced to their changed line ranges against the exact snapshot.
+    Candidate contents are reduced to their changed line ranges against the exact snapshot.
     Two candidates whose ranges intersect on one file cannot be combined mechanically, so the
     batch is rejected as `overlapping_candidates` instead of silently preferring one candidate.
     """
@@ -397,11 +456,11 @@ def combine_patch_bundles(request: RepairRequest, snapshot: Snapshot, bundles: l
     for bundle in bundles:
         for patch in bundle.patches:
             by_path.setdefault(patch.path, []).append(patch)
-    changes: list[dict[str, Any]] = []
+    replacements: dict[str, str] = {}
     for path, patches in sorted(by_path.items()):
         original = snapshot.full_content(path)
         if len(patches) == 1:
-            changes.append({"path": path, "base_sha256": patches[0].base_sha256, "replacement_content": patches[0].replacement_content})
+            replacements[path] = patches[0].replacement_content
             continue
         original_lines = original.splitlines(keepends=True)
         accepted: list[tuple[int, int, list[str]]] = []
@@ -417,8 +476,10 @@ def combine_patch_bundles(request: RepairRequest, snapshot: Snapshot, bundles: l
             merged.extend(lines)
             cursor = max(cursor, end)
         merged.extend(original_lines[cursor:])
-        changes.append({"path": path, "base_sha256": content_sha256(original), "replacement_content": "".join(merged)})
-    return build_patch_bundle(request, snapshot, changes, [combined_tests[path] for path in sorted(combined_tests)])
+        replacements[path] = "".join(merged)
+    return _build_bundle_from_contents(
+        request, snapshot, replacements, [combined_tests[path] for path in sorted(combined_tests)]
+    )
 
 
 def _bundle_ranges(snapshot: Snapshot, bundles: list[PatchBundle]) -> dict[str, list[tuple[int, int, list[str]]]]:
