@@ -85,27 +85,44 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "additionalProperties": False,
                     },
                 },
-                "regression_test": {
-                    "type": "object",
+                "regression_tests": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 10,
                     "description": (
-                        "A self-contained Node regression test that exits non-zero on the original "
-                        "code and zero on the patched code. Its path must be "
-                        "'.mitig8it/regression/<finding-id>.test.js' and must not already exist in "
-                        "the repository. With sandbox.dependencies_installed true, require the "
-                        "changed module by relative path and use its declared dependencies. With "
-                        "it false, nothing is installed: require no package and do not load the "
-                        "changed module, and instead read its source with node:fs and assert on "
-                        "the text, exiting non-zero while the vulnerable pattern is present."
+                        "One behavior test per finding this patch actually repairs, and none for "
+                        "a finding it does not. A candidate claims exactly the findings whose test "
+                        "fails on the original code and passes on the patched code; every other "
+                        "finding is dropped and reported as not repaired, so do not send a test "
+                        "you cannot make reproduce. Each test must require the changed module by "
+                        "relative path and invoke the affected function or route handler with fake "
+                        "req and res objects, stubbing collaborators such as child_process, pg and "
+                        "fs by patching Module.prototype.require or Module._load before the "
+                        "require, so no package needs to be installed. Exit non-zero when the "
+                        "vulnerable behavior is observed and zero when it is not. A test that only "
+                        "reads the changed file as text with fs.readFileSync and never requires it "
+                        "proves nothing about behavior and is rejected."
                     ),
-                    "properties": {
-                        "path": {"type": "string", "maxLength": 512},
-                        "content": {"type": "string", "maxLength": 64000},
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "finding_id": {
+                                "type": "string",
+                                "maxLength": 200,
+                                "description": "The exact finding id from the task this test reproduces.",
+                            },
+                            "path": {
+                                "type": "string",
+                                "maxLength": 512,
+                                "description": "'.mitig8it/regression/<finding-id>.test.js', not an existing repository path.",
+                            },
+                            "content": {"type": "string", "maxLength": 64000},
+                        },
+                        "required": ["finding_id", "path", "content"],
+                        "additionalProperties": False,
                     },
-                    "required": ["path", "content"],
-                    "additionalProperties": False,
                 },
-            },
-            ["hypothesis", "intended_behavior", "assumptions", "citations", "changes", "regression_test"],
+            ["hypothesis", "intended_behavior", "assumptions", "citations", "changes", "regression_tests"],
         ),
         tool("request_verification", "Request independent broker verification of the current proposal.", {}, []),
         tool("inspect_failure", "Read bounded structured evidence from the last verification failure.", {}, []),

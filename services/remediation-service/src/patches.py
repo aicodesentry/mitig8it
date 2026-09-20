@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .digests import content_sha256, digest_json
+from .digests import content_sha256, digest_json, git_blob_sha1
 from .models import FilePatch, RepairRequest
 from .retrieval import Snapshot, SnapshotError
 from .retrieval.snapshot import validate_repo_path
@@ -91,11 +91,22 @@ class PatchBundle:
 
     @property
     def file_manifest(self) -> list[dict[str, Any]]:
+        """The final content of every changed application file, not just its digests.
+
+        The control plane never reconstructs file content from hunks, so a candidate has to
+        carry the whole post-patch file: `contents_base64` is what the GitHub adapter commits,
+        `blob_oid` is the exact Git blob the verified tree was computed over, and `new_sha256`
+        binds the two. Without these an applicable candidate is unusable and the apply blocks
+        with `verified_full_file_manifest_unavailable`.
+        """
         return [
             {
                 "path": patch.path,
                 "base_sha256": patch.base_sha256,
                 "new_sha256": patch.new_sha256,
+                "contents_base64": patch.contents_base64,
+                "blob_oid": git_blob_sha1(patch.replacement_content.encode("utf-8")),
+                "bytes": len(patch.replacement_content.encode("utf-8")),
                 "kind": "application",
             }
             for patch in self.patches

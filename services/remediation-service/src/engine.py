@@ -227,7 +227,7 @@ def _build_candidate(request: RepairRequest, snapshot: Snapshot, finding_ids: li
         assumptions=result.proposal["assumptions"],
         citations=result.proposal["citations"],
         patch=list(result.bundle.patches),
-        file_manifest=result.bundle.file_manifest,
+        file_manifest={"files": result.bundle.file_manifest, "verified_tree_oid": verified_tree_oid},
         generated_tests=result.bundle.generated_test_manifest,
         artifact_digest=result.bundle.artifact_digest,
         context_manifest_digest=snapshot.manifest_digest,
