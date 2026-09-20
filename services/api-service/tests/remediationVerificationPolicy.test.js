@@ -83,5 +83,6 @@ describe('remediation verification policy', () => {
     expect(selected.require_generated_regression_test).toBe(true);
     expect(selected.run_repository_tests).toBe(false);
     expect(selected.verification_checks).toEqual([]);
+    expect(selected.max_revisions).toBe(2);
   });
 });
