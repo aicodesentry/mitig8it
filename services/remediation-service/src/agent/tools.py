@@ -25,9 +25,8 @@ def tool_definitions() -> list[dict[str, Any]]:
         tool(
             "read_file",
             (
-                "Read a line range of one snapshot file; null bounds read around the finding "
-                "lines. Returns `lines` as `[line_number, text]` pairs; text is what "
-                "original_lines expects."
+                "Read a line range of one snapshot file (null bounds: around the finding lines). "
+                "Returns lines as [line_number, text] pairs; text is what original_lines expects."
             ),
             {
                 "path": {"type": "string"},
@@ -43,7 +42,8 @@ def tool_definitions() -> list[dict[str, Any]]:
             "propose_patch",
             (
                 "Propose the smallest line-range replacements, each quoting the exact lines it "
-                "replaces, plus one regression test per repaired finding. Does not verify."
+                "replaces, plus one regression test per finding you fix; the result names "
+                "findings still lacking a test. Does not verify."
             ),
             {
                 "hypothesis": {"type": "string", "maxLength": 4000},
@@ -64,9 +64,8 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "minItems": 1,
                     "maxItems": 50,
                     "description": (
-                        "Hunks: original_lines verbatim from read_file (the service locates "
-                        "them); start_line is a hint between repeats; replacement_lines are the "
-                        "new lines, empty deletes. No newlines in items."
+                        "Hunks: original_lines verbatim from read_file; start_line disambiguates "
+                        "repeats; replacement_lines replace them (empty deletes); no newlines in items."
                     ),
                     "items": {
                         "type": "object",
@@ -84,14 +83,14 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "type": "array",
                     "maxItems": 10,
                     "description": (
-                        "One behavior test per repaired finding using require('../harness'), per "
-                        "the system prompt. A test that requires supertest, express, pg, or jest, "
-                        "or only reads the file as text, is rejected."
+                        "One harness test (require('../harness')) per finding you fix, per the "
+                        "system prompt; a test requiring supertest, express, pg, or jest, or only "
+                        "reading the file as text, is rejected."
                     ),
                     "items": {
                         "type": "object",
                         "properties": {
-                            "finding_id": {"type": "string", "maxLength": 200, "description": "The task finding id this test reproduces."},
+                            "finding_id": {"type": "string", "maxLength": 200, "description": "The finding id this test reproduces."},
                             "path": {"type": "string", "maxLength": 512, "description": "'.mitig8it/regression/<finding-id>.test.js'."},
                             "content": {"type": "string", "maxLength": 64000},
                         },

@@ -368,6 +368,13 @@
           "title": "Max Output Tokens Per Call",
           "type": "integer"
         },
+        "max_revisions": {
+          "default": 2,
+          "maximum": 5,
+          "minimum": 0,
+          "title": "Max Revisions",
+          "type": "integer"
+        },
         "max_snapshot_bytes": {
           "default": 10000000,
           "maximum": 100000000,

@@ -97,7 +97,15 @@ def _run_engine(payload, *, source=JS_SOURCE, replacement=JS_REPAIRED, regressio
         arguments["regression_tests"] = regression_tests
     elif regression_test is not None:
         arguments["regression_tests"] = [regression_test]
-    actions = iter([ProviderAction("propose_patch", arguments), ProviderAction("request_verification", {})])
+    # A partial proof asks for a coverage revision; this scripted model declines it, so the
+    # proven subset ships exactly as it did before revisions existed.
+    actions = iter(
+        [
+            ProviderAction("propose_patch", arguments),
+            ProviderAction("request_verification", {}),
+            ProviderAction("abstain", {"reason_code": "no_further_repair", "explanation": "Nothing more to add."}),
+        ]
+    )
 
     class _Provider:
         async def next_action(self, messages, tools):

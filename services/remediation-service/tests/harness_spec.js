@@ -127,7 +127,7 @@ test('child_process records exec, execFile, spawn, and sync calls and feeds conf
   const rendered = await h.invoke(router, 'post', '/orders/:id/invoice', { params: { id: '7; rm -rf /' } });
   assert.equal(rendered.body, 'rendered');
   assert.equal(rendered.headers['content-type'], 'text/plain');
-  assert.deepEqual(h.child_process.calls[0], { fn: 'exec', command: 'invoice-render --order 7; rm -rf /', args: null, options: {} });
+  assert.deepEqual(h.child_process.calls[0], { fn: 'exec', command: 'invoice-render --order 7; rm -rf /', args: null, options: {}, shell: 'invoice-render --order 7; rm -rf /' });
   const app = h.load('services/app.js', { stubs: { axios: {} }, child_process: { stdout: 'out' } });
   assert.equal((await h.invoke(app, 'get', '/sync')).body, 'out');
   assert.equal((await h.invoke(app, 'get', '/promised', { query: { dir: '/x' } })).body, 'out');
@@ -138,6 +138,7 @@ test('child_process records exec, execFile, spawn, and sync calls and feeds conf
     ['spawn', 'tar', ['-czf', 'x.tgz']],
   ]);
   assert.equal(h.child_process.calls[2].options.shell, false);
+  assert.deepEqual(h.child_process.calls.map((call) => call.shell), ['uname -a', null, null]);
   h.load('services/app.js', { stubs: { axios: {} }, child_process: { error: new Error('spawn failed') } });
   await assert.rejects(h.invoke(h.app, 'get', '/promised', { query: { dir: '/x' } }), /spawn failed/);
 });
@@ -148,15 +149,20 @@ test('fs overrides record paths and return configured content while other fs fun
   assert.equal(download.status, 200);
   assert.equal(download.body.toString(), 'PDF');
   assert.equal(h.fs.reads.length, 1);
-  assert.ok(h.fs.reads[0].endsWith(pathReal.join('etc', 'passwd')));
-  assert.throws(() => h.assert.inside(pathReal.join(h.root, 'reports'), h.fs.reads[0]), /stay under/);
+  assert.ok(h.fs.reads[0].path.endsWith(pathReal.join('etc', 'passwd')));
+  assert.equal(h.fs.reads[0].resolved, pathReal.resolve(h.fs.reads[0].path), 'resolved is the absolute form');
+  assert.equal(String(h.fs.reads[0]), h.fs.reads[0].path, 'String(read) is the raw path');
+  assert.throws(() => h.assert.inside(h.fs.reads[0], pathReal.join(h.root, 'reports')), /stay under/);
+  assert.throws(() => h.assert.inside(h.fs.reads[0].path, pathReal.join(h.root, 'reports')), /stay under/);
+  assert.throws(() => h.assert.inside(pathReal.join(h.root, 'reports'), h.fs.reads[0]), /stay under/, 'an entry is recognized in either position');
   const missing = await h.invoke(h.load('services/orders.js', { fs: { exists: false } }), 'get', '/reports/download', { query: { name: 'a.pdf' } });
   assert.equal(missing.status, 404);
   const app = h.load('services/app.js', { stubs: { axios: {} }, fs: { content: (file) => `content of ${file}` } });
   assert.equal((await h.invoke(app, 'get', '/readsync')).body, 'content of /etc/app.conf');
   assert.equal((await h.invoke(app, 'get', '/stream')).body, 'content of /var/data/report.pdf');
   assert.deepEqual((await h.invoke(app, 'get', '/exists')).body, { exists: true, real: 'function' });
-  assert.deepEqual(h.fs.reads, ['/etc/app.conf', '/var/data/report.pdf', '/tmp/missing']);
+  assert.deepEqual(h.fs.reads.map((read) => read.path), ['/etc/app.conf', '/var/data/report.pdf', '/tmp/missing']);
+  assert.deepEqual(h.fs.reads.map((read) => read.resolved), ['/etc/app.conf', '/var/data/report.pdf', '/tmp/missing']);
   assert.equal(realFs.readFileSync(pathReal.join(root, 'services', 'app.js'), 'utf8').length > 0, true, 'the real fs is untouched');
 });
 
@@ -175,9 +181,26 @@ test('assert helpers throw HarnessAssertion with the given message', () => {
   assert.throws(() => h.assert.equal(1, 2, 'eq'), /eq: \{ actual: 1, expected: 2 \}/);
   assert.throws(() => h.assert.includes('abc', 'z', 'inc'), /inc/);
   assert.throws(() => h.assert.notIncludes('abc', 'b', 'ninc'), /ninc/);
-  h.assert.inside('/base', '/base/sub/file');
+  h.assert.inside('/base/sub/file', '/base');
+  h.assert.inside({ path: 'sub/file', resolved: '/base/sub/file' }, '/base');
   assert.throws(() => h.assert.inside('/base', '/base'), /stay under/);
-  assert.throws(() => h.assert.inside('/base', '/base/../etc'), /stay under/);
+  assert.throws(() => h.assert.inside('/base/../etc', '/base'), /stay under/);
+  assert.throws(() => h.assert.inside({ path: '../etc', resolved: '/etc' }, '/base', 'escaped'), { name: 'HarnessAssertion', message: 'escaped' });
+});
+
+test('assert.argv accepts an argv call carrying the payload and rejects any shell string', async () => {
+  const app = h.load('services/app.js', { stubs: { axios: {} } });
+  await h.invoke(app, 'get', '/promised', { query: { dir: 'x; id' } });
+  h.assert.argv(h.child_process.calls[0], 'x; id');
+  assert.throws(() => h.assert.argv(h.child_process.calls[0], 'other'), /to be its own argument/);
+  await h.invoke(app, 'get', '/sync');
+  assert.throws(() => h.assert.argv(h.child_process.calls[1], 'uname'), /ran through a shell: uname -a/);
+  assert.throws(() => h.assert.argv(undefined, 'x'), /no child process call/);
+  const shelled = h.load('services/orders.js');
+  require('child_process').spawn('tar', ['-czf', 'x'], { shell: true });
+  assert.equal(h.child_process.calls[0].shell, 'tar -czf x', 'options.shell makes the argv form a shell string');
+  assert.throws(() => h.assert.argv(h.child_process.calls[0], 'x'), /ran through a shell/);
+  assert.ok(shelled);
 });
 
 test('a family test fails on the vulnerable module and passes on the repaired one under plain node', () => {
@@ -192,10 +215,9 @@ h.run(async () => {
   h.assert.includes(JSON.stringify(q.values || []), bad, 'input must be a bound value');
   await h.invoke(app, 'post', '/orders/:id/invoice', { params: { id: 'x; id' } });
   const call = h.child_process.calls[0];
-  h.assert(call.fn === 'execFile' || call.fn === 'spawn', 'command ran through a shell: ' + call.fn);
-  h.assert(call.args.includes('x; id') && !call.options.shell, 'input must be its own argument');
+  h.assert.argv(call, 'x; id', 'input must be its own argument, not shell text');
   await h.invoke(app, 'get', '/reports/download', { query: { name: '../../etc/passwd' } });
-  for (const read of h.fs.reads) h.assert.inside(require('node:path').join(h.root, 'reports'), read, 'read escaped: ' + read);
+  for (const read of h.fs.reads) h.assert.inside(read, require('node:path').join(h.root, 'reports'), 'read escaped: ' + read);
 });
 `;
   write('.mitig8it/regression/vulnerable.test.js', body('services/orders.js'));

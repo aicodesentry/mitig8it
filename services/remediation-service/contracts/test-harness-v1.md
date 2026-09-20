@@ -7,7 +7,7 @@ file, `.mitig8it/harness.js`, next to the generated tests in both the baseline a
 workspace. It is evidence infrastructure, not part of the repair: it is never a patch, never a
 manifest entry, and a proposal that writes to it is rejected as `harness_path_protected`.
 
-Source: `services/remediation-service/src/sandbox/harness.js` (Node 20, built-ins only, under 12 KB).
+Source: `services/remediation-service/src/sandbox/harness.js` (Node 20, built-ins only, under 16 KB).
 
 ## Shape of a test
 
@@ -53,23 +53,24 @@ Fakes and their recorders:
 
 - `express`: `express()` and `express.Router()` return the same recording app. `get`, `post`, `put`, `delete`, `patch`, `head`, `options`, `all`, and `use` record `{ method, path, handlers }` in `h.express.routes`. `express.json()`, `urlencoded()`, and `static()` are pass-through middleware; `listen` is a no-op.
 - `pg`: `Pool` and `Client` whose `query(text, values?, cb?)` (or `query({ text, values })`) record `{ text, values }` in `h.pg.queries` and resolve the configured result. `connect()` resolves a client with `query` and `release`.
-- `child_process`: `exec`, `execFile`, `spawn`, `execSync`, `execFileSync`, and `spawnSync` record `{ fn, command, args, options }` in `h.child_process.calls` (`args` is `null` for `exec` and `execSync`), then report the configured stdout through the callback, the returned child's `stdout`/`close` events, or the sync return value. `util.promisify(exec|execFile)` works.
-- `fs`: `readFile`, `readFileSync`, `existsSync`, `createReadStream`, and `fs.promises.readFile` (also `fs/promises`) record each path in `h.fs.reads` and return the configured content; every other `fs` function is the real one.
+- `child_process`: `exec`, `execFile`, `spawn`, `execSync`, `execFileSync`, and `spawnSync` record `{ fn, command, args, options, shell }` in `h.child_process.calls` (`args` is `null` for `exec` and `execSync`; `shell` is the command line a shell would interpret, the whole string for `exec`/`execSync` or command plus args when `options.shell` is set, and `null` when the child ran with an argv array), then report the configured stdout through the callback, the returned child's `stdout`/`close` events, or the sync return value. `util.promisify(exec|execFile)` works.
+- `fs`: `readFile`, `readFileSync`, `existsSync`, `createReadStream`, and `fs.promises.readFile` (also `fs/promises`) record each read in `h.fs.reads` as `{ path, resolved }`, the string the module passed and its absolute form (`String(read)` is the raw path), and return the configured content; every other `fs` function is the real one.
 
 Assertions (each throws a `HarnessAssertion` with the message on failure):
 
 - `h.assert(condition, message)`
 - `h.assert.equal(actual, expected, message)`
 - `h.assert.includes(text, needle, message)` and `h.assert.notIncludes(text, needle, message)`
-- `h.assert.inside(baseDirectory, path, message)`: the resolved path stays strictly under the base directory.
+- `h.assert.inside(read, baseDirectory, message)`: `read` is an `h.fs.reads` entry or a path string (an entry is recognized in either position); its resolved path stays strictly under the base directory.
+- `h.assert.argv(call, payload, message)`: the recorded child process call has no `shell` string and `payload` is its own element of `args`; one call covers the command-injection assertion.
 
 `h.reset()` clears every recorder. `h.root` is the repository root the harness was materialized in.
 
 ## What to assert per family
 
 - SQL injection: the recorded query `text` does not contain the payload and `values` does.
-- Command injection: the recorded call's `fn` is `execFile` or `spawn`, `args` carries the payload as its own element, and `options.shell` is unset.
-- Path traversal: every path in `h.fs.reads` satisfies `h.assert.inside(base, path)`, or the handler answered with a 4xx status and read nothing.
+- Command injection: `h.assert.argv(h.child_process.calls[0], payload)`: the call has no `shell` string and the payload is its own `args` element.
+- Path traversal: every read in `h.fs.reads` satisfies `h.assert.inside(read, base)`, where `base` is the directory the handler serves from, or the handler answered with a 4xx status and read nothing.
 
 ## Policy
 

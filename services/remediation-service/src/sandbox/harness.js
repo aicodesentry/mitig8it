@@ -116,7 +116,9 @@ class Pool extends Client {}
 const pg = { Pool, Client, query };
 
 const outcome = (command) => { const c = obj(config.child_process); const p = isFn(c.result) ? obj(c.result(command)) : c; return { stdout: p.stdout ?? '', stderr: p.stderr || '', error: p.error || null, code: p.code || 0 }; };
-const recordCall = (fn, command, args, options) => state.child_process.calls.push({ fn, command: String(command), args: args === undefined ? null : args, options: obj(options) });
+// `shell` is the command line a shell would interpret: the whole string for exec/execSync, or
+// command plus args when options.shell is set; null when the child ran with an argv array.
+const recordCall = (fn, command, args, options) => { const o = obj(options); const viaShell = args == null || Boolean(o.shell); state.child_process.calls.push({ fn, command: String(command), args: args == null ? null : args, options: o, shell: viaShell ? [command, ...list(args)].map(String).join(' ') : null }); };
 function child(command, cb) {
   const o = outcome(command);
   const proc = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true });
@@ -146,7 +148,8 @@ const content = (file) => { const c = obj(config.fs); return (isFn(c.content) ? 
 const exists = (file) => { const c = obj(config.fs); return isFn(c.exists) ? c.exists(String(file)) : c.exists !== false; };
 const enoent = (file) => Object.assign(new Error(`ENOENT: no such file or directory, open '${file}'`), { code: 'ENOENT' });
 const encode = (v, options) => { const enc = typeof options === 'string' ? options : options && options.encoding; const raw = Buffer.isBuffer(v) ? v : Buffer.from(String(v)); return enc ? raw.toString(enc) : raw; };
-const seen = (file) => state.fs.reads.push(String(file));
+// Each read is { path, resolved }: the string the module passed and its absolute form; String(read) is the raw path.
+const seen = (file) => { const raw = String(file); state.fs.reads.push(Object.defineProperty({ path: raw, resolved: path.resolve(raw) }, 'toString', { value: () => raw })); };
 const fs = Object.create(realFs);
 fs.readFile = (file, ...rest) => { seen(file); const cb = rest.find(isFn); const o = isFn(rest[0]) ? undefined : rest[0]; if (cb) later(() => (exists(file) ? cb(null, encode(content(file), o)) : cb(enoent(file)))); };
 fs.readFileSync = (file, options) => { seen(file); if (!exists(file)) throw enoent(file); return encode(content(file), options); };
@@ -178,7 +181,11 @@ function assert(condition, message) { if (!condition) fail(message || 'assertion
 assert.equal = (actual, expected, message) => { if (actual !== expected) fail(message || 'values differ', { actual, expected }); };
 assert.includes = (haystack, needle, message) => { if (!String(haystack).includes(needle)) fail(message || `expected text to include ${JSON.stringify(needle)}`, haystack); };
 assert.notIncludes = (haystack, needle, message) => { if (String(haystack).includes(needle)) fail(message || `expected text not to include ${JSON.stringify(needle)}`, haystack); };
-assert.inside = (base, target, message) => { const rel = path.relative(path.resolve(base), path.resolve(target)); if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) fail(message || `expected ${target} to stay under ${base}`); };
+const isRead = (v) => Boolean(v) && typeof v === 'object' && typeof v.resolved === 'string';
+// inside(read, baseDir): `read` is an h.fs.reads entry or a path string; the entry may come in either position.
+assert.inside = (target, base, message) => { if (isRead(base) && !isRead(target)) [target, base] = [base, target]; const rel = path.relative(path.resolve(String(base)), isRead(target) ? target.resolved : path.resolve(String(target))); if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) fail(message || `expected ${String(target)} to stay under ${String(base)}`); };
+// argv(call, payload): the child ran with an argv array (no shell string) and the payload is its own element.
+assert.argv = (call, payload, message) => { if (!call) fail(message || 'no child process call was recorded'); if (typeof call.shell === 'string') fail(message || `command ran through a shell: ${call.shell}`); if (!Array.isArray(call.args) || !call.args.some((a) => String(a) === String(payload))) fail(message || `expected ${JSON.stringify(payload)} to be its own argument`, call.args); };
 
 // Runs one test body: exit 0 when it resolves, exit 1 with the error otherwise.
 const run = (body) => Promise.resolve().then(body).then(
