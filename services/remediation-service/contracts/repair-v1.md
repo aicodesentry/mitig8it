@@ -92,6 +92,14 @@ The request's findings are grouped into connected components before generation. 
 
 The job's tool-call, token, and spend budgets are divided evenly across the groups with a per-group floor. The first group always runs. A later group whose share of the remaining budget falls below the floor is not launched, and its findings are reported as unsupported with reason `budget_exhausted`.
 
+### Leases and resumption
+
+The worker holds a lease on an execution and renews it every `REMEDIATION_WORKER_HEARTBEAT_SECONDS` (default 15). `REMEDIATION_WORKER_LEASE_SECONDS` (default 90) is the lease length and is clamped to at least three heartbeat intervals, so a lease survives missed renewals instead of expiring on the first one. The heartbeat shares the event loop with the repair, so blocking work inside the repair is run in a worker thread: `build_patch_bundle` shells out to `node --check`, and the sandbox driver's subprocesses already run through `asyncio.to_thread`.
+
+An execution is reclaimable only once `lease_expires_at` has passed. Reclaiming bumps `attempt`, and `complete` requires the caller to still hold the lease, so a superseded attempt that finishes late cannot publish over the worker that took the work.
+
+A checkpoint carrying a `pending_action` was written by `save_provider_action`, which settles the reservation in the same statement. That call is therefore already paid for: a resumed pending action neither reserves again nor settles again. With no pending action the next call is an ordinary one that reserves and then settles.
+
 ### Reservations, settlement and the hard caps
 
 Before each provider call the service reserves an estimated token and dollar amount against the execution row. The estimate uses a bytes-per-token proxy with headroom, so it is approximate by construction. When the provider's reported usage comes in above the reservation, the call is settled at its **actual** cost rather than refused: the execution is charged what it really used, and the difference is recorded as an overage.
