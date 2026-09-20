@@ -136,8 +136,8 @@ Flags on the API service, all false unless set:
 | `REMEDIATION_ENABLED` | Global kill switch. Every capability below stays off while it is false. |
 | `REMEDIATION_GENERATE_ENABLED` | Generate repair candidates. Defaults to true in the local compose stack. |
 | `REMEDIATION_PUBLISH_ENABLED` | Show candidates and evidence to developers. |
-| `REMEDIATION_APPLY_ENABLED` | Apply a verified batch through an expected-head write. |
-| `REMEDIATION_MERGE_ENABLED` | Record merge intent and merge after checks and approvals. |
+| `REMEDIATION_APPLY_ENABLED` | Apply verified fixes through an expected-head write. A human applies them one finding at a time, or the whole verified batch, by explicit request; nothing is applied on its own. |
+| `REMEDIATION_MERGE_ENABLED` | Operator-only experimental setting, off by default. The product never requests a merge and the panel offers no merge button: merging stays a human action on GitHub. While this flag is off the apply route rejects `merge_when_ready: true` with 400. |
 | `REMEDIATION_DISPATCH_MODE` | `inprocess` (outbox polling) or `cloud_tasks`. The Cloud Tasks control-plane endpoints are not implemented. |
 | `REMEDIATION_WORKER_ENABLED` | Runs the control-plane polling worker. Set on `api-worker`, not on `api-service`. |
 

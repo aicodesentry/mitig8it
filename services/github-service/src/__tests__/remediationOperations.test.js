@@ -1,4 +1,12 @@
-jest.mock('axios', () => jest.fn());
+// The operations call axios(request); the summary comment publisher calls the method
+// helpers. Both shapes are routed to the same mock so one scripted GitHub answers all.
+jest.mock('axios', () => {
+  const fn = jest.fn();
+  fn.get = (url, config = {}) => fn({ method: 'get', url, ...config });
+  fn.post = (url, data, config = {}) => fn({ method: 'post', url, data, ...config });
+  fn.patch = (url, data, config = {}) => fn({ method: 'patch', url, data, ...config });
+  return fn;
+});
 jest.mock('../services/githubAppAuth', () => ({ getInstallationToken: jest.fn(), getAppBotLogin: jest.fn() }));
 
 const axios = require('axios');
@@ -9,6 +17,7 @@ const {
   createRemediationCheckRun,
   mergeRemediationAction,
   prepareRemediationAction,
+  publishRemediationComment,
   readMergeEligibility,
   readPullRequestHead,
   reconcileRemediationAction,
@@ -650,4 +659,59 @@ test('pull head read treats an unreadable head repository as a fork', async () =
   });
   const result = await readPullRequestHead(payload({ pull_number: 9 }));
   expect(result.fork).toBe(true);
+});
+
+function commentPayload(overrides = {}) {
+  return payload({ external_id: 'report-0001', body: 'Applied 1 fix. Remaining open findings: 0.', ...overrides });
+}
+
+test('remediation report comment is created once and updated in place for the same external id', async () => {
+  const marker = '<!-- mitig8it-remediation-report:report-0001 -->';
+  const comments = [];
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/issues/9/comments') && request.method === 'get') return { data: comments };
+    if (request.url.endsWith('/issues/9/comments') && request.method === 'post') {
+      comments.push({ id: 501, body: request.data.body, user: { login: 'mitig8it[bot]' } });
+      return { data: { id: 501 } };
+    }
+    if (request.url.endsWith('/issues/comments/501') && request.method === 'patch') {
+      comments[0].body = request.data.body;
+      return { data: { id: 501 } };
+    }
+    return repositoryResponse(request);
+  });
+  const first = await publishRemediationComment(commentPayload());
+  expect(first).toMatchObject({ state: 'published', comment_id: 501, updated: false, external_id: 'report-0001' });
+  expect(comments[0].body.startsWith(marker)).toBe(true);
+  const second = await publishRemediationComment(commentPayload({ body: 'Applied 1 fix. Remaining open findings: 1.' }));
+  expect(second).toMatchObject({ state: 'published', comment_id: 501, updated: true });
+  expect(comments).toHaveLength(1);
+  expect(comments[0].body).toContain('Remaining open findings: 1.');
+  const writes = axios.mock.calls.filter(([request]) => ['post', 'patch'].includes(request.method));
+  expect(writes.map(([request]) => request.method)).toEqual(['post', 'patch']);
+});
+
+test('remediation report comment never edits a marker comment written by another author', async () => {
+  const marker = '<!-- mitig8it-remediation-report:report-0001 -->';
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/issues/9/comments') && request.method === 'get') {
+      return { data: [{ id: 7, body: `${marker}\nforged`, user: { login: 'someone-else' } }] };
+    }
+    if (request.method === 'post') return { data: { id: 8 } };
+    return repositoryResponse(request);
+  });
+  const result = await publishRemediationComment(commentPayload());
+  expect(result).toMatchObject({ state: 'published', comment_id: 8, updated: false });
+  expect(axios.mock.calls.filter(([request]) => request.method === 'patch')).toHaveLength(0);
+});
+
+test('remediation report comment reports reconciling on a lost write response without a second attempt', async () => {
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/issues/9/comments') && request.method === 'get') return { data: [] };
+    if (request.method === 'post') throw new Error('socket hang up');
+    return repositoryResponse(request);
+  });
+  const result = await publishRemediationComment(commentPayload());
+  expect(result).toEqual({ state: 'reconciling', operation_id: actionId, reason: 'github_comment_outcome_ambiguous' });
+  expect(axios.mock.calls.filter(([request]) => request.method === 'post')).toHaveLength(1);
 });

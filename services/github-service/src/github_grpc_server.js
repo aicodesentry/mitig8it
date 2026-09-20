@@ -8,6 +8,7 @@ const {
   commitRemediationAction,
   createCheckRun,
   createRemediationCheckRun,
+  publishRemediationComment,
   fetchFileContents,
   fetchPullRequestFiles,
   fetchRemediationSnapshot,
@@ -431,6 +432,24 @@ const remediationService = {
       response.setOperationId(result.operation_id || '');
       response.setCheckRunId(Number(result.check_run_id || 0));
       response.setName(result.name || '');
+      response.setExternalId(result.external_id || '');
+      response.setUpdated(Boolean(result.updated));
+      response.setReason(result.reason || '');
+      return response;
+    }
+  ),
+
+  publishRemediationComment: unary(
+    async (request) => publishRemediationComment({
+      ...fromRemediationEnvelope(request.getEnvelope()),
+      external_id: request.getExternalId(),
+      body: request.getBody(),
+    }),
+    (result) => {
+      const response = new githubPb.RemediationCommentResponse();
+      response.setState(result.state || '');
+      response.setOperationId(result.operation_id || '');
+      response.setCommentId(Number(result.comment_id || 0));
       response.setExternalId(result.external_id || '');
       response.setUpdated(Boolean(result.updated));
       response.setReason(result.reason || '');
