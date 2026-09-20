@@ -99,9 +99,11 @@ REVISION_MIN_TOOL_CALLS = 2
 COVERAGE_TASK_NOTE = "one regression test per finding you fix, keyed by id; an untested finding is reported not_repaired"
 REVISION_INSTRUCTION = (
     "Some findings in this group are not proven. Call propose_patch once more with the complete "
-    "proposal: every hunk and regression test already proven, unchanged, plus a hunk and a test "
-    "for each finding listed here and nothing else; then call request_verification. To keep only "
-    "the proven findings, call abstain."
+    "proposal: every hunk and regression test already proven, unchanged, plus a test for each "
+    "finding listed here (and a hunk where its code is not fixed yet) and nothing else; then call "
+    "request_verification. A finding on the same lines as a proven one is fixed by the same hunk "
+    "and is proven by a copy of that test under its own finding id. To keep only the proven "
+    "findings, call abstain."
 )
 _TRACE_REASON_RE = re.compile(r"[^A-Za-z0-9_.:/@-]+")
 
@@ -584,8 +586,10 @@ class RepairAgent:
                     if untested:
                         output["note"] = (
                             "Findings without a regression test are reported not_repaired and stay "
-                            "unfixed. Add one test per finding you intend to fix and call "
-                            "propose_patch again, or verify now to claim only the tested findings."
+                            "unfixed. Add one test per finding you intend to fix (a finding on the "
+                            "same lines as a tested one needs its own entry, a copy of that test "
+                            "under its finding id) and call propose_patch again, or verify now to "
+                            "claim only the tested findings."
                         )
                 elif action.name == "request_verification":
                     if proposal is None or bundle is None:
@@ -912,6 +916,25 @@ class RepairAgent:
                 "assertion": FAMILY_ASSERTIONS.get(family or ""),
                 "test_path": test_paths.get(finding_id),
             }
+            # A finding on the same lines and of the same family as a proven one is fixed by the
+            # same hunk; what it lacks is its own test, which a copy of the proven test supplies.
+            co_located = [
+                proven_id
+                for proven_id in verification.proven_finding_ids
+                if finding is not None
+                and (proven := by_id.get(proven_id)) is not None
+                and proven.affected_path == finding.affected_path
+                and rule_family(proven) == family
+                and (proven.line_start or 0) <= (finding.line_end or finding.line_start or 0)
+                and (finding.line_start or 0) <= (proven.line_end or proven.line_start or 0)
+            ]
+            if co_located:
+                entry["co_located_with"] = co_located
+                entry["hint"] = (
+                    f"same lines as proven finding {co_located[0]}: already fixed by that hunk; a copy "
+                    f"of its test at {entry.get('test_path') or f'.mitig8it/regression/{finding_id}.test.js'} "
+                    f"with finding_id {finding_id} proves it"
+                )
             check = checks.get(verification.regression_checks.get(finding_id, ""))
             if check is not None:
                 tails = {

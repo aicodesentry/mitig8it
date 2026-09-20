@@ -431,3 +431,26 @@ async def test_a_failed_verification_names_each_unproven_finding_with_assertion_
     assert by_id["f-exec"]["test_failure_tail"]["candidate"] == CANDIDATE_TAIL
     assert "injected input" in by_id["f-exec"]["assertion"]
     assert by_id["f-path"]["expected_test_path"] == ".mitig8it/regression/f-path.test.js"
+
+
+@pytest.mark.asyncio
+async def test_a_finding_on_the_same_lines_as_a_proven_one_is_named_co_located(request_payload):
+    """Two scanner rules on one line: the second finding is fixed by the same hunk and needs only
+    a copy of the test under its own id, which the revision says outright."""
+    findings = FINDINGS + [
+        {"snapshot_id": "f-path-2", "rule_id": "js.express-path-join-traversal", "cwe_id": "CWE-22", "file_path": "src/app.js", "line_start": 11, "line_end": 11},
+    ]
+    actions = [
+        _propose(ALL_FIXED, ["f-sql", "f-exec", "f-path"]),
+        _verify("verify-1"),
+        _propose(ALL_FIXED, ["f-sql", "f-exec", "f-path", "f-path-2"], call_id="propose-2"),
+        _verify("verify-2"),
+    ]
+    payload = _payload(request_payload, findings=findings)
+    response, provider = await _run(payload, actions, SelectiveBroker({"f-sql", "f-exec", "f-path", "f-path-2"}))
+    revision = _tool_result(provider.seen[2], "verify-1")["coverage_revision"]
+    assert [item["finding_id"] for item in revision["unproven"]] == ["f-path-2"]
+    assert revision["unproven"][0]["co_located_with"] == ["f-path"]
+    assert "copy of its test at .mitig8it/regression/f-path-2.test.js" in revision["unproven"][0]["hint"]
+    assert "same lines as a proven one" in revision["instruction"]
+    assert response.state == "ready" and response.candidates[0].finding_ids == ["f-exec", "f-path", "f-path-2", "f-sql"]
