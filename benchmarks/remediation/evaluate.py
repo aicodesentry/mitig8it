@@ -221,11 +221,13 @@ def run_trusted_fixture_test(fixture_dir: Path, fixture: dict[str, Any]) -> dict
     return report
 
 
-def reference_hunks(modules: dict[str, Any], path: str, original: str, replacement: str) -> list[dict[str, Any]]:
+def reference_hunks(path: str, original: str, replacement: str) -> list[dict[str, Any]]:
     """The reviewed repair expressed as the line-range hunks `propose_patch` now takes.
 
     The reference repair is stored as a whole file, so the changed ranges are recovered with a
     diff. This replays exactly the reviewed patch while exercising the hunk path end to end.
+    Each hunk quotes the lines it replaces, which is what the service checks: no caller, scripted
+    or model, is asked to compute a digest.
     """
     original_lines = original.splitlines(keepends=True)
     replacement_lines = replacement.splitlines(keepends=True)
@@ -243,7 +245,7 @@ def reference_hunks(modules: dict[str, Any], path: str, original: str, replaceme
                 "path": path,
                 "start_line": start + 1,
                 "end_line": end,
-                "replaced_sha256": modules["content_sha256"](replaced),
+                "original_lines": replaced.splitlines(),
                 "replacement_lines": "".join(new_lines).splitlines(),
             }
         )
@@ -508,7 +510,7 @@ class ScriptedFixtureProvider:
                         "changes": [
                             hunk
                             for unit in repairable
-                            for hunk in reference_hunks(modules, unit["path"], unit["original"], unit["replacement"])
+                            for hunk in reference_hunks(unit["path"], unit["original"], unit["replacement"])
                         ],
                         # One reproducer per finding group, so a multi-group fixture proposes a
                         # distinct generated test per candidate and the combined tree runs both.

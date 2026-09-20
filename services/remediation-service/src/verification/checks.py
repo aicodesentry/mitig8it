@@ -85,7 +85,7 @@ def _repository_test_script(snapshot: Snapshot) -> str | None:
     return script if isinstance(script, str) and script.strip() else None
 
 
-def _dependencies_installed(snapshot: Snapshot) -> bool:
+def dependencies_installed(snapshot: Snapshot) -> bool:
     return any(path == "node_modules" or path.startswith("node_modules/") for path in snapshot.paths)
 
 
@@ -133,7 +133,7 @@ def build_effective_checks(request: RepairRequest, snapshot: Snapshot, bundle: P
         limitations.append(REPOSITORY_TESTS_DISABLED_LIMITATION)
     elif script is None:
         limitations.append(NO_REPOSITORY_TEST_SCRIPT_LIMITATION)
-    elif not _dependencies_installed(snapshot):
+    elif not dependencies_installed(snapshot):
         limitations.append(UNINSTALLED_DEPENDENCIES_LIMITATION)
     else:
         checks.append(
