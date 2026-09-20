@@ -193,18 +193,35 @@ async function claimJobById(jobId, workerId, leaseSeconds = 60) {
   return claimJob(workerId, leaseSeconds, jobId);
 }
 
+// A stage has exactly one reservation for the life of a job. The key used to carry the
+// fencing token, so every retry minted a fresh charge against the installation ceiling and
+// left the previous one outstanding forever. Keying it by job and stage is what
+// `ON CONFLICT (job_id,stage,reservation_key) DO NOTHING` always meant.
+function reservationKeyFor(job, stage) {
+  return `${job.id}:${stage}`;
+}
+
+// Only work that can still spend counts against the ceiling. A reservation belonging to a
+// job that has already ended is released, not outstanding.
+const OUTSTANDING_RESERVED_SQL = `
+  SELECT COALESCE(SUM(r.reserved_amount),0)::numeric AS amount
+  FROM usage_reservations r JOIN remediation_jobs j ON j.id = r.job_id
+  WHERE r.installation_id=$1 AND r.state='reserved' AND NOT (j.state = ANY($2))`;
+
 async function reserveUsage(job, stage, amount) {
   return scopedTransaction({ tenantId: job.installation_id, worker: true }, async (client) => {
-    const reservationKey = `${job.fencing_token}:${stage}`;
-    // A retry of the same stage under the same fencing token is the same
-    // reservation, not a new charge and not an exhausted quota.
+    const reservationKey = reservationKeyFor(job, stage);
+    // A retry of the same stage is the same reservation, not a new charge and not an
+    // exhausted quota. Any row for this job and stage counts, including one written under
+    // the old fencing-token key.
     const existing = await client.query(
-      `SELECT * FROM usage_reservations WHERE job_id=$1 AND stage=$2 AND reservation_key=$3`,
-      [job.id, stage, reservationKey]
+      `SELECT * FROM usage_reservations WHERE job_id=$1 AND stage=$2 AND state <> 'released'
+       ORDER BY created_at DESC LIMIT 1`,
+      [job.id, stage]
     );
     if (existing.rowCount) return existing.rows[0];
     const ceiling = Number(job.policy_manifest.max_spend_usd || 2);
-    const used = await client.query(`SELECT COALESCE(SUM(reserved_amount),0)::numeric AS amount FROM usage_reservations WHERE installation_id=$1 AND state='reserved'`, [job.installation_id]);
+    const used = await client.query(OUTSTANDING_RESERVED_SQL, [job.installation_id, [...TERMINAL_STATES]]);
     if (Number(used.rows[0].amount) + Number(amount) > ceiling) return null;
     const result = await client.query(
       `INSERT INTO usage_reservations (installation_id,repository_id,job_id,stage,reservation_key,reserved_amount,state)
@@ -220,13 +237,29 @@ async function reserveUsage(job, stage, amount) {
   });
 }
 
+// Frees every reservation this job will never spend. Called inside the transaction that
+// makes the job terminal, so a job cannot end while still holding budget.
+async function releaseReservationsForJob(client, job, reason) {
+  const released = await client.query(
+    `UPDATE usage_reservations SET state='released', actual_amount=0, settled_at=NOW()
+     WHERE job_id=$1 AND state='reserved' RETURNING id, stage, reserved_amount`,
+    [job.id]
+  );
+  if (released.rowCount) {
+    await audit(client, null, job.repository_id, 'remediation.usage_released', 'remediation_job', job.id, {
+      reason,
+      released: released.rowCount,
+      amount: released.rows.reduce((total, row) => total + Number(row.reserved_amount), 0),
+      stages: released.rows.map((row) => row.stage),
+    });
+  }
+  return released.rowCount;
+}
+
 // Remaining installation budget, used by the apply route to answer 429 honestly.
 async function budgetSnapshot(installationId, ceiling) {
   return scopedTransaction({ tenantId: installationId, worker: true }, async (client) => {
-    const used = await client.query(
-      `SELECT COALESCE(SUM(reserved_amount),0)::numeric AS amount FROM usage_reservations WHERE installation_id=$1 AND state='reserved'`,
-      [installationId]
-    );
+    const used = await client.query(OUTSTANDING_RESERVED_SQL, [installationId, [...TERMINAL_STATES]]);
     const reserved = Number(used.rows[0].amount);
     return { reserved, ceiling: Number(ceiling), available: Number(ceiling) - reserved };
   });
@@ -236,8 +269,48 @@ async function settleUsage(job, reservation, actualAmount, providerRequestId) {
   if (!reservation) return;
   await scopedTransaction({ tenantId: job.installation_id, worker: true }, (client) => client.query(
     `UPDATE usage_reservations SET actual_amount=$1, provider_request_id=$2, state='settled', settled_at=NOW()
-     WHERE id=$3 AND state='reserved'`, [actualAmount, providerRequestId || null, reservation.id]
+     WHERE id=$3 AND state='reserved'`, [Math.max(0, Number(actualAmount) || 0), providerRequestId || null, reservation.id]
   ));
+}
+
+// What a stage actually cost, from the tokens the repair service reports priced at the
+// job's own rates. A response without usage settles at zero rather than at the estimate:
+// an unspent reservation is not a charge.
+function usageCost(job, result) {
+  const usage = result?.evidence?.usage || result?.usage || {};
+  const input = Number(usage.input_tokens || 0);
+  const output = Number(usage.output_tokens || 0);
+  if (!input && !output) return Number(result?.usage?.actual_usd || 0);
+  const policy = job.policy_manifest || {};
+  const inputRate = Number(policy.input_usd_per_million_tokens || 0);
+  const outputRate = Number(policy.output_usd_per_million_tokens || 0);
+  return (input * inputRate + output * outputRate) / 1_000_000;
+}
+
+// The sweep that clears reservations stranded by an earlier defect or by a crash between
+// the job ending and its release. A reservation whose job is terminal, or whose job is gone,
+// can never be spent. Bounded per tick so one sweep cannot hold a long transaction.
+async function releaseStrandedReservations(limit = 200) {
+  return scopedTransaction({ worker: true }, async (client) => {
+    const released = await client.query(
+      `WITH stranded AS (
+         SELECT r.id FROM usage_reservations r
+         LEFT JOIN remediation_jobs j ON j.id = r.job_id
+         WHERE r.state='reserved' AND (j.id IS NULL OR j.state = ANY($1::text[]))
+         ORDER BY r.created_at FOR UPDATE OF r SKIP LOCKED LIMIT $2
+       )
+       UPDATE usage_reservations u SET state='released', actual_amount=0, settled_at=NOW()
+       FROM stranded WHERE u.id = stranded.id
+       RETURNING u.id, u.installation_id, u.repository_id, u.job_id, u.stage, u.reserved_amount`,
+      [[...TERMINAL_STATES], limit]
+    );
+    for (const row of released.rows) {
+      await audit(client, null, row.repository_id, 'remediation.usage_released', 'remediation_job', row.job_id, {
+        reason: 'reconciler_stranded', stage: row.stage, amount: Number(row.reserved_amount),
+      });
+    }
+    return released.rows;
+  });
 }
 
 // A failed or exhausted stage consumes one attempt. A successful stage does not.
@@ -286,6 +359,9 @@ async function completeStage(job, { state, stage, outcome, candidates = [], veri
     }
     await appendEvent(client, eventJob, `remediation.${state}`, { stage, outcome, reason: reason || null });
     await audit(client, null, row.repository_id, `remediation.${state}`, 'remediation_job', row.id, { stage, outcome, fencing_token: job.fencing_token });
+    // A terminal job spends nothing further, so anything it still holds is freed here, in
+    // the transaction that ended it. A stage that did run settles before this point.
+    if (TERMINAL_STATES.has(state)) await releaseReservationsForJob(client, row, `job_${state}`);
     return true;
   });
 }
@@ -1006,6 +1082,7 @@ async function recordRepairMemoryObservation({ job, candidate, userId, outcome, 
 module.exports = {
   ACTIVE_STATES, TERMINAL_STATES, hash, scopedTransaction, createJob, getJobForUser, getLatestForPullRequest, getPreview,
   claimNextJob, claimJobById, recordAttempt, heartbeat, deferForExternalExecution, reserveUsage, settleUsage, budgetSnapshot,
+  usageCost, releaseStrandedReservations,
   completeStage, cancelJob, createAction, getActionForUser, cancelMerge, claimNextAction, claimActionById, actionMaterial,
   updateAction, enterChecking, completeAction, appendEvent, audit, recordApplyDenial,
   reclaimExpiredLeases, redispatchStuckOutbox, listStaleReconcilingActions, quarantineExhaustedJobs, expireMergeIntents,
