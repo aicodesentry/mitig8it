@@ -89,6 +89,8 @@ class GroupOutcome:
     agent_ran: bool
     # Numeric evidence the agent attached to its reason, such as a denied budget reservation.
     evidence: dict[str, Any] = dataclass_field(default_factory=dict)
+    # The group's findings the candidate does not claim, each with the verifier's reason.
+    unproven: list[dict[str, str]] = dataclass_field(default_factory=list)
 
     def report(self) -> dict[str, Any]:
         report: dict[str, Any] = {
@@ -98,6 +100,10 @@ class GroupOutcome:
             "reason": None if self.reason_code is None else {"code": self.reason_code, "message": self.message},
             "candidate_id": self.candidate.candidate_id if self.candidate else None,
         }
+        if self.candidate is not None:
+            report["repaired_finding_ids"] = list(self.candidate.finding_ids)
+        if self.unproven:
+            report["unproven_findings"] = list(self.unproven)
         if self.evidence:
             report["reason_evidence"] = self.evidence
         return report
@@ -189,6 +195,12 @@ async def build_verified_batch(
         )
     if combined.verification.status != "passed" or not combined.verification.evidence_digest:
         raise BatchPolicyError(combined.verification.reason_code or "combined_tree_verification_failed")
+    if len(entries) > 1:
+        # Each candidate's claims must survive the combined run: a finding whose reproducer
+        # passed alone but not on the union is not repaired by the batch.
+        claimed = {finding_id for candidate, _, _ in entries for finding_id in candidate.finding_ids}
+        if claimed - set(combined.verification.proven_finding_ids):
+            raise BatchPolicyError("combined_regression_tests_not_proven")
     with telemetry.stage_span("batch", **telemetry.request_attributes(request)) as span:
         batch = build_immutable_batch(
             request,
@@ -204,8 +216,9 @@ async def build_verified_batch(
 def _build_candidate(request: RepairRequest, snapshot: Snapshot, finding_ids: list[str], result: Any) -> Candidate:
     """Builds the immutable candidate for one connected finding group.
 
-    `finding_ids` are exactly the group's findings, so a candidate always states which findings
-    its evidence covers rather than every finding the job carried.
+    `finding_ids` are exactly the group's findings whose own regression test failed on the
+    baseline and passed on the candidate, so a candidate states what its evidence covers rather
+    than every finding the group carried.
     """
     candidate_id = digest_json(
         {
@@ -460,10 +473,36 @@ class RepairEngine:
                     )
                 )
                 continue
-            candidate = _build_candidate(request, snapshot, finding_ids, result)
+            proven = [finding_id for finding_id in finding_ids if finding_id in set(result.verification.proven_finding_ids)]
+            unproven = [item for item in result.verification.unproven_findings if item.get("finding_id") in finding_ids]
+            if not proven:
+                outcomes.append(
+                    GroupOutcome(
+                        index,
+                        finding_ids,
+                        "inconclusive",
+                        "regression_test_not_reproducing",
+                        "No finding in this group was shown repaired by its own regression test.",
+                        None,
+                        None,
+                        result.verification,
+                        result.trace,
+                        result.usage,
+                        True,
+                        {},
+                        unproven,
+                    )
+                )
+                continue
+            # A finding the candidate could not prove is reported, never carried silently.
+            skipped.extend(
+                {"finding_id": str(item["finding_id"]), "code": str(item["code"]), "message": str(item["message"])}
+                for item in unproven
+            )
+            candidate = _build_candidate(request, snapshot, proven, result)
             accepted.append((candidate, result.bundle, result.verification))
             outcomes.append(
-                GroupOutcome(index, finding_ids, "ready", None, None, candidate, result.bundle, result.verification, result.trace, result.usage, True)
+                GroupOutcome(index, finding_ids, "ready", None, None, candidate, result.bundle, result.verification, result.trace, result.usage, True, {}, unproven)
             )
 
         group_report = [outcome.report() for outcome in outcomes]

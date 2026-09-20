@@ -6,6 +6,8 @@ import json
 import re
 import subprocess
 import tempfile
+import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -62,23 +64,27 @@ class GeneratedTest:
 
     Its content is untrusted model output treated exactly like repository text. It is
     materialized into the baseline and candidate workspaces and executed only by the sandbox
-    driver, alongside every other verification check.
+    driver, alongside every other verification check. Each test names the one finding it
+    reproduces: a candidate claims exactly the findings whose test fails on the baseline tree
+    and passes on the candidate tree.
     """
 
     path: str
     content: str
     new_sha256: str
+    finding_id: str
 
     def manifest_entry(self) -> dict[str, Any]:
         return {
             "path": self.path,
+            "finding_id": self.finding_id,
             "new_sha256": self.new_sha256,
             "bytes": len(self.content.encode("utf-8")),
             "kind": "generated_regression_test",
         }
 
     def spec(self) -> dict[str, str]:
-        return {"path": self.path, "content": self.content}
+        return {"finding_id": self.finding_id, "path": self.path, "content": self.content}
 
 
 @dataclass(frozen=True)
@@ -242,6 +248,25 @@ def _path_forbidden(path: str, request: RepairRequest) -> bool:
     return any(lowered.startswith(prefix.lower().rstrip("/") + "/") for prefix in request.policy.forbidden_path_prefixes)
 
 
+# A regression test proves behavior only by loading the changed module and invoking it. One that
+# reads the changed file as text passes or fails on wording alone, so it is rejected.
+_FS_READ_RE = re.compile(r"\b(?:readFileSync|readFile)\s*\(")
+_DIRNAME_REQUIRE_RE = re.compile(r"\brequire\s*\([^)]*__dirname")
+BEHAVIOR_TEST_GUIDANCE = (
+    "Require the changed module by relative path, call the affected function or route handler "
+    "with fake req and res objects and stubbed collaborators (patch Module.prototype.require or "
+    "Module._load before the require so no package needs to be installed), and exit non-zero "
+    "only when the vulnerable behavior is observed."
+)
+
+
+def _requires_repository_module(content: str) -> bool:
+    """True when the test loads a repository module, by relative specifier or via __dirname."""
+    if any(specifier.startswith(".") for specifier in module_specifiers(content)):
+        return True
+    return bool(_DIRNAME_REQUIRE_RE.search(content))
+
+
 def build_generated_tests(
     request: RepairRequest,
     snapshot: Snapshot,
@@ -249,9 +274,11 @@ def build_generated_tests(
 ) -> tuple[list[GeneratedTest], list[str]]:
     """Validates agent-authored regression tests under the same policy as any other file.
 
-    A test is accepted only when it is a new `.mitig8it/regression/*.test.{js,cjs,mjs}` file
-    that no repository path occupies, parses under `node --check`, and imports nothing beyond
-    Node built-ins, the repository's declared dependencies, and relative repository paths.
+    A test is accepted only when it names one of the task's findings, is a new
+    `.mitig8it/regression/*.test.{js,cjs,mjs}` file that no repository path occupies, parses
+    under `node --check`, imports nothing beyond Node built-ins, the repository's declared
+    dependencies, and relative repository paths, and exercises behavior rather than reading the
+    changed file as text.
     """
     if not specs:
         return [], []
@@ -260,9 +287,27 @@ def build_generated_tests(
     tests: list[GeneratedTest] = []
     limitations: list[str] = []
     seen: set[str] = set()
+    claimed: set[str] = set()
+    known = sorted(finding.stable_id for finding in request.findings)
     for spec in specs:
-        if not isinstance(spec, dict) or set(spec) != {"path", "content"}:
-            raise PatchPolicyError("regression_test_schema_invalid")
+        if not isinstance(spec, dict) or set(spec) != {"finding_id", "path", "content"}:
+            raise PatchPolicyError(
+                "regression_test_schema_invalid",
+                "regression_tests is a list of {finding_id, path, content}, one entry per finding "
+                "this patch repairs.",
+            )
+        finding_id = spec["finding_id"]
+        if not isinstance(finding_id, str) or finding_id not in known:
+            raise PatchPolicyError(
+                "regression_test_finding_unknown",
+                f"finding_id must be one of the task's finding ids: {', '.join(known)}.",
+            )
+        if finding_id in claimed:
+            raise PatchPolicyError(
+                "duplicate_regression_test_finding",
+                f"Send exactly one regression test per finding; {finding_id} has two.",
+            )
+        claimed.add(finding_id)
         try:
             path = validate_repo_path(str(spec["path"]))
         except SnapshotError as exc:
@@ -290,13 +335,156 @@ def build_generated_tests(
             raise PatchPolicyError("regression_test_content_required")
         if len(content.encode("utf-8")) > MAX_GENERATED_TEST_BYTES:
             raise PatchPolicyError(f"regression_test_too_large:{path}")
+        if _FS_READ_RE.search(content) and not _requires_repository_module(content):
+            raise PatchPolicyError(
+                f"regression_test_reads_source_as_text:{path}",
+                "The test reads a file as text and never requires a repository module, so it proves "
+                "nothing about behavior. " + BEHAVIOR_TEST_GUIDANCE,
+            )
         _reject_missing_dependencies(path, "", content, snapshot)
         limitation = _syntax_check(path, content)
         if limitation:
             limitations.append(limitation)
-        tests.append(GeneratedTest(path, content, content_sha256(content)))
+        tests.append(GeneratedTest(path, content, content_sha256(content), finding_id))
     tests.sort(key=lambda item: item.path)
     return tests, limitations
+
+
+# Runtime load of each changed module. `node --check` proves the file parses; only loading it
+# proves its top level runs, which is where an identifier used without an import fails.
+LOAD_CHECK_TIMEOUT_SECONDS = 10
+MAX_LOAD_DIAGNOSTIC_CHARS = 600
+MAX_LOAD_LIMITATION_CHARS = 240
+LOAD_REPORT_KEY = "mitig8it_load"
+# The loader prints one classification line so a missing dependency is a limitation and a
+# thrown error is a rejection. It exits as soon as the module has loaded, so a module that
+# starts a server at its top level does not keep the check alive.
+_LOAD_SCRIPT = """
+const target = process.argv[1];
+const { pathToFileURL } = require('node:url');
+const report = (value) => process.stdout.write('\\n' + JSON.stringify(value) + '\\n');
+const unavailable = new Set(['MODULE_NOT_FOUND', 'ERR_MODULE_NOT_FOUND', 'ERR_REQUIRE_ESM',
+  'ERR_REQUIRE_ASYNC_MODULE', 'ERR_UNKNOWN_FILE_EXTENSION']);
+const load = target.endsWith('.mjs')
+  ? () => import(pathToFileURL(target).href)
+  : () => Promise.resolve().then(() => require(target));
+load().then(() => { report({ mitig8it_load: 'ok' }); process.exit(0); }, (error) => {
+  const code = error && error.code;
+  const message = String((error && error.message) || error).slice(0, 400);
+  if (unavailable.has(code)) { report({ mitig8it_load: 'unavailable', code, message }); process.exit(0); }
+  report({ mitig8it_load: 'error', name: String((error && error.name) || 'Error'), message });
+  process.exit(1);
+});
+"""
+
+
+def _materialize_snapshot(root: Path, snapshot: Snapshot, replacements: dict[str, str]) -> None:
+    for path in snapshot.paths:
+        target = root.joinpath(*PurePosixPath(path).parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(replacements.get(path, snapshot.full_content(path)), encoding="utf-8")
+
+
+def _load_report(output: str) -> dict[str, Any] | None:
+    found = None
+    for line in output.splitlines():
+        line = line.strip()
+        if not line.startswith("{") or LOAD_REPORT_KEY not in line:
+            continue
+        try:
+            document = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(document, dict) and isinstance(document.get(LOAD_REPORT_KEY), str):
+            found = document
+    return found
+
+
+def _load_module(root: Path, path: str) -> dict[str, Any]:
+    """Loads one file from a materialized tree. Returns `{state: ok|unavailable|error|timeout}`."""
+    target = root.joinpath(*PurePosixPath(path).parts)
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell, temporary tree only.
+            ["node", "-e", _LOAD_SCRIPT, str(target)],
+            cwd=root,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": str(root.parent / "no-home"),
+                "CI": "true",
+                "NO_COLOR": "1",
+                "NODE_OPTIONS": "--disable-proto=throw",
+            },
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=LOAD_CHECK_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"state": "timeout", "message": f"the module did not finish loading within {LOAD_CHECK_TIMEOUT_SECONDS} seconds"}
+    except (OSError, subprocess.SubprocessError):
+        return {"state": "toolchain", "message": "no usable node toolchain"}
+    report = _load_report(completed.stdout or "")
+    scrub = str(root.parent)
+    if report is None:
+        detail = ((completed.stderr or "").strip() or f"exit code {completed.returncode}").replace(scrub, "")
+        return {"state": "error", "name": "Error", "message": f"the module exited before it finished loading: {detail[:MAX_LOAD_DIAGNOSTIC_CHARS]}"}
+    message = str(report.get("message", "")).replace(scrub, "")
+    if report[LOAD_REPORT_KEY] == "ok":
+        return {"state": "ok", "message": ""}
+    if report[LOAD_REPORT_KEY] == "unavailable":
+        return {"state": "unavailable", "code": str(report.get("code", "")), "message": message}
+    return {"state": "error", "name": str(report.get("name", "Error")), "message": message}
+
+
+def _load_checks(snapshot: Snapshot, replacements: dict[str, str]) -> list[str]:
+    """Loads every changed JavaScript file from the candidate tree. Returns limitations.
+
+    A module that throws on load is rejected with Node's own diagnostic, unless the original
+    module throws too, in which case the check is recorded as inconclusive. A dependency the
+    snapshot declares but does not carry, or a module Node cannot load through `require`, is a
+    limitation rather than a failure: nothing about the candidate was shown wrong.
+    """
+    targets = [path for path in sorted(replacements) if PurePosixPath(path).suffix.lower() in SYNTAX_CHECKED_SUFFIXES]
+    if not targets:
+        return []
+    if shutil.which("node") is None:
+        return [f"runtime load check unavailable for {path}: no usable node toolchain" for path in targets]
+    limitations: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="mitig8it-load-") as directory:
+        candidate_root = Path(directory) / "candidate"
+        _materialize_snapshot(candidate_root, snapshot, replacements)
+        baseline_root: Path | None = None
+        for path in targets:
+            outcome = _load_module(candidate_root, path)
+            state = outcome["state"]
+            if state == "ok":
+                continue
+            if state == "error":
+                if baseline_root is None:
+                    baseline_root = Path(directory) / "baseline"
+                    _materialize_snapshot(baseline_root, snapshot, {})
+                original = _load_module(baseline_root, path)
+                if original["state"] == "error":
+                    limitations.append(
+                        f"runtime load check inconclusive for {path}: the original module does not load "
+                        f"either ({original['message'][:MAX_LOAD_LIMITATION_CHARS]})"
+                    )
+                    continue
+                raise PatchPolicyError(
+                    f"candidate_load_failed:{path}",
+                    f"The patched {path} parses but throws when loaded. Node reports: "
+                    f"{outcome.get('name', 'Error')}: {outcome['message'][:MAX_LOAD_DIAGNOSTIC_CHARS]}\n"
+                    "Every identifier a hunk uses must be imported or defined by the same proposal: "
+                    "add the require or import in another hunk of the same propose_patch call.",
+                )
+            if state == "unavailable":
+                limitations.append(
+                    f"runtime load check skipped for {path}: {outcome['message'][:MAX_LOAD_LIMITATION_CHARS]}"
+                )
+            else:
+                limitations.append(f"runtime load check unavailable for {path}: {outcome['message'][:MAX_LOAD_LIMITATION_CHARS]}")
+    return limitations
 
 
 # A hunk states the lines it replaces verbatim, and the service finds them in the exact
@@ -561,6 +749,7 @@ def _build_bundle_from_contents(
             )
         )
 
+    limitations.extend(_load_checks(snapshot, replacements))
     generated_tests, generated_limitations = build_generated_tests(request, snapshot, regression_tests)
     limitations.extend(generated_limitations)
     patches.sort(key=lambda item: item.path)

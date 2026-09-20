@@ -12,7 +12,7 @@ executed only by the sandbox driver, exactly like repository code.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -52,6 +52,9 @@ class EffectiveChecks:
     generated_files: tuple[dict[str, str], ...]
     regression_check_ids: frozenset[str]
     limitations: tuple[str, ...]
+    # Which finding each generated regression check reproduces, by check id. A candidate
+    # claims a finding only when its own check fails on the baseline and passes on the candidate.
+    regression_findings: dict[str, str] = field(default_factory=dict)
 
     @property
     def kinds(self) -> set[str]:
@@ -94,6 +97,7 @@ def build_effective_checks(request: RepairRequest, snapshot: Snapshot, bundle: P
     used = {check.check_id for check in checks}
     generated_files: list[dict[str, str]] = []
     regression_ids: set[str] = set()
+    regression_findings: dict[str, str] = {}
     limitations: list[str] = []
 
     # 1. The agent's reproducer. It runs on both trees, so the evidence distinguishes a repair
@@ -101,6 +105,7 @@ def build_effective_checks(request: RepairRequest, snapshot: Snapshot, bundle: P
     for test in bundle.generated_tests:
         check_id = _unique(REGRESSION_CHECK_PREFIX, used)
         regression_ids.add(check_id)
+        regression_findings[check_id] = test.finding_id
         generated_files.append({"path": test.path, "content": test.content})
         checks.append(
             VerificationCheck(
@@ -145,7 +150,9 @@ def build_effective_checks(request: RepairRequest, snapshot: Snapshot, bundle: P
             )
         )
 
-    return EffectiveChecks(tuple(checks), tuple(generated_files), frozenset(regression_ids), tuple(limitations))
+    return EffectiveChecks(
+        tuple(checks), tuple(generated_files), frozenset(regression_ids), tuple(limitations), regression_findings
+    )
 
 
 def generated_snapshot_entries(snapshot: Snapshot, effective: EffectiveChecks) -> list[dict[str, Any]]:

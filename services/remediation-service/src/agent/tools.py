@@ -25,10 +25,10 @@ def tool_definitions() -> list[dict[str, Any]]:
         tool(
             "read_file",
             (
-                "Read a bounded line range from one snapshot file. Leave line_start and line_end "
-                "null to read a window around the reported finding lines. Results are capped, so "
-                "request the narrowest range that answers the question. Returns `lines`: "
-                "`[line_number, text]` pairs whose text is what original_lines expects."
+                "Read a bounded line range from one snapshot file; null line_start and line_end "
+                "read a window around the finding lines. Results are capped, so keep ranges "
+                "narrow. Returns `lines`: `[line_number, text]` pairs whose text is what "
+                "original_lines expects."
             ),
             {
                 "path": {"type": "string"},
@@ -44,8 +44,7 @@ def tool_definitions() -> list[dict[str, Any]]:
             "propose_patch",
             (
                 "Propose the smallest line-range replacements, each quoting the exact lines it "
-                "replaces, with the regression test that reproduces the finding. This does not "
-                "verify a patch."
+                "replaces, plus one regression test per repaired finding. Does not verify."
             ),
             {
                 "hypothesis": {"type": "string", "maxLength": 4000},
@@ -66,12 +65,10 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "minItems": 1,
                     "maxItems": 50,
                     "description": (
-                        "Line-range hunks against the exact snapshot. original_lines are the "
-                        "lines this hunk replaces, copied verbatim from read_file; the service "
-                        "locates them and derives the range, so send no end_line and no digest. "
-                        "start_line is the 1-based line you believe they start at, used only to "
-                        "pick between repeats. replacement_lines are the new lines. Neither list "
-                        "contains newlines; an empty replacement_lines deletes the range."
+                        "Line-range hunks. original_lines: the replaced lines, verbatim from "
+                        "read_file; the service locates them, so send no end_line or digest. "
+                        "start_line: 1-based hint used only between repeats. replacement_lines: "
+                        "the new lines; empty deletes the range. No newlines in either list."
                     ),
                     "items": {
                         "type": "object",
@@ -87,41 +84,28 @@ def tool_definitions() -> list[dict[str, Any]]:
                 },
                 "regression_tests": {
                     "type": "array",
-                    "minItems": 1,
                     "maxItems": 10,
                     "description": (
-                        "One behavior test per finding this patch actually repairs, and none for "
-                        "a finding it does not. A candidate claims exactly the findings whose test "
-                        "fails on the original code and passes on the patched code; every other "
-                        "finding is dropped and reported as not repaired, so do not send a test "
-                        "you cannot make reproduce. Each test must require the changed module by "
-                        "relative path and invoke the affected function or route handler with fake "
-                        "req and res objects, stubbing collaborators such as child_process, pg and "
-                        "fs by patching Module.prototype.require or Module._load before the "
-                        "require, so no package needs to be installed. Exit non-zero when the "
-                        "vulnerable behavior is observed and zero when it is not. A test that only "
-                        "reads the changed file as text with fs.readFileSync and never requires it "
-                        "proves nothing about behavior and is rejected."
+                        "One behavior test per finding this patch repairs; a finding whose test "
+                        "does not fail on the original and pass on the patch is dropped and "
+                        "reported not repaired. Require the changed module by relative path, "
+                        "invoke the affected function or handler with fake req and res, stub "
+                        "collaborators (child_process, pg, fs) via Module.prototype.require before "
+                        "the require, and exit non-zero only on the vulnerable behavior. A test "
+                        "that only reads the file as text is rejected."
                     ),
                     "items": {
                         "type": "object",
                         "properties": {
-                            "finding_id": {
-                                "type": "string",
-                                "maxLength": 200,
-                                "description": "The exact finding id from the task this test reproduces.",
-                            },
-                            "path": {
-                                "type": "string",
-                                "maxLength": 512,
-                                "description": "'.mitig8it/regression/<finding-id>.test.js', not an existing repository path.",
-                            },
+                            "finding_id": {"type": "string", "maxLength": 200, "description": "The task finding id this test reproduces."},
+                            "path": {"type": "string", "maxLength": 512, "description": "'.mitig8it/regression/<finding-id>.test.js'."},
                             "content": {"type": "string", "maxLength": 64000},
                         },
                         "required": ["finding_id", "path", "content"],
                         "additionalProperties": False,
                     },
                 },
+            },
             ["hypothesis", "intended_behavior", "assumptions", "citations", "changes", "regression_tests"],
         ),
         tool("request_verification", "Request independent broker verification of the current proposal.", {}, []),

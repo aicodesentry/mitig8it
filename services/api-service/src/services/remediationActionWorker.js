@@ -165,4 +165,4 @@ async function executeAction(action) {
   } else if (committed.state === 'reconciling') { await remediationDb.updateAction(action, 'reconciling', { operationId: committed.operation_id, reason: { code: 'ambiguous_write' } }); metrics.actionTransitions.labels('reconciling').inc(); }
   else { await remediationDb.updateAction(action, 'blocked', { operationId: committed.operation_id, reason: { code: committed.reason || 'commit_rejected' } }); metrics.actionTransitions.labels('blocked').inc(); }
 }
-module.exports = { GitHubRemediationClient, executeClaimedAction, executeAction, revalidate, enterCheckingAfterCommit };
+module.exports = { GitHubRemediationClient, executeClaimedAction, executeAction, revalidate, enterCheckingAfterCommit, persistedChanges, verifiedTreeOid };

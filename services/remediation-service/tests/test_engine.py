@@ -58,7 +58,7 @@ async def _ready_engine(request_payload, source):
                 "assumptions": ["pg positional parameters are available"],
                 "citations": [{"path": "src/db.ts", "line_start": 1, "line_end": 3}],
                 "changes": [whole_file_change("src/db.ts", source, replacement)],
-                "regression_test": regression_test_spec(),
+                "regression_tests": [regression_test_spec()],
             },
         ),
         ProviderAction("request_verification", {}),
@@ -146,7 +146,7 @@ async def _engine_with_broker(request_payload, source, broker):
                 "assumptions": ["pg positional parameters are available"],
                 "citations": [{"path": "src/db.ts", "line_start": 1, "line_end": 3}],
                 "changes": [whole_file_change("src/db.ts", source, replacement)],
-                "regression_test": regression_test_spec(),
+                "regression_tests": [regression_test_spec()],
             },
         ),
         ProviderAction("request_verification", {}),
@@ -216,7 +216,12 @@ def _two_file_payload(request_payload):
     return payload
 
 
-def _propose(path, original, replacement, hypothesis):
+FINDING_BY_PATH = {"src/db.ts": "finding-sql", "src/cmd.ts": "finding-cmd"}
+
+
+def _propose(path, original, replacement, hypothesis, finding_ids=None):
+    """One proposal for `path` carrying one regression test per finding it claims."""
+    claimed = finding_ids or [FINDING_BY_PATH[path]]
     return ProviderAction(
         "propose_patch",
         {
@@ -225,7 +230,10 @@ def _propose(path, original, replacement, hypothesis):
             "assumptions": ["the snapshot proves the required dependency"],
             "citations": [{"path": path, "line_start": 1, "line_end": 3}],
             "changes": [whole_file_change(path, original, replacement)],
-            "regression_test": regression_test_spec(path=f".mitig8it/regression/{path.replace('/', '-')}.test.js"),
+            "regression_tests": [
+                regression_test_spec(path=f".mitig8it/regression/{finding_id}.test.js", finding_id=finding_id)
+                for finding_id in claimed
+            ],
         },
     )
 
@@ -273,7 +281,10 @@ async def test_two_findings_in_the_same_file_are_one_group_with_one_candidate(re
         "line_end": 2,
     }
     scripts = {
-        "src/db.ts": [_propose("src/db.ts", SQL_SOURCE, SQL_REPAIRED, "Untrusted id is interpolated into SQL."), ProviderAction("request_verification", {})],
+        "src/db.ts": [
+            _propose("src/db.ts", SQL_SOURCE, SQL_REPAIRED, "Untrusted id is interpolated into SQL.", ["finding-sql", "finding-sql-2"]),
+            ProviderAction("request_verification", {}),
+        ],
     }
     calls: list[list[str]] = []
 
@@ -286,7 +297,39 @@ async def test_two_findings_in_the_same_file_are_one_group_with_one_candidate(re
     assert response.state == "ready"
     assert len(response.candidates) == 1
     assert response.candidates[0].finding_ids == ["finding-sql", "finding-sql-2"]
+    assert response.skipped == []
     assert response.evidence["verified_tree_oid"] == response.candidates[0].verified_tree_oid
+
+
+@pytest.mark.asyncio
+async def test_a_finding_without_its_own_regression_test_is_dropped_from_the_candidate_and_reported(request_payload):
+    """Two findings in one group, one reproducer: the candidate claims only the finding it proved."""
+    payload = _two_file_payload(request_payload)
+    payload["findings"][1] = {
+        "snapshot_id": "finding-sql-2",
+        "rule_id": "js.sql-injection",
+        "cwe_id": "CWE-89",
+        "file_path": "src/db.ts",
+        "line_start": 2,
+        "line_end": 2,
+    }
+    scripts = {
+        "src/db.ts": [_propose("src/db.ts", SQL_SOURCE, SQL_REPAIRED, "Untrusted id is interpolated into SQL."), ProviderAction("request_verification", {})],
+    }
+    response = await RepairEngine(_per_path_agent_factory(scripts)).repair(RepairRequest.model_validate(payload))
+    assert response.state == "ready"
+    assert response.candidates[0].finding_ids == ["finding-sql"]
+    assert response.skipped == [
+        {
+            "finding_id": "finding-sql-2",
+            "code": "not_repaired",
+            "message": "No regression test reproduced this finding, so the candidate does not claim it.",
+        }
+    ]
+    group = response.evidence["groups"][0]
+    assert group["finding_ids"] == ["finding-sql", "finding-sql-2"]
+    assert group["repaired_finding_ids"] == ["finding-sql"]
+    assert [item["finding_id"] for item in group["unproven_findings"]] == ["finding-sql-2"]
 
 
 @pytest.mark.asyncio
@@ -319,7 +362,10 @@ async def test_a_later_group_that_edits_an_accepted_line_range_is_rejected_as_ov
     other_repair = SQL_REPAIRED.replace("$1", "$1 /* audited */")
     scripts = {
         "src/db.ts": [_propose("src/db.ts", SQL_SOURCE, SQL_REPAIRED, "Untrusted id is interpolated into SQL."), ProviderAction("request_verification", {})],
-        "src/cmd.ts": [_propose("src/db.ts", SQL_SOURCE, other_repair, "The same line is repaired differently."), ProviderAction("request_verification", {})],
+        "src/cmd.ts": [
+            _propose("src/db.ts", SQL_SOURCE, other_repair, "The same line is repaired differently.", ["finding-cmd"]),
+            ProviderAction("request_verification", {}),
+        ],
     }
     response = await RepairEngine(_per_path_agent_factory(scripts)).repair(RepairRequest.model_validate(payload))
     assert response.state == "ready"
