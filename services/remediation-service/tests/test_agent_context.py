@@ -68,7 +68,8 @@ async def test_unscoped_read_returns_a_window_around_the_finding(request_payload
     result = json.loads(_tool_messages(provider.last_messages)[0]["content"])
     assert result["line_start"] == 1  # 30 - 30 clamps to the first line
     assert result["line_end"] == 60
-    assert "SELECT * FROM users" in result["content"]
+    assert result["lines"][0][0] == 1 and result["lines"][-1][0] == 60
+    assert any("SELECT * FROM users" in text for _, text in result["lines"])
 
 
 @pytest.mark.asyncio
@@ -81,8 +82,8 @@ async def test_a_window_read_returns_only_the_requested_lines(request_payload):
 
     result = json.loads(_tool_messages(provider.last_messages)[0]["content"])
     assert (result["line_start"], result["line_end"]) == (28, 32)
-    assert result["content"].count("\n") == 5
-    assert "line 2 of the module" not in result["content"]
+    assert [number for number, _ in result["lines"]] == [28, 29, 30, 31, 32]
+    assert all("line 2 of the module" not in text for _, text in result["lines"])
 
 
 @pytest.mark.asyncio
@@ -95,7 +96,10 @@ async def test_one_tool_result_never_exceeds_the_per_result_character_cap(reques
     await RepairAgent(provider, FailingVerifier()).run(request, snapshot)
 
     result = json.loads(_tool_messages(provider.last_messages)[0]["content"])
-    assert len(result["content"]) <= 1_000
+    assert len(json.dumps(result["lines"])) <= 1_000
+    assert result["truncated"] is True
+    # Truncation drops whole lines, so the reported range still describes what came back.
+    assert result["line_end"] - result["line_start"] + 1 == len(result["lines"])
 
 
 @pytest.mark.asyncio
@@ -113,10 +117,10 @@ async def test_consumed_reads_are_stubbed_once_the_working_set_is_exceeded(reque
     assert results[0]["read"][0]["path"] == "src/db.ts"
     assert results[0]["read"][0]["line_start"] == 1
     assert "content_digest" in results[0]["read"][0]
-    assert "content" not in results[0]
+    assert "lines" not in results[0]
     # The most recent result is still the working set and keeps its content.
     assert results[-1].get("evicted_context") is not True
-    assert "content" in results[-1]
+    assert "lines" in results[-1]
 
 
 @pytest.mark.asyncio
@@ -164,17 +168,22 @@ async def test_eviction_never_removes_the_system_prompt_or_the_latest_verificati
 
 
 def test_a_hunk_with_a_stale_hash_is_rejected(request_payload, source):
+    """A caller that still sends a digest is held to it, in prefixed or bare hexadecimal form."""
     request = RepairRequest.model_validate(request_payload)
     snapshot = Snapshot(request)
     stale = {
         "path": "src/db.ts",
         "start_line": 2,
         "end_line": 2,
+        "original_lines": [source.splitlines()[1]],
         "replaced_sha256": "sha256:" + "0" * 64,
         "replacement_lines": ["  return db.query('SELECT * FROM users WHERE id = $1', [id]);"],
     }
     with pytest.raises(PatchPolicyError, match="stale_hunk_digest"):
         build_patch_bundle(request, snapshot, [stale])
+
+    bare = dict(stale) | {"replaced_sha256": content_sha256(source.splitlines()[1] + "\n").removeprefix("sha256:")}
+    assert build_patch_bundle(request, snapshot, [bare], [regression_test_spec()]).changed_lines == 2
 
 
 def test_a_hunk_patch_produces_the_same_tree_as_the_whole_file_replacement(request_payload, source):
@@ -188,7 +197,7 @@ def test_a_hunk_patch_produces_the_same_tree_as_the_whole_file_replacement(reque
         "path": "src/db.ts",
         "start_line": 2,
         "end_line": 2,
-        "replaced_sha256": content_sha256(original_lines[1] + "\n"),
+        "original_lines": [original_lines[1]],
         "replacement_lines": [replacement.splitlines()[1]],
     }
     from_hunk = build_patch_bundle(request, snapshot, [hunk], [regression_test_spec()])
@@ -209,14 +218,14 @@ def test_hunks_are_applied_bottom_up_and_must_not_overlap(request_payload):
         "path": "src/db.ts",
         "start_line": 2,
         "end_line": 3,
-        "replaced_sha256": content_sha256("".join(lines[1:3])),
+        "original_lines": [line.rstrip("\n") for line in lines[1:3]],
         "replacement_lines": ["// replaced first"],
     }
     second = {
         "path": "src/db.ts",
         "start_line": 40,
         "end_line": 41,
-        "replaced_sha256": content_sha256("".join(lines[39:41])),
+        "original_lines": [line.rstrip("\n") for line in lines[39:41]],
         "replacement_lines": ["// replaced second", "// and another"],
     }
     updated = apply_hunks(snapshot, [second, first])["src/db.ts"].splitlines()
@@ -224,7 +233,11 @@ def test_hunks_are_applied_bottom_up_and_must_not_overlap(request_payload):
     assert updated[38:40] == ["// replaced second", "// and another"]
     assert len(updated) == len(content.splitlines()) - 1
 
-    overlapping = dict(first) | {"start_line": 3, "end_line": 4, "replaced_sha256": content_sha256("".join(lines[2:4]))}
+    overlapping = dict(first) | {
+        "start_line": 3,
+        "end_line": 4,
+        "original_lines": [line.rstrip("\n") for line in lines[2:4]],
+    }
     with pytest.raises(PatchPolicyError, match="overlapping_hunks"):
         apply_hunks(snapshot, [first, overlapping])
 
