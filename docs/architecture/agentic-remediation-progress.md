@@ -59,6 +59,21 @@ All commands run from the named service directory unless stated. Disposable data
 | W14 | not done | No load, chaos, or security acceptance suites |
 | W15 | partial | CI runs every suite above; compose runs the whole stack locally; runbook covers all listed incidents. No staging deployment, no real GitHub PR lifecycle, no restore drill |
 
+## Live evidence on the deployed app, 2026-09-19 to 2026-09-20
+
+Staging repository: nebullii/test-only. Deployment: Cloud Run, single instance per service, scale to zero, CPU always allocated; repair service with the local execution backend, in-process worker and sandbox, gpt-4o; every result labelled `development_unverified`.
+
+| Observation | Evidence |
+| --- | --- |
+| Analysis on a multi-file PR | PR 124: check run failure "5 critical/high findings"; 19 inline comments (3 blocking, 16 informational in test code); summary reports 3 test files scanned and 33 informational findings; one scanner batch, no memory events |
+| Generation | PR 124 job 8b27a35b: ready in about one minute, 6,318 input and 471 output tokens, one candidate proven by a generated regression test that fails on baseline and passes on the candidate |
+| Honest partial coverage | Two findings skipped as unsupported families, three as not repaired (no reproducing test); none claimed |
+| Apply | Action c002de2b completed; commit e6593394 by the app on the PR branch changing one line (parameterized SQL query); exact head and manifest bound |
+| Post-apply | Fresh analysis on the applied head shows the SQL finding gone (5 open, was 6); the app's remediation verification check reports failure because blocking findings remain |
+| Defects fixed on the way | Cloud Run billing and CPU throttling, metadata token retry, protobuf map serialization, GitHub identity token on HTTP and gRPC transport for remediation calls, repair service secret precedence, request contract (attempt, platform, tree entries), partial coverage, budget estimation and overage settlement, checkpoint resume, lease heartbeat, reservation leak, sandbox workspace root, per-finding proof, full-file manifests, sandbox test harness |
+
+Not yet exercised live: merge-when-ready (flag off; the installation lacks push and pull request review event subscriptions), and coverage of more than one finding per run.
+
 ## Definition of done, honestly
 
 Unmet items from plan section 15: a real staging PR lifecycle, real sandbox isolation evidence, evaluation against real baselines with a reviewed corpus, dashboards and alerts exercised, retention and deletion, and load testing. Everything the feature flags guard remains off by default, and the local compose stack labels its results `development_unverified`.
