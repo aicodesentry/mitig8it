@@ -455,6 +455,137 @@ test('merge eligibility reports a changed head as a blocker instead of throwing'
   expect(result.head_sha).toBe('f'.repeat(40));
 });
 
+// --- Ruleset-governed branches ------------------------------------------------------
+// A branch governed only by a ruleset has no classic protection to read; the ruleset is
+// the protection source and its rules carry the required checks and reviews.
+const verificationContext = 'Mitig8it Remediation Verification';
+
+function rulesetRules(extra = []) {
+  return [
+    { type: 'deletion' },
+    { type: 'non_fast_forward' },
+    { type: 'required_status_checks', parameters: { required_status_checks: [
+      { context: 'build', integration_id: null },
+      { context: verificationContext, integration_id: 123 },
+    ] } },
+    ...extra,
+  ];
+}
+
+function rulesetResponse(request, { rules = rulesetRules(), reviews = [] } = {}) {
+  if (request.url.includes('/rules/branches/')) return { data: rules };
+  if (request.url.includes('/branches/main/protection')) {
+    const error = new Error('Branch not protected');
+    error.response = { status: 404, data: { message: 'Branch not protected' } };
+    throw error;
+  }
+  if (request.url.includes('/pulls/9/reviews')) return { data: reviews };
+  if (request.url.includes('/check-runs')) return { data: { total_count: 1, check_runs: [
+    { id: 1, name: verificationContext, app: { id: 123 }, status: 'completed', conclusion: 'success' },
+  ] } };
+  if (request.method === 'put' && request.url.endsWith('/merge')) return { data: { merged: true, sha: 'e'.repeat(40) } };
+  return repositoryResponse(request);
+}
+
+test('merge eligibility accepts a ruleset-only branch that requires this app verification check and no review', async () => {
+  process.env.GITHUB_APP_ID = '123';
+  axios.mockImplementation(async request => rulesetResponse(request));
+  const result = await readMergeEligibility(eligibilityPayload());
+  expect(result.blockers).toEqual([]);
+  expect(result.eligible).toBe(true);
+  expect(result.protection_source).toBe('rulesets');
+  expect(result.reviews).toEqual({ required: 0, approvals: 0, changes_requested: false });
+  expect(result.required_checks).toEqual([
+    { context: 'build', app_id: 0 },
+    { context: verificationContext, app_id: 123 },
+  ]);
+});
+
+test('guarded merge proceeds on a ruleset-only branch and still mutates only the consented head', async () => {
+  process.env.GITHUB_APP_ID = '123';
+  axios.mockImplementation(async request => rulesetResponse(request));
+  const result = await mergeRemediationAction(payload({ expected_head_sha: head, expected_base_sha: base,
+    merge_method: 'squash', verification_check_name: verificationContext }));
+  expect(result.state).toBe('merged');
+  const mutations = axios.mock.calls.filter(([request]) => request.method === 'put');
+  expect(mutations).toHaveLength(1);
+  expect(mutations[0][0].data.sha).toBe(head);
+});
+
+test('merge eligibility blocks when a ruleset context binds the verification check to another app', async () => {
+  process.env.GITHUB_APP_ID = '123';
+  const rules = [{ type: 'required_status_checks', parameters: { required_status_checks: [
+    { context: verificationContext, integration_id: 999 },
+  ] } }];
+  axios.mockImplementation(async request => rulesetResponse(request, { rules }));
+  const result = await readMergeEligibility(eligibilityPayload());
+  expect(result.eligible).toBe(false);
+  expect(result.blockers).toContain('verification_check_not_required');
+});
+
+test('merge eligibility blocks when a ruleset requires an approval the pull request does not have', async () => {
+  process.env.GITHUB_APP_ID = '123';
+  const rules = rulesetRules([{ type: 'pull_request', parameters: {
+    required_approving_review_count: 1, dismiss_stale_reviews_on_push: true, require_code_owner_review: false,
+  } }]);
+  axios.mockImplementation(async request => rulesetResponse(request, { rules }));
+  const result = await readMergeEligibility(eligibilityPayload());
+  expect(result.eligible).toBe(false);
+  expect(result.blockers).toContain('required_approvals_missing');
+  expect(result.reviews).toEqual({ required: 1, approvals: 0, changes_requested: false });
+});
+
+test('merge eligibility blocks a merge queue ruleset because queue integration is out of scope', async () => {
+  process.env.GITHUB_APP_ID = '123';
+  const rules = rulesetRules([{ type: 'merge_queue', parameters: { merge_method: 'SQUASH' } }]);
+  axios.mockImplementation(async request => rulesetResponse(request, { rules }));
+  const result = await readMergeEligibility(eligibilityPayload());
+  expect(result.eligible).toBe(false);
+  expect(result.blockers).toContain('merge_queue_unsupported');
+});
+
+test('merge eligibility fails closed on a ruleset rule this release does not model', async () => {
+  process.env.GITHUB_APP_ID = '123';
+  const rules = rulesetRules([{ type: 'required_deployments', parameters: { required_deployment_environments: ['staging'] } }]);
+  axios.mockImplementation(async request => rulesetResponse(request, { rules }));
+  const result = await readMergeEligibility(eligibilityPayload());
+  expect(result.eligible).toBe(false);
+  expect(result.blockers).toContain('ruleset_rule_unsupported_required_deployments');
+});
+
+test('merge eligibility blocks when this app is a ruleset bypass actor', async () => {
+  process.env.GITHUB_APP_ID = '123';
+  const rules = rulesetRules().map(rule => (rule.type === 'required_status_checks'
+    ? { ...rule, bypass_actors: [{ actor_id: 123, actor_type: 'Integration', bypass_mode: 'always' }] } : rule));
+  axios.mockImplementation(async request => rulesetResponse(request, { rules }));
+  const result = await readMergeEligibility(eligibilityPayload());
+  expect(result.eligible).toBe(false);
+  expect(result.blockers).toContain('app_bypass_forbidden');
+});
+
+test('merge eligibility combines a ruleset with classic protection and enforces the stricter requirement', async () => {
+  process.env.GITHUB_APP_ID = '123';
+  const rules = rulesetRules([{ type: 'pull_request', parameters: { required_approving_review_count: 0 } }]);
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/rules/branches/')) return { data: rules };
+    if (request.url.includes('/branches/main/protection')) return { data: {
+      required_status_checks: { checks: [{ context: 'legacy-ci', app_id: 456 }] },
+      required_pull_request_reviews: { required_approving_review_count: 2 },
+    } };
+    return rulesetResponse(request, { rules, reviews: [{ user: { login: 'reviewer' }, state: 'APPROVED' }] });
+  });
+  const result = await readMergeEligibility(eligibilityPayload());
+  expect(result.eligible).toBe(false);
+  expect(result.protection_source).toBe('rulesets+branch_protection');
+  expect(result.reviews).toEqual({ required: 2, approvals: 1, changes_requested: false });
+  expect(result.blockers).toEqual(['required_approvals_missing']);
+  expect(result.required_checks).toEqual([
+    { context: 'build', app_id: 0 },
+    { context: verificationContext, app_id: 123 },
+    { context: 'legacy-ci', app_id: 456 },
+  ]);
+});
+
 test('pull head read returns the current revision, state and fork flag without mutating', async () => {
   axios.mockImplementation(async request => repositoryResponse(request));
   const result = await readPullRequestHead(payload({ pull_number: 9 }));
