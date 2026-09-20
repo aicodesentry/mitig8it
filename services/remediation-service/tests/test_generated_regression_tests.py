@@ -34,8 +34,16 @@ JS_SOURCE = "function loadUser(db, id) {\n  return db.query(`SELECT * FROM users
 JS_REPAIRED = "function loadUser(db, id) {\n  return db.query('SELECT * FROM users WHERE id = $1', [id]);\n}\nmodule.exports = { loadUser };\n"
 JS_BROKEN = "function loadUser(db, id) {\n  return db.query('SELECT * FROM users WHERE id = $1', [id;\n}\n"
 
-# Reads the changed module by relative path from the generated test's own directory.
+# Loads the changed module by relative path and exercises it with an injection payload: the
+# payload reaches the SQL text on the original code and is a bound parameter on the repair.
 JS_REGRESSION_TEST = (
+    "const { loadUser } = require('../../src/db.js');\n"
+    "let text = '';\n"
+    "loadUser({ query: (sql) => { text = String(sql); } }, '1 OR 1=1');\n"
+    "process.exit(text.includes('1 OR 1=1') ? 1 : 0);\n"
+)
+# Reads the changed file as text and never loads it: it can only assert on wording.
+JS_TEXT_ONLY_TEST = (
     "const fs = require('node:fs');\n"
     "const path = require('node:path');\n"
     "const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'db.js'), 'utf8');\n"
@@ -73,7 +81,11 @@ def _no_profile_payload(request_payload, *, source=JS_SOURCE):
     return payload
 
 
-def _run_engine(payload, *, source=JS_SOURCE, replacement=JS_REPAIRED, regression_test):
+def _spec(content, path=REGRESSION_TEST_PATH, finding_id="finding-1"):
+    return {"finding_id": finding_id, "path": path, "content": content}
+
+
+def _run_engine(payload, *, source=JS_SOURCE, replacement=JS_REPAIRED, regression_test=None, regression_tests=None):
     arguments = {
         "hypothesis": "Untrusted id is interpolated into SQL text.",
         "intended_behavior": "Load the same user by id.",
@@ -81,8 +93,10 @@ def _run_engine(payload, *, source=JS_SOURCE, replacement=JS_REPAIRED, regressio
         "citations": [{"path": "src/db.js", "line_start": 1, "line_end": 4}],
         "changes": [whole_file_change("src/db.js", source, replacement)],
     }
-    if regression_test is not None:
-        arguments["regression_test"] = regression_test
+    if regression_tests is not None:
+        arguments["regression_tests"] = regression_tests
+    elif regression_test is not None:
+        arguments["regression_tests"] = [regression_test]
     actions = iter([ProviderAction("propose_patch", arguments), ProviderAction("request_verification", {})])
 
     class _Provider:
@@ -97,14 +111,17 @@ def _run_engine(payload, *, source=JS_SOURCE, replacement=JS_REPAIRED, regressio
 @pytest.mark.asyncio
 async def test_reproducing_generated_test_makes_a_repository_without_fixtures_ready(request_payload):
     """The whole point: no policy checks, and the candidate still reaches `ready`."""
-    response = await _run_engine(_no_profile_payload(request_payload), regression_test={"path": REGRESSION_TEST_PATH, "content": JS_REGRESSION_TEST})
+    response = await _run_engine(_no_profile_payload(request_payload), regression_test=_spec(JS_REGRESSION_TEST))
     assert response.state == "ready", response.reason
     candidate = response.candidates[0]
+    assert candidate.finding_ids == ["finding-1"]
+    assert response.skipped == []
     assert [entry["path"] for entry in candidate.generated_tests] == [REGRESSION_TEST_PATH]
     assert candidate.generated_tests[0]["kind"] == "generated_regression_test"
+    assert candidate.generated_tests[0]["finding_id"] == "finding-1"
     # The generated test is evidence, not part of the applied tree.
     assert [patch.path for patch in candidate.patch] == ["src/db.js"]
-    assert all(entry["kind"] == "application" for entry in candidate.file_manifest)
+    assert all(entry["kind"] == "application" for entry in candidate.file_manifest["files"])
     assert response.evidence["batch_manifest"]["generated_tests"][0]["path"] == REGRESSION_TEST_PATH
 
     checks = {item["check_id"]: item for item in response.evidence["verification_run"]["checks"]}
@@ -118,13 +135,8 @@ async def test_reproducing_generated_test_makes_a_repository_without_fixtures_re
 @requires_node
 @pytest.mark.asyncio
 async def test_a_generated_test_that_passes_on_the_baseline_is_inconclusive(request_payload):
-    passing_on_both = (
-        "const fs = require('node:fs');\n"
-        "const path = require('node:path');\n"
-        "fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'db.js'), 'utf8');\n"
-        "process.exit(0);\n"
-    )
-    response = await _run_engine(_no_profile_payload(request_payload), regression_test={"path": REGRESSION_TEST_PATH, "content": passing_on_both})
+    passing_on_both = "require('../../src/db.js');\nprocess.exit(0);\n"
+    response = await _run_engine(_no_profile_payload(request_payload), regression_test=_spec(passing_on_both))
     assert response.state == "inconclusive"
     assert response.reason["code"] == "regression_test_not_reproducing"
     assert response.candidates == []
@@ -148,7 +160,7 @@ def test_an_unparseable_candidate_is_rejected_before_any_verification_run(reques
             request,
             snapshot,
             [whole_file_change("src/db.js", JS_SOURCE, JS_BROKEN)],
-            [{"path": REGRESSION_TEST_PATH, "content": JS_REGRESSION_TEST}],
+            [_spec(JS_REGRESSION_TEST)],
         )
 
 
@@ -163,7 +175,7 @@ async def test_node_check_failure_at_verification_time_is_failed(request_payload
         request,
         snapshot,
         [whole_file_change("src/db.js", JS_SOURCE, JS_REPAIRED)],
-        [{"path": REGRESSION_TEST_PATH, "content": JS_REGRESSION_TEST}],
+        [_spec(JS_REGRESSION_TEST)],
     )
     # Replace the validated patch with unparseable content to reach the sandbox `node --check`.
     broken = bundle.patches[0].model_copy(
@@ -198,7 +210,7 @@ def test_a_generated_test_outside_its_directory_is_rejected(request_payload, sou
             request,
             snapshot,
             [whole_file_change("src/db.ts", source, source + "\n")],
-            [{"path": path, "content": REPRODUCING_REGRESSION_TEST}],
+            [_spec(REPRODUCING_REGRESSION_TEST, path=path)],
         )
 
 
@@ -215,7 +227,7 @@ def test_a_generated_test_cannot_overwrite_an_application_file(request_payload, 
             request,
             snapshot,
             [whole_file_change("src/db.ts", source, source + "\n")],
-            [{"path": occupied["path"], "content": REPRODUCING_REGRESSION_TEST}],
+            [_spec(REPRODUCING_REGRESSION_TEST, path=occupied["path"])],
         )
 
 
@@ -227,7 +239,7 @@ def test_a_generated_test_may_not_import_an_undeclared_dependency(request_payloa
             request,
             snapshot,
             [whole_file_change("src/db.ts", source, source + "\n")],
-            [{"path": REGRESSION_TEST_PATH, "content": "require('supertest');\nprocess.exit(1);\n"}],
+            [_spec("require('supertest');\nprocess.exit(1);\n")],
         )
 
 

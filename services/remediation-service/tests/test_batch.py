@@ -15,7 +15,7 @@ def candidate(identifier, path="src/a.ts", tree="a" * 40):
         assumptions=[],
         citations=[],
         patch=[FilePatch(path=path, base_sha256="sha256:" + "1" * 64, replacement_content="x", contents_base64="eA==", new_sha256="sha256:" + "2" * 64, unified_diff="diff")],
-        file_manifest=[],
+        file_manifest={},
         artifact_digest="sha256:" + "3" * 64,
         context_manifest_digest="sha256:" + "4" * 64,
         verified_tree_oid=tree,
@@ -63,7 +63,7 @@ def _verified_candidate(identifier, bundle, tree_oid):
         assumptions=[],
         citations=[],
         patch=list(bundle.patches),
-        file_manifest=bundle.file_manifest,
+        file_manifest={"files": bundle.file_manifest, "verified_tree_oid": tree_oid},
         artifact_digest=bundle.artifact_digest,
         context_manifest_digest="sha256:" + "4" * 64,
         verified_tree_oid=tree_oid,
@@ -80,7 +80,10 @@ class CombinedPassingVerifier:
         from src.verification import VerificationResult
 
         self.calls += 1
-        return VerificationResult("passed", {"outcome": "passed"}, "sha256:" + "7" * 64, None, "independent_sandbox", [])
+        # The combined run proves every finding the two candidates claim.
+        return VerificationResult(
+            "passed", {"outcome": "passed"}, "sha256:" + "7" * 64, None, "independent_sandbox", [], ["one", "two"]
+        )
 
 
 def test_non_overlapping_candidates_combine_into_one_tree(request_payload):

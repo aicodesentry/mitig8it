@@ -148,15 +148,24 @@ Most repositories ship no verification fixture, so `policy.verification_checks` 
 Every candidate must instead carry an agent-generated regression test, and the engine derives
 the rest of the check set from the candidate itself.
 
-- `propose_patch` requires a `regression_test` of `{path, content}`. The path must be
+- `propose_patch` requires `regression_tests`, a list of `{finding_id, path, content}` with one
+  entry per finding the patch repairs. The path must be
   `.mitig8it/regression/<name>.test.{js,cjs,mjs}`, must not already exist in the snapshot, and
   is rejected outright anywhere else, so a generated test can never overwrite repository code.
-  The content must parse under `node --check` and may import only Node built-ins, the
-  repository's declared dependencies, and relative repository paths.
-- The file is materialized into both the baseline and the candidate workspace and executed as
-  an `exploit` check with a 60-second timeout: it must fail on the original tree and pass on
-  the patched one. Its content is untrusted repository-adjacent code and runs only inside the
-  sandbox driver, exactly like any other check.
+  The content must parse under `node --check`, may import only Node built-ins, the repository's
+  declared dependencies, and relative repository paths, and must exercise behavior: require the
+  changed module and invoke it with fake collaborators. A test that only reads the file as text
+  is rejected.
+- Each file is materialized into both the baseline and the candidate workspace and executed as
+  its own `exploit` check with a 60-second timeout. A finding is proven when its test fails on
+  the original tree and passes on the patched one; the candidate claims exactly the proven
+  findings and the rest are reported in `skipped` as `not_repaired` or
+  `regression_test_not_reproducing`. Test content is untrusted repository-adjacent code and
+  runs only inside the sandbox driver, exactly like any other check.
+- After `node --check`, patch policy also loads every changed JavaScript file from a temporary
+  copy of the candidate tree. A module that throws on load, such as a `ReferenceError` for an
+  identifier used without its import, is rejected as `candidate_load_failed`; a dependency the
+  snapshot does not carry is recorded as a limitation instead.
 - Every changed `.js`, `.cjs`, and `.mjs` file also gets a `node --check` `typecheck` check.
   It needs no fixture and no installed dependency, so it is the one behavior check every Node
   repository can always run.
@@ -166,10 +175,12 @@ the rest of the check set from the candidate itself.
 - Policy-supplied `verification_checks` still run exactly as before; the generated checks are
   additive.
 
-A candidate with no generated regression test, or whose test also passes on the baseline, is
-`inconclusive` with `regression_test_not_reproducing` and is never `ready`. The generated test
-is recorded on the candidate as `generated_tests` and in the batch manifest, separately from
-the application `file_manifest`: it is verification evidence, never part of the applied tree.
+A candidate with no proven finding is never `ready`: `inconclusive` with
+`regression_test_not_reproducing` when a test also passed on the baseline, `failed` when every
+test still failed on the patched tree. The generated tests are recorded on the candidate as
+`generated_tests` and in the batch manifest, separately from the application `file_manifest`,
+which carries the full final content (`contents_base64`, `blob_oid`) of every changed file plus
+the `verified_tree_oid` the apply path commits against.
 
 Set `require_generated_regression_test: false` to restore the previous behavior, in which a
 non-empty policy `verification_checks` with an `exploit` and a `behavior` check is mandatory.

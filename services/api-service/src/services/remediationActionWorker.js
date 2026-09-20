@@ -11,11 +11,22 @@ function basePayload(action, job) {
     action_id: action.id, idempotency_key: action.idempotency_key };
 }
 function verifiedTreeOid(candidates) {
-  const tree = candidates[0]?.preview?.verified_tree_oid || candidates[0]?.file_manifest?.verified_tree_oid;
+  const tree = candidates[0]?.preview?.verified_tree_oid || candidates[0]?.file_manifest?.verified_tree_oid
+    || candidates[0]?.verified_tree_oid;
   return typeof tree === 'string' && /^[0-9a-f]{40}$/i.test(tree) ? tree : null;
 }
+// The adapter commits whole files. A candidate stored as `{ files: [...] }`, as a bare array of
+// file entries, or as a single entry all carry the same thing: the final content of each changed
+// path. Anything without `contents_base64` is not a committable change and is dropped here, which
+// is what `verified_full_file_manifest_unavailable` reports.
+function manifestFiles(candidate) {
+  const manifest = candidate?.file_manifest;
+  if (Array.isArray(manifest?.files)) return manifest.files;
+  if (Array.isArray(manifest)) return manifest;
+  return [manifest];
+}
 function persistedChanges(candidates) {
-  const changes = candidates.flatMap((candidate) => Array.isArray(candidate.file_manifest?.files) ? candidate.file_manifest.files : [candidate.file_manifest]);
+  const changes = candidates.flatMap(manifestFiles);
   return changes.filter((patch) => patch && typeof patch.path === 'string' && typeof patch.contents_base64 === 'string');
 }
 
@@ -154,4 +165,4 @@ async function executeAction(action) {
   } else if (committed.state === 'reconciling') { await remediationDb.updateAction(action, 'reconciling', { operationId: committed.operation_id, reason: { code: 'ambiguous_write' } }); metrics.actionTransitions.labels('reconciling').inc(); }
   else { await remediationDb.updateAction(action, 'blocked', { operationId: committed.operation_id, reason: { code: committed.reason || 'commit_rejected' } }); metrics.actionTransitions.labels('blocked').inc(); }
 }
-module.exports = { GitHubRemediationClient, executeClaimedAction, executeAction, revalidate, enterCheckingAfterCommit };
+module.exports = { GitHubRemediationClient, executeClaimedAction, executeAction, revalidate, enterCheckingAfterCommit, persistedChanges, verifiedTreeOid };
