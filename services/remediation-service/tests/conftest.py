@@ -41,7 +41,7 @@ def whole_file_change(path: str, original: str, replacement: str) -> dict[str, o
         "path": path,
         "start_line": 1,
         "end_line": max(1, len(lines)),
-        "replaced_sha256": content_sha256(original),
+        "original_lines": original.splitlines(),
         "replacement_lines": replacement.splitlines(),
     }
 

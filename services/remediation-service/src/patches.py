@@ -17,7 +17,17 @@ from .retrieval.snapshot import validate_repo_path
 
 
 class PatchPolicyError(ValueError):
-    pass
+    """A rejected proposal, carrying a stable code and optional actionable guidance.
+
+    `code` is a short machine-readable identifier safe to record in the agent trace. `guidance`
+    is the specific, human-readable correction returned to the model in the tool result: it may
+    quote snapshot lines the agent is already authorized to read, so it is never traced.
+    """
+
+    def __init__(self, code: str, guidance: str | None = None):
+        super().__init__(code)
+        self.code = code
+        self.guidance = guidance
 
 
 NODE_BUILTIN_MODULES = frozenset(
@@ -145,6 +155,11 @@ def declared_dependencies(snapshot: Snapshot) -> set[str]:
     return declared
 
 
+# A `node --check` diagnostic handed back to the agent: enough for the line, message, and
+# caret, never an unbounded subprocess stream.
+MAX_SYNTAX_DIAGNOSTIC_CHARS = 600
+
+
 def _reject_missing_dependencies(path: str, original: str, replacement: str, snapshot: Snapshot) -> None:
     introduced = {
         root
@@ -157,7 +172,13 @@ def _reject_missing_dependencies(path: str, original: str, replacement: str, sna
     for name in sorted(introduced):
         if _is_builtin(name) or name.removeprefix("node:") in allowed or name in allowed:
             continue
-        raise PatchPolicyError(f"missing_dependency:{name}")
+        raise PatchPolicyError(
+            f"missing_dependency:{name}",
+            f"{name!r} is not a Node built-in and no package.json in the snapshot declares it. "
+            f"The snapshot declares: {', '.join(sorted(allowed)) or 'nothing'}. Rewrite the file to "
+            "use only those, Node built-ins, and relative repository paths: require the changed "
+            "module directly and call its exported handlers rather than adding a test framework.",
+        )
 
 
 def _syntax_check(path: str, replacement: str) -> str | None:
@@ -185,8 +206,20 @@ def _syntax_check(path: str, replacement: str) -> str | None:
             )
         except (OSError, subprocess.SubprocessError):
             return f"syntax check unavailable for {path}: no usable node toolchain"
-    if completed.returncode != 0:
-        raise PatchPolicyError(f"candidate_syntax_invalid:{path}")
+        if completed.returncode != 0:
+            # Node already says which line of the candidate fails and why. Handing that back
+            # names the mistake the agent can actually correct; "check your brackets" does not.
+            # The diagnostic quotes the agent's own candidate, so it never leaves the tool result.
+            diagnostic = (completed.stderr or completed.stdout or "").replace(directory, "").replace(
+                f"/candidate{suffix}", f" {path}"
+            )
+            raise PatchPolicyError(
+                f"candidate_syntax_invalid:{path}",
+                f"The patched {path} does not parse under `node --check`. Node reports:\n"
+                f"{diagnostic.strip()[:MAX_SYNTAX_DIAGNOSTIC_CHARS]}\n"
+                "The line number is in the patched file. Re-read that range and send hunks whose "
+                "replacement_lines leave the file balanced.",
+            )
     return None
 
 
@@ -225,9 +258,15 @@ def build_generated_tests(
             raise PatchPolicyError(f"regression_test_path_invalid:{exc}") from exc
         pure = PurePosixPath(path)
         if pure.parent.as_posix() != GENERATED_TEST_DIRECTORY:
-            raise PatchPolicyError(f"regression_test_outside_generated_directory:{path}")
+            raise PatchPolicyError(
+                f"regression_test_outside_generated_directory:{path}",
+                f"The regression test path must be {GENERATED_TEST_DIRECTORY}/<name>.test.js.",
+            )
         if not pure.name.endswith(GENERATED_TEST_SUFFIXES) or pure.name.startswith("."):
-            raise PatchPolicyError(f"regression_test_name_invalid:{path}")
+            raise PatchPolicyError(
+                f"regression_test_name_invalid:{path}",
+                "The regression test file name must end in .test.js, .test.cjs, or .test.mjs.",
+            )
         if path in snapshot.paths:
             raise PatchPolicyError(f"regression_test_overwrites_repository_file:{path}")
         if _path_forbidden(path, request):
@@ -249,15 +288,131 @@ def build_generated_tests(
     return tests, limitations
 
 
-HUNK_FIELDS = {"path", "start_line", "end_line", "replaced_sha256", "replacement_lines"}
+# A hunk states the lines it replaces verbatim, and the service finds them in the exact
+# snapshot. The text is the anchor, not the numbers: `start_line` is a hint that only
+# disambiguates a block occurring more than once, and `end_line` and `replaced_sha256` are
+# tolerated from callers that already send them. Nothing asks a caller to count or to hash.
+HUNK_REQUIRED_FIELDS = {"path", "original_lines", "replacement_lines"}
+HUNK_OPTIONAL_FIELDS = {"start_line", "end_line", "replaced_sha256"}
+HUNK_FIELDS = HUNK_REQUIRED_FIELDS | HUNK_OPTIONAL_FIELDS
+# Candidate line numbers named in an ambiguity rejection, so the message stays bounded.
+MAX_REPORTED_OCCURRENCES = 10
+MAX_GUIDANCE_LINE_CHARS = 200
+
+
+def _quote(line: str) -> str:
+    trimmed = line.rstrip("\n\r")
+    if len(trimmed) > MAX_GUIDANCE_LINE_CHARS:
+        trimmed = trimmed[:MAX_GUIDANCE_LINE_CHARS] + "..."
+    return json.dumps(trimmed)
+
+
+def _normalized_digest(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    candidate = value.strip().lower()
+    return candidate if candidate.startswith("sha256:") else f"sha256:{candidate}"
+
+
+def _occurrences(file_lines: list[str], supplied: list[str]) -> list[int]:
+    """Every 1-based line where `supplied` occurs verbatim in the file, ignoring line endings."""
+    body = [line.rstrip("\n\r") for line in file_lines]
+    wanted = [line.rstrip("\n\r") for line in supplied]
+    span = len(wanted)
+    return [index + 1 for index in range(len(body) - span + 1) if body[index : index + span] == wanted]
+
+
+def _first_mismatch(file_lines: list[str], supplied: list[str], start: int) -> str:
+    """Why the quoted block is not at `start`: the first line that differs, both sides quoted."""
+    body = [line.rstrip("\n\r") for line in file_lines]
+    wanted = [line.rstrip("\n\r") for line in supplied]
+    for offset, got in enumerate(wanted):
+        number = start + offset
+        if number > len(body):
+            return f"{number} is past the end of the file, which has {len(body)} lines"
+        if body[number - 1] != got:
+            return f"{number} is {_quote(body[number - 1])}, but original_lines gave {_quote(got)}"
+    return f"{start} matches, but the block does not"
+
+
+def locate_hunk(path: str, file_lines: list[str], hunk: dict[str, Any]) -> tuple[int, int]:
+    """Finds the range `original_lines` occupies in the exact snapshot, or rejects with guidance.
+
+    The quoted text is the anchor and `start_line` is only a hint, so an agent that miscounts a
+    line number still lands on the right range. A block that occurs once is unambiguous; one that
+    repeats is resolved by the hint, and a repeat the hint cannot resolve is rejected by naming
+    the candidate line numbers rather than guessing which one the agent meant.
+    """
+    supplied = hunk["original_lines"]
+    if not isinstance(supplied, list) or any(not isinstance(line, str) for line in supplied):
+        raise PatchPolicyError(
+            "original_lines_must_be_a_list_of_strings",
+            "original_lines must be the exact snapshot lines this hunk replaces, one string per "
+            "line, without newline characters.",
+        )
+    if not supplied:
+        raise PatchPolicyError(
+            "original_lines_required",
+            "Quote at least one line to replace. To insert, quote the line you are inserting "
+            "after and repeat it in replacement_lines.",
+        )
+    hint = hunk.get("start_line")
+    hint_line = int(hint) if isinstance(hint, int) or (isinstance(hint, str) and str(hint).isdigit()) else None
+    found = _occurrences(file_lines, supplied)
+    if not found:
+        anchor = hint_line if hint_line and 1 <= hint_line <= len(file_lines) else 1
+        raise PatchPolicyError(
+            f"original_lines_not_found:{path}",
+            f"These lines are not in {path}. Line {_first_mismatch(file_lines, supplied, anchor)}. "
+            "Copy the lines exactly as read_file returned them, including leading whitespace.",
+        )
+    if len(found) == 1:
+        start = found[0]
+    elif hint_line in found:
+        start = hint_line
+    else:
+        candidates = ", ".join(str(number) for number in found[:MAX_REPORTED_OCCURRENCES])
+        raise PatchPolicyError(
+            f"original_lines_ambiguous:{path}",
+            f"These lines occur {len(found)} times in {path}, at lines {candidates}. Set "
+            "start_line to the one you mean, or quote more surrounding lines so the block is "
+            "unique.",
+        )
+    end = start + len(supplied) - 1
+    if "end_line" in hunk:
+        try:
+            stated_end = int(hunk["end_line"])
+        except (TypeError, ValueError) as exc:
+            raise PatchPolicyError("hunk_line_range_invalid", "end_line must be an integer.") from exc
+        if stated_end != end:
+            raise PatchPolicyError(
+                f"hunk_line_range_inconsistent:{path}@{start}-{stated_end}",
+                f"original_lines holds {len(supplied)} lines beginning at line {start} of {path}, "
+                f"so end_line is {end}. Omit end_line and the service derives it.",
+            )
+    supplied_digest = _normalized_digest(hunk.get("replaced_sha256"))
+    if supplied_digest is not None and supplied_digest != content_sha256("".join(file_lines[start - 1 : end])):
+        raise PatchPolicyError(
+            f"stale_hunk_digest:{path}@{start}-{end}",
+            f"replaced_sha256 does not match {path} lines {start}-{end}. It is optional: omit it "
+            "and the service derives it from original_lines.",
+        )
+    return start, end
 
 
 def _hunk_text(replacement_lines: Any, replaced_block: str) -> str:
     """Renders a hunk's replacement lines, preserving the replaced block's trailing newline."""
     if not isinstance(replacement_lines, list) or any(not isinstance(line, str) for line in replacement_lines):
-        raise PatchPolicyError("replacement_lines_must_be_a_list_of_strings")
+        raise PatchPolicyError(
+            "replacement_lines_must_be_a_list_of_strings",
+            "replacement_lines must be a list of strings, one per new line. Send an empty list to "
+            "delete the range.",
+        )
     if any("\n" in line or "\r" in line for line in replacement_lines):
-        raise PatchPolicyError("replacement_lines_must_not_contain_newlines")
+        raise PatchPolicyError(
+            "replacement_lines_must_not_contain_newlines",
+            "Split the replacement on newlines and send one string per line.",
+        )
     if not replacement_lines:
         return ""
     trailing = "\n" if replaced_block.endswith(("\n", "\r")) else ""
@@ -267,19 +422,24 @@ def _hunk_text(replacement_lines: Any, replaced_block: str) -> str:
 def apply_hunks(snapshot: Snapshot, proposed_changes: list[dict[str, Any]]) -> dict[str, str]:
     """Applies line-range hunks to the exact snapshot and returns each file's new content.
 
-    A hunk names the lines it replaces and the digest of exactly those lines. A digest that no
-    longer matches the snapshot is stale and rejects the whole proposal, so the agent can never
-    edit a range it did not read. Hunks are applied bottom-up so earlier line numbers stay valid.
+    A hunk quotes the lines it replaces and the service finds them in the exact snapshot, so the
+    agent can never edit a range it did not read, never has to compute a hash, and is not held to
+    a line number it miscounted. Hunks are applied bottom-up so earlier line numbers stay valid.
     """
     by_path: dict[str, list[dict[str, Any]]] = {}
     for change in proposed_changes:
-        if not isinstance(change, dict) or set(change) != HUNK_FIELDS:
-            raise PatchPolicyError("change_schema_invalid")
+        if not isinstance(change, dict) or not HUNK_REQUIRED_FIELDS <= set(change) or not set(change) <= HUNK_FIELDS:
+            raise PatchPolicyError(
+                "change_schema_invalid",
+                "Each change must be {path, start_line, original_lines, replacement_lines}, "
+                "where original_lines are the snapshot lines the hunk replaces and start_line is "
+                "a hint used only when those lines occur more than once.",
+            )
         try:
             path = validate_repo_path(str(change["path"]))
             snapshot.full_content(path)
         except SnapshotError as exc:
-            raise PatchPolicyError(str(exc)) from exc
+            raise PatchPolicyError(str(exc), f"{change.get('path')!r} is not a readable snapshot path.") from exc
         by_path.setdefault(path, []).append(change)
 
     contents: dict[str, str] = {}
@@ -287,21 +447,18 @@ def apply_hunks(snapshot: Snapshot, proposed_changes: list[dict[str, Any]]) -> d
         original_lines = snapshot.full_content(path).splitlines(keepends=True)
         prepared: list[tuple[int, int, str]] = []
         for hunk in hunks:
-            try:
-                start = int(hunk["start_line"])
-                end = int(hunk["end_line"])
-            except (TypeError, ValueError) as exc:
-                raise PatchPolicyError("hunk_line_range_invalid") from exc
-            if start < 1 or end < start or end > len(original_lines):
-                raise PatchPolicyError(f"hunk_line_range_out_of_bounds:{path}@{start}-{end}")
+            # The quoted lines are the anchor: the service finds them and derives the range, so a
+            # miscounted start_line never decides which lines are replaced.
+            start, end = locate_hunk(path, original_lines, hunk)
             replaced_block = "".join(original_lines[start - 1 : end])
-            if str(hunk["replaced_sha256"]) != content_sha256(replaced_block):
-                raise PatchPolicyError(f"stale_hunk_digest:{path}@{start}-{end}")
             prepared.append((start, end, _hunk_text(hunk["replacement_lines"], replaced_block)))
         prepared.sort(key=lambda item: (item[0], item[1]))
         for earlier, later in zip(prepared, prepared[1:]):
             if later[0] <= earlier[1]:
-                raise PatchPolicyError(f"overlapping_hunks:{path}")
+                raise PatchPolicyError(
+                    f"overlapping_hunks:{path}",
+                    f"Two hunks on {path} cover line {later[0]}. Send one hunk per line range.",
+                )
         updated = list(original_lines)
         for start, end, text in reversed(prepared):
             updated[start - 1 : end] = [text] if text else []
@@ -317,7 +474,7 @@ def build_patch_bundle(
 ) -> PatchBundle:
     """Builds a bundle from the agent's line-range hunks against the exact snapshot."""
     if not proposed_changes:
-        raise PatchPolicyError("proposal_contains_no_changes")
+        raise PatchPolicyError("proposal_contains_no_changes", "Send at least one change hunk.")
     return _build_bundle_from_contents(request, snapshot, apply_hunks(snapshot, proposed_changes), regression_tests)
 
 
@@ -330,7 +487,10 @@ def _build_bundle_from_contents(
     if not replacements:
         raise PatchPolicyError("proposal_contains_no_changes")
     if len(replacements) > request.policy.max_files:
-        raise PatchPolicyError("changed_file_limit_exceeded")
+        raise PatchPolicyError(
+            "changed_file_limit_exceeded",
+            f"The proposal changes {len(replacements)} files and policy allows {request.policy.max_files}.",
+        )
 
     patches: list[FilePatch] = []
     limitations: list[str] = []
@@ -346,7 +506,10 @@ def _build_bundle_from_contents(
         if not isinstance(replacement, str):
             raise PatchPolicyError("replacement_content_must_be_string")
         if replacement == original:
-            raise PatchPolicyError(f"unchanged_file:{path}")
+            raise PatchPolicyError(
+                f"unchanged_file:{path}",
+                f"The hunks leave {path} byte-identical to the snapshot. Propose a real change or abstain.",
+            )
         if len(replacement.encode("utf-8")) > request.policy.max_file_bytes:
             raise PatchPolicyError(f"replacement_file_too_large:{path}")
 
@@ -367,7 +530,11 @@ def _build_bundle_from_contents(
         )
         total_changed += changed
         if total_changed > request.policy.max_changed_lines:
-            raise PatchPolicyError("changed_line_limit_exceeded")
+            raise PatchPolicyError(
+                "changed_line_limit_exceeded",
+                f"The proposal changes {total_changed} lines and policy allows "
+                f"{request.policy.max_changed_lines}. Make the change smaller.",
+            )
         _reject_missing_dependencies(path, original, replacement, snapshot)
         limitation = _syntax_check(path, replacement)
         if limitation:

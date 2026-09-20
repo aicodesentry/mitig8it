@@ -40,12 +40,20 @@ def test_patch_rejects_invalid_javascript_syntax(request_payload):
     original = "module.exports = { ok: true };\n"
     request_payload["files"].append({"path": "src/app.js", "content": original})
     request = RepairRequest.model_validate(request_payload)
-    with pytest.raises(PatchPolicyError, match="candidate_syntax_invalid"):
+    with pytest.raises(PatchPolicyError) as raised:
         build_patch_bundle(
             request,
             Snapshot(request),
             [whole_file_change("src/app.js", original, "module.exports = {;\n")],
         )
+    assert raised.value.code == "candidate_syntax_invalid:src/app.js"
+    # The rejection hands back what node actually said, so the agent can correct that line
+    # instead of guessing, and never leaks the host temporary directory it was checked in.
+    guidance = raised.value.guidance or ""
+    assert "SyntaxError" in guidance
+    assert "src/app.js" in guidance
+    assert "mitig8it-syntax-" not in guidance
+    assert "/var/folders" not in guidance and "/tmp/" not in guidance
 
 
 def test_patch_accepts_valid_javascript_and_records_no_syntax_limitation(request_payload):
