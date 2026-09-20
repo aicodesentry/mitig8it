@@ -56,7 +56,15 @@ def lease_seconds() -> int:
     return max(floor, configured)
 
 
-async def renew_lease(backend: Backend, execution_id: str, worker_id: str, lease: int, interval: float, lost: asyncio.Event) -> None:
+async def renew_lease(
+    backend: Backend,
+    execution_id: str,
+    worker_id: str,
+    lease: int,
+    interval: float,
+    lost: asyncio.Event,
+    first: asyncio.Event | None = None,
+) -> None:
     """Renews the lease on a task of its own until the lease is definitively gone.
 
     It never awaits the repair, so no model call, sandbox run, or checkpoint write can delay a
@@ -66,15 +74,20 @@ async def renew_lease(backend: Backend, execution_id: str, worker_id: str, lease
     anyway. Both cases are logged with the observed timestamps.
     """
     last_renewed = time.monotonic()
+    # The first renewal is immediate, so every attempt proves at the start that the lease it
+    # just claimed is still renewable by this worker, and no attempt can run to completion
+    # without a single renewal ever having been attempted.
     while True:
-        await asyncio.sleep(interval)
         failure: str | None = None
         try:
             renewed = await asyncio.to_thread(backend.heartbeat, execution_id, worker_id, lease)
         except Exception as exc:  # noqa: BLE001 - the type is reported; the text may carry source.
             renewed, failure = False, type(exc).__name__
+        if first is not None:
+            first.set()
         if renewed:
             last_renewed = time.monotonic()
+            await asyncio.sleep(interval)
             continue
         held_for = time.monotonic() - last_renewed
         logger.warning(
@@ -110,8 +123,14 @@ async def run_once(backend: Backend, worker_id: str) -> bool:
     request = await asyncio.to_thread(backend.read_request, record)
     checkpoints = create_checkpoint_store(backend, record.execution_id, worker_id, request)
     lost = asyncio.Event()
+    first_renewal = asyncio.Event()
     lost_waiter = asyncio.create_task(lost.wait())
-    renewals = asyncio.create_task(renew_lease(backend, record.execution_id, worker_id, lease, interval, lost))
+    renewals = asyncio.create_task(
+        renew_lease(backend, record.execution_id, worker_id, lease, interval, lost, first_renewal)
+    )
+    # No repair work starts until the claimed lease has been shown to be renewable by this
+    # worker, so an attempt can never run to completion without one renewal having happened.
+    await first_renewal.wait()
     # A span link, not a child span: the intake request finished long before this resumption.
     with telemetry.linked_span("remediation.repair", record.trace_context, **telemetry.request_attributes(request)) as span:
         task = asyncio.create_task(RepairEngine().repair(request, checkpoints))
