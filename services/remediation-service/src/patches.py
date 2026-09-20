@@ -16,6 +16,7 @@ from .digests import content_sha256, digest_json, git_blob_sha1
 from .models import FilePatch, RepairRequest
 from .retrieval import Snapshot, SnapshotError
 from .retrieval.snapshot import validate_repo_path
+from .sandbox.harness import HARNESS_PATH, is_harness_path
 
 
 class PatchPolicyError(ValueError):
@@ -177,7 +178,15 @@ def declared_dependencies(snapshot: Snapshot) -> set[str]:
 MAX_SYNTAX_DIAGNOSTIC_CHARS = 600
 
 
-def _reject_missing_dependencies(path: str, original: str, replacement: str, snapshot: Snapshot) -> None:
+def _reject_missing_dependencies(
+    path: str, original: str, replacement: str, snapshot: Snapshot, *, allow_declared: bool = True
+) -> None:
+    """Rejects a specifier the sandbox cannot resolve.
+
+    An application file may import what package.json declares: the repository installs it. A
+    generated regression test may not, because the sandbox installs nothing, so for tests only
+    Node built-ins, relative paths, and the service harness resolve.
+    """
     introduced = {
         root
         for root in (package_root(item) for item in module_specifiers(replacement) - module_specifiers(original))
@@ -185,16 +194,18 @@ def _reject_missing_dependencies(path: str, original: str, replacement: str, sna
     }
     if not introduced:
         return
-    allowed = declared_dependencies(snapshot)
+    allowed = declared_dependencies(snapshot) if allow_declared else set()
     for name in sorted(introduced):
         if _is_builtin(name) or name.removeprefix("node:") in allowed or name in allowed:
             continue
         raise PatchPolicyError(
             f"missing_dependency:{name}",
             f"{name!r} is not a Node built-in and no package.json in the snapshot declares it. "
-            f"The snapshot declares: {', '.join(sorted(allowed)) or 'nothing'}. Rewrite the file to "
-            "use only those, Node built-ins, and relative repository paths; never add a test "
-            "framework. " + BEHAVIOR_TEST_GUIDANCE,
+            f"The snapshot declares: {', '.join(sorted(allowed)) or 'nothing'}. Nothing is installed in "
+            "the sandbox, so a regression test must require only Node built-ins, relative repository "
+            f"paths, and the service harness at {HARNESS_PATH} (require('../harness') from the test "
+            "directory); never supertest, express, pg, jest, or any other package. "
+            + BEHAVIOR_TEST_GUIDANCE,
         )
 
 
@@ -240,6 +251,28 @@ def _syntax_check(path: str, replacement: str) -> str | None:
     return None
 
 
+def _reject_service_path(path: str) -> None:
+    """Rejects a proposal that targets the service-owned `.mitig8it/` tree.
+
+    The harness and the generated tests are evidence the service materializes into the sandbox;
+    a proposal that writes there could replace the harness the verifier trusts to record calls.
+    """
+    normalized = path.strip().strip("/")
+    if is_harness_path(normalized):
+        raise PatchPolicyError(
+            f"harness_path_protected:{HARNESS_PATH}",
+            f"{HARNESS_PATH} is the service test harness and is materialized by the sandbox; a "
+            "proposal may not write it. Change only application files and require the harness "
+            "from a regression test with require('../harness').",
+        )
+    if normalized == ".mitig8it" or normalized.startswith(".mitig8it/"):
+        raise PatchPolicyError(
+            f"protected_path:{normalized}",
+            "The .mitig8it directory is owned by the service. Regression tests go in "
+            f"{GENERATED_TEST_DIRECTORY}/ through propose_patch.regression_tests, not through changes.",
+        )
+
+
 def _path_forbidden(path: str, request: RepairRequest) -> bool:
     lowered = path.lower()
     name = PurePosixPath(path).name.lower()
@@ -252,25 +285,31 @@ def _path_forbidden(path: str, request: RepairRequest) -> bool:
 # reads the changed file as text passes or fails on wording alone, so it is rejected.
 _FS_READ_RE = re.compile(r"\b(?:readFileSync|readFile)\s*\(")
 _DIRNAME_REQUIRE_RE = re.compile(r"\brequire\s*\([^)]*__dirname")
+_HARNESS_LOAD_RE = re.compile(r"\.load\s*\(\s*['\"]")
 BEHAVIOR_TEST_GUIDANCE = (
-    "Plain Node only: no jest, mocha, or supertest; assert with plain conditions and "
-    "process.exit. Nothing is installed, so stub every package the changed module requires by replacing "
-    "Module._load (from node:module) before requiring it: for example express as a function "
-    "whose Router() returns an object whose get/post record each path's handler, pg as { Pool } "
-    "whose query records sql and params and resolves { rows: [] }, child_process as exec and "
-    "execFile that record the command and call back. Then require the changed module by "
-    "relative path, call the recorded handler or exported function with fake req (params, "
-    "query, body) and res (status/json/type/send returning this) carrying an injection payload, "
-    "and exit non-zero only when the payload reaches the SQL text, the shell command, or a path "
-    "outside the base directory."
+    "Plain Node only: no jest, mocha, or supertest. Use the service harness: const h = "
+    "require('../harness'); const app = h.load('<repository path of the changed file>'); it fakes "
+    "express, pg, child_process, and fs and records every call. Then await h.invoke(app, 'get', "
+    "'/route/:id', { params, query, body }) or call the exported function with an injection "
+    "payload, and assert on h.pg.queries (text must not contain the payload, values must), "
+    "h.child_process.calls (fn is execFile or spawn, args carries the payload, options.shell is "
+    "unset), or h.fs.reads (every path stays under the base directory). Wrap the body in "
+    "h.run(async () => { ... }); it exits non-zero on the first failed h.assert."
 )
 
 
 def _requires_repository_module(content: str) -> bool:
-    """True when the test loads a repository module, by relative specifier or via __dirname."""
-    if any(specifier.startswith(".") for specifier in module_specifiers(content)):
+    """True when the test loads a repository module, by relative specifier or via __dirname.
+
+    The service harness is a relative specifier too, but loading it alone proves nothing about
+    the repository, so it does not count; its `load(<repository path>)` call does.
+    """
+    if any(
+        specifier.startswith(".") and PurePosixPath(specifier).stem != "harness"
+        for specifier in module_specifiers(content)
+    ):
         return True
-    return bool(_DIRNAME_REQUIRE_RE.search(content))
+    return bool(_DIRNAME_REQUIRE_RE.search(content) or _HARNESS_LOAD_RE.search(content))
 
 
 def build_generated_tests(
@@ -314,6 +353,12 @@ def build_generated_tests(
                 f"Send exactly one regression test per finding; {finding_id} has two.",
             )
         claimed.add(finding_id)
+        if is_harness_path(str(spec["path"]).strip().strip("/")):
+            raise PatchPolicyError(
+                f"harness_path_protected:{HARNESS_PATH}",
+                f"{HARNESS_PATH} is the service test harness; a regression test may require it but "
+                f"never replace it. Name the test {GENERATED_TEST_DIRECTORY}/<finding-id>.test.js.",
+            )
         try:
             path = validate_repo_path(str(spec["path"]))
         except SnapshotError as exc:
@@ -347,7 +392,7 @@ def build_generated_tests(
                 "The test reads a file as text and never requires a repository module, so it proves "
                 "nothing about behavior. " + BEHAVIOR_TEST_GUIDANCE,
             )
-        _reject_missing_dependencies(path, "", content, snapshot)
+        _reject_missing_dependencies(path, "", content, snapshot, allow_declared=False)
         limitation = _syntax_check(path, content)
         if limitation:
             limitations.append(limitation)
@@ -640,6 +685,7 @@ def apply_hunks(snapshot: Snapshot, proposed_changes: list[dict[str, Any]]) -> d
                 "where original_lines are the snapshot lines the hunk replaces and start_line is "
                 "a hint used only when those lines occur more than once.",
             )
+        _reject_service_path(str(change.get("path", "")))
         try:
             path = validate_repo_path(str(change["path"]))
             snapshot.full_content(path)
@@ -701,6 +747,7 @@ def _build_bundle_from_contents(
     limitations: list[str] = []
     total_changed = 0
     for path, replacement in sorted(replacements.items()):
+        _reject_service_path(path)
         original = snapshot.full_content(path)
         if _path_forbidden(path, request):
             raise PatchPolicyError(f"protected_path:{path}")

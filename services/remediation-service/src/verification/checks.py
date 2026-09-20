@@ -19,6 +19,7 @@ from typing import Any
 from ..models import RepairRequest, VerificationCheck
 from ..patches import PatchBundle
 from ..retrieval import Snapshot
+from ..sandbox.harness import HARNESS_OCCUPIED_LIMITATION, HARNESS_PATH, harness_snapshot_entry
 
 REGRESSION_CHECK_PREFIX = "generated_regression_test"
 SYNTAX_CHECK_PREFIX = "generated_node_syntax"
@@ -55,6 +56,9 @@ class EffectiveChecks:
     # Which finding each generated regression check reproduces, by check id. A candidate
     # claims a finding only when its own check fails on the baseline and passes on the candidate.
     regression_findings: dict[str, str] = field(default_factory=dict)
+    # Service-owned support files the generated tests load, materialized into both workspaces
+    # exactly like the tests: never a patch, never a manifest entry, never applied to the tree.
+    harness_files: tuple[dict[str, str], ...] = ()
 
     @property
     def kinds(self) -> set[str]:
@@ -115,8 +119,15 @@ def build_effective_checks(request: RepairRequest, snapshot: Snapshot, bundle: P
                 timeout_seconds=REGRESSION_TEST_TIMEOUT_SECONDS,
             )
         )
+    harness_files: list[dict[str, str]] = []
     if not bundle.generated_tests:
         limitations.append(NO_REGRESSION_TEST_LIMITATION)
+    elif HARNESS_PATH in snapshot.paths:
+        # The materializer refuses duplicate paths, so a repository that occupies the harness
+        # path keeps its own file and the limitation says the harness was not supplied.
+        limitations.append(HARNESS_OCCUPIED_LIMITATION)
+    else:
+        harness_files.append(harness_snapshot_entry())
 
     # 2. `node --check` on every changed JavaScript file. It needs no fixture and no installed
     #    dependency, so it is the one behavior check every Node repository can always run.
@@ -151,17 +162,25 @@ def build_effective_checks(request: RepairRequest, snapshot: Snapshot, bundle: P
         )
 
     return EffectiveChecks(
-        tuple(checks), tuple(generated_files), frozenset(regression_ids), tuple(limitations), regression_findings
+        tuple(checks),
+        tuple(generated_files),
+        frozenset(regression_ids),
+        tuple(limitations),
+        regression_findings,
+        harness_files=tuple(harness_files),
     )
 
 
 def generated_snapshot_entries(snapshot: Snapshot, effective: EffectiveChecks) -> list[dict[str, Any]]:
-    """The sandbox payload's file list: the exact snapshot plus the generated test files.
+    """The sandbox payload's file list: the exact snapshot, the generated tests, and the harness.
 
     The generated files are added to the tree both variants materialize, so the baseline runs
-    the same reproducer against the original code. They are never part of the candidate patch
-    set and therefore never reach the tree the batch applies.
+    the same reproducer against the original code. Both sandbox drivers write this list through
+    the shared trusted materializer, so the harness reaches the Kubernetes runner and the local
+    driver by the same path as the tests. None of it is part of the candidate patch set, so none
+    of it reaches the tree the batch applies.
     """
     entries = [{"path": path, "content": snapshot.full_content(path)} for path in snapshot.paths]
     entries.extend({"path": item["path"], "content": item["content"]} for item in effective.generated_files)
+    entries.extend({"path": item["path"], "content": item["content"]} for item in effective.harness_files)
     return entries
