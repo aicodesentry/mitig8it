@@ -1,6 +1,7 @@
 const remediationDb = require('../db/remediation');
 const { GitHubRemediationClient } = require('./githubRemediationClient');
 const mergeController = require('./mergeController');
+const residualReport = require('./remediationResidualReport');
 
 const metrics = require('./remediationMetrics');
 const logger = require('../utils/logger');
@@ -45,9 +46,9 @@ async function reconcileActions(staleSeconds, limit) {
   const counts = { applied: 0, not_applied: 0, unresolved: 0, errors: 0 };
   for (const action of actions) {
     try {
-      const { job, candidates } = await remediationDb.actionMaterial(action);
-      const tree = candidates[0]?.preview?.verified_tree_oid || candidates[0]?.file_manifest?.verified_tree_oid;
-      if (!job || typeof tree !== 'string' || !/^[0-9a-f]{40}$/i.test(tree)) {
+      const { job, candidates, combinedTreeOid } = await remediationDb.actionMaterial(action);
+      const tree = require('./remediationActionWorker').verifiedTreeOid(candidates, combinedTreeOid);
+      if (!job || !tree) {
         counts.unresolved += 1;
         await remediationDb.updateAction(action, 'blocked', { reason: { code: 'verified_tree_oid_unavailable' } });
         logger.error('Remediation reconciliation has no verified tree to compare', { action_id: action.id });
@@ -94,6 +95,9 @@ async function completeVerifiedActions(limit) {
         try { await mergeController.publishVerificationCheck(row.id); } catch (error) {
           logger.error('Verification check publication failed after completion', { action_id: row.id, error: error.message });
         }
+        try { await residualReport.publishResidualComment(row.id); } catch (error) {
+          logger.error('Residual report publication failed after completion', { action_id: row.id, error: error.message });
+        }
         try { await mergeController.evaluateForAction(row.id); } catch (error) {
           logger.error('Merge evaluation failed after completion', { action_id: row.id, error: error.message });
         }
@@ -113,6 +117,11 @@ async function sweepMergeIntents(options) {
 
 async function publishVerificationChecks(limit) {
   return mergeController.publishPendingVerificationChecks({ limit });
+}
+
+// Residual report comments that a transient GitHub failure left unpublished.
+async function publishResidualComments(limit) {
+  return residualReport.publishPendingResidualComments({ limit });
 }
 
 async function quarantineJobs(limit) {
@@ -153,6 +162,7 @@ async function runReconciliation(options = {}) {
   await step('merge_intents', () => expireIntents(intentLimit), summary);
   await step('usage', () => releaseStrandedUsage(usageLimit), summary);
   await step('verification_checks', () => publishVerificationChecks(actionLimit), summary);
+  await step('residual_comments', () => publishResidualComments(actionLimit), summary);
   await step('merge_controller', () => sweepMergeIntents({
     limit: mergeSweepLimit,
     ...(mergeSweepStaleSeconds == null ? {} : { staleSeconds: mergeSweepStaleSeconds }),
@@ -177,5 +187,5 @@ function startReconciler(options = {}) {
 
 module.exports = {
   runReconciliation, startReconciler, intervalMs, reconcileActions, completeVerifiedActions, releaseStrandedUsage,
-  sweepMergeIntents, publishVerificationChecks,
+  sweepMergeIntents, publishVerificationChecks, publishResidualComments,
 };

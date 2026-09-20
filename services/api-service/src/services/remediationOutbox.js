@@ -98,6 +98,11 @@ function registerDefaultHandlers({ executeClaimedJob, executeClaimedAction, work
   // A completed application is the moment its merge intent becomes evaluable.
   registerHandler('remediation.action.completed', async (event) => {
     await mergeController.publishVerificationCheck(event.aggregate_id);
+    // The residual report is posted once the fresh analysis finished; a failure here is
+    // retried by the reconciler and never blocks the merge evaluation.
+    try { await require('./remediationResidualReport').publishResidualComment(event.aggregate_id); } catch (error) {
+      logger.error('Residual report publication failed from the outbox', { action_id: event.aggregate_id, error: error.message });
+    }
     await mergeController.evaluateForAction(event.aggregate_id);
     return { status: 'executed' };
   });

@@ -2,13 +2,18 @@ const request = require('supertest');
 const jwt = require('jsonwebtoken');
 
 jest.mock('../src/config/database', () => ({ pool: { query: jest.fn() }, transaction: jest.fn() }));
-jest.mock('../src/db/remediation', () => ({
-  getLatestForPullRequest: jest.fn(), createJob: jest.fn(), getJobForUser: jest.fn(), getPreview: jest.fn(),
-  createAction: jest.fn(), cancelJob: jest.fn(), getActionForUser: jest.fn(), cancelMerge: jest.fn(),
-  budgetSnapshot: jest.fn(), recordApplyDenial: jest.fn(),
-  getCandidateForFeedback: jest.fn(), recordRepairMemoryObservation: jest.fn(),
-  mergeIntentContext: jest.fn(), transitionMergeIntent: jest.fn(), recordMergeEvaluation: jest.fn(),
-}));
+jest.mock('../src/db/remediation', () => {
+  const actual = jest.requireActual('../src/db/remediation');
+  return {
+    getLatestForPullRequest: jest.fn(), createJob: jest.fn(), getJobForUser: jest.fn(), getPreview: jest.fn(),
+    createAction: jest.fn(), cancelJob: jest.fn(), getActionForUser: jest.fn(), cancelMerge: jest.fn(),
+    budgetSnapshot: jest.fn(), recordApplyDenial: jest.fn(),
+    getCandidateForFeedback: jest.fn(), recordRepairMemoryObservation: jest.fn(),
+    mergeIntentContext: jest.fn(), transitionMergeIntent: jest.fn(), recordMergeEvaluation: jest.fn(),
+    // Consent digests and subset selection are pure; the route is tested against the real ones.
+    manifestDigestFor: actual.manifestDigestFor, selectCandidates: actual.selectCandidates, hash: actual.hash,
+  };
+});
 jest.mock('../src/services/githubUserAuth', () => ({ getGithubAccessTokenForUser: jest.fn() }));
 jest.mock('../src/services/githubRemediationClient', () => {
   const authorize = jest.fn();
@@ -64,8 +69,21 @@ const REMEDIATION_ENV = [
   'REMEDIATION_PROTECTED_BRANCH_PATTERNS_JSON',
 ];
 
+// Two verified candidates in one job, one per file. Consent digests are computed by the
+// real helper over exactly the subset a request names.
+const secondCandidate = '77777777-7777-4777-8777-777777777777';
+const candidateRows = [
+  { id: candidate, finding_snapshot_ids: [candidate], artifact_digest: 'x'.repeat(64), context_manifest_digest: 'y', verification_level: 'independent_sandbox', rejection_reason: null,
+    file_manifest: { files: [{ path: 'src/app.js' }], verified_tree_oid: 'e'.repeat(40) }, preview: { changes: [{ path: 'src/app.js' }] } },
+  { id: secondCandidate, finding_snapshot_ids: [secondCandidate], artifact_digest: 'z'.repeat(64), context_manifest_digest: 'y', verification_level: 'independent_sandbox', rejection_reason: null,
+    file_manifest: { files: [{ path: 'src/other.js' }], verified_tree_oid: 'f'.repeat(40) }, preview: { changes: [{ path: 'src/other.js' }] } },
+];
+const digestFor = (ids) => remediationDb.manifestDigestFor(job, candidateRows.filter((c) => ids.includes(c.id)));
+const previewRow = (candidates = candidateRows) => ({ job, manifestDigest: remediationDb.manifestDigestFor(job, candidates), candidates,
+  verification: { outcome: 'passed', candidate_tree_sha: 'a'.repeat(40) }, findings: [{ id: candidate, title: 'SQL injection', file_path: 'src/app.js', line_start: 4, severity: 'high' }] });
+
 function applyBody(overrides = {}) {
-  return { head_sha: sha, base_sha: baseSha, manifest_digest: digest, candidate_ids: [candidate],
+  return { head_sha: sha, base_sha: baseSha, manifest_digest: digestFor([candidate]), candidate_ids: [candidate],
     merge_when_ready: false, idempotency_key: 'idempotency-key', ...overrides };
 }
 
@@ -77,6 +95,7 @@ describe('remediation API', () => {
     enableRemediation();
     remediationDb.budgetSnapshot.mockResolvedValue({ reserved: 0, ceiling: 2, available: 2 });
     remediationDb.recordApplyDenial.mockResolvedValue(undefined);
+    remediationDb.getPreview.mockResolvedValue(previewRow());
     getGithubAccessTokenForUser.mockResolvedValue({ githubUsername: 'owner' });
     authorize.mockResolvedValue({ state: 'authorized', installation_active: true, repository_granted: true,
       actor_write_permission: true, head_sha: sha, base_sha: baseSha, head_branch: 'feature', base_branch: 'main' });
@@ -95,8 +114,20 @@ describe('remediation API', () => {
     expect(res.status).toBe(422); expect(remediationDb.createJob).not.toHaveBeenCalled();
   });
 
-  test('a disabled merge flag does not enable itself through the apply flag', async () => {
+  test('merge_when_ready is refused with 400 unless the operator-only merge flag is on', async () => {
     process.env.REMEDIATION_MERGE_ENABLED = 'false';
+    remediationDb.getJobForUser.mockResolvedValue(job);
+    const res = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`)
+      .send(applyBody({ merge_when_ready: true }));
+    expect(res.status).toBe(400); expect(res.body.code).toBe('merge_not_available');
+    expect(res.body.error).toMatch(/human action on GitHub/);
+    expect(remediationDb.createAction).not.toHaveBeenCalled();
+    expect(authorize).not.toHaveBeenCalled();
+  });
+
+  test('the operator-only merge flag still fails closed when its GitHub dependency is missing', async () => {
+    delete process.env.GITHUB_SERVICE_URL;
+    process.env.REMEDIATION_MERGE_ENABLED = 'true';
     remediationDb.getJobForUser.mockResolvedValue(job);
     const res = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`)
       .send(applyBody({ merge_when_ready: true }));
@@ -122,7 +153,7 @@ describe('remediation API', () => {
 
   test('development verification never applies unless an operator opts in', async () => {
     remediationDb.getJobForUser.mockResolvedValue(job);
-    remediationDb.getPreview.mockResolvedValue({ job, manifestDigest: digest, candidates: [{ id: candidate, verification_level: 'development_unverified' }], verification: { outcome: 'passed' } });
+    remediationDb.getPreview.mockResolvedValue(previewRow([{ ...candidateRows[0], verification_level: 'development_unverified' }, candidateRows[1]]));
     const denied = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`).send(applyBody());
     expect(denied.status).toBe(422); expect(denied.body.code).toBe('verification_level_not_permitted');
     expect(remediationDb.createAction).not.toHaveBeenCalled();
@@ -133,11 +164,34 @@ describe('remediation API', () => {
     delete process.env.REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION;
   });
 
-  test('preview only renders a ready immutable batch', async () => {
-    remediationDb.getPreview.mockResolvedValue({ job, manifestDigest: digest, candidates: [{ id: candidate, finding_snapshot_ids: [candidate], artifact_digest: 'x', context_manifest_digest: 'y', file_manifest: {}, preview: { changes: [] }, verification_level: 'independent_sandbox' }], verification: { outcome: 'passed' } });
+  test('preview renders each candidate with its own consent digest, its file group and its findings', async () => {
     const res = await request(createApp()).get(`/api/remediations/${id}/preview`).set('Authorization', `Bearer ${token()}`);
-    expect(res.status).toBe(200); expect(res.body.manifest_digest).toBe(digest);
+    expect(res.status).toBe(200); expect(res.body.manifest_digest).toBe(digestFor([candidate, secondCandidate]));
+    expect(res.body.applicable).toBe(true);
+    expect(res.body.candidates.map((c) => c.manifest_digest)).toEqual([digestFor([candidate]), digestFor([secondCandidate])]);
+    expect(res.body.candidates.map((c) => c.status)).toEqual(['applicable', 'applicable']);
+    expect(res.body.files).toEqual([
+      { path: 'src/app.js', candidate_ids: [candidate], verified_together: true, manifest_digest: digestFor([candidate]) },
+      { path: 'src/other.js', candidate_ids: [secondCandidate], verified_together: true, manifest_digest: digestFor([secondCandidate]) },
+    ]);
+    expect(res.body.findings[0]).toEqual(expect.objectContaining({ id: candidate, title: 'SQL injection', file_path: 'src/app.js', line_start: 4 }));
     expect(res.body.capabilities.apply).toEqual({ enabled: true, reason: null });
+  });
+
+  test('preview stays readable after an apply superseded the job, with stale and applied candidates marked', async () => {
+    const applied = { ...candidateRows[0], rejection_reason: { code: 'applied', action_id: action, commit_sha: 'c'.repeat(40) } };
+    const stale = { ...candidateRows[1], rejection_reason: { code: 'head_changed' } };
+    remediationDb.getPreview.mockResolvedValue(previewRow([applied, stale]));
+    remediationDb.getPreview.mockResolvedValue({ ...previewRow([applied, stale]), job: { ...job, state: 'superseded' } });
+    const res = await request(createApp()).get(`/api/remediations/${id}/preview`).set('Authorization', `Bearer ${token()}`);
+    expect(res.status).toBe(200);
+    expect(res.body.applicable).toBe(false); expect(res.body.manifest_digest).toBeNull();
+    expect(res.body.candidates[0]).toEqual(expect.objectContaining({ status: 'applied', applied_commit_sha: 'c'.repeat(40) }));
+    expect(res.body.candidates[1]).toEqual(expect.objectContaining({ status: 'stale', stale_reason: 'head_changed' }));
+    const failed = await request(createApp()).get(`/api/remediations/${id}/preview`).set('Authorization', `Bearer ${token()}`);
+    expect(failed.status).toBe(200);
+    remediationDb.getPreview.mockResolvedValue({ ...previewRow(), job: { ...job, state: 'failed' } });
+    expect((await request(createApp()).get(`/api/remediations/${id}/preview`).set('Authorization', `Bearer ${token()}`)).status).toBe(409);
   });
 
   test('status reports why an unavailable capability is unavailable', async () => {
@@ -196,7 +250,7 @@ describe('remediation API', () => {
     remediationDb.getJobForUser.mockResolvedValue(job);
     remediationDb.createAction.mockResolvedValue({ kind: 'conflict' });
     const res = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`)
-      .send(applyBody({ candidate_ids: [candidate, action] }));
+      .send(applyBody());
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/Idempotency key/);
   });
@@ -225,6 +279,86 @@ describe('remediation API', () => {
     const res = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`).send(applyBody());
     expect(res.status).toBe(422);
     expect(remediationDb.createAction).not.toHaveBeenCalled();
+  });
+
+  test('one candidate of a two-candidate batch is applied on its own consent digest', async () => {
+    remediationDb.getJobForUser.mockResolvedValue(job);
+    remediationDb.createAction.mockResolvedValue({ kind: 'ok', action: { id: action, state: 'requested' } });
+    const res = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`)
+      .send(applyBody({ candidate_ids: [secondCandidate], manifest_digest: digestFor([secondCandidate]) }));
+    expect(res.status).toBe(202);
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ manifest_digest: digestFor([secondCandidate]) }));
+    expect(remediationDb.createAction).toHaveBeenCalledWith(job, id, expect.objectContaining({ candidate_ids: [secondCandidate], merge_when_ready: false }), 'owner');
+  });
+
+  test('a digest computed over a different subset is rejected as manifest_mismatch before any GitHub call', async () => {
+    remediationDb.getJobForUser.mockResolvedValue(job);
+    for (const wrong of [digestFor([secondCandidate]), digestFor([candidate, secondCandidate]), digest]) {
+      const res = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`)
+        .send(applyBody({ candidate_ids: [candidate], manifest_digest: wrong }));
+      expect(res.status).toBe(409); expect(res.body.code).toBe('manifest_mismatch');
+    }
+    expect(authorize).not.toHaveBeenCalled();
+    expect(remediationDb.createAction).not.toHaveBeenCalled();
+    expect(remediationDb.recordApplyDenial).toHaveBeenCalledWith(id, job, 'manifest_mismatch', expect.any(Object));
+  });
+
+  test('the full batch is applied with the digest computed over the whole ordered batch', async () => {
+    remediationDb.getJobForUser.mockResolvedValue(job);
+    remediationDb.createAction.mockResolvedValue({ kind: 'ok', action: { id: action, state: 'requested' } });
+    const res = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`)
+      .send(applyBody({ candidate_ids: [secondCandidate, candidate], manifest_digest: digestFor([candidate, secondCandidate]) }));
+    expect(res.status).toBe(202);
+  });
+
+  test('a multi-candidate subset that is not the verified batch is refused with 422 subset_not_verified', async () => {
+    const third = { ...candidateRows[1], id: '88888888-8888-4888-8888-888888888888', artifact_digest: 'w'.repeat(64) };
+    const rows = [...candidateRows, third];
+    remediationDb.getJobForUser.mockResolvedValue(job);
+    remediationDb.getPreview.mockResolvedValue(previewRow(rows));
+    const res = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`)
+      .send(applyBody({ candidate_ids: [candidate, secondCandidate], manifest_digest: remediationDb.manifestDigestFor(job, rows.slice(0, 2)) }));
+    expect(res.status).toBe(422); expect(res.body.code).toBe('subset_not_verified');
+    expect(res.body.error).toMatch(/one fix at a time, or apply all/);
+    expect(authorize).not.toHaveBeenCalled();
+    expect(remediationDb.createAction).not.toHaveBeenCalled();
+  });
+
+  test('a stale candidate is never applied, and an unknown candidate is invalid', async () => {
+    remediationDb.getJobForUser.mockResolvedValue(job);
+    remediationDb.getPreview.mockResolvedValue(previewRow([candidateRows[0], { ...candidateRows[1], rejection_reason: { code: 'head_changed' } }]));
+    const stale = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`)
+      .send(applyBody({ candidate_ids: [secondCandidate], manifest_digest: digestFor([secondCandidate]) }));
+    expect(stale.status).toBe(409); expect(stale.body.code).toBe('candidate_stale');
+    const unknown = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`)
+      .send(applyBody({ candidate_ids: [action], manifest_digest: digest }));
+    expect(unknown.status).toBe(422); expect(unknown.body.code).toBe('invalid_candidates');
+    expect(remediationDb.createAction).not.toHaveBeenCalled();
+  });
+
+  test('the database re-check under lock reports the same subset errors', async () => {
+    remediationDb.getJobForUser.mockResolvedValue(job);
+    for (const [kind, status, code] of [['manifest_mismatch', 409, 'manifest_mismatch'], ['candidate_stale', 409, 'candidate_stale'], ['subset_not_verified', 422, 'subset_not_verified']]) {
+      remediationDb.createAction.mockResolvedValue({ kind });
+      const res = await request(createApp()).post(`/api/remediations/${id}/apply`).set('Authorization', `Bearer ${token()}`).send(applyBody());
+      expect(res.status).toBe(status); expect(res.body.code).toBe(code);
+    }
+  });
+});
+
+describe('subset consent selection', () => {
+  test('selectCandidates binds one candidate, the full batch, and nothing in between', () => {
+    const one = remediationDb.selectCandidates(job, candidateRows, [candidate]);
+    expect(one.kind).toBe('ok'); expect(one.fullBatch).toBe(false); expect(one.manifestDigest).toBe(digestFor([candidate]));
+    const all = remediationDb.selectCandidates(job, candidateRows, [secondCandidate, candidate]);
+    expect(all.kind).toBe('ok'); expect(all.fullBatch).toBe(true);
+    expect(all.candidates.map((c) => c.id)).toEqual([candidate, secondCandidate]);
+    expect(all.manifestDigest).toBe(digestFor([candidate, secondCandidate]));
+    expect(digestFor([candidate])).not.toBe(digestFor([secondCandidate]));
+    const third = { ...candidateRows[1], id: '88888888-8888-4888-8888-888888888888', artifact_digest: 'w'.repeat(64) };
+    expect(remediationDb.selectCandidates(job, [...candidateRows, third], [candidate, secondCandidate]).kind).toBe('subset_not_verified');
+    expect(remediationDb.selectCandidates(job, candidateRows, []).kind).toBe('invalid_candidates');
+    expect(remediationDb.selectCandidates(job, [candidateRows[0], { ...candidateRows[1], rejection_reason: { code: 'head_changed' } }], [candidate, secondCandidate]).kind).toBe('candidate_stale');
   });
 });
 

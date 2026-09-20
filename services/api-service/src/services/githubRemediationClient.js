@@ -58,6 +58,8 @@ class GitHubRemediationClient {
   async reconcile(payload) { return this.call('/internal/github/remediation/reconcile', 'reconcileRemediation', payload); }
   async merge(payload) { return this.call('/internal/github/remediation/merge', 'mergeRemediation', payload); }
   async createCheckRun(payload) { return this.call('/internal/github/remediation/check-run', 'createRemediationCheckRun', payload); }
+  // One residual report comment per action, updated in place when it already exists.
+  async publishComment(payload) { return this.call('/internal/github/remediation/comment', 'publishRemediationComment', payload); }
   async cancelScheduledMerge(payload) { return this.call('/internal/github/remediation/cancel-merge', 'cancelScheduledMerge', payload); }
   // Pre-flight reads. They report blockers and current revisions; they never mutate.
   async readMergeEligibility(payload) { return this.call('/internal/github/remediation/merge-eligibility', 'readMergeEligibility', payload); }

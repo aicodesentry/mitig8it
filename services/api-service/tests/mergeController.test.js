@@ -4,6 +4,7 @@ jest.mock('../src/db/remediation', () => ({
   mergeIntentIdForAction: jest.fn(), transitionMergeIntent: jest.fn(), recordMergeEvaluation: jest.fn(),
   blockingFindingsForAction: jest.fn(), recordVerificationCheck: jest.fn(),
   listActionsNeedingVerificationCheck: jest.fn(), actionCheckContext: jest.fn(),
+  appliedReportForAction: jest.fn(async () => ({ applied: [], unsupported: [] })),
 }));
 jest.mock('../src/services/githubRemediationClient', () => ({ GitHubRemediationClient: jest.fn(() => ({})) }));
 
@@ -368,6 +369,36 @@ describe('remediation verification check publication', () => {
     const github = githubClient();
     await mergeController.publishVerificationCheck(ACTION_ID, { githubClient: github });
     expect(github.createCheckRun.mock.calls[0][0].conclusion).toBe('failure');
+  });
+
+  test('an open medium finding fails the check and is listed in the residual report, while informational test-code findings do not', async () => {
+    remediationDb.blockingFindingsForAction.mockResolvedValue({ analysisState: 'completed', blocking: 1, open: [
+      { id: 'f1', title: 'Command injection', file_path: 'services/orders.js', line_start: 20, severity: 'medium', informational: false },
+      { id: 'f2', title: 'Hardcoded secret', file_path: 'tests/orders.test.js', line_start: 3, severity: 'info', informational: true },
+    ] });
+    remediationDb.appliedReportForAction.mockResolvedValue({
+      applied: [{ finding_id: 'f0', title: 'SQL injection', file_path: 'services/customers.js', line_start: 12, severity: 'high' }],
+      unsupported: [{ finding_id: 'f3', title: 'Path traversal', file_path: 'services/orders.js', line_start: 40, reason: 'not_repaired' }],
+    });
+    const github = githubClient();
+    await mergeController.publishVerificationCheck(ACTION_ID, { githubClient: github });
+    const payload = github.createCheckRun.mock.calls[0][0];
+    expect(payload.conclusion).toBe('failure');
+    expect(payload.title).toBe('Remediation verification did not pass: findings remain open');
+    expect(payload.summary).toContain('Open findings on the applied head (any severity, excluding informational test-code findings): 1');
+    expect(payload.summary).toContain('- SQL injection in services/customers.js:12');
+    expect(payload.summary).toContain('  - medium: Command injection (line 20)');
+    expect(payload.summary).toContain('Hardcoded secret in tests/orders.test.js:3');
+    expect(payload.summary).toContain('Path traversal in services/orders.js:40: not_repaired');
+    expect(payload.summary).toContain('Merging stays a human action on GitHub.');
+
+    remediationDb.blockingFindingsForAction.mockResolvedValue({ analysisState: 'completed', blocking: 0, open: [
+      { id: 'f2', title: 'Hardcoded secret', file_path: 'tests/orders.test.js', line_start: 3, severity: 'info', informational: true },
+    ] });
+    const clean = githubClient();
+    await mergeController.publishVerificationCheck(ACTION_ID, { githubClient: clean });
+    expect(clean.createCheckRun.mock.calls[0][0].conclusion).toBe('success');
+    expect(clean.createCheckRun.mock.calls[0][0].title).toBe('1 verified fix applied; no open findings remain');
   });
 
   test('a failed verification analysis publishes failure rather than staying silent', async () => {
