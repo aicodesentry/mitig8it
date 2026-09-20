@@ -105,15 +105,55 @@ router.get('/remediations/:id', authenticateToken, async (req, res, next) => {
   } catch (error) { return next(error); }
 });
 
+// A candidate is applicable, applied by an earlier action, or stale because the head
+// moved. The preview never hides a stale candidate: it is shown greyed with its reason.
+function candidateStatus(candidate) {
+  const code = candidate.rejection_reason?.code;
+  if (!code) return { status: 'applicable', stale_reason: null, applied_commit_sha: null };
+  if (code === 'applied') return { status: 'applied', stale_reason: null, applied_commit_sha: candidate.rejection_reason.commit_sha || null };
+  return { status: 'stale', stale_reason: code, applied_commit_sha: null };
+}
+
+function candidatePaths(candidate) {
+  const files = Array.isArray(candidate.file_manifest?.files) ? candidate.file_manifest.files
+    : Array.isArray(candidate.preview?.changes) ? candidate.preview.changes : [];
+  return [...new Set(files.map((f) => f?.path).filter(Boolean))];
+}
+
+// The preview is readable while the job is ready and after it was superseded by an
+// application commit, so remaining candidates can be shown as stale rather than vanish.
+const PREVIEWABLE_STATES = new Set(['ready', 'superseded']);
+
 router.get('/remediations/:id/preview', authenticateToken, async (req, res, next) => {
   try {
     if (!UUID.test(req.params.id)) return res.status(400).json({ error: 'Invalid remediation ID' });
     const preview = await remediationDb.getPreview(req.params.id, req.user.user_id);
     if (!preview) return res.status(404).json({ error: 'Remediation not found' });
-    if (preview.job.state !== 'ready') return res.status(409).json({ error: 'Immutable preview is not ready', state: preview.job.state });
-    return res.json({ job_id: preview.job.id, head_sha: preview.job.head_sha, base_sha: preview.job.base_sha, manifest_digest: preview.manifestDigest,
+    if (!PREVIEWABLE_STATES.has(preview.job.state)) return res.status(409).json({ error: 'Immutable preview is not ready', state: preview.job.state });
+    const applicable = preview.job.state === 'ready';
+    const candidates = preview.candidates.map((candidate) => ({
+      id: candidate.id, finding_ids: candidate.finding_snapshot_ids, changes: candidate.preview?.changes || [candidate.file_manifest],
+      paths: candidatePaths(candidate), rationale: candidate.preview?.rationale || null,
+      evidence: candidate.preview?.evidence || { artifact_digest: candidate.artifact_digest, context_manifest_digest: candidate.context_manifest_digest },
+      verification_level: candidate.verification_level,
+      // Consent for this one candidate alone: the digest the apply request must carry.
+      manifest_digest: remediationDb.manifestDigestFor(preview.job, [candidate]),
+      ...candidateStatus(candidate),
+    }));
+    const selectable = preview.candidates.filter((candidate) => !candidate.rejection_reason);
+    // Per-file groups. A group of more than one candidate is only applicable as a unit
+    // when it is the whole verified batch; otherwise the fixes are applied one at a time.
+    const files = [...new Set(candidates.flatMap((c) => c.paths))].map((path) => {
+      const ids = candidates.filter((c) => c.paths.includes(path) && c.status === 'applicable').map((c) => c.id);
+      const rows = selectable.filter((c) => ids.includes(c.id));
+      const batch = ids.length === selectable.length && selectable.length > 0;
+      return { path, candidate_ids: ids, verified_together: ids.length <= 1 || batch,
+        manifest_digest: (ids.length <= 1 || batch) ? remediationDb.manifestDigestFor(preview.job, rows) : null };
+    });
+    return res.json({ job_id: preview.job.id, job_state: preview.job.state, applicable, head_sha: preview.job.head_sha, base_sha: preview.job.base_sha,
+      manifest_digest: applicable ? remediationDb.manifestDigestFor(preview.job, selectable) : null,
       verified_tree_oid: preview.verification?.candidate_tree_sha || null,
-      candidates: preview.candidates.map((candidate) => ({ id: candidate.id, finding_ids: candidate.finding_snapshot_ids, changes: candidate.preview?.changes || [candidate.file_manifest], rationale: candidate.preview?.rationale || null, evidence: candidate.preview?.evidence || { artifact_digest: candidate.artifact_digest, context_manifest_digest: candidate.context_manifest_digest }, verification_level: candidate.verification_level })),
+      candidates, files, findings: preview.findings || [],
       skipped: preview.job.failure_reason?.skipped || [], verification: preview.verification, capabilities: policy.capabilityReport() });
   } catch (error) { return next(error); }
 });
@@ -123,9 +163,31 @@ router.post('/remediations/:id/apply', authenticateToken, async (req, res, next)
     const body = req.body || {};
     if (!UUID.test(req.params.id) || !SHA.test(body.head_sha || '') || !SHA.test(body.base_sha || '') || !DIGEST.test(body.manifest_digest || '') || !Array.isArray(body.candidate_ids) || body.candidate_ids.some((id) => !UUID.test(id)) || typeof body.idempotency_key !== 'string' || body.idempotency_key.length < 8 || body.idempotency_key.length > 255 || typeof body.merge_when_ready !== 'boolean') return res.status(400).json({ error: 'Invalid immutable apply request' });
     policy.assertApplyEnabled();
-    if (body.merge_when_ready) policy.assertMergeEnabled();
+    // Merging is a human action on GitHub. The product never asks for a merge; the
+    // operator-only experimental flag is the only thing that lets this field through.
+    if (body.merge_when_ready) {
+      if (!policy.getPolicy().merge_enabled) {
+        return res.status(400).json({ error: 'Automatic merge is not part of applying fixes. Merging stays a human action on GitHub.', code: 'merge_not_available' });
+      }
+      policy.assertMergeEnabled();
+    }
     const job = await remediationDb.getJobForUser(req.params.id, req.user.user_id);
     if (!job) return res.status(404).json({ error: 'Remediation not found' });
+    // The consented subset and its digest are checked before any GitHub call, so a
+    // digest computed over a different subset never reaches live authorization.
+    const consented = await remediationDb.getPreview(job.id, req.user.user_id);
+    if (!consented || consented.job.state !== 'ready') return res.status(409).json({ error: 'Remediation is not ready', code: 'job_not_ready' });
+    const selection = remediationDb.selectCandidates(consented.job, consented.candidates, body.candidate_ids);
+    if (selection.kind === 'invalid_candidates') return res.status(422).json({ error: 'Candidate selection does not match the immutable verified batch', code: 'invalid_candidates' });
+    if (selection.kind === 'candidate_stale') return res.status(409).json({ error: 'A selected fix is stale: the pull request head moved since it was verified. Regenerate remaining fixes.', code: 'candidate_stale' });
+    if (selection.kind === 'subset_not_verified') {
+      await remediationDb.recordApplyDenial(req.user.user_id, job, 'subset_not_verified', { candidate_ids: body.candidate_ids });
+      return res.status(422).json({ error: 'This combination of fixes was not verified together. Apply one fix at a time, or apply all verified fixes as the batch that was verified.', code: 'subset_not_verified' });
+    }
+    if (body.manifest_digest !== selection.manifestDigest) {
+      await remediationDb.recordApplyDenial(req.user.user_id, job, 'manifest_mismatch', { candidate_ids: body.candidate_ids });
+      return res.status(409).json({ error: 'The manifest digest does not match the selected fixes', code: 'manifest_mismatch' });
+    }
     // Token presence is a live user-consent prerequisite; the token is never passed onward.
     const githubIdentity = await getGithubAccessTokenForUser(req.user.user_id);
     const actorLogin = githubIdentity.githubUsername || req.user.github_username || 'unknown';
@@ -143,16 +205,18 @@ router.post('/remediations/:id/apply', authenticateToken, async (req, res, next)
       return res.status(authorized.status).json({ error: authorized.error, code: authorized.code });
     }
 
-    const consented = await remediationDb.getPreview(job.id, req.user.user_id);
-    const unpermitted = (consented?.candidates || []).filter((candidate) => body.candidate_ids.includes(candidate.id) && !policy.verificationLevelPermitted(candidate.verification_level));
+    const unpermitted = selection.candidates.filter((candidate) => !policy.verificationLevelPermitted(candidate.verification_level));
     if (unpermitted.length) {
       await remediationDb.recordApplyDenial(req.user.user_id, job, 'verification_level_not_permitted', { levels: unpermitted.map((c) => c.verification_level) });
       return res.status(422).json({ error: 'Selected fixes were not verified in an isolated sandbox', code: 'verification_level_not_permitted' });
     }
     const created = await remediationDb.createAction(job, req.user.user_id, body, actorLogin);
-    if (created.kind === 'not_ready') return res.status(409).json({ error: 'Remediation is not ready' });
-    if (created.kind === 'stale') return res.status(409).json({ error: 'Preview revision or manifest has changed' });
-    if (created.kind === 'invalid_candidates') return res.status(422).json({ error: 'Candidate selection does not match the immutable verified batch' });
+    if (created.kind === 'not_ready') return res.status(409).json({ error: 'Remediation is not ready', code: 'job_not_ready' });
+    if (created.kind === 'stale') return res.status(409).json({ error: 'Preview revision or manifest has changed', code: 'revision_changed' });
+    if (created.kind === 'manifest_mismatch') return res.status(409).json({ error: 'The manifest digest does not match the selected fixes', code: 'manifest_mismatch' });
+    if (created.kind === 'candidate_stale') return res.status(409).json({ error: 'A selected fix is stale: the pull request head moved since it was verified. Regenerate remaining fixes.', code: 'candidate_stale' });
+    if (created.kind === 'subset_not_verified') return res.status(422).json({ error: 'This combination of fixes was not verified together. Apply one fix at a time, or apply all verified fixes as the batch that was verified.', code: 'subset_not_verified' });
+    if (created.kind === 'invalid_candidates') return res.status(422).json({ error: 'Candidate selection does not match the immutable verified batch', code: 'invalid_candidates' });
     if (created.kind === 'conflict') return res.status(409).json({ error: 'Idempotency key was already used with a different request' });
     if (created.kind === 'writer_busy') return res.status(409).json({ error: 'Another remediation write is already in progress for this pull request', code: 'writer_lease_held' });
     return res.status(202).json({ action: { id: created.action.id, state: created.action.state }, replay: Boolean(created.replay) });

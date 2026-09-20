@@ -141,19 +141,43 @@ async function getLatestForPullRequest(pullRequestId, userId) {
   });
 }
 
+// Consent binds the exact ordered subset a human chose. The digest is computed over
+// exactly those candidates, in their persisted order, so a digest for a different
+// subset of the same job never matches.
+function manifestDigestFor(job, candidates) {
+  if (!job || !candidates?.length) return null;
+  return hash({ job: job.id, head: job.head_sha, base: job.base_sha,
+    candidates: candidates.map((c) => ({ id: c.id, artifact_digest: c.artifact_digest })) });
+}
+
+// Findings the job was generated for, from the immutable analysis snapshot, so the
+// preview can name each finding beside its recommended fix.
+async function findingSnapshots(client, job) {
+  if (!job?.analysis_run_id) return [];
+  const rows = await client.query(
+    `SELECT finding_id, snapshot FROM analysis_run_findings WHERE analysis_run_id=$1 AND finding_id = ANY($2::uuid[])`,
+    [job.analysis_run_id, job.finding_snapshot_ids || []]
+  );
+  return rows.rows.map((row) => ({
+    id: row.finding_id, title: row.snapshot?.title || null, file_path: row.snapshot?.file_path || null,
+    line_start: row.snapshot?.line_start ?? null, line_end: row.snapshot?.line_end ?? null,
+    severity: row.snapshot?.severity || null, rule_id: row.snapshot?.rule_id || null,
+  }));
+}
+
 async function getPreview(jobId, userId) {
   return requestScope(userId, async (client) => {
     const jobResult = await client.query(`SELECT * FROM remediation_jobs WHERE id=$1`, [jobId]);
     const job = jobResult.rows[0];
     if (!job) return null;
     const candidates = await client.query(
-      `SELECT id, finding_snapshot_ids, artifact_digest, context_manifest_digest, file_manifest, preview, verification_level
+      `SELECT id, finding_snapshot_ids, artifact_digest, context_manifest_digest, file_manifest, preview, verification_level, rejection_reason
        FROM remediation_candidates WHERE job_id=$1 ORDER BY candidate_version`, [jobId]
     );
     const verification = await client.query(`SELECT outcome, evidence_digest, coverage_gaps, limitations, candidate_tree_sha FROM verification_runs WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1`, [jobId]);
-    const manifestDigest = candidates.rowCount ? hash({ job: job.id, head: job.head_sha, base: job.base_sha,
-      candidates: candidates.rows.map((c) => ({ id: c.id, artifact_digest: c.artifact_digest })) }) : null;
-    return { job, candidates: candidates.rows, verification: verification.rows[0] || null, manifestDigest };
+    const findings = await findingSnapshots(client, job);
+    return { job, candidates: candidates.rows, verification: verification.rows[0] || null,
+      manifestDigest: manifestDigestFor(job, candidates.rows), findings };
   });
 }
 
@@ -470,22 +494,23 @@ async function createAction(job, userId, payload, actorLogin) {
     const existing = await client.query(`SELECT * FROM remediation_actions WHERE actor_id=$1 AND repository_id=$2 AND idempotency_key=$3`, [userId,row.repository_id,payload.idempotency_key]);
     if (existing.rowCount) return existing.rows[0].payload_hash === payloadHash ? { kind: 'ok', action: existing.rows[0], replay: true } : { kind: 'conflict' };
     const preview = await getPreviewWithinTransaction(client, row);
-    if (payload.head_sha !== row.head_sha || payload.base_sha !== row.base_sha || payload.manifest_digest !== preview.manifestDigest) return { kind: 'stale' };
-    const wanted = [...new Set(payload.candidate_ids || [])].sort();
-    const available = preview.candidates.map((c) => c.id).sort();
-    if (!wanted.length || wanted.length !== available.length || wanted.some((id, i) => id !== available[i])) return { kind: 'invalid_candidates' };
+    if (payload.head_sha !== row.head_sha || payload.base_sha !== row.base_sha) return { kind: 'stale' };
+    const selection = selectCandidates(row, preview.candidates, payload.candidate_ids);
+    if (selection.kind !== 'ok') return selection;
+    if (payload.manifest_digest !== selection.manifestDigest) return { kind: 'manifest_mismatch' };
+    const wanted = selection.candidates.map((c) => c.id);
     const lease = await acquireWriterLease(client, row, userId);
     if (!lease) return { kind: 'writer_busy' };
     const insert = await client.query(
       `INSERT INTO remediation_actions (job_id,installation_id,repository_id,pull_request_id,actor_id,actor_login,action_type,head_sha,base_sha,batch_manifest_digest,candidate_ids,idempotency_key,payload_hash,state)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'requested') RETURNING *`,
-      [row.id,row.installation_id,row.repository_id,row.pull_request_id,userId,actorLogin,payload.merge_when_ready ? 'apply_and_merge':'apply',row.head_sha,row.base_sha,preview.manifestDigest,wanted,payload.idempotency_key,payloadHash]
+      [row.id,row.installation_id,row.repository_id,row.pull_request_id,userId,actorLogin,payload.merge_when_ready ? 'apply_and_merge':'apply',row.head_sha,row.base_sha,selection.manifestDigest,wanted,payload.idempotency_key,payloadHash]
     );
     const action=insert.rows[0];
     await client.query(`UPDATE remediation_writer_leases SET action_id=$1 WHERE pull_request_id=$2`, [action.id, row.pull_request_id]);
     // The action row and its dispatch event commit together; the worker never
     // discovers an action that was not durably recorded.
-    const actionEvent = JSON.stringify({ job_id: row.id, head_sha: row.head_sha, manifest_digest: preview.manifestDigest });
+    const actionEvent = JSON.stringify({ job_id: row.id, head_sha: row.head_sha, manifest_digest: selection.manifestDigest });
     await client.query(
       `INSERT INTO workflow_events (aggregate_id,aggregate_type,installation_id,repository_id,sequence,event_type,payload)
        VALUES ($1,'remediation_action',$2,$3,1,'remediation.action.requested',$4) ON CONFLICT (aggregate_id, sequence) DO NOTHING`,
@@ -496,15 +521,32 @@ async function createAction(job, userId, payload, actorLogin) {
        VALUES ($1,$2,$3,1,'remediation.action.requested',$4) ON CONFLICT (aggregate_id, event_sequence) DO NOTHING`,
       [action.id, row.installation_id, row.repository_id, actionEvent]
     );
-    if (payload.merge_when_ready) await client.query(`INSERT INTO merge_intents (action_id,installation_id,repository_id,actor_id,approved_manifest_digest,approved_head_sha,approved_base_sha,expires_at,state) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()+INTERVAL '24 hours','waiting_for_application')`, [action.id,row.installation_id,row.repository_id,userId,preview.manifestDigest,row.head_sha,row.base_sha]);
-    await audit(client,userId,row.repository_id,'remediation.apply.requested','remediation_action',action.id,{job_id:row.id,head_sha:row.head_sha,manifest_digest:preview.manifestDigest,merge_when_ready:Boolean(payload.merge_when_ready)});
+    if (payload.merge_when_ready) await client.query(`INSERT INTO merge_intents (action_id,installation_id,repository_id,actor_id,approved_manifest_digest,approved_head_sha,approved_base_sha,expires_at,state) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()+INTERVAL '24 hours','waiting_for_application')`, [action.id,row.installation_id,row.repository_id,userId,selection.manifestDigest,row.head_sha,row.base_sha]);
+    await audit(client,userId,row.repository_id,'remediation.apply.requested','remediation_action',action.id,{job_id:row.id,head_sha:row.head_sha,manifest_digest:selection.manifestDigest,candidate_ids:wanted,merge_when_ready:Boolean(payload.merge_when_ready)});
     return { kind:'ok',action };
   });
 }
 
 async function getPreviewWithinTransaction(client, job) {
   const candidates = await client.query(`SELECT * FROM remediation_candidates WHERE job_id=$1 ORDER BY candidate_version`, [job.id]);
-  return { candidates: candidates.rows, manifestDigest: hash({ job: job.id, head: job.head_sha, base: job.base_sha, candidates: candidates.rows.map((c) => ({ id:c.id,artifact_digest:c.artifact_digest })) }) };
+  return { candidates: candidates.rows, manifestDigest: manifestDigestFor(job, candidates.rows) };
+}
+
+// Resolves a requested subset against the job's stored candidates. One candidate is
+// applied on its own verification; more than one is allowed only when the repair
+// service verified that exact combination, which today is the full batch. A stale or
+// already applied candidate is never selectable.
+function selectCandidates(job, stored, requestedIds) {
+  const wanted = [...new Set(requestedIds || [])];
+  if (!wanted.length) return { kind: 'invalid_candidates' };
+  const byId = new Map(stored.map((c) => [c.id, c]));
+  if (wanted.some((id) => !byId.has(id))) return { kind: 'invalid_candidates' };
+  if (wanted.some((id) => byId.get(id).rejection_reason)) return { kind: 'candidate_stale' };
+  const applicable = stored.filter((c) => !c.rejection_reason);
+  const selected = stored.filter((c) => wanted.includes(c.id));
+  const fullBatch = selected.length === applicable.length && selected.length === stored.length;
+  if (selected.length > 1 && !fullBatch) return { kind: 'subset_not_verified' };
+  return { kind: 'ok', candidates: selected, fullBatch, manifestDigest: manifestDigestFor(job, selected) };
 }
 
 async function getActionForUser(actionId, userId) {
@@ -549,14 +591,16 @@ async function actionMaterial(action) {
   return scopedTransaction({ tenantId: action.installation_id, worker: true }, async (client) => {
     const job = await client.query(`SELECT j.*,r.full_name AS repository_full_name,pr.pr_number FROM remediation_jobs j JOIN repositories r ON r.id=j.repository_id JOIN pull_requests pr ON pr.id=j.pull_request_id WHERE j.id=$1`, [action.job_id]);
     const candidates = await client.query(`SELECT * FROM remediation_candidates WHERE id = ANY($1::uuid[]) AND job_id=$2 ORDER BY candidate_version`, [action.candidate_ids, action.job_id]);
-    // The manifest is recomputed from every stored candidate of the job, not only the
-    // selected subset, so an added or replaced candidate changes the digest.
-    const all = await client.query(`SELECT id, artifact_digest FROM remediation_candidates WHERE job_id=$1 ORDER BY candidate_version`, [action.job_id]);
+    // The manifest is recomputed over the consented subset in persisted order, from the
+    // stored rows, so a replaced candidate or a different subset changes the digest.
+    const all = await client.query(`SELECT id, artifact_digest, rejection_reason FROM remediation_candidates WHERE job_id=$1 ORDER BY candidate_version`, [action.job_id]);
     const jobRow = job.rows[0] || null;
-    const manifestDigest = jobRow && all.rowCount
-      ? hash({ job: jobRow.id, head: jobRow.head_sha, base: jobRow.base_sha, candidates: all.rows.map((c) => ({ id: c.id, artifact_digest: c.artifact_digest })) })
-      : null;
-    return { job: jobRow, candidates: candidates.rows, manifestDigest, orderedCandidateIds: all.rows.map((c) => c.id) };
+    const manifestDigest = manifestDigestFor(jobRow, candidates.rows);
+    // The combined tree is what the repair service verified for the whole batch; a single
+    // candidate carries its own verified tree in its file manifest.
+    const combined = await client.query(`SELECT candidate_tree_sha FROM verification_runs WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1`, [action.job_id]);
+    return { job: jobRow, candidates: candidates.rows, manifestDigest, orderedCandidateIds: candidates.rows.map((c) => c.id),
+      fullBatch: candidates.rowCount === all.rowCount, combinedTreeOid: combined.rows[0]?.candidate_tree_sha || null };
   });
 }
 
@@ -797,6 +841,20 @@ async function supersedeForHeadChange({ client, pullRequestId, newHeadSha, reaso
   });
 }
 
+// After an apply commits, the applied candidates are recorded as applied and every
+// other candidate of the pull request is stale: it was verified against a head that no
+// longer exists. Nothing is rebased; a new generation on the new head replaces them.
+async function markCandidatesAfterApply(action, commitSha) {
+  return scopedTransaction({ tenantId: action.installation_id, worker: true }, async (client) => {
+    await client.query(
+      `UPDATE remediation_candidates SET rejection_reason=jsonb_build_object('code','applied','action_id',$2::text,'commit_sha',$3::text)
+        WHERE id = ANY($1::uuid[]) AND rejection_reason IS NULL`,
+      [action.candidate_ids, action.id, commitSha]
+    );
+    return supersedeForHeadChange({ client, pullRequestId: action.pull_request_id, newHeadSha: commitSha, reason: 'head_changed' });
+  });
+}
+
 async function supersedeForBranchPush({ client, repositoryGithubId, branch, newHeadSha, reason = 'head_changed' }) {
   return withClient(client, async (db) => {
     const prs = await db.query(
@@ -990,12 +1048,73 @@ async function blockingFindingsForAction(action) {
     const row = run.rows[0];
     if (!row) return { analysisState: 'missing', blocking: null };
     if (row.status !== 'completed') return { analysisState: row.status || 'unknown', blocking: null, commitSha: row.commit_sha };
+    // Every open finding in the pull request's changed files counts, whatever its
+    // severity. Informational findings in test code are listed but never block.
     const findings = await client.query(
-      `SELECT COUNT(*)::int AS blocking FROM findings
-        WHERE analysis_run_id=$1 AND status='open' AND LOWER(severity) = ANY($2::text[])`,
-      [action.verification_analysis_run_id, ['critical', 'high']]
+      `SELECT id, title, file_path, line_start, line_end, severity, rule_id,
+              (LOWER(severity)='info' OR COALESCE((evidence_details->'extra'->>'in_test_code')::boolean, false)) AS informational
+         FROM findings
+        WHERE analysis_run_id=$1 AND status='open'
+        ORDER BY file_path, CASE LOWER(severity) WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, line_start`,
+      [action.verification_analysis_run_id]
     );
-    return { analysisState: 'completed', blocking: findings.rows[0].blocking, commitSha: row.commit_sha };
+    const open = findings.rows.map((f) => ({ id: f.id, title: f.title, file_path: f.file_path, line_start: f.line_start, line_end: f.line_end,
+      severity: String(f.severity || '').toLowerCase(), rule_id: f.rule_id, informational: Boolean(f.informational) }));
+    return { analysisState: 'completed', blocking: open.filter((f) => !f.informational).length, open, commitSha: row.commit_sha };
+  });
+}
+
+// What one action applied and what the job could not repair, from the immutable job
+// snapshot. Combined with blockingFindingsForAction this is the residual report.
+async function appliedReportForAction(action) {
+  return scopedTransaction({ tenantId: action.installation_id, worker: true }, async (client) => {
+    const job = await client.query(`SELECT * FROM remediation_jobs WHERE id=$1`, [action.job_id]);
+    const jobRow = job.rows[0] || null;
+    if (!jobRow) return { applied: [], unsupported: [] };
+    const candidates = await client.query(
+      `SELECT id, finding_snapshot_ids, file_manifest, preview FROM remediation_candidates WHERE id = ANY($1::uuid[]) AND job_id=$2 ORDER BY candidate_version`,
+      [action.candidate_ids, action.job_id]);
+    const findings = await findingSnapshots(client, jobRow);
+    const byId = new Map(findings.map((f) => [f.id, f]));
+    const applied = [];
+    for (const candidate of candidates.rows) {
+      const paths = (candidate.file_manifest?.files || candidate.preview?.changes || []).map((f) => f?.path).filter(Boolean);
+      for (const findingId of candidate.finding_snapshot_ids || []) {
+        const finding = byId.get(findingId) || { id: findingId };
+        applied.push({ finding_id: findingId, title: finding.title || null, file_path: finding.file_path || paths[0] || null,
+          line_start: finding.line_start ?? null, severity: finding.severity || null, candidate_id: candidate.id, paths });
+      }
+    }
+    const unsupported = (jobRow.failure_reason?.skipped || []).map((item) => {
+      const finding = byId.get(item.finding_id) || {};
+      return { finding_id: item.finding_id || null, title: finding.title || null, file_path: finding.file_path || null,
+        line_start: finding.line_start ?? null, severity: finding.severity || null, code: item.code || null, reason: item.reason || item.message || item.code || 'not repaired' };
+    });
+    return { applied, unsupported };
+  });
+}
+
+async function recordResidualComment(action, { commentId, headSha }) {
+  return scopedTransaction({ tenantId: action.installation_id, worker: true }, async (client) => {
+    const result = await client.query(
+      `UPDATE remediation_actions SET residual_comment_id=COALESCE($2::bigint, residual_comment_id), residual_comment_head_sha=$3,
+         residual_comment_published_at=NOW(), updated_at=NOW() WHERE id=$1 RETURNING *`,
+      [action.id, commentId == null ? null : String(commentId), headSha]
+    );
+    return result.rows[0] || null;
+  });
+}
+
+// A completed action whose report was not yet published for its verification head.
+async function listActionsNeedingResidualComment(limit = 25) {
+  return scopedTransaction({ worker: true }, async (client) => {
+    const result = await client.query(
+      `SELECT a.id FROM remediation_actions a
+        WHERE a.state='completed' AND a.verification_head_sha IS NOT NULL
+          AND a.residual_comment_head_sha IS DISTINCT FROM a.verification_head_sha
+        ORDER BY a.updated_at LIMIT $1`, [limit]
+    );
+    return result.rows.map((row) => row.id);
   });
 }
 
@@ -1104,4 +1223,6 @@ module.exports = {
   mergeIntentIdForAction, transitionMergeIntent, recordMergeEvaluation, blockingFindingsForAction,
   recordVerificationCheck, listActionsNeedingVerificationCheck, actionCheckContext, recordRepairMemoryObservation,
   getCandidateForFeedback,
+  manifestDigestFor, selectCandidates, markCandidatesAfterApply, appliedReportForAction,
+  recordResidualComment, listActionsNeedingResidualComment,
 };

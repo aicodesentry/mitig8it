@@ -1,5 +1,6 @@
 jest.mock('../src/db/remediation', () => ({
   actionMaterial: jest.fn(), updateAction: jest.fn(async () => ({})), enterChecking: jest.fn(async () => ({})),
+  markCandidatesAfterApply: jest.fn(async () => ({ jobs: [], candidates: [], mergeIntents: [] })),
 }));
 jest.mock('../src/services/githubRemediationClient', () => {
   const prepare = jest.fn();
@@ -102,5 +103,57 @@ describe('executeAction', () => {
     expect(prepare).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
     expect(remediationDb.updateAction).toHaveBeenCalledWith(action, 'blocked', { reason: { code: 'verified_full_file_manifest_unavailable' } });
+  });
+
+  test('a committed apply marks the applied candidate and every remaining candidate of the pull request stale', async () => {
+    remediationDb.actionMaterial.mockResolvedValue({ job, candidates: [hunkCandidate()], manifestDigest: action.batch_manifest_digest,
+      orderedCandidateIds: action.candidate_ids, fullBatch: false, combinedTreeOid: '9'.repeat(40) });
+    prepare.mockResolvedValue({ state: 'ready', operation_id: 'op', branch: 'feature', expected_head_oid: job.head_sha });
+    commit.mockResolvedValue({ state: 'applied', operation_id: 'op', commit_sha: 'c'.repeat(40), tree_oid: tree });
+
+    await executeAction(action);
+
+    // One candidate commits against its own verified tree, not the batch tree.
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ verified_tree_oid: tree }));
+    expect(remediationDb.markCandidatesAfterApply).toHaveBeenCalledWith(action, 'c'.repeat(40));
+    expect(remediationDb.enterChecking).toHaveBeenCalled();
+  });
+
+  test('a multi-candidate subset that is not the verified batch is rejected before any GitHub call', async () => {
+    const second = hunkCandidate({ id: '44444444-4444-4444-8444-444444444444', artifact_digest: 'b'.repeat(64) });
+    const subset = { ...action, candidate_ids: [action.candidate_ids[0], second.id] };
+    remediationDb.actionMaterial.mockResolvedValue({ job, candidates: [hunkCandidate(), second], manifestDigest: subset.batch_manifest_digest,
+      orderedCandidateIds: subset.candidate_ids, fullBatch: false, combinedTreeOid: '9'.repeat(40) });
+
+    await executeAction(subset);
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    expect(remediationDb.updateAction).toHaveBeenCalledWith(subset, 'rejected', { reason: { code: 'subset_not_verified' } });
+  });
+
+  test('the full batch commits against the combined tree the repair service verified', async () => {
+    const second = hunkCandidate({ id: '44444444-4444-4444-8444-444444444444', artifact_digest: 'b'.repeat(64) });
+    const batch = { ...action, candidate_ids: [action.candidate_ids[0], second.id] };
+    remediationDb.actionMaterial.mockResolvedValue({ job, candidates: [hunkCandidate(), second], manifestDigest: batch.batch_manifest_digest,
+      orderedCandidateIds: batch.candidate_ids, fullBatch: true, combinedTreeOid: '9'.repeat(40) });
+    prepare.mockResolvedValue({ state: 'ready', operation_id: 'op', branch: 'feature', expected_head_oid: job.head_sha });
+    commit.mockResolvedValue({ state: 'applied', operation_id: 'op', commit_sha: 'c'.repeat(40), tree_oid: '9'.repeat(40) });
+
+    await executeAction(batch);
+
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ verified_tree_oid: '9'.repeat(40) }));
+    expect(verifiedTreeOid([hunkCandidate(), second], '9'.repeat(40))).toBe('9'.repeat(40));
+    expect(verifiedTreeOid([hunkCandidate(), second], null)).toBeNull();
+  });
+
+  test('a stale candidate is rejected rather than rebased', async () => {
+    remediationDb.actionMaterial.mockResolvedValue({ job, candidates: [hunkCandidate({ rejection_reason: { code: 'head_changed' } })],
+      manifestDigest: action.batch_manifest_digest, orderedCandidateIds: action.candidate_ids, fullBatch: false, combinedTreeOid: null });
+
+    await executeAction(action);
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(remediationDb.updateAction).toHaveBeenCalledWith(action, 'rejected', { reason: { code: 'candidate_stale' } });
   });
 });
