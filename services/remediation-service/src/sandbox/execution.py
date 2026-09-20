@@ -12,6 +12,18 @@ from typing import Any
 MAX_SCANNER_FINDINGS = 500
 MAX_FINGERPRINT_CHARS = 200
 SCANNER_REPORT_KEY = "mitig8it_scanner_findings"
+# A failed check keeps the end of its output, so the agent's `inspect_failure` can see why a
+# generated test crashed (an undefined helper, a module it could not load) instead of only an
+# exit code. Bounded, and only for failures: passing output is never evidence of anything.
+MAX_OUTPUT_TAIL_CHARS = 800
+
+
+def output_tail(output: str, exit_code: int | None) -> str | None:
+    """The last `MAX_OUTPUT_TAIL_CHARS` characters of a failed check's output, else None."""
+    if exit_code is None or exit_code == 0:
+        return None
+    text = output.strip()
+    return text[-MAX_OUTPUT_TAIL_CHARS:] if text else ""
 
 
 def parse_scanner_findings(output: str) -> list[str] | None:

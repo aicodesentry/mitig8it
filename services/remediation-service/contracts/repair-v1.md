@@ -64,6 +64,8 @@ with one entry for every changed application file. `contents_base64` is the comp
 
 ### Tool outcomes and repeated rejections
 
+A check that exits non-zero records `output_tail`, the last 800 characters of its combined output, on that variant's result; a passing check records none. `inspect_failure` returns it with the check, so the agent sees why a generated test crashed rather than only its exit code.
+
 Every rejected tool call returns `{error, reason, guidance}`: `reason` is the stable code and `guidance` names the specific correction, for example which line differed and what the snapshot holds there, or the `node --check` diagnostic naming the line of the patched file that fails to parse. A diagnostic is stripped of the host temporary directory it was produced in and bounded before it is returned. Guidance may quote snapshot lines the agent is already authorized to read; it is returned to the model and never persisted.
 
 `evidence.agent_trace` records one entry per tool call: `{sequence, tool, arguments_digest_only, outcome, reason, result_bytes}`. `outcome` is `ok`, `rejected`, `error`, or `abstained`. `reason` is the redacted stable code, restricted to code-shaped characters and 120 characters, and is null for an `ok` step. `result_bytes` is the size of the rendered tool result. File contents, patch text, and model prose never enter the trace.

@@ -253,7 +253,8 @@ def _path_forbidden(path: str, request: RepairRequest) -> bool:
 _FS_READ_RE = re.compile(r"\b(?:readFileSync|readFile)\s*\(")
 _DIRNAME_REQUIRE_RE = re.compile(r"\brequire\s*\([^)]*__dirname")
 BEHAVIOR_TEST_GUIDANCE = (
-    "Nothing is installed, so stub every package the changed module requires by replacing "
+    "Plain Node only: no jest, mocha, or supertest; assert with plain conditions and "
+    "process.exit. Nothing is installed, so stub every package the changed module requires by replacing "
     "Module._load (from node:module) before requiring it: for example express as a function "
     "whose Router() returns an object whose get/post record each path's handler, pg as { Pool } "
     "whose query records sql and params and resolves { rows: [] }, child_process as exec and "

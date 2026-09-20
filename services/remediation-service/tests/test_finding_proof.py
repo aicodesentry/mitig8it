@@ -261,3 +261,40 @@ def test_a_module_that_did_not_load_before_the_change_is_inconclusive_not_reject
         request, snapshot, [whole_file_change("src/db.js", THROWS_ON_LOAD, THROWS_ON_LOAD + "// still broken\n")], [_spec(JS_REGRESSION_TEST)]
     )
     assert any(item.startswith("runtime load check inconclusive for src/db.js") for item in bundle.limitations)
+
+
+# --- a crashed test reports why ------------------------------------------------------------------
+
+CRASHING_TEST = "require('../../src/db.js');\nconst helper = jest.fn();\nprocess.exit(0);\n"
+
+
+def test_output_tail_is_kept_only_for_failed_checks():
+    from src.sandbox.execution import MAX_OUTPUT_TAIL_CHARS, output_tail
+
+    assert output_tail("all good\n", 0) is None
+    assert output_tail("anything", None) is None
+    assert output_tail("", 1) == ""
+    assert output_tail("ReferenceError: jest is not defined\n", 1) == "ReferenceError: jest is not defined"
+    assert output_tail("x" * 5000, 1) == "x" * MAX_OUTPUT_TAIL_CHARS
+
+
+@requires_node
+@pytest.mark.asyncio
+async def test_a_crashing_test_shows_its_error_to_the_agent_through_inspect_failure(request_payload):
+    """The live gap: a test that crashed on both trees left the agent with exit codes only."""
+    from src.agent.loop import RepairAgent as Loop
+
+    request = RepairRequest.model_validate(_no_profile_payload(request_payload))
+    snapshot = Snapshot(request)
+    bundle = build_patch_bundle(request, snapshot, [whole_file_change("src/db.js", JS_SOURCE, JS_REPAIRED)], [_spec(CRASHING_TEST)])
+    result = await Verifier(InProcessSandboxBroker(LocalSubprocessDriver())).verify(request, snapshot, bundle)
+    assert result.status == "failed"
+    assert result.proven_finding_ids == []
+    check = next(item for item in result.evidence["checks"] if item["check_id"] == "generated_regression_test")
+    assert "jest is not defined" in check["candidate"]["output_tail"]
+    assert "jest is not defined" in check["baseline"]["output_tail"]
+    syntax = next(item for item in result.evidence["checks"] if item["check_id"] == "generated_node_syntax")
+    assert syntax["candidate"]["output_tail"] is None
+    inspected = Loop._bounded_failure(result)
+    assert inspected["unproven_findings"][0]["code"] == "not_repaired"
+    assert "jest is not defined" in inspected["checks"][0]["candidate"]["output_tail"]
