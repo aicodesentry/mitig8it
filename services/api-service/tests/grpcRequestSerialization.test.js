@@ -162,3 +162,35 @@ describe('generated gRPC request serialization', () => {
     expect(definition.requestDeserialize(serialized)).toBeDefined();
   });
 });
+
+describe('test-code markers survive the wire format', () => {
+  const { findingToMessage, findingToPlain } = require('../src/clients/grpcConverters');
+
+  test('evidence_details.extra round-trips through serialization', () => {
+    const message = findingToMessage({
+      rule_id: 'secrets.hardcoded',
+      file_path: 'test_security.py',
+      severity: 'info',
+      evidence_details: {
+        analysis_scope: 'pattern',
+        extra: { in_test_code: true, original_severity: 'critical' },
+      },
+    });
+
+    const restored = commonPb.Finding.deserializeBinary(message.serializeBinary());
+    const plain = findingToPlain(restored);
+
+    expect(plain.severity).toBe('info');
+    expect(plain.evidence_details.extra).toEqual({
+      in_test_code: true,
+      original_severity: 'critical',
+    });
+  });
+
+  test('findings without markers carry no extra', () => {
+    const message = findingToMessage({ rule_id: 'r', file_path: 'app.js', severity: 'high' });
+    const plain = findingToPlain(commonPb.Finding.deserializeBinary(message.serializeBinary()));
+
+    expect(plain.evidence_details.extra).toBeUndefined();
+  });
+});
