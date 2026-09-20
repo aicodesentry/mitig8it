@@ -10,7 +10,16 @@ from ..models import RepairRequest
 
 
 class SnapshotError(ValueError):
-    pass
+    """A refused retrieval, carrying a stable code and optional actionable guidance.
+
+    `guidance` is returned to the agent in the tool result so a refusal is correctable; only the
+    code is ever recorded in the durable trace.
+    """
+
+    def __init__(self, code: str, guidance: str | None = None):
+        super().__init__(code)
+        self.code = code
+        self.guidance = guidance
 
 
 @dataclass(frozen=True)
@@ -21,11 +30,22 @@ class ContextHit:
     content: str
     reason: str
     content_digest: str
+    truncated: bool = False
+
+    def numbered_lines(self) -> list[list[object]]:
+        """The hit's text as `[line_number, text]` pairs, which a patch hunk quotes back.
+
+        A pair costs a few characters more than a bare line and removes the counting the agent
+        used to have to do, and line numbers are trustworthy only because `Snapshot.read` ends a
+        window on a line boundary.
+        """
+        return [[self.line_start + offset, line] for offset, line in enumerate(self.content.splitlines())]
 
     def provenance(self, request: RepairRequest) -> dict[str, object]:
+        """Where this text came from. The tenant and repository are constant for the whole run
+        and already travel in the task message, so repeating them on every result would only
+        re-bill the same identifiers on every provider call."""
         return {
-            "tenant_id": request.tenant_id,
-            "repository_id": request.repository_id,
             "commit_sha": request.head_sha,
             "path": self.path,
             "line_start": self.line_start,
@@ -102,17 +122,30 @@ class Snapshot:
     def read(self, path: str, start: int = 1, end: int | None = None, max_chars: int = 20_000) -> ContextHit:
         normalized = validate_repo_path(path)
         if normalized not in self._files:
-            raise SnapshotError("path_not_in_snapshot")
+            raise SnapshotError("path_not_in_snapshot", f"The snapshot holds: {self.path_listing()}.")
         lines = self._files[normalized].splitlines(keepends=True)
         if start < 1 or start > max(len(lines), 1):
             raise SnapshotError("line_start_out_of_range")
         stop = min(end or len(lines), len(lines))
         if stop < start:
             raise SnapshotError("line_end_out_of_range")
+        # Truncation drops whole trailing lines, never part of one: `line_end` and the numbered
+        # lines a patch hunk quotes back are only trustworthy when the window ends on a boundary.
+        truncated = False
+        while stop > start and len("".join(lines[start - 1 : stop])) > max_chars:
+            stop -= 1
+            truncated = True
         content = "".join(lines[start - 1 : stop])
         if len(content) > max_chars:
             content = content[:max_chars]
-        return ContextHit(normalized, start, stop, content, "scoped_read", content_sha256(content))
+            truncated = True
+        return ContextHit(normalized, start, stop, content, "scoped_read", content_sha256(content), truncated)
+
+    def path_listing(self, limit: int = 40) -> str:
+        """A bounded listing of the snapshot's paths, so a refused read can name the real ones."""
+        paths = sorted(self._files)
+        listed = ", ".join(paths[:limit])
+        return listed + (f", and {len(paths) - limit} more" if len(paths) > limit else "")
 
     def full_content(self, path: str) -> str:
         normalized = validate_repo_path(path)
