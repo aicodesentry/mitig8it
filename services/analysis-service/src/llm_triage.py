@@ -11,7 +11,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from llm_client import call_llm, is_llm_configured
+from llm_client import call_llm, is_llm_configured, redact
 from prometheus_client import Counter, Histogram
 from remediation_patches import build_remediation_patch
 
@@ -781,9 +781,9 @@ def triage_findings(
 
     except json.JSONDecodeError as e:
         LLM_TRIAGE_REQUESTS.labels(status="parse_error").inc()
-        print(f"LLM triage response not valid JSON (non-blocking): {e}")
+        print(f"LLM triage response not valid JSON (non-blocking): {redact(e)}")
         return findings
     except Exception as e:
         LLM_TRIAGE_REQUESTS.labels(status="error").inc()
-        print(f"LLM triage failed (non-blocking): {e}")
+        print(f"LLM triage failed (non-blocking): {redact(e)}")
         return findings
