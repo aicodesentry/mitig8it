@@ -4,7 +4,20 @@ import { findingAPI, suppressionAPI } from '../services/api'
 import RemediationPanel from '../components/RemediationPanel'
 import { getPrivateCacheEpoch } from '../services/privateCache'
 
-const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 }
+const severityOrder = { critical: 0, high: 1, medium: 2, low: 3, info: 4 }
+
+// Findings in test code are informational: shown in grey, never blocking.
+const severityStyles = {
+  critical: 'bg-red-50 text-red-700',
+  high: 'bg-orange-50 text-orange-700',
+  medium: 'bg-amber-50 text-amber-700',
+  low: 'bg-sky-50 text-sky-700',
+  info: 'bg-neutral-100 text-neutral-600',
+}
+
+export function severityStyle(severity) {
+  return severityStyles[String(severity || '').toLowerCase()] || severityStyles.info
+}
 
 export default function PullRequestFindingsPage() {
   const { pullRequestId } = useParams()
@@ -80,7 +93,18 @@ export default function PullRequestFindingsPage() {
             <div>
               <h2 className="text-lg font-semibold text-neutral-900">{finding.title}</h2>
               <p className="text-sm text-neutral-500">
-                {finding.category} • {finding.severity} • confidence {Math.round(Number(finding.confidence) * 100)}%
+                {finding.category} • confidence {Math.round(Number(finding.confidence) * 100)}%
+              </p>
+              <p className="mt-1 flex items-center gap-2">
+                <span
+                  data-testid={`severity-badge-${finding.id}`}
+                  className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${severityStyle(finding.severity)}`}
+                >
+                  {finding.severity}
+                </span>
+                {finding.severity === 'info' && (
+                  <span className="text-xs text-neutral-500">Test code — does not block</span>
+                )}
               </p>
               {finding.remediation_patch && (
                 <p className="mt-2 inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">

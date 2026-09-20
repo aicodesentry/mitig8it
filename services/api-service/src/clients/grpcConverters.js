@@ -133,8 +133,17 @@ function findingToMessage(finding = {}) {
   return message;
 }
 
+function evidenceExtraToPlain(finding) {
+  const details = typeof finding.getEvidenceDetails === 'function' ? finding.getEvidenceDetails() : null;
+  const extra = details && typeof details.getExtra === 'function' ? details.getExtra() : null;
+  if (!extra) return undefined;
+  const plain = extra.toJavaScript();
+  return plain && typeof plain === 'object' && Object.keys(plain).length > 0 ? plain : undefined;
+}
+
 function findingToPlain(finding) {
   const object = finding.toObject();
+  const evidenceExtra = evidenceExtraToPlain(finding);
   return compact({
     rule_id: object.ruleId,
     internal_type: object.internalType,
@@ -194,6 +203,7 @@ function findingToPlain(finding) {
       fix_target_expr: object.evidenceDetails.fixTargetExpr,
       missing_control_type: object.evidenceDetails.missingControlType,
       auto_fix_eligible: object.evidenceDetails.autoFixEligible,
+      extra: evidenceExtra,
     } : undefined,
     evidence: object.evidence,
     exploit_scenario: object.exploitScenario,
