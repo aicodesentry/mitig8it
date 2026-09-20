@@ -121,6 +121,20 @@ async function quarantineJobs(limit) {
   return { quarantined: quarantined.length };
 }
 
+// Reservations held by jobs that have already ended can never be spent. Releasing them is
+// what returns that budget to the installation.
+async function releaseStrandedUsage(limit) {
+  const released = await remediationDb.releaseStrandedReservations(limit);
+  if (released.length) {
+    metrics.usageReleases.labels('reconciler_stranded').inc(released.length);
+    logger.warn('Released stranded remediation spend reservations', {
+      count: released.length,
+      amount: released.reduce((total, row) => total + Number(row.reserved_amount), 0),
+    });
+  }
+  return { released: released.length };
+}
+
 async function expireIntents(limit) {
   const expired = await remediationDb.expireMergeIntents(limit);
   if (expired.length) logger.info('Expired remediation merge intents', { count: expired.length });
@@ -129,7 +143,7 @@ async function expireIntents(limit) {
 
 async function runReconciliation(options = {}) {
   const { leaseLimit = 50, outboxStuckSeconds = 300, outboxLimit = 100, actionStaleSeconds = 300, actionLimit = 20,
-    jobLimit = 50, intentLimit = 100, mergeSweepLimit = 25, mergeSweepStaleSeconds = null } = options;
+    jobLimit = 50, intentLimit = 100, mergeSweepLimit = 25, mergeSweepStaleSeconds = null, usageLimit = 200 } = options;
   const summary = {};
   await step('leases', () => reclaimLeases(leaseLimit), summary);
   await step('outbox', () => redispatchOutbox(outboxStuckSeconds, outboxLimit), summary);
@@ -137,6 +151,7 @@ async function runReconciliation(options = {}) {
   await step('verification', () => completeVerifiedActions(actionLimit), summary);
   await step('jobs', () => quarantineJobs(jobLimit), summary);
   await step('merge_intents', () => expireIntents(intentLimit), summary);
+  await step('usage', () => releaseStrandedUsage(usageLimit), summary);
   await step('verification_checks', () => publishVerificationChecks(actionLimit), summary);
   await step('merge_controller', () => sweepMergeIntents({
     limit: mergeSweepLimit,
@@ -161,6 +176,6 @@ function startReconciler(options = {}) {
 }
 
 module.exports = {
-  runReconciliation, startReconciler, intervalMs, reconcileActions, completeVerifiedActions,
+  runReconciliation, startReconciler, intervalMs, reconcileActions, completeVerifiedActions, releaseStrandedUsage,
   sweepMergeIntents, publishVerificationChecks,
 };
