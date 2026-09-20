@@ -441,6 +441,66 @@ test('a legitimate retry of the same stage reuses its reservation instead of rep
 });
 
 
+test('a retry under a new fencing token does not mint a second reservation', async () => {
+  const f = await fixture();
+  const app = createApp();
+  const jobId = (await request(app).post(`/api/pull-requests/${f.pr}/remediations`).auth(f.token, { type: 'bearer' }).send({})).body.job.id;
+  const job = await remediationDb.claimJobById(jobId, 'worker-a', 60);
+  const first = await remediationDb.reserveUsage(job, 'snapshotting', 0.05);
+  assert.ok(first);
+
+  // Losing the lease and being reclaimed bumps the fencing token. That used to change the
+  // reservation key, so every reclaimed attempt charged the installation again.
+  await pool.query('UPDATE remediation_jobs SET lease_expires_at = NOW() - INTERVAL \'1 minute\' WHERE id=$1', [jobId]);
+  const reclaimed = await remediationDb.claimJobById(jobId, 'worker-b', 60);
+  assert.ok(Number(reclaimed.fencing_token) > Number(job.fencing_token), 'the reclaim must bump the fencing token');
+  const retry = await remediationDb.reserveUsage(reclaimed, 'snapshotting', 0.05);
+
+  assert.equal(retry.id, first.id, 'a reclaimed attempt must reuse the stage reservation');
+  const rows = await pool.query("SELECT COUNT(*)::int AS n FROM usage_reservations WHERE job_id=$1 AND stage='snapshotting'", [jobId]);
+  assert.equal(rows.rows[0].n, 1);
+});
+
+test('a job that ends releases what it never spent, and the ceiling stops counting it', async () => {
+  const f = await fixture();
+  const app = createApp();
+  const jobId = (await request(app).post(`/api/pull-requests/${f.pr}/remediations`).auth(f.token, { type: 'bearer' }).send({})).body.job.id;
+  const job = await remediationDb.claimJobById(jobId, 'worker-a', 60);
+  await remediationDb.reserveUsage(job, 'snapshotting', 0.05);
+  const before = await remediationDb.budgetSnapshot(f.installation, 2);
+  assert.ok(before.reserved > 0);
+
+  await remediationDb.completeStage(job, { state: 'inconclusive', stage: 'inconclusive', outcome: 'quota_exhausted' });
+
+  const row = await pool.query("SELECT state, actual_amount FROM usage_reservations WHERE job_id=$1", [jobId]);
+  assert.equal(row.rows[0].state, 'released');
+  assert.equal(Number(row.rows[0].actual_amount), 0);
+  const after = await remediationDb.budgetSnapshot(f.installation, 2);
+  assert.equal(after.reserved, 0);
+  const audited = await pool.query("SELECT COUNT(*)::int AS n FROM audit_logs WHERE action='remediation.usage_released' AND resource_id=$1", [jobId]);
+  assert.equal(audited.rows[0].n, 1);
+});
+
+test('the reconciler releases reservations stranded by a job that already ended', async () => {
+  const f = await fixture();
+  const app = createApp();
+  const jobId = (await request(app).post(`/api/pull-requests/${f.pr}/remediations`).auth(f.token, { type: 'bearer' }).send({})).body.job.id;
+  const job = await remediationDb.claimJobById(jobId, 'worker-a', 60);
+  await remediationDb.reserveUsage(job, 'snapshotting', 0.05);
+  // The job ends without releasing, exactly as it did before this fix.
+  await pool.query("UPDATE remediation_jobs SET state='inconclusive', stage='inconclusive' WHERE id=$1", [jobId]);
+  const stranded = await pool.query("SELECT COUNT(*)::int AS n FROM usage_reservations WHERE job_id=$1 AND state='reserved'", [jobId]);
+  assert.equal(stranded.rows[0].n, 1);
+
+  const summary = await reconciler.runReconciliation();
+
+  assert.equal(summary.usage.released, 1);
+  const cleared = await pool.query("SELECT state FROM usage_reservations WHERE job_id=$1", [jobId]);
+  assert.equal(cleared.rows[0].state, 'released');
+  const budget = await remediationDb.budgetSnapshot(f.installation, 2);
+  assert.equal(budget.reserved, 0);
+});
+
 // Drives one apply-and-merge action to the point where its merge intent is evaluable
 // against the real database: applied commit recorded, fresh analysis completed.
 async function applyAndMerge(f, key) {

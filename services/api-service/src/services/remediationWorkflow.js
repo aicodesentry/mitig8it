@@ -153,8 +153,10 @@ async function executeClaimedJob(job) {
     // Persist the walk through the declared sequence so the record shows the stages
     // the repair actually passed through, not one jump to a terminal state.
     const stagePath = result.state === 'ready' ? stagePathToEnd(stage) : [];
+    // Settle before the job goes terminal: `completeStage` releases whatever is still
+    // reserved, and a stage that really ran must be charged what it really cost.
+    await remediationDb.settleUsage(job, reservation, remediationDb.usageCost(job, result), result.usage?.provider_request_id);
     await remediationDb.completeStage(job, { state: result.state, stage: result.state, outcome: result.state, candidates, verification, stagePath, reason: result.skipped?.length ? { code: result.reason?.code || null, skipped: result.skipped } : result.reason || null, outputDigest: remediationDb.hash(result) });
-    await remediationDb.settleUsage(job, reservation, Number(result.usage?.actual_usd || reservation.reserved_amount), result.usage?.provider_request_id);
     metrics.stageAttempts.labels(stage, result.state).inc();
     metrics.stageDuration.labels(stage, result.state).observe(Number(process.hrtime.bigint() - started) / 1e9);
   } catch (error) {
