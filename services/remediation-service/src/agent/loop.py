@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -270,7 +271,11 @@ class RepairAgent:
                     # The resumed proposal is revalidated against the exact snapshot under the
                     # same policy as the live path; a rejected one is a structured abstention.
                     try:
-                        bundle = build_patch_bundle(
+                        # `build_patch_bundle` shells out to `node --check`, so it runs off the
+                        # event loop: a blocking subprocess here stops the worker's heartbeats
+                        # and costs the lease.
+                        bundle = await asyncio.to_thread(
+                            build_patch_bundle,
                             request,
                             snapshot,
                             proposal_arguments["changes"],
@@ -343,9 +348,14 @@ class RepairAgent:
                     reservation_evidence,
                 )
             if pending_action is not None:
+                # A checkpoint carrying a pending action was written by `save_provider_action`,
+                # which settles the reservation in the same statement. The call is already paid
+                # for, so resuming it must not reserve again and must not settle again.
                 action = pending_action
                 pending_action = None
+                action_already_settled = True
             else:
+                action_already_settled = False
                 if self.checkpoint_store:
                     try:
                         reserved = await self.checkpoint_store.reserve_provider_call(index + 1, estimated_next_input + reserved_output, next_reserved_usd)
@@ -394,7 +404,7 @@ class RepairAgent:
                 )
             if action.request_id:
                 provider_request_ids.append(action.request_id)
-            if self.checkpoint_store:
+            if self.checkpoint_store and not action_already_settled:
                 actual_usd = (
                     action.input_tokens * request.policy.input_usd_per_million_tokens
                     + action.output_tokens * request.policy.output_usd_per_million_tokens
@@ -492,8 +502,10 @@ class RepairAgent:
                             "The attempt budget for this group is spent. Call abstain with the reason.",
                         )
                     self._validate_proposal_metadata(action.arguments, snapshot)
-                    bundle = build_patch_bundle(
-                        request, snapshot, action.arguments["changes"], _regression_tests(action.arguments)
+                    # Off the event loop: `node --check` is a blocking subprocess and the
+                    # worker's heartbeats share this loop.
+                    bundle = await asyncio.to_thread(
+                        build_patch_bundle, request, snapshot, action.arguments["changes"], _regression_tests(action.arguments)
                     )
                     proposal = {
                         "hypothesis": str(action.arguments["hypothesis"]),
