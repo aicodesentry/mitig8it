@@ -208,3 +208,43 @@ async def test_spend_past_the_usd_cap_alone_fails_as_budget_cap_exceeded(tmp_pat
     with pytest.raises(BudgetCapExceeded) as raised:
         await store.save_provider_action({"group_key": "g"}, _action(), 120, 0.05)
     assert raised.value.settlement["cumulative_actual_usd"] == pytest.approx(0.05)
+
+
+def test_a_live_lease_is_not_reclaimed_and_expiry_reclaims_with_a_fencing_bump(tmp_path, request_payload):
+    """Reclaim is bounded by the lease, and the reclaim is what fences the previous attempt."""
+    backend = LocalExecutionBackend(tmp_path / "state")
+    request = RepairRequest.model_validate(request_payload)
+    record = backend.enqueue(request)
+    first = backend.claim("worker-a", lease_seconds=900)
+    assert first is not None
+
+    # A live lease is nobody else's to take, however long the attempt runs.
+    assert backend.claim("worker-b", lease_seconds=900) is None
+    assert _attempt(backend, record.execution_id) == 1
+
+    # Once it expires the work is reclaimable, and the attempt counter moves.
+    assert backend.heartbeat(record.execution_id, "worker-a", lease_seconds=-1) is True
+    second = backend.claim("worker-b", lease_seconds=900)
+    assert second is not None and second.execution_id == record.execution_id
+    assert _attempt(backend, record.execution_id) == 2
+
+
+def test_a_fenced_attempt_cannot_publish_over_the_worker_that_reclaimed_it(tmp_path, request_payload):
+    """The original attempt may still be running; its result must not land."""
+    backend = LocalExecutionBackend(tmp_path / "state")
+    request = RepairRequest.model_validate(request_payload)
+    record = backend.enqueue(request)
+    assert backend.claim("worker-a", lease_seconds=900) is not None
+    assert backend.heartbeat(record.execution_id, "worker-a", lease_seconds=-1) is True
+    assert backend.claim("worker-b", lease_seconds=900) is not None
+
+    # worker-a finishes late. It lost the lease, so its completion is refused.
+    assert backend.complete(record.execution_id, "worker-a", response_for(request)) is False
+    assert backend.heartbeat(record.execution_id, "worker-a") is False
+    # The holder of the lease publishes normally.
+    assert backend.complete(record.execution_id, "worker-b", response_for(request)) is True
+
+
+def _attempt(backend, execution_id: str) -> int:
+    with backend._lock, backend._connect() as connection:
+        return int(connection.execute("SELECT attempt FROM executions WHERE execution_id=?", (execution_id,)).fetchone()[0])
