@@ -27,7 +27,8 @@ def tool_definitions() -> list[dict[str, Any]]:
             (
                 "Read a bounded line range from one snapshot file. Leave line_start and line_end "
                 "null to read a window around the reported finding lines. Results are capped, so "
-                "request the narrowest range that answers the question."
+                "request the narrowest range that answers the question. Returns `lines`: "
+                "`[line_number, text]` pairs whose text is what original_lines expects."
             ),
             {
                 "path": {"type": "string"},
@@ -42,9 +43,9 @@ def tool_definitions() -> list[dict[str, Any]]:
         tool(
             "propose_patch",
             (
-                "Propose the smallest line-range replacements bound to the digest of exactly the "
-                "lines they replace, together with the regression test that reproduces the "
-                "finding. This does not verify a patch."
+                "Propose the smallest line-range replacements, each quoting the exact lines it "
+                "replaces, with the regression test that reproduces the finding. This does not "
+                "verify a patch."
             ),
             {
                 "hypothesis": {"type": "string", "maxLength": 4000},
@@ -65,21 +66,22 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "minItems": 1,
                     "maxItems": 50,
                     "description": (
-                        "Line-range hunks against the exact snapshot. start_line and end_line are "
-                        "inclusive and 1-based, replaced_sha256 is the sha256 of exactly those "
-                        "lines as read, and replacement_lines are the new lines without newline "
-                        "characters. An empty replacement_lines deletes the range."
+                        "Line-range hunks against the exact snapshot. original_lines are the "
+                        "lines this hunk replaces, copied verbatim from read_file; the service "
+                        "locates them and derives the range, so send no end_line and no digest. "
+                        "start_line is the 1-based line you believe they start at, used only to "
+                        "pick between repeats. replacement_lines are the new lines. Neither list "
+                        "contains newlines; an empty replacement_lines deletes the range."
                     ),
                     "items": {
                         "type": "object",
                         "properties": {
                             "path": {"type": "string"},
                             "start_line": {"type": "integer", "minimum": 1},
-                            "end_line": {"type": "integer", "minimum": 1},
-                            "replaced_sha256": {"type": "string"},
+                            "original_lines": {"type": "array", "items": {"type": "string", "maxLength": 4000}, "maxItems": 400},
                             "replacement_lines": {"type": "array", "items": {"type": "string", "maxLength": 4000}, "maxItems": 400},
                         },
-                        "required": ["path", "start_line", "end_line", "replaced_sha256", "replacement_lines"],
+                        "required": ["path", "start_line", "original_lines", "replacement_lines"],
                         "additionalProperties": False,
                     },
                 },
@@ -89,8 +91,11 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "A self-contained Node regression test that exits non-zero on the original "
                         "code and zero on the patched code. Its path must be "
                         "'.mitig8it/regression/<finding-id>.test.js' and must not already exist in "
-                        "the repository. Use only Node built-ins and the repository's declared "
-                        "dependencies, and import the changed module by relative path."
+                        "the repository. With sandbox.dependencies_installed true, require the "
+                        "changed module by relative path and use its declared dependencies. With "
+                        "it false, nothing is installed: require no package and do not load the "
+                        "changed module, and instead read its source with node:fs and assert on "
+                        "the text, exiting non-zero while the vulnerable pattern is present."
                     ),
                     "properties": {
                         "path": {"type": "string", "maxLength": 512},
