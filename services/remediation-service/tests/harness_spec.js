@@ -192,7 +192,8 @@ test('assert.argv accepts an argv call carrying the payload and rejects any shel
   const app = h.load('services/app.js', { stubs: { axios: {} } });
   await h.invoke(app, 'get', '/promised', { query: { dir: 'x; id' } });
   h.assert.argv(h.child_process.calls[0], 'x; id');
-  assert.throws(() => h.assert.argv(h.child_process.calls[0], 'other'), /to be its own argument/);
+  h.assert.argv(h.child_process.calls[0], 'ls', 'the command name is argv[0]');
+  assert.throws(() => h.assert.argv(h.child_process.calls[0], 'other'), /expected the injected input "other" to be its own args element of ls/);
   await h.invoke(app, 'get', '/sync');
   assert.throws(() => h.assert.argv(h.child_process.calls[1], 'uname'), /ran through a shell: uname -a/);
   assert.throws(() => h.assert.argv(undefined, 'x'), /no child process call/);

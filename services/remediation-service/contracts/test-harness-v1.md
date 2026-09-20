@@ -62,7 +62,7 @@ Assertions (each throws a `HarnessAssertion` with the message on failure):
 - `h.assert.equal(actual, expected, message)`
 - `h.assert.includes(text, needle, message)` and `h.assert.notIncludes(text, needle, message)`
 - `h.assert.inside(read, baseDirectory, message)`: `read` is an `h.fs.reads` entry or a path string (an entry is recognized in either position); its resolved path stays strictly under the base directory.
-- `h.assert.argv(call, payload, message)`: the recorded child process call has no `shell` string and `payload` is its own element of `args`; one call covers the command-injection assertion.
+- `h.assert.argv(call, payload, message)`: the recorded child process call has no `shell` string and `payload`, the injected input, is its own element of `args` (the command name itself is argv[0] and also satisfies it); one call covers the command-injection assertion.
 
 `h.reset()` clears every recorder. `h.root` is the repository root the harness was materialized in.
 

@@ -416,3 +416,18 @@ async def test_two_findings_across_files_in_one_group_are_both_proven_after_a_re
         ".mitig8it/regression/f-exec.test.js",
     }
     assert response.evidence["groups"][0]["coverage"]["stopped"] == "all_proven"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_verification_names_each_unproven_finding_with_assertion_and_tail(request_payload):
+    """Nothing proven: the verification result itself carries the family assertion and the tail,
+    so the correction needs no inspect_failure call."""
+    actions = [_propose(SQL_FIXED, ["f-exec"]), _verify("verify-1"), _abstain()]
+    response, provider = await _run(_payload(request_payload), actions, SelectiveBroker(set(), still_failing={"f-exec"}))
+    assert response.state == "unsupported" and response.reason["code"] == "no_further_repair"
+    failed = _tool_result(provider.seen[2], "verify-1")
+    assert failed["status"] == "failed" and "coverage_revision" not in failed
+    by_id = {item["finding_id"]: item for item in failed["unproven_findings"]}
+    assert by_id["f-exec"]["test_failure_tail"]["candidate"] == CANDIDATE_TAIL
+    assert "injected input" in by_id["f-exec"]["assertion"]
+    assert by_id["f-path"]["expected_test_path"] == ".mitig8it/regression/f-path.test.js"

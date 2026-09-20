@@ -20,8 +20,9 @@ FAMILY_ASSERTIONS: dict[str, str] = {
         "h.assert.includes(JSON.stringify(q.values || []), payload)"
     ),
     COMMAND_ARGUMENTS: (
-        "h.assert.argv(h.child_process.calls[0], payload): fails on a shell string "
-        "(exec, execSync, or options.shell) and when the payload is not its own args element"
+        "h.assert.argv(h.child_process.calls[0], payload) with payload the injected input you sent "
+        "(such as 'x; rm -rf /'), not the command name: fails on a shell string (exec, execSync, or "
+        "options.shell) and when the payload is not its own args element"
     ),
     PATH_CONTAINMENT: (
         "for (const r of h.fs.reads) h.assert.inside(r, base): each read is { path, resolved }; "

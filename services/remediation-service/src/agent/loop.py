@@ -27,7 +27,7 @@ A rejection names the problem and the fix: correct exactly that, never resend th
 Never edit tests, scanner/policy/workflow/lock files, suppress findings, remove functionality, or claim verification.
 Import every identifier a hunk uses in the same propose_patch call; a module that throws on load is rejected.
 Nothing is installed: a test never requires express, supertest, pg, or jest; require('../harness') (.mitig8it/harness.js) fakes express, pg, child_process, and fs and records every call.
-regression_tests: one plain Node script per finding you fix, keyed by finding_id; a finding counts only when its test fails on the original and passes on the patch; an untested one is reported not_repaired. Assert by family: SQL, h.pg.queries[0].text lacks the payload and values has it; command, h.assert.argv(h.child_process.calls[0], payload) (argv form, payload its own element); traversal, for (const r of h.fs.reads) h.assert.inside(r, base) (r is { path, resolved }, base the served directory).
+regression_tests: one plain Node script per finding you fix, keyed by finding_id; a finding counts only when its test fails on the original and passes on the patch; an untested one is reported not_repaired. Assert by family, payload being the injected input you sent: SQL, h.pg.queries[0].text lacks the payload and values has it; command, h.assert.argv(h.child_process.calls[0], payload); traversal, for (const r of h.fs.reads) h.assert.inside(r, base) (r is { path, resolved }, base the served directory).
 Example: const h = require('../harness'); h.run(async () => { const app = h.load('services/orders.js'); const bad = "1' OR 1=1"; await h.invoke(app, 'get', '/orders/:id', { params: { id: bad } }); const q = h.pg.queries[0]; h.assert.notIncludes(q.text, bad); h.assert.includes(JSON.stringify(q.values), bad); await h.invoke(app, 'get', '/reports/download', { query: { name: '../../etc/passwd' } }); for (const r of h.fs.reads) h.assert.inside(r, h.root + '/reports'); });
 Only request_verification verifies. If requirements are ambiguous or support is missing, call abstain.
 Do not expose chain-of-thought: give only hypothesis, behavior contract, assumptions, citations, and patch."""
@@ -614,7 +614,12 @@ class RepairAgent:
                         # Which findings the candidate actually claims, and why the rest do
                         # not count, so the agent never mistakes a partial pass for a full one.
                         "proven_finding_ids": list(last_verification.proven_finding_ids),
-                        "unproven_findings": list(last_verification.unproven_findings)[:20],
+                        # A failed or inconclusive run names each unproven finding with its
+                        # family assertion and its test's failure tail, so the correction needs
+                        # no further tool call.
+                        "unproven_findings": list(last_verification.unproven_findings)[:20]
+                        if last_verification.status == "passed"
+                        else self._unproven_entries(request, bundle, last_verification),
                     }
                     if last_verification.status == "passed":
                         # A revision replaces the candidate only when it keeps every finding
@@ -873,6 +878,17 @@ class RepairAgent:
     def _coverage_revision(self, request: RepairRequest, bundle: PatchBundle, verification: VerificationResult) -> dict[str, Any]:
         """The focused message a coverage revision sends: each unproven finding with its lines,
         the family's harness assertion, and its own test's failure tail when a test existed."""
+        return {
+            "revision": self._coverage["revisions_used"],
+            "max_revisions": request.policy.max_revisions,
+            "proven_finding_ids": list(verification.proven_finding_ids),
+            "unproven": self._unproven_entries(request, bundle, verification),
+            "instruction": REVISION_INSTRUCTION,
+        }
+
+    @staticmethod
+    def _unproven_entries(request: RepairRequest, bundle: PatchBundle, verification: VerificationResult) -> list[dict[str, Any]]:
+        """Each unproven finding with its lines, family assertion, test path, and failure tail."""
         by_id = {finding.stable_id: finding for finding in request.findings}
         test_paths = {test.finding_id: test.path for test in bundle.generated_tests}
         checks = {
@@ -911,13 +927,7 @@ class RepairAgent:
             else:
                 entry["expected_test_path"] = f".mitig8it/regression/{finding_id}.test.js"
             unproven.append(entry)
-        return {
-            "revision": self._coverage["revisions_used"],
-            "max_revisions": request.policy.max_revisions,
-            "proven_finding_ids": list(verification.proven_finding_ids),
-            "unproven": unproven,
-            "instruction": REVISION_INSTRUCTION,
-        }
+        return unproven
 
     @staticmethod
     def _serialize_verification(verification: VerificationResult | None) -> dict[str, Any] | None:

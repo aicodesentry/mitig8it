@@ -184,8 +184,8 @@ assert.notIncludes = (haystack, needle, message) => { if (String(haystack).inclu
 const isRead = (v) => Boolean(v) && typeof v === 'object' && typeof v.resolved === 'string';
 // inside(read, baseDir): `read` is an h.fs.reads entry or a path string; the entry may come in either position.
 assert.inside = (target, base, message) => { if (isRead(base) && !isRead(target)) [target, base] = [base, target]; const rel = path.relative(path.resolve(String(base)), isRead(target) ? target.resolved : path.resolve(String(target))); if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) fail(message || `expected ${String(target)} to stay under ${String(base)}`); };
-// argv(call, payload): the child ran with an argv array (no shell string) and the payload is its own element.
-assert.argv = (call, payload, message) => { if (!call) fail(message || 'no child process call was recorded'); if (typeof call.shell === 'string') fail(message || `command ran through a shell: ${call.shell}`); if (!Array.isArray(call.args) || !call.args.some((a) => String(a) === String(payload))) fail(message || `expected ${JSON.stringify(payload)} to be its own argument`, call.args); };
+// argv(call, payload): the child ran with an argv array (no shell string) and the injected payload is its own element (the command name itself is argv[0]).
+assert.argv = (call, payload, message) => { if (!call) fail(message || 'no child process call was recorded'); if (typeof call.shell === 'string') fail(message || `command ran through a shell: ${call.shell}`); const want = String(payload); if (want !== call.command && !(Array.isArray(call.args) && call.args.some((a) => String(a) === want))) fail(message || `expected the injected input ${JSON.stringify(payload)} to be its own args element of ${call.command}`, call.args); };
 
 // Runs one test body: exit 0 when it resolves, exit 1 with the error otherwise.
 const run = (body) => Promise.resolve().then(body).then(
