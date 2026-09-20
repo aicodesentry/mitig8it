@@ -313,6 +313,18 @@ async function releaseStrandedReservations(limit = 200) {
   });
 }
 
+// The apply path commits whole files, never hunks, so `file_manifest` has to be the repair
+// service's full-file manifest: `{ files: [{ path, contents_base64, new_sha256, blob_oid }],
+// verified_tree_oid }`. A service that sent only the hunk patch list is stored in the same
+// shape so `persistedChanges` finds the contents rather than blocking the apply.
+function fileManifest(candidate) {
+  const manifest = candidate.file_manifest;
+  if (manifest && Array.isArray(manifest.files)) return manifest;
+  const files = Array.isArray(manifest) ? manifest : Array.isArray(candidate.patch) ? candidate.patch : [];
+  const verified = candidate.verified_tree_oid || candidate.preview?.verified_tree_oid || null;
+  return { files, ...(verified ? { verified_tree_oid: verified } : {}) };
+}
+
 // A failed or exhausted stage consumes one attempt. A successful stage does not.
 const ATTEMPT_CONSUMING_STATES = new Set(['queued', 'inconclusive', 'failed', 'dead_letter']);
 
@@ -331,7 +343,7 @@ async function completeStage(job, { state, stage, outcome, candidates = [], veri
         `INSERT INTO remediation_candidates (job_id,installation_id,repository_id,candidate_version,finding_snapshot_ids,artifact_digest,context_manifest_digest,file_manifest,preview,verification_level)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (job_id,artifact_digest) DO NOTHING`,
         [row.id,row.installation_id,row.repository_id,index + 1,candidate.finding_ids || [],candidate.artifact_digest,
-          candidate.context_manifest_digest || verification?.context_manifest_digest || '',JSON.stringify(candidate.patch || {}),
+          candidate.context_manifest_digest || verification?.context_manifest_digest || '',JSON.stringify(fileManifest(candidate)),
           JSON.stringify(candidate.preview || candidate),candidate.preview?.evidence?.verification_level || candidate.verification_level || verification?.verification_level || 'none']
       );
     }

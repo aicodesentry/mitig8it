@@ -11,6 +11,7 @@ from ..patches import PatchBundle, candidate_tree_digest
 from ..retrieval import Snapshot
 from ..sandbox import BrokerEvidenceError, BrokerTransportError, SandboxBroker
 from ..sandbox.broker import evidence_digest
+from ..sandbox.execution import aggregate_outcome
 from .checks import EffectiveChecks, build_effective_checks, generated_snapshot_entries
 
 PRODUCTION_VERIFICATION_LEVEL = "independent_sandbox"
@@ -26,6 +27,24 @@ class VerificationResult:
     reason_code: str | None = None
     verification_level: str = "none"
     limitations: list[str] = field(default_factory=list)
+    # Findings whose own regression test failed on the baseline tree and passed on the candidate
+    # tree, and every other finding with the reason it was not shown repaired. A candidate
+    # claims exactly `proven_finding_ids`; the rest are reported, never silently included.
+    proven_finding_ids: list[str] = field(default_factory=list)
+    unproven_findings: list[dict[str, str]] = field(default_factory=list)
+
+
+NOT_REPAIRED = "not_repaired"
+NOT_REPRODUCING = "regression_test_not_reproducing"
+
+
+@dataclass(frozen=True)
+class FindingVerdicts:
+    proven: list[str]
+    unproven: list[dict[str, str]]
+    # Regression checks whose finding is unproven. They are left out of the pass/fail outcome:
+    # the finding is dropped from the candidate instead of failing the whole verification.
+    excluded_check_ids: frozenset[str]
 
 
 class Verifier:
@@ -40,11 +59,13 @@ class Verifier:
             # repair from disabling the feature, whatever the other checks report.
             return VerificationResult(
                 "inconclusive",
-                {"reason_code": "regression_test_not_reproducing"},
+                {"reason_code": NOT_REPRODUCING},
                 None,
-                "regression_test_not_reproducing",
+                NOT_REPRODUCING,
                 "none",
                 ["the candidate supplied no generated regression test, so the finding was never reproduced"],
+                [],
+                [self._untested(finding.stable_id) for finding in request.findings],
             )
         effective = build_effective_checks(request, snapshot, bundle)
         checks = list(effective.checks)
@@ -109,42 +130,113 @@ class Verifier:
                     level,
                     ["the sandbox reported development-only evidence and policy does not allow it"],
                 )
-            self._validate_evidence(request, snapshot, bundle, evidence, candidate_tree, level, effective)
+            verdicts = self._finding_verdicts(request, effective, evidence)
+            status = self._effective_outcome(evidence, verdicts.excluded_check_ids)
+            self._validate_evidence(
+                request, snapshot, bundle, evidence, candidate_tree, level, effective, status, verdicts.excluded_check_ids
+            )
         except BrokerTransportError:
             return self._inconclusive("sandbox_broker_unavailable")
         except BrokerEvidenceError:
             return self._inconclusive("sandbox_evidence_invalid")
 
         limitations = self._limitations(effective, evidence, level)
-        status = evidence["outcome"]
         digest = evidence_digest(evidence)
-        if self._regression_not_reproducing(effective, evidence):
-            # The reproducer passed on the original code, so it does not demonstrate the
-            # finding. That is an unusable reproducer, not a failing repair.
-            return VerificationResult(
-                "inconclusive", evidence, digest, "regression_test_not_reproducing", level, limitations
-            )
+        unproven = verdicts.unproven
+        if not verdicts.proven:
+            # Nothing was shown repaired. A reproducer that passed on the original code is an
+            # unusable reproducer, not a failing repair; a reproducer that still fails on the
+            # candidate is a failed repair the agent can inspect and correct.
+            if any(item["code"] == NOT_REPRODUCING for item in unproven):
+                return VerificationResult("inconclusive", evidence, digest, NOT_REPRODUCING, level, limitations, [], unproven)
+            return VerificationResult("failed", evidence, digest, "verification_failed", level, limitations, [], unproven)
         if status == "passed":
             scanner_status, scanner_reason = self._scanner_verdict(request, evidence)
             if scanner_status != "passed":
-                return VerificationResult(scanner_status, evidence, digest, scanner_reason, level, limitations)
-            return VerificationResult("passed", evidence, digest, None, level, limitations)
+                return VerificationResult(scanner_status, evidence, digest, scanner_reason, level, limitations, [], unproven)
+            return VerificationResult("passed", evidence, digest, None, level, limitations, verdicts.proven, unproven)
         if status == "failed":
-            return VerificationResult("failed", evidence, digest, "verification_failed", level, limitations)
+            return VerificationResult("failed", evidence, digest, "verification_failed", level, limitations, [], unproven)
         if status == "unsupported":
-            return VerificationResult("unsupported", evidence, digest, "sandbox_profile_unsupported", level, limitations)
-        return VerificationResult("inconclusive", evidence, digest, "verification_inconclusive", level, limitations)
+            return VerificationResult("unsupported", evidence, digest, "sandbox_profile_unsupported", level, limitations, [], unproven)
+        return VerificationResult("inconclusive", evidence, digest, "verification_inconclusive", level, limitations, [], unproven)
 
     @staticmethod
-    def _regression_not_reproducing(effective: EffectiveChecks, evidence: dict[str, Any]) -> bool:
-        """True when a generated reproducer completed on the baseline tree without failing."""
-        for result in evidence.get("checks", []):
-            if not isinstance(result, dict) or result.get("check_id") not in effective.regression_check_ids:
-                continue
-            baseline = result.get("baseline") or {}
+    def _untested(finding_id: str) -> dict[str, str]:
+        return {
+            "finding_id": finding_id,
+            "code": NOT_REPAIRED,
+            "message": "No regression test reproduced this finding, so the candidate does not claim it.",
+        }
+
+    @staticmethod
+    def _finding_verdicts(request: RepairRequest, effective: EffectiveChecks, evidence: dict[str, Any]) -> FindingVerdicts:
+        """Decides per finding whether its own reproducer failed on the baseline and passed on the candidate.
+
+        A finding with no test is proven only when policy does not require generated tests, in
+        which case the policy-supplied checks are its evidence. Every unproven finding carries
+        the reason: `regression_test_not_reproducing` when its test also passed on the original
+        code, `not_repaired` otherwise.
+        """
+        results: dict[str, dict[str, Any]] = {}
+        for result in evidence.get("checks", []) if isinstance(evidence.get("checks"), list) else []:
+            if isinstance(result, dict) and isinstance(result.get("check_id"), str):
+                results[result["check_id"]] = result
+        tested: dict[str, dict[str, str] | None] = {}
+        excluded: set[str] = set()
+        for check_id, finding_id in effective.regression_findings.items():
+            result = results.get(check_id) or {}
+            baseline = result.get("baseline") if isinstance(result.get("baseline"), dict) else {}
+            candidate = result.get("candidate") if isinstance(result.get("candidate"), dict) else {}
             if baseline.get("completed") is True and baseline.get("status") != "failed":
-                return True
-        return False
+                verdict = {
+                    "finding_id": finding_id,
+                    "code": NOT_REPRODUCING,
+                    "message": "The regression test for this finding also passes on the original code, so it does not reproduce the finding.",
+                }
+            elif baseline.get("completed") is True and candidate.get("completed") is True and candidate.get("status") == "passed":
+                verdict = None
+            elif candidate.get("completed") is True:
+                verdict = {
+                    "finding_id": finding_id,
+                    "code": NOT_REPAIRED,
+                    "message": "The regression test for this finding still fails on the patched code.",
+                }
+            else:
+                verdict = {
+                    "finding_id": finding_id,
+                    "code": NOT_REPAIRED,
+                    "message": "The regression test for this finding did not complete on both trees.",
+                }
+            tested[finding_id] = verdict
+            if verdict is not None:
+                excluded.add(check_id)
+        proven: list[str] = []
+        unproven: list[dict[str, str]] = []
+        for finding in request.findings:
+            finding_id = finding.stable_id
+            if finding_id in tested:
+                if tested[finding_id] is None:
+                    proven.append(finding_id)
+                else:
+                    unproven.append(tested[finding_id])
+            elif request.policy.require_generated_regression_test:
+                unproven.append(Verifier._untested(finding_id))
+            else:
+                proven.append(finding_id)
+        return FindingVerdicts(proven, unproven, frozenset(excluded))
+
+    @staticmethod
+    def _effective_outcome(evidence: dict[str, Any], excluded: frozenset[str]) -> str:
+        """The check outcome over every check except the regression checks of unproven findings."""
+        if evidence.get("outcome") == "unsupported":
+            return "unsupported"
+        records = [
+            result
+            for result in (evidence.get("checks") if isinstance(evidence.get("checks"), list) else [])
+            if isinstance(result, dict) and isinstance(result.get("kind"), str) and result.get("check_id") not in excluded
+        ]
+        return aggregate_outcome(records)
 
     @staticmethod
     def _verification_level(evidence: dict[str, Any]) -> str:
@@ -205,6 +297,8 @@ class Verifier:
         candidate_tree: str,
         level: str,
         effective: EffectiveChecks,
+        status: str,
+        excluded: frozenset[str],
     ) -> None:
         if evidence.get("outcome") not in {"passed", "failed", "inconclusive", "unsupported"}:
             raise BrokerEvidenceError("broker outcome is invalid")
@@ -250,11 +344,15 @@ class Verifier:
             baseline, candidate = result.get("baseline"), result.get("candidate")
             if not isinstance(baseline, dict) or not isinstance(candidate, dict):
                 raise BrokerEvidenceError("baseline/candidate check evidence missing")
+            if check_id in excluded:
+                # An unproven finding's reproducer: its outcome drops the finding from the
+                # candidate and is never part of a passed verdict.
+                continue
             if baseline.get("completed") is not True or candidate.get("completed") is not True:
-                if evidence.get("outcome") == "passed":
+                if status == "passed":
                     raise BrokerEvidenceError("passed evidence contains incomplete checks")
                 continue
-            if evidence.get("outcome") != "passed":
+            if status != "passed":
                 continue
             if candidate.get("status") != "passed":
                 raise BrokerEvidenceError("passed evidence contains failing candidate check")

@@ -26,28 +26,45 @@ Once the message history is estimated above `policy.max_working_set_tokens`, con
 
 `propose_patch.changes` are line-range hunks, not whole files. Each is `{path, start_line, original_lines, replacement_lines}`, where `original_lines` are the lines the hunk replaces copied back verbatim from `read_file` and neither list carries newline characters. The quoted lines are the anchor, not the numbers: the service finds them in the exact snapshot, derives the real line range from that match, and computes the replaced digest itself, so no caller is asked to count a range or compute a hash it cannot compute. `start_line` is a hint. It is used only to disambiguate a block that occurs more than once, so a hunk whose quoted lines are unique is applied where they really are even when the hint is wrong. A block that occurs several times and whose hint names none of them is rejected as `original_lines_ambiguous:<path>`, naming the candidate line numbers rather than guessing. Quoted lines that are nowhere in the file are rejected as `original_lines_not_found:<path>`, and the rejection quotes the first line that differs together with what the snapshot holds there. `end_line` and `replaced_sha256` remain accepted for callers that already send them, the digest in prefixed or bare hexadecimal form; each is checked against the located range and disagreement is rejected as `hunk_line_range_inconsistent` or `stale_hunk_digest`. Hunks are applied bottom-up so earlier line numbers stay valid, overlapping hunks on one file are rejected as `overlapping_hunks`, and the file and changed-line caps apply to the applied result. The response still carries each candidate's full `replacement_content`, because that is what the sandbox materializes and what the apply path writes. The regression test remains a complete small file under `.mitig8it/regression/`.
 
-Plan section 8 step 4 requires a reproducer that distinguishes a real repair from disabling the feature. With `require_generated_regression_test: true` the agent's `propose_patch` must supply `regression_test: {path, content}`:
+Plan section 8 step 4 requires a reproducer that distinguishes a real repair from disabling the feature. With `require_generated_regression_test: true` the agent's `propose_patch` must supply `regression_tests: [{finding_id, path, content}]`, one entry per finding the patch repairs:
 
+- `finding_id` must be one of the task's finding ids, and each finding may have at most one test. An unknown id is rejected as `regression_test_finding_unknown`, a second test for the same finding as `duplicate_regression_test_finding`, and the retired single `regression_test` field as `regression_tests_required`.
 - `path` must be `.mitig8it/regression/<name>.test.{js,cjs,mjs}` and must not name a file the snapshot already carries. Any other path, including a nested subdirectory or an application file, is rejected by patch policy.
-- `content` must parse under `node --check` and may import only Node built-ins, the repository's declared dependencies, and relative repository paths. It is at most 64,000 bytes. The task message carries `sandbox.dependencies_installed`; when it is false the sandbox has no `node_modules` and no network, so a reproducer that requires a declared package, or the changed module through one, cannot run at all. The tool contract therefore directs the agent to assert on the changed file's source text read with `node:fs` in that case, and to require the changed module only when dependencies are installed.
+- `content` must parse under `node --check` and may import only Node built-ins, the repository's declared dependencies, and relative repository paths. It is at most 64,000 bytes. It must exercise behavior: require the changed module by relative path and invoke the affected function or route handler with fake `req` and `res` objects, stubbing collaborators such as `child_process`, `pg`, or `fs` through `Module.prototype.require` or `Module._load` before the require, so nothing needs to be installed. A test that reads a file with `fs.readFileSync` or `fs.readFile` and never requires a repository module can only assert on wording, and is rejected as `regression_test_reads_source_as_text`.
 
-The file is written into both the baseline and the candidate workspace and executed as an `exploit` check with argv `["node", "<path>"]` and a 60-second timeout: it must exit non-zero on the original tree and zero on the patched tree. It is never part of the candidate patch set, so it never reaches `verified_tree_oid` or the tree the batch applies.
+Each test is written into both the baseline and the candidate workspace and executed as its own `exploit` check with argv `["node", "<path>"]` and a 60-second timeout. A finding is proven when its test exits non-zero on the original tree and zero on the patched tree. The verifier decides per finding: a candidate's `finding_ids` are exactly the proven findings, and every other finding in the group is reported in the response's `skipped` list with `regression_test_not_reproducing` when its test also passed on the original code, or `not_repaired` when it had no test, still failed on the patched code, or did not complete. A candidate with zero proven findings is never `ready`: it is `inconclusive` with `regression_test_not_reproducing` when a test did not reproduce, and `failed` with `verification_failed` when every test still failed on the patched code. The tests are never part of the candidate patch set, so they never reach `verified_tree_oid` or the tree the batch applies.
+
+### Runtime load check
+
+`node --check` proves a changed file parses; it does not prove its top level runs. After the syntax check, patch policy materializes the candidate tree into a temporary directory and loads every changed `.js`, `.cjs`, and `.mjs` file with `node -e` (a `require` for CommonJS, a dynamic `import` for `.mjs`) under a 10-second timeout. A module that throws when loaded, such as a `ReferenceError` for an identifier used without its import, is rejected as `candidate_load_failed:<path>` with Node's diagnostic, so the agent adds the missing `require` or `import` in another hunk of the same call. A module that cannot be loaded for a reason the candidate did not introduce is a recorded limitation rather than a failure: a dependency the snapshot declares but does not carry (`MODULE_NOT_FOUND`), an ES module Node cannot `require`, a timeout, a host without Node, or an original module that already throws on load.
 
 The engine also derives, from the candidate alone and without any fixture:
 
 | Derived check | Kind | argv | Expectation |
 | --- | --- | --- | --- |
-| `generated_regression_test` | `exploit` | `node <generated test path>` | baseline `failed`, candidate `passed` |
+| `generated_regression_test` (one per finding, suffixed `_2`, `_3`, ...) | `exploit` | `node <generated test path>` | baseline `failed`, candidate `passed` proves that finding |
 | `generated_node_syntax` | `typecheck` | `node --check <changed path>` | candidate `passed` |
 | `generated_repository_test_script` | `existing_test` | `npm test --silent` | baseline and candidate equal |
 
 A `generated_node_syntax` check is derived for every changed `.js`, `.cjs`, or `.mjs` file. `generated_repository_test_script` is derived only when `run_repository_tests` is true and the root `package.json` declares `scripts.test`; because the sandbox has no network, a snapshot without installed dependencies records a limitation instead. Policy-supplied checks always run as before, and the derived checks are additive.
 
-A candidate that supplies no regression test, or whose test completes on the baseline tree without failing, is `inconclusive` with reason `regression_test_not_reproducing` and is never `ready`.
+A regression check whose finding is unproven is left out of the pass/fail outcome: its finding is dropped from the candidate instead of failing the verification of the findings that were proven. Policy-supplied checks and the derived syntax and repository-test checks still gate the whole candidate.
 
-Each candidate carries `generated_tests: [{path, new_sha256, bytes, kind}]` alongside its `file_manifest`, whose entries carry `kind: "application"`. The batch manifest carries the union under `generated_tests`. Generated tests are reviewed with the batch and tracked separately from the application files, because they are verification evidence rather than the repair.
+Each candidate carries `generated_tests: [{path, finding_id, new_sha256, bytes, kind}]` alongside its `file_manifest`. The batch manifest carries the union under `generated_tests`. Generated tests are reviewed with the batch and tracked separately from the application files, because they are verification evidence rather than the repair.
+
+## Candidate file manifest
+
+The control plane commits whole files, never hunks, and never reconstructs content from a diff. Each candidate's `file_manifest` is therefore
+
+```json
+{"files": [{"path": "...", "base_sha256": "sha256:...", "new_sha256": "sha256:...", "contents_base64": "...", "blob_oid": "<40 hex>", "bytes": 123, "kind": "application"}], "verified_tree_oid": "<40 hex>"}
+```
+
+with one entry for every changed application file. `contents_base64` is the complete post-patch file exactly as the sandbox materialized it, `blob_oid` is the Git blob SHA-1 of those bytes, and `verified_tree_oid` is the tree obtained by replacing each changed path's blob in the head tree with that `blob_oid`; committing exactly these contents on the consented head reproduces `verified_tree_oid`, which the GitHub adapter checks after the commit. The API persists this object on `remediation_candidates.file_manifest`, and the apply worker reads `files[].contents_base64` from it; a candidate without full contents blocks the apply with `verified_full_file_manifest_unavailable`.
 
 ### Tool outcomes and repeated rejections
+
+A check that exits non-zero records `output_tail`, the last 800 characters of its combined output, on that variant's result; a passing check records none. `inspect_failure` returns it with the check, so the agent sees why a generated test crashed rather than only its exit code.
 
 Every rejected tool call returns `{error, reason, guidance}`: `reason` is the stable code and `guidance` names the specific correction, for example which line differed and what the snapshot holds there, or the `node --check` diagnostic naming the line of the patched file that fails to parse. A diagnostic is stripped of the host temporary directory it was produced in and bounded before it is returned. Guidance may quote snapshot lines the agent is already authorized to read; it is returned to the model and never persisted.
 
@@ -110,17 +127,18 @@ Only `policy.max_total_tokens` and `policy.max_spend_usd` refuse work. A call wh
 
 Settling against an **absent** reservation still raises: a call that was never announced is a protocol violation, not an estimate that came in high, and it ends the run as `checkpoint_unavailable`.
 
-`evidence.groups` is an ordered array of `{group_index, finding_ids, state, reason, candidate_id}`, one entry per group. A response is `ready` when at least one group produced a verified candidate and the combined tree verified, even when other groups did not:
+`evidence.groups` is an ordered array of `{group_index, finding_ids, state, reason, candidate_id}`, one entry per group; a group with a candidate adds `repaired_finding_ids`, and a group whose candidate proved only some of its findings adds `unproven_findings: [{finding_id, code, message}]`. A response is `ready` when at least one group produced a verified candidate and the combined tree verified, even when other groups did not:
 
 | Group reason code | Meaning |
 | --- | --- |
 | `budget_exhausted` | The remaining job budget was below the per-group floor, so no agent ran for these findings. |
 | `budget_cap_exceeded` | Cumulative actual provider spend passed `max_total_tokens` or `max_spend_usd`. The call that crossed the cap is settled and recorded first. |
 | `overlapping_candidates` | This group's patch changes a line range an earlier accepted candidate already changes, so it was left out of the batch. |
+| `regression_test_not_reproducing` | No finding in the group was shown repaired by its own regression test. |
 | `verification_level_not_permitted` | The group's evidence carried a level this policy does not accept. |
 | any agent reason code | The group's bounded loop abstained or could not reach verified evidence. |
 
-Partial coverage is therefore explicit. A finding absent from every candidate's `finding_ids` was not repaired, and `evidence.groups` states why.
+Partial coverage is therefore explicit. A finding absent from every candidate's `finding_ids` was not repaired, and `evidence.groups` states why. The response-level `skipped: [{finding_id, code, message}]` lists every such finding the request carried, including findings outside the enabled families and findings a candidate's group could not prove (`not_repaired`, `regression_test_not_reproducing`). A batch of two or more candidates must also prove every claimed finding again on the combined tree; otherwise the response is `inconclusive` with `combined_verification_failed`.
 
 ## Trace context
 

@@ -10,7 +10,7 @@ from src.patches import build_patch_bundle
 from src.retrieval import Snapshot
 from src.sandbox import InProcessSandboxBroker, LocalSubprocessDriver
 from src.verification import Verifier
-from tests.conftest import regression_test_spec, whole_file_change
+from tests.conftest import whole_file_change
 
 REPAIRED = "export function loadUser(db, id) {\n  return db.query('SELECT * FROM users WHERE id = $1', [id]);\n}\n"
 
@@ -25,17 +25,22 @@ SCANNER = [
 
 
 def development_payload(request_payload, checks, *, allow=True, source=None, replacement=REPAIRED, regression_test=None):
+    """A policy-checked request: the fixture's exploit and behavior argv are the evidence.
+
+    The snapshot is TypeScript, which node cannot load, so a generated behavior test cannot run
+    here; policy therefore does not require one unless a test is passed in explicitly.
+    """
     request_payload["policy"]["sandbox_image_digest"] = None
     request_payload["policy"]["allow_development_verification"] = allow
     request_payload["policy"]["verification_checks"] = checks
+    request_payload["policy"]["require_generated_regression_test"] = regression_test is not None
     request = RepairRequest.model_validate(request_payload)
     snapshot = Snapshot(request)
-    supplied = regression_test_spec() if regression_test is None else regression_test
     bundle = build_patch_bundle(
         request,
         snapshot,
         [whole_file_change("src/db.ts", source, replacement)],
-        [supplied] if supplied else [],
+        [regression_test] if regression_test else [],
     )
     return request, snapshot, bundle
 

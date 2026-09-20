@@ -258,7 +258,9 @@ class Candidate(StrictModel):
     assumptions: list[str]
     citations: list[dict[str, Any]]
     patch: list[FilePatch]
-    file_manifest: list[dict[str, Any]]
+    # The full post-patch content of every changed application file plus the verified tree OID.
+    # `{"files": [...], "verified_tree_oid": "..."}`: what the control plane commits, never hunks.
+    file_manifest: dict[str, Any]
     # Generated regression tests are tracked apart from the application files they exercise:
     # they are verification artifacts, never part of the tree the batch applies.
     generated_tests: list[dict[str, Any]] = Field(default_factory=list)

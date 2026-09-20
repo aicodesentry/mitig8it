@@ -512,11 +512,13 @@ class ScriptedFixtureProvider:
                             for unit in repairable
                             for hunk in reference_hunks(unit["path"], unit["original"], unit["replacement"])
                         ],
-                        # One reproducer per finding group, so a multi-group fixture proposes a
-                        # distinct generated test per candidate and the combined tree runs both.
-                        "regression_test": modules["fixture_regression_test"](
-                            fixture, suffix=f"-{repairable[0]['path'].replace('/', '-')}"
-                        ),
+                        # One reproducer per finding, so a candidate claims exactly the findings
+                        # whose test fails on the baseline and passes on the candidate tree.
+                        "regression_tests": [
+                            modules["fixture_regression_test"](fixture, finding_id)
+                            for unit in repairable
+                            for finding_id in unit.get("finding_ids", [])
+                        ],
                     },
                     input_tokens=8,
                     output_tokens=8,
@@ -583,7 +585,12 @@ def engine_local_adapter(
                 if finding.affected_path and finding.affected_path not in paths:
                     paths.append(finding.affected_path)
             units = [
-                {"path": path, "original": originals.get(path, ""), "replacement": replacements.get(path)}
+                {
+                    "path": path,
+                    "original": originals.get(path, ""),
+                    "replacement": replacements.get(path),
+                    "finding_ids": [finding.stable_id for finding in prepared.findings if finding.affected_path == path],
+                }
                 for path in paths
             ]
             provider = ScriptedFixtureProvider(modules, fixture, units)
