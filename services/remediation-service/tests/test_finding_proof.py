@@ -56,7 +56,7 @@ def test_a_test_that_only_reads_the_changed_file_as_text_is_rejected(request_pay
     snapshot = Snapshot(request)
     with pytest.raises(PatchPolicyError, match="regression_test_reads_source_as_text") as info:
         build_patch_bundle(request, snapshot, [whole_file_change("src/db.js", JS_SOURCE, JS_REPAIRED)], [_spec(JS_TEXT_ONLY_TEST)])
-    assert "require the changed module by relative path" in info.value.guidance
+    assert "require('../harness')" in info.value.guidance and "h.load(" in info.value.guidance
 
 
 def test_a_test_naming_a_finding_outside_the_task_is_rejected(request_payload):
