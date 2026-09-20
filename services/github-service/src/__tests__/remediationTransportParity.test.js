@@ -412,6 +412,59 @@ const cases = [
       base_branch: response.getBaseBranch(),
     }),
   },
+  {
+    // A ruleset-governed branch reports a different protection source and ruleset-derived
+    // blockers, so both transports must carry those values unchanged.
+    name: 'merge-eligibility-rulesets',
+    path: '/github/remediation/merge-eligibility',
+    rpc: 'readMergeEligibility',
+    operation: 'readMergeEligibility',
+    body: {
+      ...envelopeBody,
+      pull_number: 9,
+      expected_head_sha: head,
+      verification_check_name: 'Mitig8it Remediation Verification',
+    },
+    request: () => {
+      const request = new githubPb.MergeEligibilityRequest();
+      request.setEnvelope(buildEnvelope());
+      request.setPullNumber(9);
+      request.setExpectedHeadSha(head);
+      request.setVerificationCheckName('Mitig8it Remediation Verification');
+      return request;
+    },
+    result: {
+      eligible: false,
+      blockers: ['merge_queue_unsupported', 'ruleset_rule_unsupported_required_deployments'],
+      required_checks: [{ context: 'Mitig8it Remediation Verification', app_id: 123 }],
+      check_runs: [{ id: 3, name: 'Mitig8it Remediation Verification', app_id: 123, status: 'completed', conclusion: 'success' }],
+      reviews: { required: 0, approvals: 0, changes_requested: false },
+      protection_source: 'rulesets',
+      mergeable_state: 'clean',
+      head_sha: head,
+      base_sha: base,
+      verification_check_name: 'Mitig8it Remediation Verification',
+    },
+    read: (response) => ({
+      eligible: response.getEligible(),
+      blockers: response.getBlockersList(),
+      required_checks: response.getRequiredChecksList().map((check) => ({ context: check.getContext(), app_id: check.getAppId() })),
+      check_runs: response.getCheckRunsList().map((check) => ({
+        id: check.getId(), name: check.getName(), app_id: check.getAppId(),
+        status: check.getStatus(), conclusion: check.getConclusion(),
+      })),
+      reviews: {
+        required: response.getReviews().getRequired(),
+        approvals: response.getReviews().getApprovals(),
+        changes_requested: response.getReviews().getChangesRequested(),
+      },
+      protection_source: response.getProtectionSource(),
+      mergeable_state: response.getMergeableState(),
+      head_sha: response.getHeadSha(),
+      base_sha: response.getBaseSha(),
+      verification_check_name: response.getVerificationCheckName(),
+    }),
+  },
 ];
 
 function callGrpc(rpc, request) {
@@ -428,7 +481,7 @@ test('the operations module exposes every function both transports dispatch to',
   for (const name of OPERATION_NAMES) {
     expect(typeof require('../services/githubInternalOperations')[name]).toBe('function');
   }
-  expect(cases).toHaveLength(10);
+  expect(cases).toHaveLength(11);
 });
 
 test.each(cases)('$name reaches the same operation with the same payload over HTTP and gRPC', async (testCase) => {
