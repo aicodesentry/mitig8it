@@ -712,13 +712,24 @@ async function makeReadyWith(f, jobId, paths) {
   return { rows, job, digestFor };
 }
 
+// An open finding that belongs to the verification run's immutable snapshot. Its mutable
+// analysis_run_id points at a later webhook run for the same commit, as it does in
+// production when the webhook's analysis upserts the same fingerprint last: membership
+// must come from the snapshot, never from that pointer.
 async function insertOpenFinding(f, runId, { severity, path, title, testCode = false }) {
-  return (await pool.query(
+  const commit = (await pool.query('SELECT commit_sha FROM analysis_runs WHERE id=$1', [runId])).rows[0].commit_sha;
+  const laterRun = (await pool.query(
+    `INSERT INTO analysis_runs (repository_id,pull_request_id,pr_number,commit_sha,status,triggered_by,completed_at)
+     VALUES ($1,$2,1,$3,'completed','webhook',NOW()) RETURNING id`, [f.repo, f.pr, commit])).rows[0].id;
+  const id = (await pool.query(
     `INSERT INTO findings (repository_id,installation_id,pull_request_number,pull_request_id,analysis_run_id,commit_sha,fingerprint,rule_id,title,description,category,severity,file_path,line_start,status,evidence_details)
      VALUES ($1,$2,1,$3,$4,$5,$6,'rule',$7,'d','injection',$8,$9,10,'open',$10) RETURNING id`,
-    [f.repo, f.installation, f.pr, runId, f.head.slice(0, 40), randomUUID().replace(/-/g, ''), title, severity, path,
+    [f.repo, f.installation, f.pr, laterRun, commit, randomUUID().replace(/-/g, ''), title, severity, path,
       JSON.stringify(testCode ? { extra: { in_test_code: true, original_severity: severity } } : {})]
   )).rows[0].id;
+  await pool.query(`INSERT INTO analysis_run_findings (analysis_run_id,finding_id,snapshot) VALUES ($1,$2,$3)`,
+    [runId, id, JSON.stringify({ id, file_path: path, severity, title, status: 'open' })]);
+  return id;
 }
 
 test('consent binds the exact subset: one candidate applies on its own digest, other digests are refused', async () => {
