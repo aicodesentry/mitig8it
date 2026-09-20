@@ -92,11 +92,22 @@ The request's findings are grouped into connected components before generation. 
 
 The job's tool-call, token, and spend budgets are divided evenly across the groups with a per-group floor. The first group always runs. A later group whose share of the remaining budget falls below the floor is not launched, and its findings are reported as unsupported with reason `budget_exhausted`.
 
+### Reservations, settlement and the hard caps
+
+Before each provider call the service reserves an estimated token and dollar amount against the execution row. The estimate uses a bytes-per-token proxy with headroom, so it is approximate by construction. When the provider's reported usage comes in above the reservation, the call is settled at its **actual** cost rather than refused: the execution is charged what it really used, and the difference is recorded as an overage.
+
+`evidence.budget_reservation` carries `{settled_calls, overage_calls, overage_tokens, overage_usd, settlements}`, where each settlement is `{call_index, reserved_tokens, reserved_usd, actual_tokens, actual_usd, overage_tokens, overage_usd}`. Every result carries it, not only a refused one, so an overage is visible on a job that otherwise succeeded. The list is bounded at 50 entries.
+
+Only `policy.max_total_tokens` and `policy.max_spend_usd` refuse work. A call whose settlement takes cumulative actual spend past either cap ends the run as `inconclusive` with reason `budget_cap_exceeded`, after the spend has been recorded, so the cost of the crossing call is never lost.
+
+Settling against an **absent** reservation still raises: a call that was never announced is a protocol violation, not an estimate that came in high, and it ends the run as `checkpoint_unavailable`.
+
 `evidence.groups` is an ordered array of `{group_index, finding_ids, state, reason, candidate_id}`, one entry per group. A response is `ready` when at least one group produced a verified candidate and the combined tree verified, even when other groups did not:
 
 | Group reason code | Meaning |
 | --- | --- |
 | `budget_exhausted` | The remaining job budget was below the per-group floor, so no agent ran for these findings. |
+| `budget_cap_exceeded` | Cumulative actual provider spend passed `max_total_tokens` or `max_spend_usd`. The call that crossed the cap is settled and recorded first. |
 | `overlapping_candidates` | This group's patch changes a line range an earlier accepted candidate already changes, so it was left out of the batch. |
 | `verification_level_not_permitted` | The group's evidence carried a level this policy does not accept. |
 | any agent reason code | The group's bounded loop abstained or could not reach verified evidence. |

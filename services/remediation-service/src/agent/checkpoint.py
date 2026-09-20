@@ -9,6 +9,19 @@ class CheckpointError(RuntimeError):
     pass
 
 
+class BudgetCapExceeded(CheckpointError):
+    """Cumulative actual spend passed a hard cap, so the run stops with the spend recorded.
+
+    A reservation is an estimate and may be overrun; `max_total_tokens` and `max_spend_usd` are
+    the caps that actually bind. The settlement that crossed the cap is carried so the reason is
+    reportable rather than only loggable.
+    """
+
+    def __init__(self, settlement: dict[str, Any]):
+        super().__init__("cumulative provider spend exceeds the configured hard cap")
+        self.settlement = settlement
+
+
 class AgentCheckpointStore(Protocol):
     async def load(self) -> dict[str, Any] | None: ...
 
@@ -20,7 +33,7 @@ class AgentCheckpointStore(Protocol):
         action: ProviderAction,
         actual_tokens: int,
         actual_usd: float,
-    ) -> None: ...
+    ) -> dict[str, Any]: ...
 
     async def save_completed_step(self, state: dict[str, Any]) -> None: ...
 
@@ -57,8 +70,8 @@ class GroupScopedCheckpointStore:
         action: ProviderAction,
         actual_tokens: int,
         actual_usd: float,
-    ) -> None:
-        await self.inner.save_provider_action({**state, "group_key": self.group_key}, action, actual_tokens, actual_usd)
+    ) -> dict[str, Any]:
+        return await self.inner.save_provider_action({**state, "group_key": self.group_key}, action, actual_tokens, actual_usd)
 
     async def save_completed_step(self, state: dict[str, Any]) -> None:
         await self.inner.save_completed_step({**state, "group_key": self.group_key})
