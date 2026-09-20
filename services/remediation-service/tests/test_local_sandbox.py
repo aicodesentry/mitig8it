@@ -113,3 +113,24 @@ async def test_local_driver_enforces_the_total_job_deadline(request_payload, sou
     )
     assert result["outcome"] == "inconclusive"
     assert any(item["baseline"].get("reason_code") for item in result["checks"])
+
+
+@pytest.mark.asyncio
+async def test_a_missing_workspace_root_is_inconclusive_evidence_not_a_raised_error(tmp_path, request_payload, source):
+    """The live lease loss: mkdtemp under an absent root raised through broker and verifier.
+
+    The raised OSError left the worker's attempt dead with the lease still held, so the job
+    burnt its whole recovery budget in silence. A sandbox that cannot make a workspace has to
+    produce inconclusive evidence instead.
+    """
+    absent = tmp_path / "never-created" / "sandbox"
+    driver = LocalSubprocessDriver(str(absent))
+    # A configured root is created rather than assumed to exist.
+    assert absent.is_dir()
+    absent.rmdir()
+    (tmp_path / "never-created").rmdir()
+
+    request, snapshot, bundle = development_payload(request_payload, checks("exploit", "behavior"), source=source)
+    result = await Verifier(InProcessSandboxBroker(driver)).verify(request, snapshot, bundle)
+    assert result.status == "inconclusive"
+    assert any("did not complete" in limitation for limitation in result.limitations)

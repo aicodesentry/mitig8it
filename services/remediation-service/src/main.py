@@ -123,7 +123,15 @@ async def repair_status(execution_id: str) -> dict[str, object]:
     if record.state in {"queued", "running"}:
         return {"schema_version": "v1", "execution_id": record.execution_id, "state": "running"}
     if record.state == "failed" and not record.result_artifact_uri:
-        return {"schema_version": "v1", "execution_id": record.execution_id, "state": "failed", "reason": {"code": "worker_attempts_exhausted", "message": "The durable execution exhausted its worker recovery budget."}}
+        # A dead-lettered execution has no result artifact, so the attempt history is the only
+        # account of what the recovery budget was spent on. It carries lease bookkeeping only.
+        return {
+            "schema_version": "v1",
+            "execution_id": record.execution_id,
+            "state": "failed",
+            "reason": {"code": "worker_attempts_exhausted", "message": "The durable execution exhausted its worker recovery budget."},
+            "attempts": [dict(attempt) for attempt in record.attempts],
+        }
     if record.state == "cancelled":
         return {"schema_version": "v1", "execution_id": record.execution_id, "state": "cancelled"}
     try:
