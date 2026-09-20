@@ -19,6 +19,7 @@ service GitHubService {
   rpc ReadMergeEligibility(MergeEligibilityRequest) returns (MergeEligibilityResponse);
   rpc ReadPullRequestHead(PullRequestHeadRequest) returns (PullRequestHeadResponse);
   rpc CreateRemediationCheckRun(RemediationCheckRunRequest) returns (RemediationCheckRunResponse);
+  rpc PublishRemediationComment(RemediationCommentRequest) returns (RemediationCommentResponse);
   rpc AuthorizeRemediation(RemediationAuthorizeRequest) returns (RemediationAuthorizeResponse);
   rpc HealthCheck(mitig8it.common.v1.HealthCheckRequest) returns (mitig8it.common.v1.HealthCheckResponse);
 }
@@ -287,6 +288,23 @@ message RemediationCheckRunResponse {
   string external_id = 5;
   bool updated = 6;
   string reason = 7;
+}
+
+// One residual report comment per applied action, identified by external_id and
+// updated in place when it already exists.
+message RemediationCommentRequest {
+  RemediationEnvelope envelope = 1;
+  string external_id = 2;
+  string body = 3;
+}
+
+message RemediationCommentResponse {
+  string state = 1;
+  string operation_id = 2;
+  int64 comment_id = 3;
+  string external_id = 4;
+  bool updated = 5;
+  string reason = 6;
 }
 
 // Live authorization pre-flight. The control plane calls this before persisting an

@@ -368,7 +368,7 @@ function verifiedTreeOid(action, candidates) {
   return typeof tree === 'string' && /^[0-9a-f]{40}$/i.test(tree) ? tree : null;
 }
 
-function checkOutput(action, candidates, analysis, conclusion) {
+function checkOutput(action, candidates, analysis, conclusion, report = null) {
   const tree = verifiedTreeOid(action, candidates);
   const summary = [
     `Verified tree OID: ${tree || 'unavailable'}`,
@@ -376,13 +376,16 @@ function checkOutput(action, candidates, analysis, conclusion) {
     `Candidates in batch: ${candidates.length}`,
     `Applied commit: ${action.verification_head_sha || action.observed_commit_sha || 'unknown'}`,
     `Verification analysis: ${analysis.analysisState}`,
+    // Every open finding of any severity in the pull request's changed files blocks;
+    // informational findings in test code are listed but never fail the check.
     analysis.analysisState === 'completed'
-      ? `Blocking findings on the applied head: ${Number(analysis.blocking)}`
-      : 'Blocking findings on the applied head: not established',
+      ? `Open findings on the applied head (any severity, excluding informational test-code findings): ${Number(analysis.blocking)}`
+      : 'Open findings on the applied head: not established',
+    ...(report ? ['', report] : []),
   ].join('\n');
   const title = conclusion === 'success'
-    ? `${candidates.length} verified ${candidates.length === 1 ? 'fix' : 'fixes'} applied and re-analysed`
-    : (conclusion ? 'Remediation verification did not pass' : 'Remediation verification in progress');
+    ? `${candidates.length} verified ${candidates.length === 1 ? 'fix' : 'fixes'} applied; no open findings remain`
+    : (conclusion ? 'Remediation verification did not pass: findings remain open' : 'Remediation verification in progress');
   return { title, summary };
 }
 
@@ -408,7 +411,18 @@ async function publishVerificationCheck(actionId, options = {}) {
     status = 'completed';
     conclusion = 'failure';
   }
-  const { title, summary } = checkOutput(action, candidates, analysis, conclusion);
+  // The check carries the same residual report as the pull request comment once the
+  // fresh analysis completed; a failed report never blocks the check itself.
+  let report = null;
+  if (analysis.analysisState === 'completed') {
+    try {
+      const { applied, unsupported } = await remediationDb.appliedReportForAction(action);
+      report = require('./remediationResidualReport').buildReport({ action, analysis, applied, unsupported });
+    } catch (error) {
+      logger.warn('Residual report could not be built for the verification check', { action_id: action.id, error: error.message });
+    }
+  }
+  const { title, summary } = checkOutput(action, candidates, analysis, conclusion, report);
 
   try {
     const result = await client(options).createCheckRun({

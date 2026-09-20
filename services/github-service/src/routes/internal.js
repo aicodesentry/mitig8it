@@ -105,6 +105,12 @@ router.post('/github/remediation/check-run', routeOperation(
   'Failed to publish the remediation verification check run'
 ));
 
+// One residual report comment per applied action, updated in place on retry.
+router.post('/github/remediation/comment', routeOperation(
+  require('../services/githubInternalOperations').publishRemediationComment,
+  'Failed to publish the remediation report comment'
+));
+
 router.post('/github/remediation/cancel-merge', routeOperation(
   require('../services/githubInternalOperations').cancelScheduledMerge,
   'Failed to cancel the scheduled merge'

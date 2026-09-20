@@ -1010,6 +1010,54 @@ async function createRemediationCheckRun(payload) {
   }
 }
 
+function residualReportMarker(externalId) {
+  return `<!-- mitig8it-remediation-report:${externalId} -->`;
+}
+
+// One residual report comment per action. The marker identifies this app's own comment
+// for the external id, which is updated in place; another author's comment carrying
+// the same text is never edited. It reuses the summary comment publisher.
+async function publishRemediationComment(payload) {
+  const envelope = validateActionEnvelope(payload);
+  const externalId = requireString(payload.external_id, 'external_id', 255);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$/.test(externalId)) throw badRequest('Invalid external_id');
+  const text = requireString(payload.body, 'body', 65000);
+  const marker = residualReportMarker(externalId);
+  const body = `${marker}\n${text}`;
+  const commentService = require('./githubCommentService');
+
+  try {
+    // Publishing the report is system initiated, after verification completes, so actor
+    // write permission is not required; the app writes only its own comment.
+    const token = await assertInstallationRepositoryAndActor(envelope, false);
+    const botLogin = await githubAppAuth.getAppBotLogin();
+    let existing = null;
+    for (let page = 1; page <= 10; page += 1) {
+      const comments = await commentService.listSummaryComments(envelope.owner, envelope.repo, envelope.pr_number, token, page);
+      existing = comments.find((comment) => typeof comment?.body === 'string' && comment.body.startsWith(marker)
+        && (!botLogin || comment.user?.login === botLogin)) || null;
+      if (existing || comments.length < 100) break;
+    }
+    const response = existing
+      ? await commentService.updateSummaryComment(envelope.owner, envelope.repo, existing.id, body, token)
+      : await commentService.postSummaryComment(envelope.owner, envelope.repo, envelope.pr_number, body, token);
+    if (!response?.id) throw new OperationError('GitHub did not return the published comment', 502);
+    return {
+      state: 'published',
+      operation_id: envelope.action_id,
+      comment_id: Number(response.id),
+      external_id: externalId,
+      updated: Boolean(existing),
+    };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    if (isAmbiguousWriteError(error)) {
+      return { state: 'reconciling', operation_id: envelope.action_id, reason: 'github_comment_outcome_ambiguous' };
+    }
+    throw externalError('Failed to publish the remediation report comment', error);
+  }
+}
+
 async function cancelScheduledMerge(payload) {
   const envelope = validateActionEnvelope(payload);
   assertPullNumberMatches(payload, envelope);
@@ -1170,6 +1218,7 @@ module.exports = {
   cancelScheduledMerge,
   createCheckRun,
   createRemediationCheckRun,
+  publishRemediationComment,
   fetchFileContents,
   fetchPullRequestFiles,
   fetchRemediationSnapshot,

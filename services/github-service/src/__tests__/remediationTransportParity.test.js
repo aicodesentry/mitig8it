@@ -13,6 +13,7 @@ const OPERATION_NAMES = [
   'mergeRemediationAction',
   'postInlineComment',
   'prepareRemediationAction',
+  'publishRemediationComment',
   'readMergeEligibility',
   'readPullRequestHead',
   'reconcileRemediationAction',
@@ -25,7 +26,7 @@ jest.mock('../services/githubInternalOperations', () => {
     'cancelScheduledMerge', 'commitRemediationAction', 'createCheckRun', 'createRemediationCheckRun',
     'fetchFileContents', 'fetchPullRequestFiles', 'fetchRemediationSnapshot', 'mergeRemediationAction',
     'postInlineComment', 'prepareRemediationAction', 'readMergeEligibility', 'readPullRequestHead',
-    'reconcileRemediationAction', 'submitPullRequestReview', 'authorizeRemediationActor',
+    'reconcileRemediationAction', 'submitPullRequestReview', 'authorizeRemediationActor', 'publishRemediationComment',
   ]) {
     operations[name] = jest.fn();
   }
@@ -102,6 +103,29 @@ function createRes() {
 }
 
 const cases = [
+  {
+    name: 'comment',
+    path: '/github/remediation/comment',
+    rpc: 'publishRemediationComment',
+    operation: 'publishRemediationComment',
+    body: { ...envelopeBody, external_id: 'report-0001', body: 'Applied 1 fix. Remaining open findings: 0.' },
+    request: () => {
+      const request = new githubPb.RemediationCommentRequest();
+      request.setEnvelope(buildEnvelope());
+      request.setExternalId('report-0001');
+      request.setBody('Applied 1 fix. Remaining open findings: 0.');
+      return request;
+    },
+    result: { state: 'published', operation_id: actionId, comment_id: 91, external_id: 'report-0001', updated: false, reason: '' },
+    read: (response) => ({
+      state: response.getState(),
+      operation_id: response.getOperationId(),
+      comment_id: response.getCommentId(),
+      external_id: response.getExternalId(),
+      updated: response.getUpdated(),
+      reason: response.getReason(),
+    }),
+  },
   {
     name: 'prepare',
     path: '/github/remediation/prepare',
@@ -481,7 +505,7 @@ test('the operations module exposes every function both transports dispatch to',
   for (const name of OPERATION_NAMES) {
     expect(typeof require('../services/githubInternalOperations')[name]).toBe('function');
   }
-  expect(cases).toHaveLength(11);
+  expect(cases).toHaveLength(12);
 });
 
 test.each(cases)('$name reaches the same operation with the same payload over HTTP and gRPC', async (testCase) => {

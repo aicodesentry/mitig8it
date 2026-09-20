@@ -10,10 +10,17 @@ function basePayload(action, job) {
     pr_number: job.pr_number, head_sha: action.head_sha, base_sha: action.base_sha, manifest_digest: action.batch_manifest_digest,
     action_id: action.id, idempotency_key: action.idempotency_key };
 }
-function verifiedTreeOid(candidates) {
-  const tree = candidates[0]?.preview?.verified_tree_oid || candidates[0]?.file_manifest?.verified_tree_oid
-    || candidates[0]?.verified_tree_oid;
-  return typeof tree === 'string' && /^[0-9a-f]{40}$/i.test(tree) ? tree : null;
+function treeOidOf(value) {
+  return typeof value === 'string' && /^[0-9a-f]{40}$/i.test(value) ? value : null;
+}
+// One candidate is committed against the tree its own verification attested. More than
+// one is committed only as the full batch, against the combined tree the repair service
+// verified for that combination; there is no other verified tree to commit against.
+function verifiedTreeOid(candidates, combinedTreeOid = null) {
+  if (candidates.length > 1) return treeOidOf(combinedTreeOid);
+  const candidate = candidates[0];
+  return treeOidOf(candidate?.file_manifest?.verified_tree_oid) || treeOidOf(candidate?.preview?.verified_tree_oid)
+    || treeOidOf(candidate?.verified_tree_oid) || treeOidOf(combinedTreeOid);
 }
 // The adapter commits whole files. A candidate stored as `{ files: [...] }`, as a bare array of
 // file entries, or as a single entry all carry the same thing: the final content of each changed
@@ -44,13 +51,17 @@ function samePersistedOrder(expected, actual) {
 
 // Re-derives everything the consent was bound to. Any mismatch is a terminal rejection.
 async function revalidate(action, material) {
-  const { job, candidates, manifestDigest, orderedCandidateIds } = material;
+  const { job, candidates, manifestDigest, orderedCandidateIds, fullBatch } = material;
   if (!job) return { ok: false, code: 'job_not_ready' };
   if (job.state !== 'ready') return { ok: false, code: 'job_not_ready' };
   if (job.head_sha !== action.head_sha || job.base_sha !== action.base_sha) return { ok: false, code: 'stale_head' };
   if (!manifestDigest || manifestDigest !== action.batch_manifest_digest) return { ok: false, code: 'manifest_mismatch' };
   if (!samePersistedOrder(action.candidate_ids, orderedCandidateIds)) return { ok: false, code: 'manifest_mismatch' };
   if (candidates.length !== action.candidate_ids.length) return { ok: false, code: 'manifest_mismatch' };
+  if (candidates.some((candidate) => candidate.rejection_reason)) return { ok: false, code: 'candidate_stale' };
+  // A combination is committed only when the repair service verified exactly that
+  // combination: one candidate on its own, or the whole batch together.
+  if (candidates.length > 1 && fullBatch !== true) return { ok: false, code: 'subset_not_verified' };
   if (candidates.some((candidate) => !policy.verificationLevelPermitted(candidate.verification_level))) return { ok: false, code: 'verification_level_not_permitted' };
   try {
     policy.assertApplyEnabled();
@@ -90,6 +101,13 @@ async function enterCheckingAfterCommit(action, commitSha, treeOid, verifiedTree
     metrics.actionTransitions.labels('blocked').inc();
     return;
   }
+  // The head moved to the applied commit: the applied candidates are recorded as such
+  // and every remaining candidate is stale. The synchronize webhook is the backup.
+  try { await remediationDb.markCandidatesAfterApply(action, commitSha); } catch (error) {
+    logger.error('Applied remediation could not mark remaining candidates stale; the webhook will', {
+      action_id: action.id, error: error.message,
+    });
+  }
   try {
     const checking = await remediationDb.enterChecking(action, { commitSha, treeOid: treeOid || verifiedTree });
     if (!checking) return;
@@ -119,7 +137,7 @@ async function executeAction(action) {
   const material = await remediationDb.actionMaterial(action);
   const { job, candidates } = material;
   const client = new GitHubRemediationClient();
-  const treeOid = verifiedTreeOid(candidates);
+  const treeOid = verifiedTreeOid(candidates, material.combinedTreeOid);
 
   if (action.state === 'reconciling') {
     // Reconciliation is read-only and stays available even after consent revalidation

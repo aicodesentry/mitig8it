@@ -110,6 +110,7 @@ describe('internal remediation routes', () => {
       title: 'Remediation verified',
       summary: 'Independent verification succeeded.',
     }),
+    '/github/remediation/comment': envelope({ external_id: 'report-0001', body: 'Applied 1 fix. Remaining open findings: 0.' }),
     '/github/remediation/cancel-merge': envelope({ pull_number: 9, expected_head_sha: head }),
     '/github/remediation/merge-eligibility': envelope({ pull_number: 9, expected_head_sha: head }),
     '/github/remediation/pull-head': envelope({ pull_number: 9 }),
@@ -132,8 +133,8 @@ describe('internal remediation routes', () => {
     return internalRouter.stack.find((entry) => !entry.route).handle;
   }
 
-  test('the nine remediation operations are each reachable over HTTP', () => {
-    expect(remediationPaths).toHaveLength(9);
+  test('the ten remediation operations are each reachable over HTTP', () => {
+    expect(remediationPaths).toHaveLength(10);
     for (const path of remediationPaths) {
       expect(typeof findRouteHandler(path)).toBe('function');
     }
