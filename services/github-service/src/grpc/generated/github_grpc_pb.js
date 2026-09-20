@@ -225,6 +225,28 @@ function deserialize_mitig8it_github_v1_RemediationCheckRunResponse(buffer_arg) 
   return github_pb.RemediationCheckRunResponse.deserializeBinary(new Uint8Array(buffer_arg));
 }
 
+function serialize_mitig8it_github_v1_RemediationCommentRequest(arg) {
+  if (!(arg instanceof github_pb.RemediationCommentRequest)) {
+    throw new Error('Expected argument of type mitig8it.github.v1.RemediationCommentRequest');
+  }
+  return Buffer.from(arg.serializeBinary());
+}
+
+function deserialize_mitig8it_github_v1_RemediationCommentRequest(buffer_arg) {
+  return github_pb.RemediationCommentRequest.deserializeBinary(new Uint8Array(buffer_arg));
+}
+
+function serialize_mitig8it_github_v1_RemediationCommentResponse(arg) {
+  if (!(arg instanceof github_pb.RemediationCommentResponse)) {
+    throw new Error('Expected argument of type mitig8it.github.v1.RemediationCommentResponse');
+  }
+  return Buffer.from(arg.serializeBinary());
+}
+
+function deserialize_mitig8it_github_v1_RemediationCommentResponse(buffer_arg) {
+  return github_pb.RemediationCommentResponse.deserializeBinary(new Uint8Array(buffer_arg));
+}
+
 function serialize_mitig8it_github_v1_RemediationCommitRequest(arg) {
   if (!(arg instanceof github_pb.RemediationCommitRequest)) {
     throw new Error('Expected argument of type mitig8it.github.v1.RemediationCommitRequest');
@@ -512,6 +534,17 @@ var GitHubServiceService = exports.GitHubServiceService = {
     requestDeserialize: deserialize_mitig8it_github_v1_RemediationCheckRunRequest,
     responseSerialize: serialize_mitig8it_github_v1_RemediationCheckRunResponse,
     responseDeserialize: deserialize_mitig8it_github_v1_RemediationCheckRunResponse,
+  },
+  publishRemediationComment: {
+    path: '/mitig8it.github.v1.GitHubService/PublishRemediationComment',
+    requestStream: false,
+    responseStream: false,
+    requestType: github_pb.RemediationCommentRequest,
+    responseType: github_pb.RemediationCommentResponse,
+    requestSerialize: serialize_mitig8it_github_v1_RemediationCommentRequest,
+    requestDeserialize: deserialize_mitig8it_github_v1_RemediationCommentRequest,
+    responseSerialize: serialize_mitig8it_github_v1_RemediationCommentResponse,
+    responseDeserialize: deserialize_mitig8it_github_v1_RemediationCommentResponse,
   },
   authorizeRemediation: {
     path: '/mitig8it.github.v1.GitHubService/AuthorizeRemediation',

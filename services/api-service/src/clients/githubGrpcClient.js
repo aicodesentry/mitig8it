@@ -360,6 +360,22 @@ class GitHubGrpcClient {
     };
   }
 
+  async publishRemediationComment(payload) {
+    const request = new githubPb.RemediationCommentRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    request.setExternalId(payload.external_id || '');
+    request.setBody(payload.body || '');
+    const response = await remediationUnary(this.client, 'publishRemediationComment', request);
+    return {
+      state: response.getState(),
+      operation_id: response.getOperationId(),
+      comment_id: response.getCommentId(),
+      external_id: response.getExternalId(),
+      updated: response.getUpdated(),
+      reason: response.getReason(),
+    };
+  }
+
   async createCheckRun(payload) {
     const request = new githubPb.CreateCheckRunRequest();
     request.setOwner(payload.owner || '');

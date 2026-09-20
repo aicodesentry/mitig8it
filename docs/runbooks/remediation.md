@@ -171,8 +171,8 @@ What a developer sees on a pull request in this mode:
 | --- | --- |
 | Finding view | An amber warning on each candidate: "Verification level: development unverified. This fix was not verified in an isolated sandbox.", with the driver's limitations listed beside it. |
 | Generate | A "Generate fixes" button starts one bounded agent loop per finding group; the panel shows the diff and the verification outcome when it finishes. |
-| Apply | An "Apply N verified fixes" button writes the batch against the exact verified tree with an expected-head check. It is disabled when apply is off, when the head moved, or when the batch no longer matches its evidence. |
-| After apply | A fresh analysis runs on the resulting commit, and a verification check is published on the pull request; only then is the action completed. |
+| Apply | Fixes are grouped by file and, within a file, by finding. Each finding shows its recommended fix with an "Apply this fix" button; "Apply all fixes in this file" and "Apply all N verified fixes" remain. One fix is committed on its own verification; several fixes are committed together only as the batch the repair service verified (any other combination is refused with `subset_not_verified`). Every apply is one commit against the exact reviewed head with an expected-head check, made only by explicit request. Buttons are disabled when apply is off, when the head moved, or when the consent digest no longer matches. |
+| After apply | The remaining fixes of that generation are marked stale (the head moved) and shown greyed; "Regenerate remaining fixes" starts a new generation on the new head once its analysis completes. A fresh analysis runs on the applied commit, the app's verification check is published, and one residual report comment per apply (updated in place) lists what was applied and what remains open by file and severity, including findings that were not repaired and why. The check is green only when no open finding of any severity remains in the pull request's changed files; informational test-code findings are listed but do not fail it. Merging stays a human action on GitHub. |
 
 Limits of this mode:
 

@@ -39,7 +39,9 @@ const githubRemediationClient = require('../../src/services/githubRemediationCli
 let authorizeResponse = null;
 // Every adapter response the merge controller consumes is scripted here. No network
 // call is ever made, and each call is counted so "exactly once" can be asserted.
-const githubCalls = { authorize: 0, head: 0, eligibility: 0, merge: 0, check_run: 0, cancel: 0 };
+const githubCalls = { authorize: 0, head: 0, eligibility: 0, merge: 0, check_run: 0, cancel: 0, comment: 0 };
+let lastCheckRun = null;
+const publishedComments = new Map();
 let headResponse = null;
 let eligibilityResponse = null;
 let mergeResponse = null;
@@ -70,7 +72,17 @@ githubRemediationClient.GitHubRemediationClient = class {
   }
   async createCheckRun(payload) {
     githubCalls.check_run += 1;
+    lastCheckRun = payload;
     return { state: 'published', operation_id: payload.action_id, check_run_id: 4242, external_id: payload.external_id, updated: false };
+  }
+  // The residual report comment is keyed by external id: a second publication for the
+  // same id updates the recorded comment instead of adding one.
+  async publishComment(payload) {
+    githubCalls.comment += 1;
+    const existing = publishedComments.get(payload.external_id);
+    const comment = { id: existing?.id || 700 + publishedComments.size, body: payload.body, head_sha: payload.head_sha, publications: (existing?.publications || 0) + 1 };
+    publishedComments.set(payload.external_id, comment);
+    return { state: 'published', operation_id: payload.action_id, comment_id: comment.id, external_id: payload.external_id, updated: Boolean(existing) };
   }
   async cancelScheduledMerge(payload) {
     githubCalls.cancel += 1;
@@ -94,6 +106,7 @@ const remediationDb = require('../../src/db/remediation');
 const outbox = require('../../src/services/remediationOutbox');
 const reconciler = require('../../src/services/remediationReconciler');
 const mergeController = require('../../src/services/mergeController');
+const residualReport = require('../../src/services/remediationResidualReport');
 const { createApp } = require('../../src/app');
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
@@ -667,4 +680,183 @@ test('a merge re-evaluation hint dispatched through the outbox evaluates the int
   await outbox.processPending({ limit: 50, dispatcher });
   assert.equal(githubCalls.eligibility, 1);
   assert.equal((await workerQuery(`SELECT status FROM workflow_outbox WHERE id=$1`, [pending.rows[0].id])).rows[0].status, 'delivered');
+});
+
+// --- Per-finding apply: subset consent, stale marking, residual report -------------
+
+// Moves a job to ready with several verified candidates, one per file, plus the
+// combined verification run the repair service would have recorded for the batch.
+async function makeReadyWith(f, jobId, paths) {
+  const rows = [];
+  for (let index = 0; index < paths.length; index += 1) {
+    const artifact = String(index + 1).repeat(64).slice(0, 64);
+    const tree = String(index + 1).repeat(40).slice(0, 40);
+    const finding = index === 0 ? f.finding : randomUUID();
+    const id = (await workerQuery(
+      `INSERT INTO remediation_candidates (job_id,installation_id,repository_id,candidate_version,finding_snapshot_ids,artifact_digest,context_manifest_digest,file_manifest,preview,verification_level)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'independent_sandbox') RETURNING id`,
+      [jobId, f.installation, f.repo, index + 1, [finding], artifact, 'c'.repeat(64),
+        JSON.stringify({ verified_tree_oid: tree, files: [{ path: paths[index], contents_base64: Buffer.from(`fixed ${index}\n`).toString('base64') }] }),
+        JSON.stringify({ verified_tree_oid: tree, changes: [{ path: paths[index], unified_diff: '@@ -1 +1 @@' }] })]
+    )).rows[0].id;
+    rows.push({ id, artifact_digest: artifact, finding });
+  }
+  await workerQuery(
+    `INSERT INTO verification_runs (job_id,installation_id,repository_id,candidate_digest,original_tree_sha,candidate_tree_sha,base_sha,verifier_identity,policy_version,outcome,evidence_digest,coverage_gaps,limitations)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'remediation-service','v1','passed',$8,'[]','[]')`,
+    [jobId, f.installation, f.repo, rows[0].artifact_digest, f.head, 'e'.repeat(40), f.base, 'd'.repeat(64)]
+  );
+  await workerQuery(`UPDATE remediation_jobs SET state='ready', stage='ready' WHERE id=$1`, [jobId]);
+  const job = (await workerQuery('SELECT * FROM remediation_jobs WHERE id=$1', [jobId])).rows[0];
+  const digestFor = (ids) => remediationDb.manifestDigestFor(job, rows.filter((row) => ids.includes(row.id)));
+  return { rows, job, digestFor };
+}
+
+async function insertOpenFinding(f, runId, { severity, path, title, testCode = false }) {
+  return (await pool.query(
+    `INSERT INTO findings (repository_id,installation_id,pull_request_number,pull_request_id,analysis_run_id,commit_sha,fingerprint,rule_id,title,description,category,severity,file_path,line_start,status,evidence_details)
+     VALUES ($1,$2,1,$3,$4,$5,$6,'rule',$7,'d','injection',$8,$9,10,'open',$10) RETURNING id`,
+    [f.repo, f.installation, f.pr, runId, f.head.slice(0, 40), randomUUID().replace(/-/g, ''), title, severity, path,
+      JSON.stringify(testCode ? { extra: { in_test_code: true, original_severity: severity } } : {})]
+  )).rows[0].id;
+}
+
+test('consent binds the exact subset: one candidate applies on its own digest, other digests are refused', async () => {
+  const f = await fixture();
+  const app = createApp();
+  const jobId = (await request(app).post(`/api/pull-requests/${f.pr}/remediations`).auth(f.token, { type: 'bearer' }).send({})).body.job.id;
+  const ready = await makeReadyWith(f, jobId, ['services/customers.js', 'services/orders.js', 'services/users.js']);
+  const [one, two, three] = ready.rows;
+
+  const preview = await request(app).get(`/api/remediations/${jobId}/preview`).auth(f.token, { type: 'bearer' });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.candidates[0].manifest_digest, ready.digestFor([one.id]));
+  assert.equal(preview.body.manifest_digest, ready.digestFor([one.id, two.id, three.id]));
+  assert.equal(preview.body.files.length, 3);
+
+  const body = (candidateIds, digest, key) => ({ head_sha: f.head, base_sha: f.base, manifest_digest: digest, candidate_ids: candidateIds,
+    merge_when_ready: false, idempotency_key: key });
+
+  // A digest over a different subset never matches the consent for this one.
+  const wrong = await request(app).post(`/api/remediations/${jobId}/apply`).auth(f.token, { type: 'bearer' })
+    .send(body([one.id], ready.digestFor([one.id, two.id, three.id]), 'integration-subset-wrong'));
+  assert.equal(wrong.status, 409); assert.equal(wrong.body.code, 'manifest_mismatch');
+
+  // Two of three were never verified together.
+  const pair = await request(app).post(`/api/remediations/${jobId}/apply`).auth(f.token, { type: 'bearer' })
+    .send(body([one.id, two.id], ready.digestFor([one.id, two.id]), 'integration-subset-pair'));
+  assert.equal(pair.status, 422); assert.equal(pair.body.code, 'subset_not_verified');
+
+  // Merging is never requested by the product.
+  const merge = await request(app).post(`/api/remediations/${jobId}/apply`).auth(f.token, { type: 'bearer' })
+    .send({ ...body([one.id], ready.digestFor([one.id]), 'integration-subset-merge'), merge_when_ready: true });
+  assert.equal(merge.status, 202, 'the integration environment opts into the operator merge flag');
+
+  assert.equal((await workerQuery('SELECT COUNT(*)::int AS n FROM remediation_actions WHERE job_id=$1', [jobId])).rows[0].n, 1);
+  const stored = (await workerQuery('SELECT candidate_ids, batch_manifest_digest FROM remediation_actions WHERE job_id=$1', [jobId])).rows[0];
+  assert.deepEqual(stored.candidate_ids, [one.id]);
+  assert.equal(stored.batch_manifest_digest, ready.digestFor([one.id]));
+  const material = await remediationDb.actionMaterial((await workerQuery('SELECT * FROM remediation_actions WHERE job_id=$1', [jobId])).rows[0]);
+  assert.equal(material.manifestDigest, ready.digestFor([one.id]));
+  assert.equal(material.fullBatch, false);
+  assert.equal(material.combinedTreeOid, 'e'.repeat(40));
+});
+
+test('after one candidate is applied the remaining candidates are stale, the job is superseded and nothing else applies', async () => {
+  const f = await fixture();
+  const app = createApp();
+  const jobId = (await request(app).post(`/api/pull-requests/${f.pr}/remediations`).auth(f.token, { type: 'bearer' }).send({})).body.job.id;
+  const ready = await makeReadyWith(f, jobId, ['services/customers.js', 'services/orders.js']);
+  const [one, two] = ready.rows;
+  const applied = await request(app).post(`/api/remediations/${jobId}/apply`).auth(f.token, { type: 'bearer' }).send({
+    head_sha: f.head, base_sha: f.base, manifest_digest: ready.digestFor([one.id]), candidate_ids: [one.id],
+    merge_when_ready: false, idempotency_key: 'integration-stale-one',
+  });
+  assert.equal(applied.status, 202, JSON.stringify(applied.body));
+  const action = (await workerQuery('SELECT * FROM remediation_actions WHERE id=$1', [applied.body.action.id])).rows[0];
+  const commitSha = '5'.repeat(40);
+
+  const marked = await remediationDb.markCandidatesAfterApply(action, commitSha);
+  assert.deepEqual(marked.jobs, [jobId]);
+  assert.deepEqual(marked.candidates, [two.id]);
+  const candidates = (await workerQuery('SELECT id, rejection_reason FROM remediation_candidates WHERE job_id=$1 ORDER BY candidate_version', [jobId])).rows;
+  assert.equal(candidates[0].rejection_reason.code, 'applied');
+  assert.equal(candidates[0].rejection_reason.commit_sha, commitSha);
+  assert.equal(candidates[1].rejection_reason.code, 'head_changed');
+  assert.equal((await workerQuery('SELECT state FROM remediation_jobs WHERE id=$1', [jobId])).rows[0].state, 'superseded');
+
+  // The preview stays readable and reports the stale state; nothing more can be applied.
+  const preview = await request(app).get(`/api/remediations/${jobId}/preview`).auth(f.token, { type: 'bearer' });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.applicable, false);
+  assert.equal(preview.body.manifest_digest, null);
+  assert.deepEqual(preview.body.candidates.map((c) => c.status), ['applied', 'stale']);
+  assert.equal(preview.body.candidates[1].stale_reason, 'head_changed');
+  // The writer lease from the in-flight action is released so the refusal is about the job, not the lease.
+  await workerQuery('DELETE FROM remediation_writer_leases WHERE pull_request_id=$1', [f.pr]);
+  const again = await request(app).post(`/api/remediations/${jobId}/apply`).auth(f.token, { type: 'bearer' }).send({
+    head_sha: f.head, base_sha: f.base, manifest_digest: ready.digestFor([two.id]), candidate_ids: [two.id],
+    merge_when_ready: false, idempotency_key: 'integration-stale-two',
+  });
+  assert.equal(again.status, 409); assert.equal(again.body.code, 'job_not_ready');
+});
+
+test('the verification check blocks on any open finding severity and the residual report is published once per action', async () => {
+  resetGitHubStub();
+  const f = await fixture();
+  const app = createApp();
+  const jobId = (await request(app).post(`/api/pull-requests/${f.pr}/remediations`).auth(f.token, { type: 'bearer' }).send({})).body.job.id;
+  const ready = await makeReadyWith(f, jobId, ['services/customers.js']);
+  const applied = await request(app).post(`/api/remediations/${jobId}/apply`).auth(f.token, { type: 'bearer' }).send({
+    head_sha: f.head, base_sha: f.base, manifest_digest: ready.digestFor([ready.rows[0].id]), candidate_ids: [ready.rows[0].id],
+    merge_when_ready: false, idempotency_key: 'integration-residual',
+  });
+  assert.equal(applied.status, 202, JSON.stringify(applied.body));
+  const actionId = applied.body.action.id;
+  const appliedSha = '6'.repeat(40);
+  const runId = await completeApplication(actionId, appliedSha);
+  const medium = await insertOpenFinding(f, runId, { severity: 'medium', path: 'services/orders.js', title: 'Command injection' });
+  await insertOpenFinding(f, runId, { severity: 'info', path: 'tests/orders.test.js', title: 'Hardcoded secret', testCode: true });
+  await pool.query(`UPDATE analysis_runs SET status='completed', completed_at=NOW() WHERE id=$1`, [runId]);
+
+  // Nothing is posted before the action completes.
+  const early = await residualReport.publishResidualComment(actionId);
+  assert.equal(early.published, false);
+  assert.equal(githubCalls.comment, 0);
+
+  const completed = await reconciler.completeVerifiedActions(10);
+  assert.equal(completed.completed, 1);
+  const action = (await workerQuery('SELECT * FROM remediation_actions WHERE id=$1', [actionId])).rows[0];
+  assert.equal(action.state, 'completed');
+
+  // A medium finding blocks; the informational test-code finding is listed but does not.
+  const analysis = await remediationDb.blockingFindingsForAction(action);
+  assert.equal(analysis.blocking, 1);
+  assert.deepEqual(analysis.open.map((finding) => [finding.severity, finding.informational]), [['medium', false], ['info', true]]);
+  assert.ok(lastCheckRun, 'the verification check was published on completion');
+  assert.equal(lastCheckRun.conclusion, 'failure');
+  assert.match(lastCheckRun.summary, /Open findings on the applied head \(any severity, excluding informational test-code findings\): 1/);
+  assert.match(lastCheckRun.summary, /- services\/orders\.js\n  - medium: Command injection \(line 10\)/);
+  assert.match(lastCheckRun.summary, /Hardcoded secret in tests\/orders\.test\.js:10/);
+
+  // The residual comment was published once on completion and is updated in place on retry.
+  const comment = publishedComments.get(actionId);
+  assert.equal(comment.publications, 1);
+  assert.match(comment.body, /### Mitig8it remediation report/);
+  assert.match(comment.body, /Applied \(1 fix\):\n- .* in src\/app\.js/);
+  assert.match(comment.body, /Remaining open findings in the pull request's changed files: 1 \(plus 1 informational finding in test code\)\./);
+  assert.match(comment.body, /Merging stays a human action on GitHub\./);
+  assert.equal(action.residual_comment_id, String(comment.id));
+  assert.equal(action.residual_comment_head_sha, appliedSha);
+  assert.deepEqual(await remediationDb.listActionsNeedingResidualComment(10), []);
+  const again = await residualReport.publishResidualComment(actionId);
+  assert.equal(again.published, true); assert.equal(again.updated, true);
+  assert.equal(publishedComments.get(actionId).publications, 2);
+  assert.equal(publishedComments.get(actionId).id, comment.id);
+
+  // Once the medium finding is closed the check turns green, and the report follows.
+  await pool.query(`UPDATE findings SET status='fixed' WHERE id=$1`, [medium]);
+  const republished = await mergeController.publishVerificationCheck(actionId);
+  assert.equal(republished.conclusion, 'success');
+  assert.match(lastCheckRun.title, /no open findings remain/);
 });
