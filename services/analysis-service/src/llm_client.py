@@ -6,10 +6,48 @@ provider-specific request/response shapes into one small internal response.
 """
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional
 
 import httpx
+
+_REDACTED = "[REDACTED]"
+
+# `key=...`, `api_key=...`, `access_token=...` in a URL query string or body.
+_QUERY_SECRET_RE = re.compile(
+    r"(?<![\w-])(api[_-]?key|key|access[_-]?token|token|password)=[^&\s\"'<>]+",
+    re.IGNORECASE,
+)
+# `Authorization: Bearer ...` and provider API-key headers, however they are formatted.
+_AUTH_VALUE_RE = re.compile(
+    r"(?<![\w-])(authorization|x-goog-api-key|api-key|x-api-key)(\s*[:=]\s*)"
+    r"(?:bearer\s+)?[^\s,;\"'}\]]+",
+    re.IGNORECASE,
+)
+# Bare provider key material that leaked into a message without a label.
+_BARE_KEY_RE = re.compile(r"(?<![\w-])(AIza[0-9A-Za-z_-]{10,}|sk-[A-Za-z0-9_-]{10,})")
+
+
+def redact(value: object) -> str:
+    """Strip API keys and Authorization values out of anything about to be logged.
+
+    Applied to every log line and error message that can carry a request URL or a
+    provider error body, so a misconfigured or failing provider call never prints
+    credentials.
+    """
+    text = value if isinstance(value, str) else str(value)
+    text = _QUERY_SECRET_RE.sub(lambda m: f"{m.group(1)}={_REDACTED}", text)
+    text = _AUTH_VALUE_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{_REDACTED}", text)
+    text = _BARE_KEY_RE.sub(_REDACTED, text)
+    return text
+
+
+# gemini-2.0-flash was retired and now returns 404 for every triage call.
+# gemini-2.5-flash-lite is the cheapest generally available Gemini flash model
+# that handles the structured JSON triage prompt.
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 
 
 @dataclass(frozen=True)
@@ -44,8 +82,8 @@ def _model_for(provider: str) -> str:
     if configured:
         return configured
     if provider == "gemini":
-        return "gemini-2.0-flash"
-    return "gpt-4o-mini"
+        return DEFAULT_GEMINI_MODEL
+    return DEFAULT_OPENAI_MODEL
 
 
 def _api_key_for(provider: str) -> Optional[str]:
@@ -188,9 +226,18 @@ def _call_gemini(
         },
     }
 
+    # The key travels in a header, never in the query string, so it cannot end up
+    # in a URL that gets logged by httpx, by us, or by an intermediary.
+    headers = {"x-goog-api-key": api_key}
+
     with httpx.Client(timeout=timeout_seconds) as client:
-        response = client.post(url, params={"key": api_key}, json=payload)
-        response.raise_for_status()
+        response = client.post(url, headers=headers, json=payload)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                redact(f"Gemini request failed: {exc} body={response.text}")
+            ) from None
         data = response.json()
 
     text = ""

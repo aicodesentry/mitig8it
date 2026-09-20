@@ -1077,3 +1077,22 @@ class TestTriageFindings:
             result = triage_findings(findings, {"config.js": '+const apiKey = "sk_live_1234567890abcdef";\n'})
         assert len(result) == 1
         assert result[0]["remediation_patch"] == "const apiKey = process.env.API_KEY;"
+
+
+def test_triage_failure_log_redacts_key_in_url(capsys):
+    leaky = (
+        "Client error '404 Not Found' for url "
+        "'https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-2.0-flash:generateContent?key=AIzaSyFAKEKEYVALUE123456'"
+    )
+    findings = [_make_finding()]
+
+    with patch.dict("os.environ", {"LLM_PROVIDER": "gemini", "LLM_API_KEY": "AIzaSyFAKEKEYVALUE123456"}, clear=True):
+        with patch("llm_triage._call_triage_llm", side_effect=RuntimeError(leaky)):
+            result = triage_findings(findings, {}, None)
+
+    assert result == findings
+    captured = capsys.readouterr().out
+    assert "LLM triage failed (non-blocking)" in captured
+    assert "AIzaSyFAKEKEYVALUE123456" not in captured
+    assert "key=[REDACTED]" in captured
