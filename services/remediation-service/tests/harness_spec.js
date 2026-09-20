@@ -49,7 +49,13 @@ module.exports = router;
 const REPAIRED = VULNERABLE
   .replace(`"SELECT id FROM orders WHERE id = '" + req.params.id + "'"`, `'SELECT id FROM orders WHERE id = $1', [req.params.id]`)
   .replace('exec(`invoice-render --order ${req.params.id}`, ', "execFile('invoice-render', ['--order', req.params.id], ")
-  .replace('fs.readFile(path.join(REPORT_DIR, req.query.name), ', 'fs.readFile(path.join(REPORT_DIR, path.basename(String(req.query.name))), ');
+  .replace(
+    'fs.readFile(path.join(REPORT_DIR, req.query.name), ',
+    `const base = path.resolve(REPORT_DIR);
+  const target = path.resolve(base, String(req.query.name));
+  if (target !== base && !target.startsWith(base + path.sep)) return res.status(400).json({ error: 'invalid report name' });
+  fs.readFile(target, `,
+  );
 write('services/orders.js', VULNERABLE);
 write('services/orders-fixed.js', REPAIRED);
 write('services/app.js', `const express = require('express');
@@ -186,6 +192,29 @@ test('assert helpers throw HarnessAssertion with the given message', () => {
   assert.throws(() => h.assert.inside('/base', '/base'), /stay under/);
   assert.throws(() => h.assert.inside('/base/../etc', '/base'), /stay under/);
   assert.throws(() => h.assert.inside({ path: '../etc', resolved: '/etc' }, '/base', 'escaped'), { name: 'HarnessAssertion', message: 'escaped' });
+  // The array form checks every read, and { payload } demands that a traversal payload read nothing.
+  h.assert.inside([{ path: 'a.pdf', resolved: '/base/a.pdf' }, '/base/b.pdf'], '/base');
+  assert.throws(() => h.assert.inside([{ path: 'a.pdf', resolved: '/base/a.pdf' }, '/etc/passwd'], '/base'), /stay under/);
+  h.assert.inside([], '/base', { payload: '../../etc/passwd' });
+  h.assert.inside([{ path: 'a.pdf', resolved: '/base/a.pdf' }], '/base', { payload: 'a.pdf' });
+  for (const payload of ['../../etc/passwd', '..%2f..%2fetc%2fpasswd', '/etc/passwd']) {
+    assert.throws(
+      () => h.assert.inside([{ path: 'passwd', resolved: '/base/passwd' }], '/base', { payload }),
+      /rejected before any filesystem read/,
+      `${payload} escapes the base, so a basename-style repair that still reads must fail`,
+    );
+  }
+});
+
+test('invoke percent-decodes query values the way express does', async () => {
+  const app = h.load('services/app.js', { stubs: { axios: {} } });
+  const out = await h.invoke(app, 'get', '/users/:id/posts/:post', {
+    params: { id: '1', post: '2' },
+    query: { name: '..%2f..%2fetc%2fpasswd', raw: '100% sure', plain: 'q3.pdf' },
+  });
+  assert.equal(out.body.query.name, '../../etc/passwd');
+  assert.equal(out.body.query.raw, '100% sure', 'a value that is not valid percent-encoding is passed through');
+  assert.equal(out.body.query.plain, 'q3.pdf');
 });
 
 test('assert.argv accepts an argv call carrying the payload and rejects any shell string', async () => {
@@ -217,8 +246,15 @@ h.run(async () => {
   await h.invoke(app, 'post', '/orders/:id/invoice', { params: { id: 'x; id' } });
   const call = h.child_process.calls[0];
   h.assert.argv(call, 'x; id', 'input must be its own argument, not shell text');
-  await h.invoke(app, 'get', '/reports/download', { query: { name: '../../etc/passwd' } });
-  for (const read of h.fs.reads) h.assert.inside(read, require('node:path').join(h.root, 'reports'), 'read escaped: ' + read);
+  const base = require('node:path').join(h.root, 'reports');
+  for (const payload of ['../../etc/passwd', '..%2f..%2fetc%2fpasswd']) {
+    h.fs.reads.length = 0;
+    await h.invoke(app, 'get', '/reports/download', { query: { name: payload } });
+    h.assert.inside(h.fs.reads, base, { payload, message: 'read before rejecting ' + payload });
+  }
+  h.fs.reads.length = 0;
+  await h.invoke(app, 'get', '/reports/download', { query: { name: 'q3.pdf' } });
+  h.assert.inside(h.fs.reads, base, 'a legitimate report must still be served');
 });
 `;
   write('.mitig8it/regression/vulnerable.test.js', body('services/orders.js'));

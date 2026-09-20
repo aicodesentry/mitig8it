@@ -222,11 +222,17 @@ rules:
         - pattern: req.params.$INPUT
         - pattern: req.query.$INPUT
         - pattern: req.body.$INPUT
+    # Only resolve-and-contain counts as a sanitizer: the candidate path is resolved
+    # against the base directory and the handler rejects it unless the resolved path
+    # stays under that base. `path.basename` is deliberately absent — it is listed in
+    # INSUFFICIENT_SANITIZERS in opengrep_runner.py, so a basename-only defence must
+    # still report.
     pattern-sanitizers:
-      - pattern-either:
-        - pattern: path.basename(...)
-        - pattern: path.posix.basename(...)
-        - pattern: path.win32.basename(...)
+      - patterns:
+        - pattern: $SAFE
+        - pattern-inside: |
+            if (<... $SAFE.startsWith(...) ...>) { ... }
+            ...
     pattern-sinks:
       - pattern-either:
         - pattern: fs.readFileSync($PATH)

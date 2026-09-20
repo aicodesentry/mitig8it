@@ -43,7 +43,7 @@ file. Each call resets the recorders. `options`:
 
 `h.invoke(app, method, path, { params, query, body, headers, timeout })`: finds the handler recorded
 for `method` and `path` (an exact route pattern such as `/orders/:id` with `params`, or a concrete
-URL such as `/orders/7` whose `:param` segments are extracted), builds `req` and `res`, runs the
+URL such as `/orders/7` whose `:param` segments are extracted), builds `req` and `res` (string `query` values are percent-decoded the way Express decodes a query string, and a value that is not valid percent-encoding is passed through unchanged), runs the
 route's handlers in order, and resolves once the response ends or the handler settles. Rejects
 when the handler throws, rejects, calls `next(err)`, or never ends the response (default 2000 ms).
 Resolves `{ status, body, headers, redirect }`. `res` records `status`, `json`, `send`, `end`,
@@ -61,7 +61,7 @@ Assertions (each throws a `HarnessAssertion` with the message on failure):
 - `h.assert(condition, message)`
 - `h.assert.equal(actual, expected, message)`
 - `h.assert.includes(text, needle, message)` and `h.assert.notIncludes(text, needle, message)`
-- `h.assert.inside(read, baseDirectory, message)`: `read` is an `h.fs.reads` entry or a path string (an entry is recognized in either position); its resolved path stays strictly under the base directory.
+- `h.assert.inside(read, baseDirectory, message | { payload, message })`: `read` is an `h.fs.reads` entry, a path string, or the whole `h.fs.reads` array (an entry or the array is recognized in either position); every read's resolved path stays strictly under the base directory. With `{ payload }` naming the input that produced those reads, a payload that escapes the base (a `..` segment or an absolute path, as sent or once percent-decoded) additionally requires that no read was recorded at all, so the handler must have rejected it before touching the filesystem.
 - `h.assert.argv(call, payload, message)`: the recorded child process call has no `shell` string and `payload`, the injected input, is its own element of `args` (the command name itself is argv[0] and also satisfies it); one call covers the command-injection assertion.
 
 `h.reset()` clears every recorder. `h.root` is the repository root the harness was materialized in.
@@ -70,7 +70,7 @@ Assertions (each throws a `HarnessAssertion` with the message on failure):
 
 - SQL injection: the recorded query `text` does not contain the payload and `values` does.
 - Command injection: `h.assert.argv(h.child_process.calls[0], payload)`: the call has no `shell` string and the payload is its own `args` element.
-- Path traversal: every read in `h.fs.reads` satisfies `h.assert.inside(read, base)`, where `base` is the directory the handler serves from, or the handler answered with a 4xx status and read nothing.
+- Path traversal: for each traversal payload (`../../etc/passwd` and its encoded form `..%2f..%2fetc%2fpasswd`), reset `h.fs.reads.length = 0`, invoke the handler, and assert `h.assert.inside(h.fs.reads, base, { payload })`, where `base` is the directory the handler serves from; the handler has to answer 400 or an equivalent error before any filesystem access, so no read is recorded. Then send one legitimate name and assert `h.assert.inside(h.fs.reads, base)`. The repair this proves resolves the candidate path against the base directory (`path.resolve(base, name)`) and rejects it unless the resolved path is the base itself or starts with base + `path.sep`; `path.basename` alone does not pass, and the analysis service reports it as an insufficient sanitizer.
 
 ## Policy
 
