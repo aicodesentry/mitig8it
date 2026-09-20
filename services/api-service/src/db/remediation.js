@@ -1050,12 +1050,16 @@ async function blockingFindingsForAction(action) {
     if (row.status !== 'completed') return { analysisState: row.status || 'unknown', blocking: null, commitSha: row.commit_sha };
     // Every open finding in the pull request's changed files counts, whatever its
     // severity. Informational findings in test code are listed but never block.
+    // Membership comes from the run's immutable snapshot: findings.analysis_run_id is
+    // re-pointed by whichever run upserted a finding last (the webhook's run for the
+    // same commit races this one), so filtering on it would report an empty head.
     const findings = await client.query(
-      `SELECT id, title, file_path, line_start, line_end, severity, rule_id,
-              (LOWER(severity)='info' OR COALESCE((evidence_details->'extra'->>'in_test_code')::boolean, false)) AS informational
-         FROM findings
-        WHERE analysis_run_id=$1 AND status='open'
-        ORDER BY file_path, CASE LOWER(severity) WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, line_start`,
+      `SELECT f.id, f.title, f.file_path, f.line_start, f.line_end, f.severity, f.rule_id,
+              (LOWER(f.severity)='info' OR COALESCE((f.evidence_details->'extra'->>'in_test_code')::boolean, false)) AS informational
+         FROM analysis_run_findings arf
+         JOIN findings f ON f.id = arf.finding_id
+        WHERE arf.analysis_run_id=$1 AND f.status='open'
+        ORDER BY f.file_path, CASE LOWER(f.severity) WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, f.line_start`,
       [action.verification_analysis_run_id]
     );
     const open = findings.rows.map((f) => ({ id: f.id, title: f.title, file_path: f.file_path, line_start: f.line_start, line_end: f.line_end,
