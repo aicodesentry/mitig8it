@@ -12,6 +12,7 @@ from starlette.responses import Response
 from finding_quality import (
     cluster_findings,
     extract_match_context,
+    has_path_containment_guard,
     pattern_matches_reviewable_content,
 )
 from security_rules import DEPENDENCY_RISK_PATTERNS, SECURITY_RULES, likely_llm_repo
@@ -285,8 +286,13 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         for rule in SECURITY_RULES:
             if rule.category == "unsafe LLM/prompt injection patterns" and not repo_has_llm_flow:
                 continue
-            if pattern_matches_reviewable_content(patch, rule.pattern):
-                findings.append(generate_finding(rule, path, patch))
+            if not pattern_matches_reviewable_content(patch, rule.pattern):
+                continue
+            if rule.category == "path traversal" and has_path_containment_guard(patch, rule.pattern):
+                # The read resolves the candidate path and rejects anything outside the
+                # base directory, which is what the taint rule accepts as a sanitizer.
+                continue
+            findings.append(generate_finding(rule, path, patch))
 
         findings.extend(dependency_findings(path, patch))
 
@@ -334,8 +340,13 @@ def analyze_tier1_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         for rule in SECURITY_RULES:
             if rule.category == "unsafe LLM/prompt injection patterns" and not repo_has_llm_flow:
                 continue
-            if pattern_matches_reviewable_content(patch, rule.pattern):
-                findings.append(generate_finding(rule, path, patch))
+            if not pattern_matches_reviewable_content(patch, rule.pattern):
+                continue
+            if rule.category == "path traversal" and has_path_containment_guard(patch, rule.pattern):
+                # The read resolves the candidate path and rejects anything outside the
+                # base directory, which is what the taint rule accepts as a sanitizer.
+                continue
+            findings.append(generate_finding(rule, path, patch))
         findings.extend(dependency_findings(path, patch))
 
     normalized = cluster_findings(classify_findings(findings))
