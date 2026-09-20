@@ -314,7 +314,12 @@ async def test_a_finding_without_its_own_regression_test_is_dropped_from_the_can
         "line_end": 2,
     }
     scripts = {
-        "src/db.ts": [_propose("src/db.ts", SQL_SOURCE, SQL_REPAIRED, "Untrusted id is interpolated into SQL."), ProviderAction("request_verification", {})],
+        "src/db.ts": [
+            _propose("src/db.ts", SQL_SOURCE, SQL_REPAIRED, "Untrusted id is interpolated into SQL."),
+            ProviderAction("request_verification", {}),
+            # The loop asks for a coverage revision; a model with nothing to add abstains.
+            ProviderAction("abstain", {"reason_code": "no_further_repair", "explanation": "Nothing more to add."}),
+        ],
     }
     response = await RepairEngine(_per_path_agent_factory(scripts)).repair(RepairRequest.model_validate(payload))
     assert response.state == "ready"
@@ -330,6 +335,8 @@ async def test_a_finding_without_its_own_regression_test_is_dropped_from_the_can
     assert group["finding_ids"] == ["finding-sql", "finding-sql-2"]
     assert group["repaired_finding_ids"] == ["finding-sql"]
     assert [item["finding_id"] for item in group["unproven_findings"]] == ["finding-sql-2"]
+    assert group["coverage"]["revisions_used"] == 1
+    assert group["coverage"]["stopped"] == "no_further_repair"
 
 
 @pytest.mark.asyncio
