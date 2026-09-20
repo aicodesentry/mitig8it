@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 import llm_client
@@ -100,7 +101,9 @@ def test_gemini_call_maps_response_shape(mock_client_cls):
     url = mock_client.post.call_args.args[0]
     kwargs = mock_client.post.call_args.kwargs
     assert url.endswith("/v1beta/models/gemini-test:generateContent")
-    assert kwargs["params"] == {"key": "key"}
+    assert "params" not in kwargs
+    assert kwargs["headers"] == {"x-goog-api-key": "key"}
+    assert "key" not in url
     assert kwargs["json"]["generationConfig"]["responseMimeType"] == "application/json"
     assert response.text == "[]"
     assert response.input_tokens == 13
@@ -112,3 +115,79 @@ def test_unsupported_provider_raises():
     with patch.dict("os.environ", {"LLM_PROVIDER": "unknown", "LLM_API_KEY": "key"}, clear=True):
         with pytest.raises(ValueError, match="Unsupported LLM_PROVIDER"):
             llm_client.call_llm(system_prompt="system", user_prompt="user", timeout_seconds=10)
+
+
+def test_default_gemini_model_is_not_the_retired_one():
+    with patch.dict("os.environ", {"LLM_PROVIDER": "gemini", "LLM_API_KEY": "key"}, clear=True):
+        model = llm_client._model_for("gemini")
+    assert model == "gemini-2.5-flash-lite"
+    assert model != "gemini-2.0-flash"
+
+
+def test_explicit_model_env_still_wins_over_default():
+    with patch.dict(
+        "os.environ",
+        {"LLM_PROVIDER": "gemini", "LLM_API_KEY": "key", "LLM_MODEL": "gemini-custom"},
+        clear=True,
+    ):
+        assert llm_client._model_for("gemini") == "gemini-custom"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Client error '404 Not Found' for url 'https://x/v1beta/models/m:generateContent?key=AIzaSyFAKEKEYVALUE123456'",
+        "GET https://x/v1?api_key=AIzaSyFAKEKEYVALUE123456&alt=json",
+        "GET https://x/v1?access_token=AIzaSyFAKEKEYVALUE123456",
+    ],
+)
+def test_redact_strips_key_query_values(raw):
+    redacted = llm_client.redact(raw)
+    assert "AIzaSyFAKEKEYVALUE123456" not in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_redact_strips_authorization_and_bare_keys():
+    redacted = llm_client.redact(
+        "headers={'Authorization': 'Bearer sk-secretvalue123456', "
+        "'x-goog-api-key': 'AIzaSyFAKEKEYVALUE123456'} raw=AIzaSyFAKEKEYVALUE123456"
+    )
+    assert "sk-secretvalue123456" not in redacted
+    assert "AIzaSyFAKEKEYVALUE123456" not in redacted
+
+
+def test_redact_keeps_non_secret_text_intact():
+    assert llm_client.redact("LLM triage failed: connection timeout") == (
+        "LLM triage failed: connection timeout"
+    )
+    assert "monkey=banana" in llm_client.redact("monkey=banana")
+
+
+@patch("httpx.Client")
+def test_gemini_http_error_is_logged_without_the_key(mock_client_cls):
+    leaky_url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-test:generateContent?key=AIzaSyFAKEKEYVALUE123456"
+    )
+    request = httpx.Request("POST", leaky_url)
+    mock_response = MagicMock()
+    mock_response.text = '{"error": {"message": "check key=AIzaSyFAKEKEYVALUE123456"}}'
+    mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        f"Client error '404 Not Found' for url '{leaky_url}'",
+        request=request,
+        response=MagicMock(),
+    )
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
+    mock_client.post.return_value = mock_response
+    mock_client_cls.return_value = mock_client
+
+    env = {"LLM_PROVIDER": "gemini", "LLM_MODEL": "gemini-test", "LLM_API_KEY": "AIzaSyFAKEKEYVALUE123456"}
+    with patch.dict("os.environ", env, clear=True):
+        with pytest.raises(RuntimeError) as excinfo:
+            llm_client.call_llm(system_prompt="system", user_prompt="user", timeout_seconds=10)
+
+    message = str(excinfo.value)
+    assert "AIzaSyFAKEKEYVALUE123456" not in message
+    assert "404 Not Found" in message
+    assert "[REDACTED]" in message

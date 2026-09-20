@@ -50,7 +50,7 @@ You still need real GitHub OAuth/App credentials for the full webhook and dashbo
 | `ANALYSIS_SERVICE_URL` | API | Analysis service base URL. Compose overrides this to `http://analysis-service:8001`. |
 | `GITHUB_SERVICE_URL` | API | GitHub service base URL. Compose overrides this to `http://github-service:3002`. |
 | `LLM_PROVIDER` | Analysis service | Optional Tier 3 provider selector. Supported values: `openai`, `gemini`, `openai_compatible`. |
-| `LLM_MODEL` / `LLM_TRIAGE_MODEL` | Analysis service | Optional Tier 3 model name. Defaults depend on provider. |
+| `LLM_MODEL` / `LLM_TRIAGE_MODEL` | Analysis service | Optional Tier 3 model name. Defaults to `gemini-2.5-flash-lite` for `gemini` and `gpt-4o-mini` otherwise. |
 | `LLM_API_KEY` | Analysis service | Generic Tier 3 LLM API key. Preferred for production Secret Manager wiring. |
 | `LLM_BASE_URL` | Analysis service | Required only for `openai_compatible` providers. |
 | `GEMINI_API_KEY` / `OPENAI_API_KEY` | Analysis service | Provider-specific fallback keys for local development. |
