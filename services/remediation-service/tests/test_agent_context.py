@@ -153,7 +153,7 @@ async def test_eviction_never_removes_the_system_prompt_or_the_latest_verificati
             "assumptions": ["pg positional parameters are available"],
             "citations": [{"path": "src/db.ts", "line_start": 1, "line_end": 3}],
             "changes": [whole_file_change("src/db.ts", source, replacement)],
-            "regression_test": regression_test_spec(),
+            "regression_tests": [regression_test_spec()],
         },
         output_tokens=64,
     )

@@ -100,12 +100,13 @@ process.exit(result.status === 0 ? 0 : 1);
 """
 
 
-def fixture_regression_test(fixture: dict[str, Any], suffix: str = "") -> dict[str, str]:
-    """The generated regression test a development or benchmark run proposes for a fixture.
+def fixture_regression_test(fixture: dict[str, Any], finding_id: str, suffix: str = "") -> dict[str, str]:
+    """The generated regression test a development or benchmark run proposes for one finding.
 
     Real jobs get this file from the agent. Fixtures already ship a reviewed `tests/verify.js`
     reproducer, so the scripted provider generates a test that re-runs exactly that argv rather
-    than fabricating fixture-specific assertions the benchmark could not audit.
+    than fabricating fixture-specific assertions the benchmark could not audit. One test is
+    proposed per finding, because a candidate claims only findings with their own reproducer.
     """
     checks = fixture.get("verification_checks")
     exploit = next(
@@ -113,8 +114,9 @@ def fixture_regression_test(fixture: dict[str, Any], suffix: str = "") -> dict[s
     )
     if not isinstance(exploit, dict) or not isinstance(exploit.get("argv"), list) or not exploit["argv"]:
         raise FixtureLoadError(f"{fixture.get('id')}: an exploit check argv is required to generate a regression test")
-    name = re.sub(r"[^A-Za-z0-9._-]", "-", f"{fixture.get('id')}{suffix}").strip("-.") or "finding"
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", f"{fixture.get('id')}-{finding_id}{suffix}").strip("-.") or "finding"
     return {
+        "finding_id": str(finding_id),
         "path": f"{GENERATED_TEST_DIRECTORY}/{name}.test.js",
         "content": GENERATED_TEST_TEMPLATE
         % {
