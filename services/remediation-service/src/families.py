@@ -25,9 +25,11 @@ FAMILY_ASSERTIONS: dict[str, str] = {
         "options.shell) and when the payload is not its own args element"
     ),
     PATH_CONTAINMENT: (
-        "for (const r of h.fs.reads) h.assert.inside(r, base): each read is { path, resolved }; "
-        "base is the directory the handler serves from, resolved as the module resolves it; "
-        "a handler that answers 4xx and reads nothing also passes"
+        "h.fs.reads.length = 0 then h.assert.inside(h.fs.reads, base, { payload }) for payload "
+        "'../../etc/passwd' and '..%2f..%2fetc%2fpasswd', then once for a legitimate name; base is "
+        "the served directory as the module resolves it. It passes only when a traversal payload "
+        "records no read, so resolve with path.resolve(base, name) and answer 400 before any fs "
+        "access unless the resolved path is base or starts with base + path.sep; path.basename fails"
     ),
 }
 

@@ -293,7 +293,7 @@ BEHAVIOR_TEST_GUIDANCE = (
     "'/route/:id', { params, query, body }) or call the exported function with an injection "
     "payload, and assert on h.pg.queries (text must not contain the payload, values must), "
     "h.child_process.calls (fn is execFile or spawn, args carries the payload, options.shell is "
-    "unset), or h.fs.reads (every path stays under the base directory). Wrap the body in "
+    "unset), or h.fs.reads (a traversal payload records no read at all and every other read stays under the base directory). Wrap the body in "
     "h.run(async () => { ... }); it exits non-zero on the first failed h.assert."
 )
 
