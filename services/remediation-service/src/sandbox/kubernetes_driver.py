@@ -10,7 +10,7 @@ from typing import Any
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
-from .execution import aggregate_outcome, parse_scanner_findings
+from .execution import aggregate_outcome, output_tail, parse_scanner_findings
 
 
 class KubernetesExecutionError(RuntimeError):
@@ -140,6 +140,7 @@ class KubernetesJobDriver:
                             "exit_code": terminated.exit_code,
                             "stdout_digest": f"sha256:{hashlib.sha256(log).hexdigest()}",
                             "output_truncated": len(log) >= 2_000_000,
+                            "output_tail": output_tail(text, terminated.exit_code if completed_normally else None),
                             "duration_ms": round((time.monotonic() - started) * 1000),
                             "scanner_findings": parse_scanner_findings(text) if check["kind"] == "scanner" else None,
                         }

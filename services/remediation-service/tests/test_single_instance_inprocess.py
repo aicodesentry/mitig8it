@@ -93,17 +93,20 @@ async def test_inprocess_broker_evidence_is_development_unverified_and_policy_ga
 
     def build(allow: bool):
         payload = dict(request_payload)
-        payload["policy"] = {**request_payload["policy"], "sandbox_image_digest": None, "allow_development_verification": allow, "verification_checks": checks}
+        # The snapshot is TypeScript, which node cannot load, so the fixture's policy checks are
+        # the evidence here rather than a generated behavior test.
+        payload["policy"] = {
+            **request_payload["policy"],
+            "sandbox_image_digest": None,
+            "allow_development_verification": allow,
+            "verification_checks": checks,
+            "require_generated_regression_test": False,
+        }
         parsed = RepairRequest.model_validate(payload)
         snapshot = Snapshot(parsed)
-        from tests.conftest import regression_test_spec, whole_file_change
+        from tests.conftest import whole_file_change
 
-        bundle = build_patch_bundle(
-            parsed,
-            snapshot,
-            [whole_file_change("src/db.ts", source, repaired)],
-            [regression_test_spec()],
-        )
+        bundle = build_patch_bundle(parsed, snapshot, [whole_file_change("src/db.ts", source, repaired)])
         return parsed, snapshot, bundle
 
     allowed = await Verifier(create_sandbox_broker()).verify(*build(True))
@@ -218,7 +221,7 @@ def test_one_container_drives_a_posted_repair_to_a_terminal_state(monkeypatch, t
                 "assumptions": ["the fixture's reference repair is the reviewed expected patch"],
                 "citations": [{"path": path, "line_start": 1, "line_end": max(1, len(originals[path].splitlines()))} for path in replacements],
                 "changes": [whole_file_change(path, originals[path], content) for path, content in replacements.items()],
-                "regression_test": fixture_regression_test(fixture),
+                "regression_tests": [fixture_regression_test(fixture, finding.stable_id) for finding in request.findings],
             },
             input_tokens=8,
             output_tokens=8,

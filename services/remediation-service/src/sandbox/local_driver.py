@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .execution import aggregate_outcome, build_evidence, parse_scanner_findings
+from .execution import aggregate_outcome, build_evidence, output_tail, parse_scanner_findings
 from .runner import materialize_tree
 
 logger = logging.getLogger("mitig8it.remediation.sandbox.local")
@@ -118,6 +118,7 @@ class LocalSubprocessDriver:
             "exit_code": completed.returncode,
             "stdout_digest": f"sha256:{hashlib.sha256(bounded.encode('utf-8')).hexdigest()}",
             "output_truncated": truncated,
+            "output_tail": output_tail(bounded, completed.returncode),
             "duration_ms": round((time.monotonic() - started) * 1000),
             "scanner_findings": parse_scanner_findings(bounded) if check["kind"] == "scanner" else None,
         }
