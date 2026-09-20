@@ -449,14 +449,21 @@ class TestRunOpenGrep:
         files = [{"path": "readme.md", "patch": "+# Hello"}]
         assert run_opengrep(files) == []
 
-    def test_skips_test_and_rule_files_even_when_extensions_match(self):
+    def test_scans_test_files_as_informational_and_skips_rule_files(self):
         files = [
             {"path": "services/analysis-service/src/tests/test_llm_triage.py", "patch": "+eval(req.body.code)\n"},
             {"path": "services/api-service/tests/orchestrator.test.js", "patch": '+db.query("SELECT * FROM users WHERE id = " + userId);\n'},
             {"path": "test_vuln.js", "patch": "+eval(req.body.code)\n"},
             {"path": "services/analysis-service/src/opengrep_rules/javascript.yml", "patch": "+- pattern: $EL.innerHTML = $INPUT\n"},
         ]
-        assert run_opengrep(files) == []
+        result = run_opengrep(files)
+
+        assert result, "test-code findings must be reported, not dropped"
+        assert all(finding["in_test_code"] is True for finding in result)
+        assert all(finding["severity"] == "info" for finding in result)
+        assert all(finding["original_severity"] != "info" for finding in result)
+        # Scanner rule assets are still never analyzed.
+        assert all("opengrep_rules/" not in finding["file_path"] for finding in result)
 
     def test_handles_no_findings_gracefully(self):
         files = [{"path": "clean.py", "patch": "+x = 1\n+y = 2"}]

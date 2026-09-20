@@ -91,6 +91,11 @@ function normalizeEvidenceDetails(raw) {
     fix_target_expr: input.fix_target_expr || null,
     missing_control_type: input.missing_control_type || null,
     auto_fix_eligible: Boolean(input.auto_fix_eligible),
+    // Scanner-supplied scope markers, such as test-code classification. Kept
+    // only when the scanner sent some, so findings without them are unchanged.
+    ...(input.extra && typeof input.extra === 'object' && Object.keys(input.extra).length > 0
+      ? { extra: input.extra }
+      : {}),
   };
 }
 

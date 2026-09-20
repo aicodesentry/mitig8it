@@ -60,7 +60,7 @@ router.get('/pr-analyses/:analysisId', authenticateToken, async (req, res) => {
       const s = f.severity || 'low';
       acc[s] = (acc[s] || 0) + 1;
       return acc;
-    }, { critical: 0, high: 0, medium: 0, low: 0 });
+    }, { critical: 0, high: 0, medium: 0, low: 0, info: 0 });
 
     res.json({ success: true, analysis });
   } catch (error) {

@@ -1,7 +1,6 @@
 import hashlib
 import os
 import time
-import re
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException, Request
@@ -20,6 +19,13 @@ from opengrep_runner import run_opengrep
 from llm_triage import triage_findings
 from remediation_patches import build_remediation_patch
 from taxonomy import build_taxonomy_metadata
+from test_code_scope import (
+    classify_findings,
+    count_test_code_files,
+    is_analyzable_path,
+    is_runtime_scannable_path,
+    is_test_code_path,
+)
 
 
 class ChangedFile(BaseModel):
@@ -70,13 +76,6 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-NON_RUNTIME_PATH_PATTERNS = [
-    re.compile(r"(^|/)tests?/"),
-    re.compile(r"(^|/)__tests?__/"),
-    re.compile(r"(^|/)test_.*\.(py|js|jsx|ts|tsx|go|java|rb|php|cs)$"),
-    re.compile(r"\.(test|spec)\.(js|jsx|ts|tsx|py|go|java|rb|php|cs)$"),
-    re.compile(r"(^|/)opengrep_rules/"),
-]
 
 
 def require_internal_auth(request: Request) -> None:
@@ -92,11 +91,6 @@ def require_internal_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-def is_runtime_scannable_path(path: str) -> bool:
-    normalized = str(path or "").strip().replace("\\", "/").lower()
-    if not normalized:
-        return False
-    return not any(pattern.search(normalized) for pattern in NON_RUNTIME_PATH_PATTERNS)
 
 
 def make_fingerprint(rule_id: str, path: str, line_start: int, snippet: str) -> str:
@@ -277,7 +271,7 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         raise ValueError("Too many files in PR payload")
 
     findings: List[Dict[str, Any]] = []
-    scannable_files = [f for f in payload.files if is_runtime_scannable_path(f.path)]
+    scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
     repo_has_llm_flow = any(likely_llm_repo(f.path, f.patch) for f in scannable_files)
 
     for changed_file in scannable_files:
@@ -307,8 +301,9 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         findings = triage_findings(findings, file_patches, None)
     except Exception as e:
         print(f"LLM triage failed (non-blocking): {e}")
+    findings = classify_findings(findings)
 
-    normalized = cluster_findings(findings)
+    normalized = cluster_findings(classify_findings(findings))
     for finding in normalized:
         FINDING_COUNT.labels(finding["category"], finding["severity"]).inc()
 
@@ -317,6 +312,7 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         "pull_request_number": payload.pull_request_number,
         "commit_sha": payload.commit_sha,
         "files_analyzed": len(payload.files),
+        "test_files_analyzed": count_test_code_files(f.path for f in scannable_files),
         "findings": normalized,
     }
 
@@ -326,7 +322,7 @@ def analyze_tier1_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         raise ValueError("Too many files in PR payload")
 
     findings: List[Dict[str, Any]] = []
-    scannable_files = [f for f in payload.files if is_runtime_scannable_path(f.path)]
+    scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
     repo_has_llm_flow = any(likely_llm_repo(f.path, f.patch) for f in scannable_files)
 
     for changed_file in scannable_files:
@@ -341,12 +337,13 @@ def analyze_tier1_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
                 findings.append(generate_finding(rule, path, patch))
         findings.extend(dependency_findings(path, patch))
 
-    normalized = cluster_findings(findings)
+    normalized = cluster_findings(classify_findings(findings))
     return {
         "repository_full_name": payload.repository_full_name,
         "pull_request_number": payload.pull_request_number,
         "commit_sha": payload.commit_sha,
         "files_analyzed": len(payload.files),
+        "test_files_analyzed": count_test_code_files(f.path for f in scannable_files),
         "tier": 1,
         "findings": normalized,
     }
@@ -357,7 +354,7 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         raise ValueError("Too many files in PR payload")
 
     findings: List[Dict[str, Any]] = []
-    scannable_files = [f for f in payload.files if is_runtime_scannable_path(f.path)]
+    scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
     try:
         opengrep_files = [
             {
@@ -372,12 +369,13 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
     except Exception as e:
         raise RuntimeError("Required OpenGrep analysis failed") from e
 
-    normalized = cluster_findings(findings)
+    normalized = cluster_findings(classify_findings(findings))
     return {
         "repository_full_name": payload.repository_full_name,
         "pull_request_number": payload.pull_request_number,
         "commit_sha": payload.commit_sha,
         "files_analyzed": len(payload.files),
+        "test_files_analyzed": count_test_code_files(f.path for f in scannable_files),
         "tier": 2,
         "findings": normalized,
     }
@@ -400,6 +398,9 @@ def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
         findings = triage_findings(findings, payload.file_patches, payload.repo_profile)
     except Exception as e:
         print(f"LLM triage failed (non-blocking): {e}")
+
+    # Triage may adjust severity; test-code findings stay informational.
+    findings = classify_findings(findings)
 
     return {
         "repository_full_name": payload.repository_full_name,
