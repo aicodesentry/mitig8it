@@ -16,6 +16,7 @@ from finding_quality import (
 )
 from security_rules import DEPENDENCY_RISK_PATTERNS, SECURITY_RULES, likely_llm_repo
 from opengrep_runner import run_opengrep
+from llm_client import redact
 from llm_triage import triage_findings
 from remediation_patches import build_remediation_patch
 from taxonomy import build_taxonomy_metadata
@@ -300,7 +301,7 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         file_patches = {f.path: f.patch for f in scannable_files}
         findings = triage_findings(findings, file_patches, None)
     except Exception as e:
-        print(f"LLM triage failed (non-blocking): {e}")
+        print(f"LLM triage failed (non-blocking): {redact(e)}")
     findings = classify_findings(findings)
 
     normalized = cluster_findings(classify_findings(findings))
@@ -397,7 +398,7 @@ def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
     try:
         findings = triage_findings(findings, payload.file_patches, payload.repo_profile)
     except Exception as e:
-        print(f"LLM triage failed (non-blocking): {e}")
+        print(f"LLM triage failed (non-blocking): {redact(e)}")
 
     # Triage may adjust severity; test-code findings stay informational.
     findings = classify_findings(findings)
