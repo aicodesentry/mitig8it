@@ -42,6 +42,17 @@ class LocalSubprocessDriver:
 
     def __init__(self, workspace_root: str | None = None):
         self.workspace_root = workspace_root or os.getenv("SANDBOX_LOCAL_WORKSPACE_ROOT") or None
+        if self.workspace_root:
+            # A configured root is a deployment's choice of scratch directory, not a promise
+            # that something else created it. Creating it here keeps an absent directory from
+            # turning every check into a raised OSError.
+            try:
+                Path(self.workspace_root).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                logger.warning(
+                    "the configured local sandbox workspace root could not be created; checks will be inconclusive",
+                    extra={"workspace_root": self.workspace_root},
+                )
         logger.warning(LOCAL_DRIVER_WARNING)
 
     def runner_identity(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -57,7 +68,17 @@ class LocalSubprocessDriver:
         started = time.monotonic()
         if budget_seconds <= 0:
             return self._incomplete(started, "job_deadline_exceeded")
-        workspace = Path(tempfile.mkdtemp(prefix="mitig8it-local-", dir=self.workspace_root))
+        try:
+            workspace = Path(tempfile.mkdtemp(prefix="mitig8it-local-", dir=self.workspace_root))
+        except OSError as error:
+            # An unwritable or missing workspace root is a sandbox failure, so it is recorded as
+            # an inconclusive check. Raising here would escape the broker and the verifier and
+            # end the worker's attempt while it still holds the lease.
+            logger.warning(
+                "the local sandbox workspace could not be created",
+                extra={"workspace_root": self.workspace_root, "error": type(error).__name__},
+            )
+            return self._incomplete(started, f"workspace_unavailable:{type(error).__name__}")
         repository = workspace / "repo"
         try:
             materialize_tree(repository, payload, variant)
@@ -147,6 +168,9 @@ class InProcessSandboxBroker:
         deadline = int(payload["execution_policy"].get("deadline_seconds") or timeout_seconds)
         try:
             result = await asyncio.to_thread(self.driver.execute, payload, deadline)
-        except (LocalExecutionError, KeyError, TypeError, ValueError):
+        except (LocalExecutionError, OSError, KeyError, TypeError, ValueError):
+            # OSError included deliberately: the driver touches the filesystem, and a raised
+            # driver failure that escapes here ends the worker's attempt with the lease still
+            # held instead of producing inconclusive evidence.
             result = {"outcome": "inconclusive", "reason_code": "sandbox_execution_failed", "checks": []}
         return build_evidence(payload, result, self.driver.runner_identity(payload), self.driver.verification_level)

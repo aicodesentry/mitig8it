@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
@@ -65,6 +66,47 @@ class ExecutionRecord:
     # The W3C `traceparent` captured at intake. The worker links its span to it instead of
     # starting an unrelated root trace when it resumes the job.
     trace_context: str | None = None
+    # One entry per worker attempt: when it claimed the execution, when and why it ended.
+    # A dead-lettered execution has no result artifact, so this is the only account of why
+    # its recovery budget was spent.
+    attempts: tuple[dict[str, Any], ...] = ()
+
+
+# The attempt history is a diagnostic, not a log. It is bounded so a pathological job cannot
+# grow the row without limit.
+MAX_ATTEMPT_HISTORY = 20
+
+
+def _attempt_timestamp(value: float) -> str:
+    """One format and one timezone for every recorded lease timestamp: UTC, ISO 8601."""
+    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _decode_attempts(raw: Any) -> list[dict[str, Any]]:
+    if isinstance(raw, list):
+        return [entry for entry in raw if isinstance(entry, dict)]
+    if not raw:
+        return []
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return [entry for entry in decoded if isinstance(entry, dict)] if isinstance(decoded, list) else []
+
+
+def _append_attempt(history: list[dict[str, Any]], entry: dict[str, Any]) -> list[dict[str, Any]]:
+    return [*history, entry][-MAX_ATTEMPT_HISTORY:]
+
+
+def _end_attempt(history: list[dict[str, Any]], worker_id: str, reason: str, ended_at: float) -> list[dict[str, Any]]:
+    """Closes this worker's open attempt entry. An already closed entry is left alone."""
+    updated = list(history)
+    for index in range(len(updated) - 1, -1, -1):
+        entry = updated[index]
+        if entry.get("worker_id") == worker_id and not entry.get("ended_at"):
+            updated[index] = {**entry, "ended_at": _attempt_timestamp(ended_at), "reason": reason}
+            break
+    return updated
 
 
 class ExecutionBackend(Protocol):
@@ -166,11 +208,12 @@ class PostgresExecutionBackend:
         with psycopg.connect(self.dsn) as connection, connection.cursor() as cursor:
             cursor.execute("SET LOCAL app.remediation_worker = 'on'")
             cursor.execute(
-                "SELECT execution_id, state, request_digest, request_artifact_uri, result_artifact_uri, trace_context FROM remediation_service_executions WHERE execution_id=%s",
+                "SELECT execution_id, state, request_digest, request_artifact_uri, result_artifact_uri, trace_context,"
+                " attempt_history FROM remediation_service_executions WHERE execution_id=%s",
                 (execution_id,),
             )
             row = cursor.fetchone()
-            return ExecutionRecord(*row) if row else None
+            return ExecutionRecord(*row[:6], attempts=tuple(_decode_attempts(row[6]))) if row else None
 
     def read_result(self, record: ExecutionRecord) -> RepairResponse:
         if not record.result_artifact_uri:
@@ -213,7 +256,8 @@ class PostgresExecutionBackend:
             cursor.execute(
                 """
                 WITH selected AS (
-                    SELECT execution_id FROM remediation_service_executions
+                    SELECT execution_id, state, lease_owner, lease_expires_at, attempt, attempt_history
+                    FROM remediation_service_executions
                     WHERE attempt < %s AND (state='queued' OR (state='running' AND lease_expires_at < now()))
                     ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
                 )
@@ -221,12 +265,65 @@ class PostgresExecutionBackend:
                 SET state='running', lease_owner=%s, lease_expires_at=now() + (%s * interval '1 second'),
                     attempt=attempt+1, updated_at=now()
                 FROM selected WHERE e.execution_id=selected.execution_id
-                RETURNING e.execution_id, e.state, e.request_digest, e.request_artifact_uri, e.result_artifact_uri
+                RETURNING e.execution_id, e.state, e.request_digest, e.request_artifact_uri, e.result_artifact_uri,
+                          selected.state, selected.lease_owner, selected.lease_expires_at, selected.attempt,
+                          selected.attempt_history, e.lease_expires_at, now()
                 """,
                 (max_attempts, worker_id, lease_seconds),
             )
             row = cursor.fetchone()
-            return ExecutionRecord(*row) if row else None
+            if row is None:
+                return None
+            history = _decode_attempts(row[9])
+            if row[5] == "running":
+                logger.warning(
+                    "remediation lease found expired at claim time",
+                    extra={
+                        "execution_id": row[0],
+                        "previous_worker_id": row[6],
+                        "lease_expires_at": row[7].isoformat() if row[7] is not None else None,
+                        "observed_at": row[11].isoformat(),
+                        "expired_by_seconds": round((row[11] - row[7]).total_seconds(), 3) if row[7] is not None else None,
+                    },
+                )
+                history = _end_attempt(history, str(row[6] or ""), "lease_expired_and_reclaimed", row[11].timestamp())
+            history = _append_attempt(
+                history,
+                {
+                    "attempt": int(row[8]) + 1,
+                    "worker_id": worker_id,
+                    "claimed_at": row[11].isoformat(),
+                    "lease_expires_at": row[10].isoformat(),
+                },
+            )
+            cursor.execute(
+                "UPDATE remediation_service_executions SET attempt_history=%s WHERE execution_id=%s",
+                (json.dumps(history), row[0]),
+            )
+            return ExecutionRecord(*row[:5], attempts=tuple(history))
+
+    def record_attempt_end(self, execution_id: str, worker_id: str, reason: str, release: bool) -> None:
+        """Closes this worker's attempt entry, optionally releasing the lease at once."""
+        with psycopg.connect(self.dsn) as connection, connection.cursor() as cursor:
+            cursor.execute("SET LOCAL app.remediation_worker = 'on'")
+            cursor.execute(
+                "SELECT attempt_history, now() FROM remediation_service_executions WHERE execution_id=%s FOR UPDATE",
+                (execution_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return
+            history = _end_attempt(_decode_attempts(row[0]), worker_id, reason, row[1].timestamp())
+            cursor.execute(
+                "UPDATE remediation_service_executions SET attempt_history=%s, updated_at=now() WHERE execution_id=%s",
+                (json.dumps(history), execution_id),
+            )
+            if release:
+                cursor.execute(
+                    "UPDATE remediation_service_executions SET state='queued', lease_owner=NULL, lease_expires_at=NULL,"
+                    " updated_at=now() WHERE execution_id=%s AND state='running' AND lease_owner=%s",
+                    (execution_id, worker_id),
+                )
 
     def read_request(self, record: ExecutionRecord) -> RepairRequest:
         return RepairRequest.model_validate(self.artifacts.get_json(record.request_artifact_uri))
@@ -512,6 +609,8 @@ class LocalExecutionBackend:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(executions)")}
             if "trace_context" not in columns:
                 connection.execute("ALTER TABLE executions ADD COLUMN trace_context TEXT")
+            if "attempt_history" not in columns:
+                connection.execute("ALTER TABLE executions ADD COLUMN attempt_history TEXT")
 
     @staticmethod
     def execution_identity(request: RepairRequest) -> tuple[str, str]:
@@ -548,10 +647,11 @@ class LocalExecutionBackend:
     def get(self, execution_id: str) -> ExecutionRecord | None:
         with self._lock, self._connect() as connection:
             row = connection.execute(
-                "SELECT execution_id, state, request_digest, request_artifact_uri, result_artifact_uri, trace_context FROM executions WHERE execution_id=?",
+                "SELECT execution_id, state, request_digest, request_artifact_uri, result_artifact_uri, trace_context,"
+                " attempt_history FROM executions WHERE execution_id=?",
                 (execution_id,),
             ).fetchone()
-        return self._record(row) if row else None
+        return ExecutionRecord(*row[:6], attempts=tuple(_decode_attempts(row[6]))) if row else None
 
     def read_result(self, record: ExecutionRecord) -> RepairResponse:
         if not record.result_artifact_uri:
@@ -589,7 +689,7 @@ class LocalExecutionBackend:
             )
             row = connection.execute(
                 """
-                SELECT execution_id FROM executions
+                SELECT execution_id, state, lease_owner, lease_expires_at, attempt, attempt_history FROM executions
                 WHERE attempt < ? AND (state='queued' OR (state='running' AND lease_expires_at < ?))
                 ORDER BY created_at LIMIT 1
                 """,
@@ -597,9 +697,34 @@ class LocalExecutionBackend:
             ).fetchone()
             claimed = None
             if row is not None:
+                history = _decode_attempts(row[5])
+                if row[1] == "running":
+                    # Taking a running execution away from another worker is always worth a
+                    # line, with both sides of the comparison that decided it.
+                    logger.warning(
+                        "remediation lease found expired at claim time",
+                        extra={
+                            "execution_id": row[0],
+                            "previous_worker_id": row[2],
+                            "lease_expires_at": _attempt_timestamp(row[3]) if row[3] is not None else None,
+                            "observed_at": _attempt_timestamp(now),
+                            "expired_by_seconds": round(now - row[3], 3) if row[3] is not None else None,
+                        },
+                    )
+                    history = _end_attempt(history, str(row[2] or ""), "lease_expired_and_reclaimed", now)
+                history = _append_attempt(
+                    history,
+                    {
+                        "attempt": int(row[4]) + 1,
+                        "worker_id": worker_id,
+                        "claimed_at": _attempt_timestamp(now),
+                        "lease_expires_at": _attempt_timestamp(now + lease_seconds),
+                    },
+                )
                 connection.execute(
-                    "UPDATE executions SET state='running', lease_owner=?, lease_expires_at=?, attempt=attempt+1, updated_at=? WHERE execution_id=?",
-                    (worker_id, now + lease_seconds, now, row[0]),
+                    "UPDATE executions SET state='running', lease_owner=?, lease_expires_at=?, attempt=attempt+1,"
+                    " updated_at=?, attempt_history=? WHERE execution_id=?",
+                    (worker_id, now + lease_seconds, now, json.dumps(history), row[0]),
                 )
                 claimed = connection.execute(
                     "SELECT execution_id, state, request_digest, request_artifact_uri, result_artifact_uri, trace_context FROM executions WHERE execution_id=?",
@@ -607,6 +732,31 @@ class LocalExecutionBackend:
                 ).fetchone()
             connection.execute("COMMIT")
         return self._record(claimed) if claimed else None
+
+    def record_attempt_end(self, execution_id: str, worker_id: str, reason: str, release: bool) -> None:
+        """Closes this worker's attempt entry, optionally releasing the lease at once.
+
+        A run that ended for a reason the worker knows about should not make the next attempt
+        wait out a lease nobody is renewing, so `release` returns the execution to `queued`
+        with the attempt already counted.
+        """
+        now = time.time()
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT attempt_history FROM executions WHERE execution_id=?", (execution_id,)).fetchone()
+            if row is not None:
+                history = _end_attempt(_decode_attempts(row[0]), worker_id, reason, now)
+                connection.execute(
+                    "UPDATE executions SET attempt_history=?, updated_at=? WHERE execution_id=?",
+                    (json.dumps(history), now, execution_id),
+                )
+                if release:
+                    connection.execute(
+                        "UPDATE executions SET state='queued', lease_owner=NULL, lease_expires_at=NULL, updated_at=?"
+                        " WHERE execution_id=? AND state='running' AND lease_owner=?",
+                        (now, execution_id, worker_id),
+                    )
+            connection.execute("COMMIT")
 
     def heartbeat(self, execution_id: str, worker_id: str, lease_seconds: int = 60) -> bool:
         now = time.time()
