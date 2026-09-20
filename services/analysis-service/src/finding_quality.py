@@ -113,6 +113,58 @@ def pattern_matches_reviewable_content(patch: str, pattern) -> bool:
     return find_pattern_match_entry(patch, pattern) is not None
 
 
+# The containment repair the taint rule accepts (see the `cwe-22.path-traversal-fs` sanitizer in
+# opengrep_rules/javascript.yml): resolve the candidate path against the base directory, then
+# reject it unless the resolved path stays under that base. `path.basename` is not one of these:
+# it is an INSUFFICIENT_SANITIZER in opengrep_runner.py, so a basename-only defence keeps
+# reporting. Tier 1 has no taint tracking, so it ties the two halves together by name, requiring
+# the containment check to be made on the very variable the resolve call assigned.
+PATH_RESOLVE_ASSIGN_RE = re.compile(
+    r"(?:const|let|var)?\s*\b(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?"
+    r"(?:path\.resolve|path\.posix\.resolve|fs\.realpathSync|fs\.realpath|"
+    r"os\.path\.realpath|os\.path\.abspath|filepath\.Abs)\s*\(",
+)
+PATH_CONTAINMENT_WINDOW = 12
+
+
+def _containment_check_re(name: str):
+    escaped = re.escape(name)
+    return re.compile(
+        rf"\b{escaped}\s*\.(?:startsWith|startswith|is_relative_to)\s*\("
+        rf"|\b(?:path\.relative|os\.path\.commonpath|os\.path\.relpath|filepath\.Rel)\s*\([^)]*\b{escaped}\b"
+        rf"|\bstrings\.HasPrefix\s*\(\s*{escaped}\b"
+    )
+
+
+def has_path_containment_guard(patch: str, pattern, window: int = PATH_CONTAINMENT_WINDOW) -> bool:
+    """True when a filesystem read matched by `pattern` is guarded by resolve-and-contain.
+
+    The guard has to sit above the read, within `window` lines of it, and has to do both halves
+    of the job on the same value: resolve the candidate path into a variable, and compare that
+    variable against the base directory. Either half alone, or a check made on some other value,
+    leaves the finding in place.
+    """
+    match_entry = find_pattern_match_entry(patch, pattern)
+    if match_entry is None:
+        return False
+
+    entries = parse_patch_entries(patch)
+    match_index = None
+    for index, entry in enumerate(entries):
+        if entry == match_entry:
+            match_index = index
+            break
+    if match_index is None:
+        return False
+
+    preceding = entries[max(0, match_index - window):match_index + 1]
+    text = "\n".join(str(entry.get("content") or "") for entry in preceding)
+    return any(
+        _containment_check_re(match.group("name")).search(text)
+        for match in PATH_RESOLVE_ASSIGN_RE.finditer(text)
+    )
+
+
 def extract_match_context(
     patch: str,
     pattern,

@@ -195,7 +195,7 @@ async def test_a_partial_proof_is_revised_once_and_the_revision_proves_the_rest(
         ("f-path", "path_containment", 11),
     ]
     assert "h.assert.argv(h.child_process.calls[0], payload)" in revision["unproven"][0]["assertion"]
-    assert "h.assert.inside(r, base)" in revision["unproven"][1]["assertion"]
+    assert "h.assert.inside(h.fs.reads, base, { payload })" in revision["unproven"][1]["assertion"]
     assert revision["unproven"][0]["expected_test_path"] == ".mitig8it/regression/f-exec.test.js"
     assert revision["instruction"] == REVISION_INSTRUCTION
     assert revision["revision"] == 1 and revision["max_revisions"] == 2

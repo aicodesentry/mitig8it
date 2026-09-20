@@ -29,6 +29,14 @@ const express = () => app;
 express.Router = () => app;
 for (const n of ['json', 'urlencoded', 'static']) express[n] = () => (req, res, next) => next && next();
 
+// Express hands the route a percent-decoded query string, so the fake decodes it too; a value that
+// is not valid percent-encoding is passed through unchanged.
+const decodeMaybe = (v) => { const s = String(v); if (!s.includes('%')) return s; try { return decodeURIComponent(s); } catch { return s; } };
+const decodeQuery = (query) => {
+  const out = {};
+  for (const [k, v] of Object.entries(obj(query))) out[k] = typeof v === 'string' ? decodeMaybe(v) : Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? decodeMaybe(x) : x)) : v;
+  return out;
+};
 const segs = (v) => String(v).split('?')[0].split('/').filter(Boolean);
 function matchRoute(method, target) {
   const parts = segs(target);
@@ -54,7 +62,7 @@ function invoke(target, method, route, options = {}) {
   for (const [k, v] of Object.entries(options.headers || {})) headers[k.toLowerCase()] = v;
   const req = {
     method: String(method).toUpperCase(), path: route, url: route, app, headers, get: (n) => headers[String(n).toLowerCase()],
-    params: { ...found.params, ...(options.params || {}) }, query: options.query || {}, body: options.body === undefined ? {} : options.body,
+    params: { ...found.params, ...(options.params || {}) }, query: decodeQuery(options.query), body: options.body === undefined ? {} : options.body,
   };
   req.header = req.get;
   const out = { status: 200, body: undefined, headers: {}, redirect: null };
@@ -182,8 +190,27 @@ assert.equal = (actual, expected, message) => { if (actual !== expected) fail(me
 assert.includes = (haystack, needle, message) => { if (!String(haystack).includes(needle)) fail(message || `expected text to include ${JSON.stringify(needle)}`, haystack); };
 assert.notIncludes = (haystack, needle, message) => { if (String(haystack).includes(needle)) fail(message || `expected text not to include ${JSON.stringify(needle)}`, haystack); };
 const isRead = (v) => Boolean(v) && typeof v === 'object' && typeof v.resolved === 'string';
-// inside(read, baseDir): `read` is an h.fs.reads entry or a path string; the entry may come in either position.
-assert.inside = (target, base, message) => { if (isRead(base) && !isRead(target)) [target, base] = [base, target]; const rel = path.relative(path.resolve(String(base)), isRead(target) ? target.resolved : path.resolve(String(target))); if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) fail(message || `expected ${String(target)} to stay under ${String(base)}`); };
+// A payload that tries to leave the base directory: a `..` segment or an absolute path, either as
+// sent or once percent-decoded the way Express decodes a query string.
+const escapesBase = (payload) => [String(payload), decodeMaybe(payload)].some((v) => v.split(/[\\/]/).includes('..') || path.isAbsolute(v));
+// inside(read, baseDir[, message | { payload, message }]): `read` is an h.fs.reads entry, a path
+// string, or the whole h.fs.reads array (an entry or the array is recognized in either position).
+// Every read's resolved path must stay strictly under the base directory, and when `payload` names
+// the input that produced those reads and that payload escapes the base, the handler must have
+// rejected it before touching the filesystem, so no read may have been recorded at all.
+assert.inside = (target, base, options) => {
+  if ((isRead(base) || Array.isArray(base)) && !isRead(target) && !Array.isArray(target)) [target, base] = [base, target];
+  const o = options === undefined || typeof options === 'string' ? { message: options } : obj(options);
+  const reads = (Array.isArray(target) ? target : [target]).filter((v) => v !== undefined && v !== null);
+  const root = path.resolve(String(base));
+  if (o.payload !== undefined && escapesBase(o.payload) && reads.length) {
+    fail(o.message || `expected ${JSON.stringify(String(o.payload))} to be rejected before any filesystem read`, reads.map(String));
+  }
+  for (const read of reads) {
+    const rel = path.relative(root, isRead(read) ? read.resolved : path.resolve(String(read)));
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) fail(o.message || `expected ${String(read)} to stay under ${String(base)}`);
+  }
+};
 // argv(call, payload): the child ran with an argv array (no shell string) and the injected payload is its own element (the command name itself is argv[0]).
 assert.argv = (call, payload, message) => { if (!call) fail(message || 'no child process call was recorded'); if (typeof call.shell === 'string') fail(message || `command ran through a shell: ${call.shell}`); const want = String(payload); if (want !== call.command && !(Array.isArray(call.args) && call.args.some((a) => String(a) === want))) fail(message || `expected the injected input ${JSON.stringify(payload)} to be its own args element of ${call.command}`, call.args); };
 
