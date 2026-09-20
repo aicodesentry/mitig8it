@@ -1,0 +1,210 @@
+'use strict';
+// Unit tests for the sandbox test harness, run under plain `node` (no jest, no packages) from
+// tests/test_harness.py. The real built-ins are captured before the harness installs its
+// require hook, so this file can spawn node and touch the filesystem for real.
+const realFs = require('node:fs');
+const os = require('node:os');
+const pathReal = require('node:path');
+const cp = require('node:child_process');
+const util = require('node:util');
+const assert = require('node:assert/strict');
+const { test } = require('node:test');
+
+const source = process.env.MITIG8IT_HARNESS_SOURCE || pathReal.resolve(__dirname, '..', 'src', 'sandbox', 'harness.js');
+const root = realFs.mkdtempSync(pathReal.join(os.tmpdir(), 'mitig8it-harness-'));
+const write = (relative, content) => {
+  const target = pathReal.join(root, relative);
+  realFs.mkdirSync(pathReal.dirname(target), { recursive: true });
+  realFs.writeFileSync(target, content);
+};
+realFs.mkdirSync(pathReal.join(root, '.mitig8it', 'regression'), { recursive: true });
+realFs.copyFileSync(source, pathReal.join(root, '.mitig8it', 'harness.js'));
+
+const VULNERABLE = `const express = require('express');
+const { Pool } = require('pg');
+const { exec, execFile } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const router = express.Router();
+const REPORT_DIR = path.join(__dirname, '..', 'reports');
+router.get('/orders/:id', async (req, res) => {
+  const result = await pool.query("SELECT id FROM orders WHERE id = '" + req.params.id + "'");
+  res.json(result.rows);
+});
+router.post('/orders/:id/invoice', (req, res) => {
+  exec(\`invoice-render --order \${req.params.id}\`, (error, stdout) => {
+    if (error) return res.status(500).json({ error: 'render failed' });
+    res.type('text/plain').send(stdout);
+  });
+});
+router.get('/reports/download', (req, res) => {
+  fs.readFile(path.join(REPORT_DIR, req.query.name), (error, data) => {
+    if (error) return res.status(404).end();
+    res.type('application/pdf').send(data);
+  });
+});
+module.exports = router;
+`;
+const REPAIRED = VULNERABLE
+  .replace(`"SELECT id FROM orders WHERE id = '" + req.params.id + "'"`, `'SELECT id FROM orders WHERE id = $1', [req.params.id]`)
+  .replace('exec(`invoice-render --order ${req.params.id}`, ', "execFile('invoice-render', ['--order', req.params.id], ")
+  .replace('fs.readFile(path.join(REPORT_DIR, req.query.name), ', 'fs.readFile(path.join(REPORT_DIR, path.basename(String(req.query.name))), ');
+write('services/orders.js', VULNERABLE);
+write('services/orders-fixed.js', REPAIRED);
+write('services/app.js', `const express = require('express');
+const { Pool } = require('pg');
+const { execSync, execFile, spawn } = require('child_process');
+const { promisify } = require('util');
+const fs = require('fs');
+const axios = require('axios');
+const app = express();
+const pool = new Pool();
+app.use(express.json());
+app.set('trust proxy', 1);
+const guard = (req, res, next) => { req.seen = ['guard']; next(); };
+app.get('/users/:id/posts/:post', guard, (req, res) => res.status(201).set('x-seen', req.seen.join()).json({ params: req.params, query: req.query, body: req.body, auth: req.get('Authorization') }));
+app.post('/callback', (req, res) => pool.query('SELECT $1::text AS v', [req.body.v], (error, result) => res.send(result.rows)));
+app.get('/client', async (req, res) => { const client = await pool.connect(); const result = await client.query({ text: 'SELECT 1', values: [7] }); client.release(); res.json(result); });
+app.get('/boom', () => { throw new Error('handler exploded'); });
+app.get('/next-error', (req, res, next) => next(new Error('passed to next')));
+app.get('/never', () => {});
+app.get('/redirect', (req, res) => res.redirect('/elsewhere'));
+app.get('/stream', (req, res) => fs.createReadStream('/var/data/report.pdf').pipe(res));
+app.get('/sync', (req, res) => res.send(execSync('uname -a').toString()));
+app.get('/promised', async (req, res) => { const { stdout } = await promisify(execFile)('ls', ['-1', req.query.dir]); res.send(stdout); });
+app.get('/spawn', (req, res) => { const child = spawn('tar', ['-czf', 'x.tgz'], { shell: false }); let out = ''; child.stdout.on('data', (chunk) => { out += chunk; }); child.on('close', (code) => res.json({ code, out })); });
+app.get('/readsync', (req, res) => res.send(fs.readFileSync('/etc/app.conf', 'utf8')));
+app.get('/exists', (req, res) => res.json({ exists: fs.existsSync('/tmp/missing'), real: typeof fs.statSync }));
+app.get('/axios', async (req, res) => res.json(await axios.get('https://example.test')));
+app.listen(3000, () => {});
+module.exports = app;
+`);
+
+const h = require(pathReal.join(root, '.mitig8it', 'harness.js'));
+
+test('express routes are recorded and invoke matches concrete URLs and route patterns', async () => {
+  const app = h.load('services/app.js', { stubs: { axios: { get: async () => ({ ok: true }) } } });
+  assert.equal(app, h.app);
+  assert.ok(h.express.routes.some((route) => route.method === 'get' && route.path === '/users/:id/posts/:post'));
+  const byUrl = await h.invoke(app, 'GET', '/users/42/posts/7', { query: { q: 'x' }, body: { b: 1 }, headers: { Authorization: 'Bearer t' } });
+  assert.equal(byUrl.status, 201);
+  assert.deepEqual(byUrl.body, { params: { id: '42', post: '7' }, query: { q: 'x' }, body: { b: 1 }, auth: 'Bearer t' });
+  assert.equal(byUrl.headers['x-seen'], 'guard');
+  assert.equal(byUrl.headers['content-type'], 'application/json');
+  const byPattern = await h.invoke(app, 'get', '/users/:id/posts/:post', { params: { id: 'a', post: 'b' } });
+  assert.deepEqual(byPattern.body.params, { id: 'a', post: 'b' });
+  const redirect = await h.invoke(app, 'get', '/redirect');
+  assert.equal(redirect.status, 302);
+  assert.equal(redirect.redirect, '/elsewhere');
+  assert.throws(() => h.invoke(app, 'delete', '/users/1/posts/2'), /no delete handler recorded for \/users\/1\/posts\/2/);
+});
+
+test('handler errors propagate as rejections and a silent handler times out', async () => {
+  const app = h.load('services/app.js', { stubs: { axios: {} } });
+  await assert.rejects(h.invoke(app, 'get', '/boom'), /handler exploded/);
+  await assert.rejects(h.invoke(app, 'get', '/next-error'), /passed to next/);
+  await assert.rejects(h.invoke(app, 'get', '/never', { timeout: 30 }), /never ended the response/);
+  await assert.rejects(h.invoke(app, 'get', '/axios'), /not a function/);
+});
+
+test('pg records query text and values across the promise, callback, config, and client forms', async () => {
+  const app = h.load('services/app.js', { stubs: { axios: {} }, pg: { rows: [{ v: 'row' }] } });
+  const callback = await h.invoke(app, 'post', '/callback', { body: { v: 'val' } });
+  assert.deepEqual(callback.body, [{ v: 'row' }]);
+  assert.deepEqual(h.pg.queries[0], { text: 'SELECT $1::text AS v', values: ['val'] });
+  const client = await h.invoke(app, 'get', '/client');
+  assert.deepEqual(h.pg.queries[1], { text: 'SELECT 1', values: [7] });
+  assert.equal(client.body.rowCount, 1);
+  h.load('services/app.js', { stubs: { axios: {} }, pg: { result: (query) => ({ rows: [query.text] }) } });
+  const custom = await h.invoke(h.app, 'get', '/client');
+  assert.deepEqual(custom.body.rows, ['SELECT 1']);
+  assert.equal(h.pg.queries.length, 1, 'load resets the recorders');
+});
+
+test('child_process records exec, execFile, spawn, and sync calls and feeds configured stdout', async () => {
+  const router = h.load('services/orders.js', { child_process: { stdout: 'rendered' } });
+  const rendered = await h.invoke(router, 'post', '/orders/:id/invoice', { params: { id: '7; rm -rf /' } });
+  assert.equal(rendered.body, 'rendered');
+  assert.equal(rendered.headers['content-type'], 'text/plain');
+  assert.deepEqual(h.child_process.calls[0], { fn: 'exec', command: 'invoice-render --order 7; rm -rf /', args: null, options: {} });
+  const app = h.load('services/app.js', { stubs: { axios: {} }, child_process: { stdout: 'out' } });
+  assert.equal((await h.invoke(app, 'get', '/sync')).body, 'out');
+  assert.equal((await h.invoke(app, 'get', '/promised', { query: { dir: '/x' } })).body, 'out');
+  assert.deepEqual((await h.invoke(app, 'get', '/spawn')).body, { code: 0, out: 'out' });
+  assert.deepEqual(h.child_process.calls.map((call) => [call.fn, call.command, call.args]), [
+    ['execSync', 'uname -a', null],
+    ['execFile', 'ls', ['-1', '/x']],
+    ['spawn', 'tar', ['-czf', 'x.tgz']],
+  ]);
+  assert.equal(h.child_process.calls[2].options.shell, false);
+  h.load('services/app.js', { stubs: { axios: {} }, child_process: { error: new Error('spawn failed') } });
+  await assert.rejects(h.invoke(h.app, 'get', '/promised', { query: { dir: '/x' } }), /spawn failed/);
+});
+
+test('fs overrides record paths and return configured content while other fs functions stay real', async () => {
+  const router = h.load('services/orders.js', { fs: { content: 'PDF' } });
+  const download = await h.invoke(router, 'get', '/reports/download', { query: { name: '../../etc/passwd' } });
+  assert.equal(download.status, 200);
+  assert.equal(download.body.toString(), 'PDF');
+  assert.equal(h.fs.reads.length, 1);
+  assert.ok(h.fs.reads[0].endsWith(pathReal.join('etc', 'passwd')));
+  assert.throws(() => h.assert.inside(pathReal.join(h.root, 'reports'), h.fs.reads[0]), /stay under/);
+  const missing = await h.invoke(h.load('services/orders.js', { fs: { exists: false } }), 'get', '/reports/download', { query: { name: 'a.pdf' } });
+  assert.equal(missing.status, 404);
+  const app = h.load('services/app.js', { stubs: { axios: {} }, fs: { content: (file) => `content of ${file}` } });
+  assert.equal((await h.invoke(app, 'get', '/readsync')).body, 'content of /etc/app.conf');
+  assert.equal((await h.invoke(app, 'get', '/stream')).body, 'content of /var/data/report.pdf');
+  assert.deepEqual((await h.invoke(app, 'get', '/exists')).body, { exists: true, real: 'function' });
+  assert.deepEqual(h.fs.reads, ['/etc/app.conf', '/var/data/report.pdf', '/tmp/missing']);
+  assert.equal(realFs.readFileSync(pathReal.join(root, 'services', 'app.js'), 'utf8').length > 0, true, 'the real fs is untouched');
+});
+
+test('relative load paths resolve from the test file and repository paths from the root', () => {
+  write('.mitig8it/regression/relative.test.js', `const h = require('../harness');
+const a = h.load('services/orders.js');
+const b = h.load('../../services/orders.js');
+process.stdout.write(String(typeof a.get === 'function' && a === b));
+`);
+  const result = cp.spawnSync(process.execPath, [pathReal.join('.mitig8it', 'regression', 'relative.test.js')], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.stdout, 'true', result.stderr);
+});
+
+test('assert helpers throw HarnessAssertion with the given message', () => {
+  assert.throws(() => h.assert(false, 'plain'), { name: 'HarnessAssertion', message: 'plain' });
+  assert.throws(() => h.assert.equal(1, 2, 'eq'), /eq: \{ actual: 1, expected: 2 \}/);
+  assert.throws(() => h.assert.includes('abc', 'z', 'inc'), /inc/);
+  assert.throws(() => h.assert.notIncludes('abc', 'b', 'ninc'), /ninc/);
+  h.assert.inside('/base', '/base/sub/file');
+  assert.throws(() => h.assert.inside('/base', '/base'), /stay under/);
+  assert.throws(() => h.assert.inside('/base', '/base/../etc'), /stay under/);
+});
+
+test('a family test fails on the vulnerable module and passes on the repaired one under plain node', () => {
+  const body = (target) => `const h = require('../harness');
+h.run(async () => {
+  const app = h.load(${JSON.stringify(target)}, { child_process: { stdout: 'ok' }, fs: { content: 'PDF' } });
+  const bad = "1' OR '1'='1";
+  await h.invoke(app, 'get', '/orders/:id', { params: { id: bad } });
+  const q = h.pg.queries[0];
+  h.assert(q, 'no query ran');
+  h.assert.notIncludes(q.text, bad, 'input reached the SQL text');
+  h.assert.includes(JSON.stringify(q.values || []), bad, 'input must be a bound value');
+  await h.invoke(app, 'post', '/orders/:id/invoice', { params: { id: 'x; id' } });
+  const call = h.child_process.calls[0];
+  h.assert(call.fn === 'execFile' || call.fn === 'spawn', 'command ran through a shell: ' + call.fn);
+  h.assert(call.args.includes('x; id') && !call.options.shell, 'input must be its own argument');
+  await h.invoke(app, 'get', '/reports/download', { query: { name: '../../etc/passwd' } });
+  for (const read of h.fs.reads) h.assert.inside(require('node:path').join(h.root, 'reports'), read, 'read escaped: ' + read);
+});
+`;
+  write('.mitig8it/regression/vulnerable.test.js', body('services/orders.js'));
+  write('.mitig8it/regression/repaired.test.js', body('services/orders-fixed.js'));
+  const run = (name) => cp.spawnSync(process.execPath, [pathReal.join('.mitig8it', 'regression', name)], { cwd: root, encoding: 'utf8' });
+  const vulnerable = run('vulnerable.test.js');
+  assert.equal(vulnerable.status, 1, vulnerable.stderr);
+  assert.match(vulnerable.stderr, /HarnessAssertion: input reached the SQL text/);
+  const repaired = run('repaired.test.js');
+  assert.equal(repaired.status, 0, repaired.stderr);
+  assert.equal(repaired.stdout.trim(), 'harness: ok');
+});

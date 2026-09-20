@@ -21,13 +21,12 @@ def tool_definitions() -> list[dict[str, Any]]:
         }
 
     return [
-        tool("search_code", "Literal search of the authorized exact-head snapshot.", {"query": {"type": "string", "maxLength": 200}}, ["query"]),
+        tool("search_code", "Literal search of the exact-head snapshot.", {"query": {"type": "string", "maxLength": 200}}, ["query"]),
         tool(
             "read_file",
             (
-                "Read a bounded line range from one snapshot file; null line_start and line_end "
-                "read a window around the finding lines. Results are capped, so keep ranges "
-                "narrow. Returns `lines`: `[line_number, text]` pairs whose text is what "
+                "Read a line range of one snapshot file; null bounds read around the finding "
+                "lines. Returns `lines` as `[line_number, text]` pairs; text is what "
                 "original_lines expects."
             ),
             {
@@ -65,10 +64,9 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "minItems": 1,
                     "maxItems": 50,
                     "description": (
-                        "Line-range hunks. original_lines: the replaced lines, verbatim from "
-                        "read_file; the service locates them, so send no end_line or digest. "
-                        "start_line: 1-based hint used only between repeats. replacement_lines: "
-                        "the new lines; empty deletes the range. No newlines in either list."
+                        "Hunks: original_lines verbatim from read_file (the service locates "
+                        "them); start_line is a hint between repeats; replacement_lines are the "
+                        "new lines, empty deletes. No newlines in items."
                     ),
                     "items": {
                         "type": "object",
@@ -86,13 +84,9 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "type": "array",
                     "maxItems": 10,
                     "description": (
-                        "One behavior test per finding this patch repairs; a finding whose test "
-                        "does not fail on the original and pass on the patch is dropped and "
-                        "reported not repaired. Require the changed module by relative path, "
-                        "invoke the affected function or handler with fake req and res, stub "
-                        "collaborators (child_process, pg, fs) via Module.prototype.require before "
-                        "the require, and exit non-zero only on the vulnerable behavior. A test "
-                        "that only reads the file as text is rejected."
+                        "One behavior test per repaired finding using require('../harness'), per "
+                        "the system prompt. A test that requires supertest, express, pg, or jest, "
+                        "or only reads the file as text, is rejected."
                     ),
                     "items": {
                         "type": "object",
@@ -108,7 +102,7 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
             ["hypothesis", "intended_behavior", "assumptions", "citations", "changes", "regression_tests"],
         ),
-        tool("request_verification", "Request independent broker verification of the current proposal.", {}, []),
-        tool("inspect_failure", "Read bounded structured evidence from the last verification failure.", {}, []),
+        tool("request_verification", "Verify the current proposal independently.", {}, []),
+        tool("inspect_failure", "Read bounded evidence from the last verification failure.", {}, []),
         tool("abstain", "Stop safely when a reliable bounded repair is not possible.", {"reason_code": {"type": "string"}, "explanation": {"type": "string", "maxLength": 4000}}, ["reason_code", "explanation"]),
     ]
