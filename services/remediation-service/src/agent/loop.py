@@ -12,7 +12,7 @@ from ..retrieval import Snapshot, SnapshotError
 from ..retrieval.snapshot import validate_repo_path
 from ..verification import VerificationResult, Verifier
 from ..verification.checks import dependencies_installed
-from .checkpoint import AgentCheckpointStore, CheckpointError
+from .checkpoint import AgentCheckpointStore, BudgetCapExceeded, CheckpointError
 from .provider import LLMProvider, ProviderError
 from .tools import tool_definitions
 
@@ -46,11 +46,12 @@ def _regression_tests(arguments: dict[str, Any]) -> list[dict[str, Any]]:
 # per-message overhead covers the role and tool-call envelope the provider adds around content.
 BYTES_PER_TOKEN = 4
 MESSAGE_TOKEN_OVERHEAD = 8
-# Source text and JSON tokenize denser than the four-byte proxy suggests, and a reservation that
-# lands under the provider's reported usage cannot be settled: the durable store refuses it and the
-# job ends `checkpoint_unavailable`. Estimated parts therefore carry headroom; reported usage does
-# not, because it is exact.
-ESTIMATE_HEADROOM = 1.5
+# Source text and JSON tokenize denser than the four-byte proxy suggests, so a reservation sized
+# from the proxy lands under the provider's reported usage. An overrun is now settled at the
+# actual figure rather than refused, so headroom only keeps overages rare and the reservation
+# honest; the caps that bind are `max_total_tokens` and `max_spend_usd`. Estimated parts carry
+# headroom; reported usage does not, because it is exact.
+ESTIMATE_HEADROOM = 2.0
 # The largest honest response is a propose_patch carrying the policy's maximum changed lines plus
 # a regression test, so the reservation tracks the change size rather than the whole file.
 MIN_OUTPUT_RESERVATION_TOKENS = 1_024
@@ -74,6 +75,8 @@ MAX_CONSECUTIVE_REJECTIONS = 2
 # An outcome reason is recorded in durable evidence, so it carries the stable code only: no
 # repository text, no model prose, no unbounded provider string.
 MAX_TRACE_REASON_CHARS = 120
+# Settlements are durable evidence, so the list is bounded like every other evidence array.
+MAX_RECORDED_SETTLEMENTS = 50
 _TRACE_REASON_RE = re.compile(r"[^A-Za-z0-9_.:/@-]+")
 
 
@@ -159,8 +162,25 @@ class RepairAgent:
         self.provider = provider
         self.verifier = verifier
         self.checkpoint_store = checkpoint_store
+        self._settlements: list[dict[str, Any]] = []
+
+    def _record_settlement(self, call_index: int, settlement: dict[str, Any]) -> None:
+        """Keeps one settled provider call, bounded, so evidence carries reserved, actual and overage."""
+        if len(self._settlements) < MAX_RECORDED_SETTLEMENTS:
+            self._settlements.append({"call_index": call_index} | settlement)
+
+    def _settlement_evidence(self) -> dict[str, Any]:
+        """Per-call settlements plus the totals an operator reads off the job."""
+        return {
+            "settled_calls": len(self._settlements),
+            "overage_calls": sum(1 for item in self._settlements if item["overage_tokens"] or item["overage_usd"]),
+            "overage_tokens": sum(item["overage_tokens"] for item in self._settlements),
+            "overage_usd": round(sum(item["overage_usd"] for item in self._settlements), 6),
+            "settlements": list(self._settlements),
+        }
 
     async def run(self, request: RepairRequest, snapshot: Snapshot) -> AgentResult:
+        self._settlements = []
         finding_payload = [
             {
                 "id": finding.stable_id,
@@ -380,14 +400,34 @@ class RepairAgent:
                     + action.output_tokens * request.policy.output_usd_per_million_tokens
                 ) / 1_000_000
                 try:
-                    await self.checkpoint_store.save_provider_action(
+                    settlement = await self.checkpoint_store.save_provider_action(
                         self._checkpoint_state(snapshot, messages, trace, proposal_arguments, last_verification, verification_attempts, input_tokens, output_tokens, provider_request_ids, context_chars_used),
                         action,
                         action.input_tokens + action.output_tokens,
                         actual_usd,
                     )
+                except BudgetCapExceeded as exc:
+                    # The call is already settled at its actual cost. The run stops because a hard
+                    # cap was passed, which is a budget decision, not a durability failure.
+                    self._record_settlement(index + 1, exc.settlement)
+                    return self._result(
+                        "inconclusive",
+                        proposal,
+                        bundle,
+                        last_verification,
+                        "budget_cap_exceeded",
+                        f"Provider spend reached {exc.settlement['cumulative_actual_tokens']} tokens and "
+                        f"${exc.settlement['cumulative_actual_usd']:.4f}, past the configured cap of "
+                        f"{exc.settlement['max_total_tokens']} tokens and ${exc.settlement['max_spend_usd']:.4f}.",
+                        trace,
+                        input_tokens,
+                        output_tokens,
+                        provider_request_ids,
+                        reservation_evidence,
+                    )
                 except CheckpointError:
                     return self._result("inconclusive", proposal, bundle, last_verification, "checkpoint_unavailable", "The provider result could not be durably checkpointed.", trace, input_tokens, output_tokens, provider_request_ids)
+                self._record_settlement(index + 1, settlement)
             step = {
                 "sequence": index + 1,
                 "tool": action.name,
@@ -764,8 +804,8 @@ class RepairAgent:
             }
         }
 
-    @staticmethod
     def _result(
+        self,
         state: Literal["ready", "unsupported", "inconclusive"],
         proposal: dict[str, Any] | None,
         bundle: PatchBundle | None,
@@ -778,6 +818,11 @@ class RepairAgent:
         provider_request_ids: list[str],
         evidence: dict[str, Any] | None = None,
     ) -> AgentResult:
+        # Every result carries what the run actually spent, not only the ones refused a
+        # reservation, so an overage is visible on a job that otherwise succeeded.
+        merged = dict(evidence or {})
+        settlement = self._settlement_evidence()
+        merged["budget_reservation"] = dict(merged.get("budget_reservation") or {}) | settlement
         return AgentResult(
             state,
             proposal,
@@ -787,5 +832,5 @@ class RepairAgent:
             explanation,
             trace,
             {"input_tokens": input_tokens, "output_tokens": output_tokens, "provider_request_ids": provider_request_ids},
-            dict(evidence or {}),
+            merged,
         )
