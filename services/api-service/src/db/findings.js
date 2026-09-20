@@ -14,7 +14,8 @@ async function listByPullRequest(pullRequestId, userId, { status = 'open', minCo
        AND f.confidence >= $4::numeric
      ORDER BY
        CASE f.severity
-         WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4
+         WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3
+         WHEN 'low' THEN 4 WHEN 'info' THEN 5 ELSE 6
        END,
        f.confidence DESC,
        f.created_at DESC`,
@@ -123,7 +124,8 @@ async function listByAnalysisRun(analysisRunId) {
     `SELECT snapshot FROM analysis_run_findings
      WHERE analysis_run_id = $1
      ORDER BY
-       CASE snapshot->>'severity' WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+       CASE snapshot->>'severity' WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2
+            WHEN 'low' THEN 3 WHEN 'info' THEN 4 ELSE 5 END,
        (snapshot->>'confidence')::numeric DESC`,
     [analysisRunId]
   );

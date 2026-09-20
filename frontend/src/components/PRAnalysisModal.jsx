@@ -3,13 +3,15 @@ const severityColors = {
   high: { text: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-500' },
   medium: { text: 'text-yellow-600 dark:text-yellow-400', bg: 'bg-amber-400' },
   low: { text: 'text-neutral-600 dark:text-neutral-400', bg: 'bg-neutral-400' },
+  // Findings in test code: reported, never blocking.
+  info: { text: 'text-neutral-500 dark:text-neutral-400', bg: 'bg-neutral-300' },
 };
 
 const PRAnalysisModal = ({ analysis, onClose }) => {
   if (!analysis) return null;
 
   const total = analysis.total_findings || 0;
-  const counts = analysis.severity_counts || { critical: 0, high: 0, medium: 0, low: 0 };
+  const counts = analysis.severity_counts || { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
   const hasFindings = total > 0;
   const prUrl = analysis.pr_url || `https://github.com/${analysis.repository_name}/pull/${analysis.pr_number}`;
 

@@ -16,8 +16,18 @@ from typing import Any, Dict, List, Optional
 from finding_quality import is_transcript_artifact_line
 from remediation_patches import build_remediation_patch
 from taxonomy import build_taxonomy_metadata
+from test_code_scope import (
+    classify_findings,
+    is_analyzable_path,
+    is_runtime_scannable_path as _is_runtime_scannable_path,
+)
 
 RULES_DIR = Path(__file__).parent / "opengrep_rules"
+
+# A large pull request must never be handed to one scanner process in a single
+# call. Files are scanned in bounded batches and the results are merged.
+DEFAULT_BATCH_MAX_FILES = 25
+DEFAULT_BATCH_MAX_BYTES = 1024 * 1024
 
 # Map OpenGrep severity to our severity levels
 SEVERITY_MAP = {
@@ -27,13 +37,6 @@ SEVERITY_MAP = {
 }
 
 TRACE_STEP_KINDS = {"source", "assignment", "call", "sanitizer", "sink"}
-NON_RUNTIME_PATH_PATTERNS = [
-    re.compile(r"(^|/)tests?/"),
-    re.compile(r"(^|/)__tests?__/"),
-    re.compile(r"(^|/)test_.*\.(py|js|jsx|ts|tsx|go|java|rb|php|cs)$"),
-    re.compile(r"\.(test|spec)\.(js|jsx|ts|tsx|py|go|java|rb|php|cs)$"),
-    re.compile(r"(^|/)opengrep_rules/"),
-]
 
 VALIDATED_SANITIZERS = {
     "path traversal": {"ensurewithbasedir", "validatesafepath", "allowlistedpath", "ensurewithinbasedir"},
@@ -95,13 +98,6 @@ def _extract_scan_content(file_info: Dict[str, Any]) -> str:
         )
         return f'package main\n\nimport (\n    "net/http"\n    "os"\n    "path/filepath"\n)\n\nfunc _generated(r *http.Request) {{\n{indented}\n}}\n'
     return extracted
-
-
-def _is_runtime_scannable_path(path: str) -> bool:
-    normalized = str(path or "").strip().replace("\\", "/").lower()
-    if not normalized:
-        return False
-    return not any(pattern.search(normalized) for pattern in NON_RUNTIME_PATH_PATTERNS)
 
 
 def _build_evidence_details(metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -441,9 +437,203 @@ SUPPORTED_EXTENSIONS = {
 }
 
 
+def _batch_limit(env_name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(env_name, ""))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def batch_max_files() -> int:
+    return _batch_limit("OPENGREP_BATCH_MAX_FILES", DEFAULT_BATCH_MAX_FILES)
+
+
+def batch_max_bytes() -> int:
+    return _batch_limit("OPENGREP_BATCH_MAX_BYTES", DEFAULT_BATCH_MAX_BYTES)
+
+
+def build_scan_batches(
+    prepared: List[Dict[str, Any]],
+    max_files: Optional[int] = None,
+    max_bytes: Optional[int] = None,
+) -> List[List[Dict[str, Any]]]:
+    """Split prepared files into batches bounded by file count and total bytes.
+
+    A single file larger than the byte budget still gets its own batch: the
+    scanner enforces its own per-file limit, and dropping it would hide code.
+    """
+    limit_files = max_files if max_files and max_files > 0 else batch_max_files()
+    limit_bytes = max_bytes if max_bytes and max_bytes > 0 else batch_max_bytes()
+
+    batches: List[List[Dict[str, Any]]] = []
+    current: List[Dict[str, Any]] = []
+    current_bytes = 0
+
+    for entry in prepared:
+        size = int(entry.get("size") or 0)
+        if current and (len(current) >= limit_files or current_bytes + size > limit_bytes):
+            batches.append(current)
+            current = []
+            current_bytes = 0
+        current.append(entry)
+        current_bytes += size
+
+    if current:
+        batches.append(current)
+
+    return batches
+
+
+def _run_semgrep(target_dir: str) -> Dict[str, Any]:
+    """Run one scanner process over one batch directory and return its output."""
+    try:
+        result = subprocess.run(
+            [
+                "semgrep",
+                "--config", str(RULES_DIR),
+                "--json",
+                "--no-git-ignore",
+                "--quiet",
+                "--timeout", "30",
+                "--max-target-bytes", "500000",
+                target_dir,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("OpenGrep timed out after 120s")
+    except FileNotFoundError:
+        raise RuntimeError("OpenGrep executable is unavailable")
+
+    if result.returncode not in (0, 1):
+        # returncode 1 = findings found, 0 = no findings
+        raise RuntimeError(f"OpenGrep failed with exit code {result.returncode}")
+
+    try:
+        output = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError("OpenGrep returned invalid JSON")
+
+    if not isinstance(output, dict) or not isinstance(output.get("results"), list):
+        raise RuntimeError("OpenGrep returned an incomplete result")
+    if output.get("errors"):
+        raise RuntimeError("OpenGrep reported incomplete analysis")
+
+    return output
+
+
+def _build_finding(
+    match: Dict[str, Any],
+    tmpdir: str,
+    extracted_content_by_path: Dict[str, str],
+) -> Dict[str, Any]:
+    raw_metadata = match.get("extra", {}).get("metadata", {})
+    check_id = match.get("check_id", "")
+    file_path = match.get("path", "").replace(tmpdir + "/", "")
+    line_start = match.get("start", {}).get("line", 1)
+    line_end = match.get("end", {}).get("line", line_start)
+    code_snippet = _extract_exact_lines(
+        extracted_content_by_path.get(file_path, ""),
+        line_start,
+        line_end,
+    )[:500] or match.get("extra", {}).get("lines", "")[:500]
+    metadata = _enrich_metadata_from_match(
+        raw_metadata,
+        match,
+        file_path=file_path,
+        file_content=extracted_content_by_path.get(file_path, ""),
+        line_start=line_start,
+        code_snippet=code_snippet,
+    )
+    opengrep_severity = match.get("extra", {}).get("severity", "WARNING")
+    taxonomy = build_taxonomy_metadata(
+        rule_id=f"opengrep.{check_id}",
+        category=metadata.get("category", "security"),
+        cwe_id=metadata.get("cwe", None),
+        owasp_category=metadata.get("owasp", None),
+        internal_type=metadata.get("internal_type", check_id),
+        title=match.get("extra", {}).get("message", check_id),
+        description=match.get("extra", {}).get("message", ""),
+        file_path=file_path,
+        code_snippet=code_snippet,
+        attack_techniques=metadata.get("attack", None),
+        capec_ids=metadata.get("capec", None),
+    )
+    trace_steps = _build_trace_steps(
+        metadata,
+        file_path=file_path,
+        line_start=line_start,
+        line_end=line_end,
+        code_snippet=code_snippet,
+    )
+    evidence_details = _build_evidence_details(metadata)
+    evidence_details["trace_steps"] = trace_steps
+
+    finding = {
+        "rule_id": f"opengrep.{check_id}",
+        "internal_type": taxonomy["internal_type"],
+        "title": match.get("extra", {}).get("message", check_id),
+        "description": match.get("extra", {}).get("message", ""),
+        "category": metadata.get("category", "security"),
+        "cwe_id": taxonomy["primary_cwe_id"],
+        "owasp_category": taxonomy["primary_owasp_category"],
+        "taxonomy_mappings": taxonomy["taxonomy_mappings"],
+        "taxonomy_versions": taxonomy["taxonomy_versions"],
+        "severity": SEVERITY_MAP.get(opengrep_severity, "medium"),
+        "confidence": float(metadata.get("confidence", 0.8)),
+        "exploitability": "medium",
+        "file_path": file_path,
+        "line_start": line_start,
+        "line_end": line_end,
+        "analysis_scope": metadata.get("analysis_scope", "ast-pattern"),
+        "source": metadata.get("source_description"),
+        "sink": metadata.get("sink_description"),
+        "sanitizers_seen": metadata.get("sanitizers_seen", []),
+        "trace_summary": metadata.get("trace_summary"),
+        "evidence_details": evidence_details,
+        "code_snippet": code_snippet,
+        "evidence": f"OpenGrep AST match on rule `{check_id}`",
+        "exploit_scenario": "",
+        "remediation": match.get("extra", {}).get("message", ""),
+        "remediation_patch": "",
+        "fingerprint": make_fingerprint(
+            f"opengrep.{check_id}", file_path, line_start, code_snippet
+        ),
+    }
+    finding["remediation_patch"] = build_remediation_patch(finding) or ""
+    return finding
+
+
+def _scan_batch(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Scan one batch. Any failure raises, so the tier fails closed."""
+    findings: List[Dict[str, Any]] = []
+
+    with tempfile.TemporaryDirectory(prefix="mitig8it_") as tmpdir:
+        extracted_content_by_path: Dict[str, str] = {}
+        for entry in batch:
+            file_path = Path(tmpdir) / entry["path"]
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            extracted_content_by_path[entry["path"]] = entry["content"]
+            file_path.write_text(entry["content"], encoding="utf-8")
+
+        output = _run_semgrep(tmpdir)
+
+        for match in output.get("results", []):
+            findings.append(_build_finding(match, tmpdir, extracted_content_by_path))
+
+    return findings
+
+
 def run_opengrep(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Run OpenGrep on PR files and return findings.
+
+    Files are scanned in bounded batches and the results are merged. If any
+    batch fails the whole tier fails closed; partial results are never returned
+    as if they were complete.
 
     Args:
         files: List of {path, patch, additions, ...} from the PR diff.
@@ -454,10 +644,11 @@ def run_opengrep(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not RULES_DIR.exists() or not any(RULES_DIR.glob("*.yml")):
         raise RuntimeError("OpenGrep rules are unavailable")
 
-    # Filter to supported file types
+    # Test files are scanned like any other file; their findings are classified
+    # as informational afterwards.
     scannable = [
         f for f in files
-        if _is_runtime_scannable_path(f.get("path", ""))
+        if is_analyzable_path(f.get("path", ""))
         and _file_extension(f.get("path", "")) in SUPPORTED_EXTENSIONS
         and (f.get("patch") or f.get("content"))
     ]
@@ -465,128 +656,32 @@ def run_opengrep(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not scannable:
         return []
 
-    findings = []
+    prepared: List[Dict[str, Any]] = []
+    for file_info in scannable:
+        content = _extract_scan_content(file_info)
+        prepared.append({
+            "path": file_info["path"],
+            "content": content,
+            "size": len(content.encode("utf-8")),
+        })
 
-    with tempfile.TemporaryDirectory(prefix="mitig8it_") as tmpdir:
-        extracted_content_by_path: Dict[str, str] = {}
-        # Write files to temp directory preserving path structure
-        for file_info in scannable:
-            file_path = Path(tmpdir) / file_info["path"]
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            content = _extract_scan_content(file_info)
-            extracted_content_by_path[file_info["path"]] = content
-            file_path.write_text(content, encoding="utf-8")
+    batches = build_scan_batches(prepared)
+    print(
+        "OpenGrep scan batches: "
+        f"count={len(batches)} files={len(prepared)} "
+        f"max_files={batch_max_files()} max_bytes={batch_max_bytes()} "
+        f"batch_bytes={[sum(entry['size'] for entry in batch) for batch in batches]} "
+        f"batch_files={[len(batch) for batch in batches]}",
+        flush=True,
+    )
 
-        try:
-            result = subprocess.run(
-                [
-                    "semgrep",
-                    "--config", str(RULES_DIR),
-                    "--json",
-                    "--no-git-ignore",
-                    "--quiet",
-                    "--timeout", "30",
-                    "--max-target-bytes", "500000",
-                    tmpdir,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("OpenGrep timed out after 120s")
-        except FileNotFoundError:
-            raise RuntimeError("OpenGrep executable is unavailable")
+    findings: List[Dict[str, Any]] = []
+    for index, batch in enumerate(batches, start=1):
+        batch_bytes = sum(entry["size"] for entry in batch)
+        print(
+            f"OpenGrep batch {index}/{len(batches)}: files={len(batch)} bytes={batch_bytes}",
+            flush=True,
+        )
+        findings.extend(_scan_batch(batch))
 
-        if result.returncode not in (0, 1):
-            # returncode 1 = findings found, 0 = no findings
-            raise RuntimeError(f"OpenGrep failed with exit code {result.returncode}")
-
-        try:
-            output = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            raise RuntimeError("OpenGrep returned invalid JSON")
-
-        if not isinstance(output, dict) or not isinstance(output.get("results"), list):
-            raise RuntimeError("OpenGrep returned an incomplete result")
-        if output.get("errors"):
-            raise RuntimeError("OpenGrep reported incomplete analysis")
-
-        for match in output.get("results", []):
-            raw_metadata = match.get("extra", {}).get("metadata", {})
-            check_id = match.get("check_id", "")
-            file_path = match.get("path", "").replace(tmpdir + "/", "")
-            line_start = match.get("start", {}).get("line", 1)
-            line_end = match.get("end", {}).get("line", line_start)
-            code_snippet = _extract_exact_lines(
-                extracted_content_by_path.get(file_path, ""),
-                line_start,
-                line_end,
-            )[:500] or match.get("extra", {}).get("lines", "")[:500]
-            metadata = _enrich_metadata_from_match(
-                raw_metadata,
-                match,
-                file_path=file_path,
-                file_content=extracted_content_by_path.get(file_path, ""),
-                line_start=line_start,
-                code_snippet=code_snippet,
-            )
-            opengrep_severity = match.get("extra", {}).get("severity", "WARNING")
-            taxonomy = build_taxonomy_metadata(
-                rule_id=f"opengrep.{check_id}",
-                category=metadata.get("category", "security"),
-                cwe_id=metadata.get("cwe", None),
-                owasp_category=metadata.get("owasp", None),
-                internal_type=metadata.get("internal_type", check_id),
-                title=match.get("extra", {}).get("message", check_id),
-                description=match.get("extra", {}).get("message", ""),
-                file_path=file_path,
-                code_snippet=code_snippet,
-                attack_techniques=metadata.get("attack", None),
-                capec_ids=metadata.get("capec", None),
-            )
-            trace_steps = _build_trace_steps(
-                metadata,
-                file_path=file_path,
-                line_start=line_start,
-                line_end=line_end,
-                code_snippet=code_snippet,
-            )
-            evidence_details = _build_evidence_details(metadata)
-            evidence_details["trace_steps"] = trace_steps
-
-            finding = {
-                "rule_id": f"opengrep.{check_id}",
-                "internal_type": taxonomy["internal_type"],
-                "title": match.get("extra", {}).get("message", check_id),
-                "description": match.get("extra", {}).get("message", ""),
-                "category": metadata.get("category", "security"),
-                "cwe_id": taxonomy["primary_cwe_id"],
-                "owasp_category": taxonomy["primary_owasp_category"],
-                "taxonomy_mappings": taxonomy["taxonomy_mappings"],
-                "taxonomy_versions": taxonomy["taxonomy_versions"],
-                "severity": SEVERITY_MAP.get(opengrep_severity, "medium"),
-                "confidence": float(metadata.get("confidence", 0.8)),
-                "exploitability": "medium",
-                "file_path": file_path,
-                "line_start": line_start,
-                "line_end": line_end,
-                "analysis_scope": metadata.get("analysis_scope", "ast-pattern"),
-                "source": metadata.get("source_description"),
-                "sink": metadata.get("sink_description"),
-                "sanitizers_seen": metadata.get("sanitizers_seen", []),
-                "trace_summary": metadata.get("trace_summary"),
-                "evidence_details": evidence_details,
-                "code_snippet": code_snippet,
-                "evidence": f"OpenGrep AST match on rule `{check_id}`",
-                "exploit_scenario": "",
-                "remediation": match.get("extra", {}).get("message", ""),
-                "remediation_patch": "",
-                "fingerprint": make_fingerprint(
-                    f"opengrep.{check_id}", file_path, line_start, code_snippet
-                ),
-            }
-            finding["remediation_patch"] = build_remediation_patch(finding) or ""
-            findings.append(finding)
-
-    return findings
+    return classify_findings(findings)

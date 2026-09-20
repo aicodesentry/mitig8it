@@ -101,7 +101,7 @@ describe('GET /api/reports/pr-analyses/:analysisId', () => {
     expect(res.status).toBe(200);
     expect(res.body.analysis.total_findings).toBe(3);
     expect(res.body.analysis.severity_counts).toEqual({
-      critical: 2, high: 1, medium: 0, low: 0,
+      critical: 2, high: 1, medium: 0, low: 0, info: 0,
     });
     expect(res.body.analysis.findings).toHaveLength(3);
   });
