@@ -5,6 +5,7 @@ import logging
 import os
 import socket
 import uuid
+from math import ceil
 
 from . import telemetry
 from .engine import RepairEngine
@@ -23,9 +24,39 @@ COUNTERS = {"completions_rejected": 0, "results_published": 0}
 
 Backend = PostgresExecutionBackend | LocalExecutionBackend
 
+# A lease is only as good as the heartbeats that renew it. The loop renews every
+# HEARTBEAT_SECONDS and the lease is held for LEASE_SECONDS, so a lease survives missed
+# renewals rather than expiring on the first one. Anything under 3x turns one slow turn of the
+# event loop into a lost lease, a reclaimed attempt, and a resumed job.
+DEFAULT_HEARTBEAT_SECONDS = 15.0
+MIN_HEARTBEAT_SECONDS = 0.05
+DEFAULT_LEASE_SECONDS = 90
+MIN_LEASE_TO_HEARTBEAT_RATIO = 3
+
+
+def heartbeat_seconds() -> float:
+    try:
+        value = float(os.getenv("REMEDIATION_WORKER_HEARTBEAT_SECONDS", DEFAULT_HEARTBEAT_SECONDS))
+    except ValueError:
+        value = DEFAULT_HEARTBEAT_SECONDS
+    # A floor only clamps a nonsensical setting; the default is what production runs.
+    return max(MIN_HEARTBEAT_SECONDS, value)
+
+
+def lease_seconds() -> int:
+    """The lease length, never shorter than three heartbeat intervals."""
+    try:
+        configured = int(float(os.getenv("REMEDIATION_WORKER_LEASE_SECONDS", DEFAULT_LEASE_SECONDS)))
+    except ValueError:
+        configured = DEFAULT_LEASE_SECONDS
+    floor = ceil(heartbeat_seconds() * MIN_LEASE_TO_HEARTBEAT_RATIO)
+    return max(floor, configured)
+
 
 async def run_once(backend: Backend, worker_id: str) -> bool:
-    record = await asyncio.to_thread(backend.claim, worker_id)
+    lease = lease_seconds()
+    interval = heartbeat_seconds()
+    record = await asyncio.to_thread(backend.claim, worker_id, lease)
     if record is None:
         return False
     request = await asyncio.to_thread(backend.read_request, record)
@@ -35,9 +66,9 @@ async def run_once(backend: Backend, worker_id: str) -> bool:
         task = asyncio.create_task(RepairEngine().repair(request, checkpoints))
         while not task.done():
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=15)
+                await asyncio.wait_for(asyncio.shield(task), timeout=interval)
             except TimeoutError:
-                if not await asyncio.to_thread(backend.heartbeat, record.execution_id, worker_id):
+                if not await asyncio.to_thread(backend.heartbeat, record.execution_id, worker_id, lease):
                     task.cancel()
                     telemetry.record_outcome(span, "abandoned", "lease_lost")
                     return True
