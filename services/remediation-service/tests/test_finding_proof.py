@@ -8,6 +8,7 @@ Git tree, because that is what the apply path commits.
 from __future__ import annotations
 
 import base64
+import json
 import shutil
 
 import pytest
@@ -167,6 +168,7 @@ async def test_verification_output_tells_the_agent_which_findings_it_proved(requ
                         },
                     ),
                     ProviderAction("request_verification", {}),
+                    ProviderAction("abstain", {"reason_code": "no_further_repair", "explanation": "Nothing more to add."}),
                 ]
             )
 
@@ -180,6 +182,11 @@ async def test_verification_output_tells_the_agent_which_findings_it_proved(requ
     assert result.state == "ready"
     assert result.verification.proven_finding_ids == ["finding-1"]
     assert [item["finding_id"] for item in result.verification.unproven_findings] == ["finding-2"]
+    # The verification result the model saw named the unproven finding and asked for a revision.
+    revision = json.loads(seen[-1]["content"])["coverage_revision"]
+    assert [item["finding_id"] for item in revision["unproven"]] == ["finding-2"]
+    assert revision["unproven"][0]["family"] == "sql_parameterization"
+    assert result.evidence["coverage"]["stopped"] == "no_further_repair"
 
 
 # --- the candidate's full-file manifest matches the verified tree -----------------------------

@@ -17,7 +17,7 @@ from pathlib import Path
 HARNESS_PATH = ".mitig8it/harness.js"
 HARNESS_SOURCE_FILE = Path(__file__).with_name("harness.js")
 # The harness travels inside every verification payload, so it stays small by construction.
-MAX_HARNESS_BYTES = 12 * 1024
+MAX_HARNESS_BYTES = 16 * 1024
 HARNESS_OCCUPIED_LIMITATION = (
     f"the repository already carries {HARNESS_PATH}, so the service test harness was not materialized"
 )
