@@ -18,8 +18,52 @@ function markdownEscape(text) {
   return String(text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// Findings in test code are reported but never block: they carry the
+// informational severity and keep their original scanner severity alongside.
+const INFORMATIONAL_SEVERITY = 'info';
+const INLINE_COMMENT_CAP = 40;
+
+// Mirrors services/analysis-service/src/test_code_scope.py.
+const TEST_CODE_PATH_PATTERNS = [
+  /(^|\/)tests?\//,
+  /(^|\/)__tests?__\//,
+  /(^|\/)test_.*\.(py|js|jsx|ts|tsx|go|java|rb|php|cs)$/,
+  /\.(test|spec)\.(js|jsx|ts|tsx|py|go|java|rb|php|cs)$/,
+];
+
+function normalizePathForScope(path) {
+  return String(path || '').trim().replace(/\\/g, '/').toLowerCase();
+}
+
+function isTestCodePath(path) {
+  const normalized = normalizePathForScope(path);
+  if (!normalized) return false;
+  return TEST_CODE_PATH_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function countTestCodeFiles(files) {
+  const paths = new Set();
+  for (const file of files || []) {
+    const path = normalizePathForScope(file?.path);
+    if (path && isTestCodePath(path)) paths.add(path);
+  }
+  return paths.size;
+}
+
+function isInfoFinding(finding) {
+  if (!finding) return false;
+  if (String(finding.severity || '').toLowerCase() === INFORMATIONAL_SEVERITY) return true;
+  const extra = finding.evidence_details && finding.evidence_details.extra;
+  return Boolean(extra && extra.in_test_code);
+}
+
+function originalSeverity(finding) {
+  const extra = (finding && finding.evidence_details && finding.evidence_details.extra) || {};
+  return String(finding?.original_severity || extra.original_severity || '').toLowerCase();
+}
+
 function summarizeFindings(findings) {
-  const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+  const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
   const categories = {};
   for (const finding of findings) {
     counts[finding.severity] = (counts[finding.severity] || 0) + 1;
@@ -28,8 +72,12 @@ function summarizeFindings(findings) {
   return { counts, categories };
 }
 
+function blockingCount(counts) {
+  return (counts.critical || 0) + (counts.high || 0);
+}
+
 function severityIcon(severity) {
-  return { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵' }[severity] || '⚪';
+  return { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵', info: 'ℹ️' }[severity] || '⚪';
 }
 
 const normalizeSuggestionPatch = validatorPrivate.normalizePatch;
@@ -128,10 +176,38 @@ function didTier3MeaningfullyChangeFindings(previousFindings, nextFindings) {
   return false;
 }
 
-function buildReviewBody(findings, runId) {
-  const { counts } = summarizeFindings(findings);
-  const total = findings.length;
-  const hasBlocking = (counts.critical || 0) + (counts.high || 0) > 0;
+function buildTestCodeSummaryLines({ testFilesScanned, infoFindings, infoCommentsOmitted }) {
+  const lines = [];
+  if (testFilesScanned <= 0 && infoFindings <= 0) return lines;
+
+  lines.push(
+    `${severityIcon('info')} ${testFilesScanned} test file${testFilesScanned === 1 ? '' : 's'} scanned; `
+    + `${infoFindings} informational finding${infoFindings === 1 ? '' : 's'} in test code. `
+    + 'Informational findings never block this check.'
+  );
+  if (infoCommentsOmitted > 0) {
+    lines.push(
+      '',
+      `${infoCommentsOmitted} informational comment${infoCommentsOmitted === 1 ? ' was' : 's were'} `
+      + 'omitted from the inline annotations so runtime findings keep their place.'
+    );
+  }
+  lines.push('');
+  return lines;
+}
+
+function buildReviewBody(findings, runId, options = {}) {
+  const all = findings || [];
+  const runtimeFindings = all.filter((finding) => !isInfoFinding(finding));
+  const infoFindings = all.filter(isInfoFinding);
+  const { counts } = summarizeFindings(runtimeFindings);
+  const total = runtimeFindings.length;
+  const hasBlocking = blockingCount(counts) > 0;
+  const testCodeLines = buildTestCodeSummaryLines({
+    testFilesScanned: Number(options.testFilesScanned || 0),
+    infoFindings: infoFindings.length,
+    infoCommentsOmitted: Number(options.infoCommentsOmitted || 0),
+  });
 
   if (total === 0) {
     return [
@@ -140,6 +216,7 @@ function buildReviewBody(findings, runId) {
       '',
       'This PR passed all security checks.',
       '',
+      ...testCodeLines,
       `<sub>Run \`${runId.slice(0, 8)}\`</sub>`,
     ].join('\n');
   }
@@ -154,6 +231,7 @@ function buildReviewBody(findings, runId) {
     '|---|---|---|---|',
     `| **${counts.critical || 0}** | **${counts.high || 0}** | **${counts.medium || 0}** | **${counts.low || 0}** |`,
     '',
+    ...testCodeLines,
     'Detailed findings are annotated inline on the affected lines below.',
     '',
     `<sub>Analyzed by <strong>Mitig8it</strong> · Run \`${runId.slice(0, 8)}\` · Findings are annotated on the affected lines below</sub>`,
@@ -172,13 +250,21 @@ function buildReviewComment(finding, options = {}) {
     buildRepoAwareRemediation(finding, options.repoProfile || null)
     || finding.remediation
     || 'Apply input validation and secure handling.';
+  const inTestCode = isInfoFinding(finding);
+  const scannerSeverity = originalSeverity(finding);
+  const headline = inTestCode
+    ? `${severityIcon('info')} **INFORMATIONAL — TEST CODE** — ${markdownEscape(finding.title)}`
+    : `${severityIcon(finding.severity)} **${finding.severity.toUpperCase()}** — ${markdownEscape(finding.title)}`;
   const lines = [
-    `${severityIcon(finding.severity)} **${finding.severity.toUpperCase()}** — ${markdownEscape(finding.title)}`,
+    headline,
     '',
     `> ${markdownEscape(finding.evidence || finding.description)}`,
     '',
     finding.cwe_id ? `**CWE:** ${finding.cwe_id}` : null,
     `**Confidence:** ${Math.round(Number(finding.confidence) * 100)}%`,
+    inTestCode
+      ? `_In test code${scannerSeverity ? `; scanner severity ${scannerSeverity}` : ''}. Informational only, it does not block this pull request._`
+      : null,
   ];
 
   const showSuggestion = shouldRenderSuggestion(finding, suggestionPatch) && suggestionValidation.ok;
@@ -253,10 +339,20 @@ async function enrichFilesForTier2({ files, repositoryFullName, installationId, 
 }
 
 function severityRank(severity) {
-  return { critical: 4, high: 3, medium: 2, low: 1 }[String(severity || '').toLowerCase()] || 0;
+  return { critical: 4, high: 3, medium: 2, low: 1, info: 0 }[String(severity || '').toLowerCase()] || 0;
+}
+
+function isInfoComment(comment) {
+  return String(comment?.severity || '').toLowerCase() === INFORMATIONAL_SEVERITY;
 }
 
 function compareReviewComments(a, b) {
+  // Runtime findings always come before informational test-code findings, so a
+  // comment cap drops informational comments first.
+  if (isInfoComment(a) !== isInfoComment(b)) {
+    return isInfoComment(a) ? 1 : -1;
+  }
+
   const pathCompare = String(a.path || '').localeCompare(String(b.path || ''));
   if (pathCompare !== 0) return pathCompare;
 
@@ -528,6 +624,20 @@ function dedupeInlineComments(reviewComments) {
   return deduped;
 }
 
+// Runtime findings keep their inline slots; informational comments are the
+// first to fall outside the cap, and the summary says how many were omitted.
+function planInlineComments(reviewComments, cap = INLINE_COMMENT_CAP) {
+  const deduped = dedupeInlineComments(prioritizeReviewComments(reviewComments));
+  const selected = deduped.slice(0, cap);
+  const omitted = deduped.slice(cap);
+
+  return {
+    comments: selected,
+    infoOmitted: omitted.filter(isInfoComment).length,
+    runtimeOmitted: omitted.filter((comment) => !isInfoComment(comment)).length,
+  };
+}
+
 async function postInlineCommentsIndividually({
   owner,
   repo,
@@ -537,7 +647,9 @@ async function postInlineCommentsIndividually({
   reviewComments,
   runId,
 }) {
-  const dedupedComments = dedupeInlineComments(prioritizeReviewComments(reviewComments)).slice(0, 40);
+  const dedupedComments = Array.isArray(reviewComments)
+    ? planInlineComments(reviewComments).comments
+    : [];
   let posted = 0;
 
   for (const comment of dedupedComments) {
@@ -691,11 +803,11 @@ async function persistAndFilter({ findings, files, runId, pullRequestId, reposit
 
 async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, installationId, commitSha, runId, tierLabel, repoProfile }) {
   const counts = summarizeFindings(actionable).counts;
-  const highOrCritical = (counts.critical || 0) + (counts.high || 0);
+  const highOrCritical = blockingCount(counts);
+  const testFilesScanned = countTestCodeFiles(files);
 
   let reviewResp = {};
   try {
-    const reviewBody = buildReviewBody(actionable, runId);
     const filePatchByPath = new Map(files.map((f) => [f.path, f.patch || '']));
     const suggestionStats = { rendered: 0, noPatch: 0, gateRejected: 0, validatorRejected: 0 };
     const rejectionReasons = {};
@@ -753,6 +865,22 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
       });
     }
 
+    const inlinePlan = planInlineComments(reviewComments);
+    if (inlinePlan.infoOmitted > 0 || inlinePlan.runtimeOmitted > 0) {
+      logger.info(`${tierLabel}: inline comment cap reached`, {
+        runId,
+        prNumber,
+        cap: INLINE_COMMENT_CAP,
+        infoOmitted: inlinePlan.infoOmitted,
+        runtimeOmitted: inlinePlan.runtimeOmitted,
+      });
+    }
+
+    const reviewBody = buildReviewBody(actionable, runId, {
+      testFilesScanned,
+      infoCommentsOmitted: inlinePlan.infoOmitted,
+    });
+
     reviewResp = await submitReviewWithFallback({
       owner, repo, prNumber, installationId, commitSha,
       reviewBody,
@@ -770,7 +898,7 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
     throw reviewErr;
   }
 
-  return { reviewResp, counts, highOrCritical };
+  return { reviewResp, counts, highOrCritical, testFilesScanned };
 }
 
 // gRPC status codes that describe the transport, not the request.
@@ -835,6 +963,7 @@ async function runAnalysisJob(payload) {
   let tier2Files = [];
   let lastCounts = {};
   let lastHighOrCritical = 0;
+  let testFilesScanned = 0;
   let reviewResp = {};
   let checkRunResp = {};
   let shouldMarkBaselineSet = false;
@@ -897,16 +1026,33 @@ async function runAnalysisJob(payload) {
     reviewResp = result.reviewResp;
     lastCounts = result.counts;
     lastHighOrCritical = result.highOrCritical;
+    testFilesScanned = result.testFilesScanned;
 
     // ── Check run + completion ────────────────────────────────────────
     try {
-      const finalCounts = Object.keys(lastCounts).length > 0 ? lastCounts : { critical: 0, high: 0, medium: 0, low: 0 };
-      const finalTotal = allFindings.length;
+      const finalCounts = Object.keys(lastCounts).length > 0
+        ? lastCounts
+        : { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+      const infoCount = allFindings.filter(isInfoFinding).length;
+      const finalTotal = allFindings.length - infoCount;
+      const summaryLines = [
+        `Mitig8it found ${finalTotal} runtime finding${finalTotal === 1 ? '' : 's'} `
+        + `(${finalCounts.critical || 0} critical, ${finalCounts.high || 0} high, `
+        + `${finalCounts.medium || 0} medium, ${finalCounts.low || 0} low).`,
+      ];
+      if (testFilesScanned > 0 || infoCount > 0) {
+        summaryLines.push(
+          `${testFilesScanned} test file${testFilesScanned === 1 ? '' : 's'} scanned; `
+          + `${infoCount} informational finding${infoCount === 1 ? '' : 's'} in test code `
+          + '(never blocking).'
+        );
+      }
       checkRunResp = await githubServiceRequest('/internal/github/check-runs', {
         owner, repo, installation_id: installationId, head_sha: commitSha,
+        // Informational findings never contribute to the conclusion.
         conclusion: lastHighOrCritical > 0 ? 'failure' : 'success',
         title: lastHighOrCritical > 0 ? `${lastHighOrCritical} critical/high finding${lastHighOrCritical === 1 ? '' : 's'}` : 'No blocking security findings',
-        summary: `Mitig8it found ${finalTotal} finding${finalTotal === 1 ? '' : 's'} (${finalCounts.critical || 0} critical, ${finalCounts.high || 0} high, ${finalCounts.medium || 0} medium, ${finalCounts.low || 0} low).`,
+        summary: summaryLines.join(' '),
       });
     } catch (checkErr) {
       throw checkErr;
@@ -1083,9 +1229,15 @@ module.exports = {
     transientRetryDelayMs,
     MAX_AUTOMATIC_ANALYSIS_RETRIES,
     buildSurfaceDecisions,
+    countTestCodeFiles,
     explainInlineCommentDecision,
+    isInfoFinding,
+    isTestCodePath,
     normalizeSuggestionPatch,
+    planInlineComments,
     prioritizeReviewComments,
+    severityIcon,
+    summarizeFindings,
     shouldFetchFullFileContent,
     shouldPostInlineComment,
     shouldRenderSuggestion,

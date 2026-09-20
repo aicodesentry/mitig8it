@@ -92,7 +92,7 @@ router.post('/analyze', async (req, res) => {
       const finding = normalizeFinding(raw);
       return [finding.fingerprint, finding];
     })).values()];
-    const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+    const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
     const vulnerabilities = findings.map(finding => {
       const severity = Object.hasOwn(counts, finding.severity) ? finding.severity : 'low';
       counts[severity] += 1;
@@ -104,6 +104,7 @@ router.post('/analyze', async (req, res) => {
     const result = { analysis_id: runId, timestamp: new Date().toISOString(), language, status: 'completed',
       vulnerabilities, total_vulnerabilities: vulnerabilities.length,
       critical_count: counts.critical, high_count: counts.high, medium_count: counts.medium, low_count: counts.low,
+      info_count: counts.info,
       style_issues: [], total_style_issues: 0, style_categories: {}, ...quota(used) };
     await pool.query(`UPDATE playground_analyses SET status = 'completed', result = $2::jsonb
       WHERE id = $1 AND user_id = $3`, [runId, JSON.stringify(result), req.user.user_id]);
