@@ -748,9 +748,12 @@ async function evaluateMergeCapability(envelope, pull, token, verificationCheckN
     protection = await githubRequest('get',
       `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/branches/${encodeURIComponent(baseRef)}/protection`, token);
   } catch (error) {
-    // A ruleset-governed branch commonly has no classic protection at all. That 404 is an
-    // answer, not an outage, so it only blocks when no ruleset governs the branch either.
-    protectionAbsent = Number(error.response?.status) === 404;
+    // A ruleset-governed branch commonly has no classic protection at all (404), and an
+    // installation without repository administration cannot read the legacy endpoint at
+    // all (403). Neither is an outage, and the ruleset already states the requirements in
+    // full, so they only block when no ruleset governs the branch either.
+    const status = Number(error.response?.status);
+    protectionAbsent = status === 404 || status === 403;
     if (!ruleset || !protectionAbsent) block('branch_protection_unavailable', error.response?.data || error.message);
   }
   const checks = protection?.data?.required_status_checks?.checks;
