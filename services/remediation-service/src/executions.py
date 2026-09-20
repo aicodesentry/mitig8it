@@ -16,9 +16,35 @@ from google.api_core.exceptions import PreconditionFailed
 from google.cloud import storage
 
 from .digests import canonical_json, digest_json, sha256_bytes
-from .agent.checkpoint import CheckpointError
+from .agent.checkpoint import BudgetCapExceeded, CheckpointError
 from .agent.provider import ProviderAction
 from .models import RepairRequest, RepairResponse
+
+
+
+def _settlement(reserved_tokens: int, reserved_usd: float, actual_tokens: int, actual_usd: float) -> dict[str, Any]:
+    """What one provider call reserved, what it really cost, and the difference.
+
+    A reservation is an estimate, so actual usage above it is settled at the actual figure and
+    recorded as an overage. Only the hard caps refuse a call.
+    """
+    return {
+        "reserved_tokens": int(reserved_tokens),
+        "reserved_usd": round(float(reserved_usd), 6),
+        "actual_tokens": int(actual_tokens),
+        "actual_usd": round(float(actual_usd), 6),
+        "overage_tokens": max(0, int(actual_tokens) - int(reserved_tokens)),
+        "overage_usd": round(max(0.0, float(actual_usd) - float(reserved_usd)), 6),
+    }
+
+
+def _cap_context(cumulative_tokens: int, cumulative_usd: float, max_tokens: int, max_usd: float) -> dict[str, Any]:
+    return {
+        "cumulative_actual_tokens": int(cumulative_tokens),
+        "cumulative_actual_usd": round(float(cumulative_usd), 6),
+        "max_total_tokens": int(max_tokens),
+        "max_spend_usd": float(max_usd),
+    }
 
 
 class ExecutionConfigurationError(RuntimeError):
@@ -292,20 +318,25 @@ class ExecutionCheckpointStore:
             )
             return cursor.rowcount == 1
 
-    async def save_provider_action(self, state: dict[str, Any], action: ProviderAction, actual_tokens: int, actual_usd: float) -> None:
+    async def save_provider_action(self, state: dict[str, Any], action: ProviderAction, actual_tokens: int, actual_usd: float) -> dict[str, Any]:
         import asyncio
 
-        await asyncio.to_thread(self._save_provider_action, state, action, actual_tokens, actual_usd)
+        return await asyncio.to_thread(self._save_provider_action, state, action, actual_tokens, actual_usd)
 
-    def _save_provider_action(self, state: dict[str, Any], action: ProviderAction, actual_tokens: int, actual_usd: float) -> None:
+    def _save_provider_action(self, state: dict[str, Any], action: ProviderAction, actual_tokens: int, actual_usd: float) -> dict[str, Any]:
         checkpoint = {**state, "pending_action": {"name": action.name, "arguments": action.arguments, "call_id": action.call_id, "request_id": action.request_id, "input_tokens": action.input_tokens, "output_tokens": action.output_tokens}}
         with psycopg.connect(self.backend.dsn) as connection, connection.cursor() as cursor:
             cursor.execute("SET LOCAL app.remediation_worker = 'on'")
-            cursor.execute("SELECT checkpoint_version, pending_reserved_tokens, pending_reserved_usd FROM remediation_service_executions WHERE execution_id=%s FOR UPDATE", (self.execution_id,))
+            cursor.execute("SELECT checkpoint_version, pending_reserved_tokens, pending_reserved_usd, actual_tokens, actual_usd FROM remediation_service_executions WHERE execution_id=%s FOR UPDATE", (self.execution_id,))
             row = cursor.fetchone()
-            if row is None or row[1] is None or actual_tokens > row[1] or actual_usd > float(row[2]):
-                raise CheckpointError("provider usage exceeds reservation or reservation is absent")
-            version, reserved_tokens, reserved_usd = row
+            if row is None or row[1] is None:
+                # No reservation to settle against means the call was never announced, which is a
+                # protocol violation rather than a bad estimate.
+                raise CheckpointError("provider reservation is absent")
+            version, reserved_tokens, reserved_usd, prior_tokens, prior_usd = row
+            settlement = _settlement(reserved_tokens, float(reserved_usd), actual_tokens, actual_usd)
+            cumulative_tokens = int(prior_tokens or 0) + actual_tokens
+            cumulative_usd = float(prior_usd or 0.0) + actual_usd
             uri = self.backend.artifacts.put_json(f"remediation-checkpoints/{self.execution_id.removeprefix('sha256:')}/{version + 1}.json", checkpoint)
             cursor.execute(
                 """
@@ -322,6 +353,11 @@ class ExecutionCheckpointStore:
             )
             if cursor.rowcount != 1:
                 raise CheckpointError("checkpoint fencing conflict")
+        # The spend is settled and recorded before the cap is enforced, so a run stopped by the
+        # cap still reports what it actually cost.
+        if cumulative_tokens > self.max_tokens or cumulative_usd > self.max_usd:
+            raise BudgetCapExceeded(settlement | _cap_context(cumulative_tokens, cumulative_usd, self.max_tokens, self.max_usd))
+        return settlement
 
     async def save_completed_step(self, state: dict[str, Any]) -> None:
         import asyncio
@@ -658,10 +694,10 @@ class LocalCheckpointStore:
             connection.execute("COMMIT")
         return reserved
 
-    async def save_provider_action(self, state: dict[str, Any], action: ProviderAction, actual_tokens: int, actual_usd: float) -> None:
-        await asyncio.to_thread(self._save_provider_action, state, action, actual_tokens, actual_usd)
+    async def save_provider_action(self, state: dict[str, Any], action: ProviderAction, actual_tokens: int, actual_usd: float) -> dict[str, Any]:
+        return await asyncio.to_thread(self._save_provider_action, state, action, actual_tokens, actual_usd)
 
-    def _save_provider_action(self, state: dict[str, Any], action: ProviderAction, actual_tokens: int, actual_usd: float) -> None:
+    def _save_provider_action(self, state: dict[str, Any], action: ProviderAction, actual_tokens: int, actual_usd: float) -> dict[str, Any]:
         checkpoint = {
             **state,
             "pending_action": {
@@ -677,13 +713,19 @@ class LocalCheckpointStore:
         with self.backend._lock, self.backend._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT checkpoint_version, pending_reserved_tokens, pending_reserved_usd FROM executions WHERE execution_id=?",
+                "SELECT checkpoint_version, pending_reserved_tokens, pending_reserved_usd, actual_tokens, actual_usd"
+                " FROM executions WHERE execution_id=?",
                 (self.execution_id,),
             ).fetchone()
-            if row is None or row[1] is None or actual_tokens > row[1] or actual_usd > float(row[2]):
+            if row is None or row[1] is None:
                 connection.execute("COMMIT")
-                raise CheckpointError("provider usage exceeds reservation or reservation is absent")
+                # No reservation to settle against means the call was never announced, which is a
+                # protocol violation rather than a bad estimate.
+                raise CheckpointError("provider reservation is absent")
             version = row[0]
+            settlement = _settlement(row[1], float(row[2]), actual_tokens, actual_usd)
+            cumulative_tokens = int(row[3] or 0) + actual_tokens
+            cumulative_usd = float(row[4] or 0.0) + actual_usd
             uri = self.backend.artifacts.put_json(
                 f"remediation-checkpoints/{self.execution_id.removeprefix('sha256:')}/{version + 1}.json", checkpoint
             )
@@ -703,6 +745,11 @@ class LocalCheckpointStore:
             connection.execute("COMMIT")
         if not changed:
             raise CheckpointError("checkpoint fencing conflict")
+        # The spend is settled and recorded before the cap is enforced, so a run stopped by the
+        # cap still reports what it actually cost.
+        if cumulative_tokens > self.max_tokens or cumulative_usd > self.max_usd:
+            raise BudgetCapExceeded(settlement | _cap_context(cumulative_tokens, cumulative_usd, self.max_tokens, self.max_usd))
+        return settlement
 
     async def save_completed_step(self, state: dict[str, Any]) -> None:
         await asyncio.to_thread(self._save_completed_step, state)
