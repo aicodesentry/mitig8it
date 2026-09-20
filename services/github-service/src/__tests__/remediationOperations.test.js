@@ -563,6 +563,53 @@ test('merge eligibility blocks when this app is a ruleset bypass actor', async (
   expect(result.blockers).toContain('app_bypass_forbidden');
 });
 
+test('merge eligibility accepts a ruleset-only branch when the legacy protection endpoint is forbidden to the installation', async () => {
+  process.env.GITHUB_APP_ID = '123';
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/branches/main/protection')) {
+      const error = new Error('Resource not accessible by integration');
+      error.response = { status: 403, data: { message: 'Resource not accessible by integration' } };
+      throw error;
+    }
+    return rulesetResponse(request);
+  });
+  const result = await readMergeEligibility(eligibilityPayload());
+  expect(result.blockers).toEqual([]);
+  expect(result.eligible).toBe(true);
+  expect(result.protection_source).toBe('rulesets');
+});
+
+test('merge eligibility still blocks when the legacy protection endpoint is unreadable and no ruleset governs the branch', async () => {
+  process.env.GITHUB_APP_ID = '123';
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/rules/branches/')) return { data: [] };
+    if (request.url.includes('/branches/main/protection')) {
+      const error = new Error('Resource not accessible by integration');
+      error.response = { status: 403, data: { message: 'Resource not accessible by integration' } };
+      throw error;
+    }
+    return successfulMergeResponse(request);
+  });
+  const result = await readMergeEligibility(eligibilityPayload());
+  expect(result.eligible).toBe(false);
+  expect(result.blockers).toEqual(expect.arrayContaining(['branch_protection_unavailable', 'protection_source_unknown']));
+});
+
+test('merge eligibility blocks a ruleset branch when the legacy protection endpoint fails for an unclear reason', async () => {
+  process.env.GITHUB_APP_ID = '123';
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/branches/main/protection')) {
+      const error = new Error('bad credentials');
+      error.response = { status: 401, data: { message: 'Bad credentials' } };
+      throw error;
+    }
+    return rulesetResponse(request);
+  });
+  const result = await readMergeEligibility(eligibilityPayload());
+  expect(result.eligible).toBe(false);
+  expect(result.blockers).toContain('branch_protection_unavailable');
+});
+
 test('merge eligibility combines a ruleset with classic protection and enforces the stricter requirement', async () => {
   process.env.GITHUB_APP_ID = '123';
   const rules = rulesetRules([{ type: 'pull_request', parameters: { required_approving_review_count: 0 } }]);
