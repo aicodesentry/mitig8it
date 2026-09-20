@@ -594,11 +594,13 @@ async function reconcileRemediationAction(payload) {
 const MERGE_BLOCKERS = {
   ruleset_capability_unavailable: { status: 422, message: 'Repository ruleset capability is unavailable; automatic merge is disabled' },
   ruleset_response_unknown: { status: 422, message: 'Repository ruleset response is unknown; automatic merge is disabled' },
-  rulesets_unsupported: { status: 422, message: 'Repositories with rulesets are unsupported for automatic merge' },
+  merge_queue_unsupported: { status: 422, message: 'Merge queue repositories are unsupported for automatic merge in this release' },
+  ruleset_rule_unsupported: { status: 422, message: 'The branch ruleset contains a rule this release does not model; automatic merge is disabled' },
+  app_bypass_forbidden: { status: 422, message: 'The remediation app must not be a ruleset bypass actor' },
   branch_protection_unavailable: { status: 422, message: 'Branch protection capability is unavailable; automatic merge is disabled' },
   app_bypasses_required_reviews: { status: 422, message: 'The remediation app must not bypass required reviews' },
-  verification_check_not_required: { status: 422, message: 'The app-specific remediation verification check is not required by branch protection' },
-  required_reviews_not_configured: { status: 422, message: 'Required pull request reviews are not configured; automatic merge is disabled' },
+  verification_check_not_required: { status: 422, message: 'The app-specific remediation verification check is not required by branch protection or a ruleset' },
+  policy_requires_review: { status: 422, message: 'Remediation policy requires at least one approving review; the branch configures none' },
   review_response_invalid: { status: 502, message: 'Invalid pull request review response' },
   review_pagination_exceeded: { status: 422, message: 'Review pagination exceeds supported limit' },
   required_approvals_missing: { status: 409, message: 'Required pull request approvals are not currently satisfied' },
@@ -638,11 +640,79 @@ function createMergeReport(mergeableState) {
   };
 }
 
+// An unmodelled ruleset rule blocks under a code that names the rule, so the report says
+// which rule stopped the merge while still resolving to a stable message.
+function mergeBlockerEntry(code) {
+  if (MERGE_BLOCKERS[code]) return MERGE_BLOCKERS[code];
+  if (code.startsWith('ruleset_rule_unsupported_')) return MERGE_BLOCKERS.ruleset_rule_unsupported;
+  return { status: 422, message: code };
+}
+
 function addMergeBlocker(report, code, stopOnFirstBlocker, detail) {
-  const entry = MERGE_BLOCKERS[code] || { status: 422, message: code };
+  const entry = mergeBlockerEntry(code);
   if (!report.blockers.includes(code)) report.blockers.push(code);
   if (!report.failure) report.failure = new OperationError(entry.message, entry.status, detail === undefined ? null : detail);
   if (stopOnFirstBlocker) throw new BlockerSignal(report);
+}
+
+// Rules that cannot change who may merge a pull request or on what evidence.
+const MERGE_IRRELEVANT_RULE_TYPES = new Set(['deletion', 'non_fast_forward', 'creation', 'update']);
+
+// Derive merge requirements from the rules GitHub says apply to the base branch.
+// Anything this release does not model blocks, so a new rule type never merges by silence.
+function deriveRulesetRequirements(ruleList, appId, verificationCheckName) {
+  const result = {
+    blockers: [], detail: {}, required_checks: [], required_reviews: null,
+    requires_verification_check: false, require_code_owner_review: false, dismiss_stale_reviews: false,
+  };
+  const addBlocker = (code, detail) => {
+    if (!result.blockers.includes(code)) result.blockers.push(code);
+    if (detail !== undefined && result.detail[code] === undefined) result.detail[code] = detail;
+  };
+  for (const rule of ruleList) {
+    const type = typeof rule?.type === 'string' ? rule.type : '';
+    // Bypass actors are only present on detailed rule payloads. Where GitHub does report
+    // them, an app-level bypass for this app defeats the gate and must block.
+    const bypassActors = Array.isArray(rule?.bypass_actors) ? rule.bypass_actors : [];
+    if (Number.isInteger(appId) && bypassActors.some((actor) => String(actor?.actor_type) === 'Integration'
+      && Number(actor?.actor_id) === appId)) {
+      addBlocker('app_bypass_forbidden', { rule_type: type });
+    }
+    if (MERGE_IRRELEVANT_RULE_TYPES.has(type)) continue;
+    if (type === 'merge_queue') {
+      addBlocker('merge_queue_unsupported', { rule_type: type });
+      continue;
+    }
+    if (type === 'required_status_checks') {
+      const required = Array.isArray(rule?.parameters?.required_status_checks) ? rule.parameters.required_status_checks : [];
+      for (const check of required) {
+        const context = String(check?.context || '');
+        const integrationId = check?.integration_id === null || check?.integration_id === undefined
+          ? null : Number(check.integration_id);
+        result.required_checks.push({ context, app_id: Number.isInteger(integrationId) ? integrationId : 0 });
+        // An unbound context is satisfied by any app, including this one, so it still counts.
+        if (context === verificationCheckName && (integrationId === null || (Number.isInteger(appId) && integrationId === appId))) {
+          result.requires_verification_check = true;
+        }
+      }
+      continue;
+    }
+    if (type === 'pull_request') {
+      const count = Number(rule?.parameters?.required_approving_review_count);
+      result.required_reviews = Math.max(result.required_reviews ?? 0, Number.isFinite(count) ? count : 0);
+      // Stale dismissal is enforced by GitHub before merge; approvals are read live here.
+      if (rule?.parameters?.dismiss_stale_reviews_on_push === true) result.dismiss_stale_reviews = true;
+      if (rule?.parameters?.require_code_owner_review === true) result.require_code_owner_review = true;
+      continue;
+    }
+    addBlocker(`ruleset_rule_unsupported_${type || 'unknown'}`, { rule_type: type });
+  }
+  return result;
+}
+
+// Whether remediation policy insists on a human approval even where the branch does not.
+function mergeRequiresHumanReview() {
+  return process.env.REMEDIATION_REQUIRE_HUMAN_REVIEW === 'true';
 }
 
 async function evaluateMergeCapability(envelope, pull, token, verificationCheckName, stopOnFirstBlocker) {
@@ -654,6 +724,8 @@ async function evaluateMergeCapability(envelope, pull, token, verificationCheckN
     return report;
   }
 
+  const appId = Number(process.env.GITHUB_APP_ID);
+
   let rules = null;
   try {
     rules = await githubRequest('get',
@@ -662,36 +734,64 @@ async function evaluateMergeCapability(envelope, pull, token, verificationCheckN
     block('ruleset_capability_unavailable', error.response?.data || error.message);
   }
   if (rules && !Array.isArray(rules.data)) block('ruleset_response_unknown');
-  if (Array.isArray(rules?.data) && rules.data.length > 0) {
+  const ruleList = Array.isArray(rules?.data) ? rules.data : [];
+  const ruleset = ruleList.length > 0 ? deriveRulesetRequirements(ruleList, appId, verificationCheckName) : null;
+  if (ruleset) {
     report.protection_source = 'rulesets';
-    block('rulesets_unsupported');
+    for (const code of ruleset.blockers) block(code, ruleset.detail[code]);
+    report.required_checks = ruleset.required_checks;
   }
 
   let protection = null;
+  let protectionAbsent = false;
   try {
     protection = await githubRequest('get',
       `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/branches/${encodeURIComponent(baseRef)}/protection`, token);
   } catch (error) {
-    block('branch_protection_unavailable', error.response?.data || error.message);
+    // A ruleset-governed branch commonly has no classic protection at all. That 404 is an
+    // answer, not an outage, so it only blocks when no ruleset governs the branch either.
+    protectionAbsent = Number(error.response?.status) === 404;
+    if (!ruleset || !protectionAbsent) block('branch_protection_unavailable', error.response?.data || error.message);
   }
   const checks = protection?.data?.required_status_checks?.checks;
-  const appId = Number(process.env.GITHUB_APP_ID);
   const bypassApps = protection?.data?.required_pull_request_reviews?.bypass_pull_request_allowances?.apps || [];
   if (Array.isArray(checks)) {
-    report.required_checks = checks.map((check) => ({ context: String(check.context || ''), app_id: Number(check.app_id || 0) }));
+    const classicChecks = checks.map((check) => ({ context: String(check.context || ''), app_id: Number(check.app_id || 0) }));
+    // Both sources are reported, and where both exist the branch really does require both.
+    const seen = new Set(report.required_checks.map((check) => `${check.context}:${check.app_id}`));
+    report.required_checks = [...report.required_checks,
+      ...classicChecks.filter((check) => !seen.has(`${check.context}:${check.app_id}`))];
   }
-  if (report.protection_source === 'unknown' && protection && Array.isArray(rules?.data)) {
-    report.protection_source = 'branch_protection';
+  // Classic protection only names the source when the ruleset read itself succeeded;
+  // an unreadable ruleset endpoint leaves the true configuration unknown.
+  if (Array.isArray(rules?.data) && protection) {
+    report.protection_source = ruleset ? 'rulesets+branch_protection' : 'branch_protection';
   }
   if (report.protection_source === 'unknown') block('protection_source_unknown');
   if (bypassApps.some(app => Number(app.id) === appId)) block('app_bypasses_required_reviews');
-  if (!Number.isInteger(appId) || !Array.isArray(checks)
-    || !checks.some((check) => check.context === verificationCheckName && Number(check.app_id) === appId)) {
-    block('verification_check_not_required');
+  const classicRequiresVerification = Number.isInteger(appId) && Array.isArray(checks)
+    && checks.some((check) => check.context === verificationCheckName && Number(check.app_id) === appId);
+  if (!classicRequiresVerification && !(ruleset?.requires_verification_check)) block('verification_check_not_required');
+
+  // The stricter of the two sources wins: GitHub enforces every source that applies.
+  const classicReviewCount = protection?.data?.required_pull_request_reviews?.required_approving_review_count;
+  const configuredCounts = [];
+  if (Number.isInteger(classicReviewCount)) configuredCounts.push(classicReviewCount);
+  if (ruleset && Number.isInteger(ruleset.required_reviews)) configuredCounts.push(ruleset.required_reviews);
+  const reviewsConfigured = configuredCounts.length > 0;
+  let reviewCount = reviewsConfigured ? Math.max(...configuredCounts) : 0;
+  // A code-owner requirement forces at least one approval even where the count is zero.
+  if (ruleset?.require_code_owner_review || protection?.data?.required_pull_request_reviews?.require_code_owner_reviews) {
+    reviewCount = Math.max(reviewCount, 1);
   }
-  const reviewCount = protection?.data?.required_pull_request_reviews?.required_approving_review_count;
-  if (!Number.isInteger(reviewCount) || reviewCount < 1) block('required_reviews_not_configured');
-  report.reviews.required = Number.isInteger(reviewCount) ? reviewCount : null;
+  // Remediation policy, not this evaluator, decides whether a human review is mandatory.
+  // The plan requires this app's verification check, not a human approval, so a branch that
+  // requires no review is eligible unless the deployment opts into requiring one.
+  if (!reviewsConfigured && reviewCount < 1 && mergeRequiresHumanReview()) {
+    reviewCount = 1;
+    block('policy_requires_review');
+  }
+  report.reviews.required = reviewCount;
 
   const latestReviewByActor = new Map();
   let reviewsComplete = true;
@@ -730,7 +830,7 @@ async function evaluateMergeCapability(envelope, pull, token, verificationCheckN
       .filter(([login, state]) => login !== appBotLogin && state === 'APPROVED').length;
     report.reviews.approvals = approvals;
     report.reviews.changes_requested = [...latestReviewByActor.values()].includes('CHANGES_REQUESTED');
-    if (approvals < (Number.isInteger(reviewCount) && reviewCount > 0 ? reviewCount : 1)) block('required_approvals_missing');
+    if (reviewCount > 0 && approvals < reviewCount) block('required_approvals_missing');
     if (report.reviews.changes_requested) block('changes_requested');
   }
 
