@@ -111,3 +111,100 @@ def test_local_backend_cancel_blocks_publication(tmp_path, request_payload):
     assert backend.cancel(record.execution_id) is True
     assert backend.complete(claimed.execution_id, "worker-a", response_for(request)) is False
     assert backend.get(record.execution_id).state == "cancelled"
+
+
+def _claimed_store(tmp_path, request_payload, **policy):
+    """A running execution with a durable checkpoint store, ready to settle provider calls."""
+    from src.executions import create_checkpoint_store
+
+    payload = {**request_payload, "policy": {**request_payload["policy"], **policy}}
+    request = RepairRequest.model_validate(payload)
+    backend = LocalExecutionBackend(tmp_path / "state")
+    backend.enqueue(request)
+    claimed = backend.claim("worker-a", lease_seconds=900)
+    return backend, claimed, create_checkpoint_store(backend, claimed.execution_id, "worker-a", request)
+
+
+def _spend(backend, claimed):
+    """The execution row's settled actual tokens and USD."""
+    with backend._lock, backend._connect() as connection:
+        row = connection.execute(
+            "SELECT actual_tokens, actual_usd FROM executions WHERE execution_id=?", (claimed.execution_id,)
+        ).fetchone()
+    return int(row[0]), float(row[1])
+
+
+def _action():
+    from src.agent.provider import ProviderAction
+
+    return ProviderAction("abstain", {"reason_code": "no_repair", "explanation": "none"}, call_id="call-1")
+
+
+@pytest.mark.asyncio
+async def test_usage_above_the_reservation_settles_as_an_overage(tmp_path, request_payload):
+    """A reservation is an estimate: an underestimate is charged at the real cost, not refused."""
+    backend, claimed, store = _claimed_store(tmp_path, request_payload)
+    assert await store.reserve_provider_call(1, 100, 0.001) is True
+
+    settlement = await store.save_provider_action({"group_key": "g"}, _action(), 250, 0.004)
+
+    assert settlement["reserved_tokens"] == 100
+    assert settlement["actual_tokens"] == 250
+    assert settlement["overage_tokens"] == 150
+    assert settlement["overage_usd"] == pytest.approx(0.003)
+    # The execution is charged what the call really cost, not what it guessed.
+    assert _spend(backend, claimed) == (250, pytest.approx(0.004))
+
+
+@pytest.mark.asyncio
+async def test_usage_within_the_reservation_records_no_overage(tmp_path, request_payload):
+    _, _, store = _claimed_store(tmp_path, request_payload)
+    assert await store.reserve_provider_call(1, 500, 0.01) is True
+
+    settlement = await store.save_provider_action({"group_key": "g"}, _action(), 400, 0.008)
+
+    assert (settlement["overage_tokens"], settlement["overage_usd"]) == (0, 0.0)
+
+
+@pytest.mark.asyncio
+async def test_a_settlement_without_a_reservation_still_raises(tmp_path, request_payload):
+    """An unannounced call is a protocol violation, not an estimate that came in high."""
+    from src.agent.checkpoint import BudgetCapExceeded, CheckpointError
+
+    _, _, store = _claimed_store(tmp_path, request_payload)
+
+    with pytest.raises(CheckpointError) as raised:
+        await store.save_provider_action({"group_key": "g"}, _action(), 10, 0.001)
+    assert not isinstance(raised.value, BudgetCapExceeded)
+    assert "reservation is absent" in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_cumulative_spend_past_the_hard_cap_fails_as_budget_cap_exceeded(tmp_path, request_payload):
+    """Only the caps bind, and crossing one is a budget decision, not a durability failure."""
+    from src.agent.checkpoint import BudgetCapExceeded
+
+    backend, claimed, store = _claimed_store(tmp_path, request_payload, max_total_tokens=1_000, max_spend_usd=1.0)
+    assert await store.reserve_provider_call(1, 900, 0.5) is True
+
+    with pytest.raises(BudgetCapExceeded) as raised:
+        await store.save_provider_action({"group_key": "g"}, _action(), 1_200, 0.6)
+
+    settlement = raised.value.settlement
+    assert settlement["overage_tokens"] == 300
+    assert settlement["cumulative_actual_tokens"] == 1_200
+    assert settlement["max_total_tokens"] == 1_000
+    # The spend is recorded before the cap stops the run, so the cost is never lost.
+    assert _spend(backend, claimed)[0] == 1_200
+
+
+@pytest.mark.asyncio
+async def test_spend_past_the_usd_cap_alone_fails_as_budget_cap_exceeded(tmp_path, request_payload):
+    from src.agent.checkpoint import BudgetCapExceeded
+
+    _, _, store = _claimed_store(tmp_path, request_payload, max_total_tokens=1_000_000, max_spend_usd=0.01)
+    assert await store.reserve_provider_call(1, 100, 0.005) is True
+
+    with pytest.raises(BudgetCapExceeded) as raised:
+        await store.save_provider_action({"group_key": "g"}, _action(), 120, 0.05)
+    assert raised.value.settlement["cumulative_actual_usd"] == pytest.approx(0.05)

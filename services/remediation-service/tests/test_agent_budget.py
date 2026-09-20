@@ -77,16 +77,17 @@ class DenseProvider:
 
 
 class SettlingCheckpointStore:
-    """Encodes the durable store's rule: reported usage above the reservation cannot settle.
+    """Encodes the durable store's rule: a reservation is an estimate, settled at the actual cost.
 
-    `ExecutionCheckpointStore.save_provider_action` raises when `actual_tokens` exceeds
-    `pending_reserved_tokens`, which surfaces as `checkpoint_unavailable` and ends the job.
+    `ExecutionCheckpointStore.save_provider_action` charges what the call really used and records
+    the difference as an overage. An absent reservation is still a protocol violation and raises.
     """
 
     def __init__(self):
         self.reserved_tokens: int | None = None
         self.reserved_usd: float = 0.0
         self.settled: list[int] = []
+        self.overages: list[dict[str, float]] = []
 
     async def load(self):
         return None
@@ -96,12 +97,17 @@ class SettlingCheckpointStore:
         self.reserved_usd = usd
         return True
 
-    async def save_provider_action(self, state, action, actual_tokens: int, actual_usd: float) -> None:
+    async def save_provider_action(self, state, action, actual_tokens: int, actual_usd: float) -> dict:
         from src.agent.checkpoint import CheckpointError
+        from src.executions import _settlement
 
-        if self.reserved_tokens is None or actual_tokens > self.reserved_tokens or actual_usd > self.reserved_usd:
-            raise CheckpointError("provider usage exceeds reservation or reservation is absent")
+        if self.reserved_tokens is None:
+            raise CheckpointError("provider reservation is absent")
+        settlement = _settlement(self.reserved_tokens, self.reserved_usd, actual_tokens, actual_usd)
         self.settled.append(actual_tokens)
+        if settlement["overage_tokens"] or settlement["overage_usd"]:
+            self.overages.append(settlement)
+        return settlement
 
     async def save_completed_step(self, state) -> None:
         return None
@@ -245,8 +251,68 @@ async def test_reservation_covers_the_tool_schemas_the_provider_bills_for(reques
 
     assert result.reason_code == "no_repair"
     assert len(store.settled) == provider.calls
+    # The reservation still has to cover what the provider bills, or every call overruns it.
+    assert store.overages == []
+    assert result.evidence["budget_reservation"]["overage_calls"] == 0
 
 
 class _NullBroker:
     async def verify(self, payload, timeout_seconds):  # pragma: no cover - never invoked
         raise AssertionError("verification must not run when the budget denies the first call")
+
+
+class CappedCheckpointStore(SettlingCheckpointStore):
+    """Settles the first call, then refuses the next one because a hard cap was crossed."""
+
+    def __init__(self, allowed_calls: int = 1):
+        super().__init__()
+        self.allowed_calls = allowed_calls
+
+    async def save_provider_action(self, state, action, actual_tokens: int, actual_usd: float) -> dict:
+        from src.agent.checkpoint import BudgetCapExceeded
+
+        settlement = await super().save_provider_action(state, action, actual_tokens, actual_usd)
+        if len(self.settled) > self.allowed_calls:
+            raise BudgetCapExceeded(
+                settlement
+                | {
+                    "cumulative_actual_tokens": sum(self.settled),
+                    "cumulative_actual_usd": 0.75,
+                    "max_total_tokens": 1_000,
+                    "max_spend_usd": 0.5,
+                }
+            )
+        return settlement
+
+
+@pytest.mark.asyncio
+async def test_crossing_the_hard_cap_reports_budget_cap_exceeded_not_a_durability_failure(request_payload, source):
+    request = RepairRequest.model_validate(request_payload)
+    snapshot = Snapshot(request)
+    store = CappedCheckpointStore(allowed_calls=1)
+    provider = RecordingProvider([_read(1, 3), _read(1, 3), _abstain()])
+
+    result = await RepairAgent(provider, FailingVerifier(), store).run(request, snapshot)
+
+    assert result.reason_code == "budget_cap_exceeded"
+    assert result.reason_code != "checkpoint_unavailable"
+    assert "past the configured cap" in (result.explanation or "")
+    # The settled calls, including the one that crossed the cap, are on the record.
+    reservation = result.evidence["budget_reservation"]
+    assert reservation["settled_calls"] == 2
+    assert all({"reserved_tokens", "actual_tokens", "overage_tokens"} <= set(item) for item in reservation["settlements"])
+
+
+@pytest.mark.asyncio
+async def test_every_result_carries_what_the_run_actually_spent(request_payload, source):
+    """Settlement evidence is not only for refused runs: a normal abstention carries it too."""
+    request = RepairRequest.model_validate(request_payload)
+    snapshot = Snapshot(request)
+    store = SettlingCheckpointStore()
+
+    result = await RepairAgent(RecordingProvider([_read(1, 3), _abstain()]), FailingVerifier(), store).run(request, snapshot)
+
+    reservation = result.evidence["budget_reservation"]
+    assert reservation["settled_calls"] == 2
+    assert reservation["overage_calls"] == 0
+    assert [item["call_index"] for item in reservation["settlements"]] == [1, 2]
