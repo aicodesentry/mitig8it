@@ -152,10 +152,18 @@ the rest of the check set from the candidate itself.
   entry per finding the patch repairs. The path must be
   `.mitig8it/regression/<name>.test.{js,cjs,mjs}`, must not already exist in the snapshot, and
   is rejected outright anywhere else, so a generated test can never overwrite repository code.
-  The content must parse under `node --check`, may import only Node built-ins, the repository's
-  declared dependencies, and relative repository paths, and must exercise behavior: require the
-  changed module and invoke it with fake collaborators. A test that only reads the file as text
-  is rejected.
+  The content must parse under `node --check`, may import only Node built-ins, relative
+  repository paths, and the service harness, and must exercise behavior: load the changed
+  module through the harness and invoke it with an injection payload. A test that requires
+  `supertest`, `express`, `pg`, or a test framework is rejected as `missing_dependency`, and one
+  that only reads the file as text is rejected too.
+- The sandbox has nothing installed, so the service materializes a dependency-free harness at
+  `.mitig8it/harness.js` next to the tests in both workspaces. `require('../harness')` gives
+  `load(path, options)`, which requires the target with fake `express`, `pg`, `child_process`,
+  and `fs` injected, `invoke(app, method, route, {params, query, body})`, recorders such as
+  `pg.queries`, `child_process.calls`, and `fs.reads`, and `assert` helpers. It is never a patch
+  or a manifest entry, and a proposal that writes to it is rejected as `harness_path_protected`.
+  See [contracts/test-harness-v1.md](contracts/test-harness-v1.md).
 - Each file is materialized into both the baseline and the candidate workspace and executed as
   its own `exploit` check with a 60-second timeout. A finding is proven when its test fails on
   the original tree and passes on the patched one; the candidate claims exactly the proven
