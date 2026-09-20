@@ -10,6 +10,7 @@ from .agent import OpenAICompatibleProvider, ProviderError, RepairAgent
 from .agent.checkpoint import AgentCheckpointStore, GroupScopedCheckpointStore
 from .batch import BatchPolicyError, ImmutableBatch, build_immutable_batch
 from .digests import digest_json
+from .families import rule_family
 from .git_tree import GitTreeError, compute_tree_oid, validate_snapshot_tree
 from .grouping import group_findings
 from .models import Candidate, FindingSnapshot, RepairPolicy, RepairRequest, RepairResponse, VerificationSummary
@@ -34,18 +35,8 @@ BUDGET_EXHAUSTED_MESSAGE = (
 )
 
 
-def _rule_family(finding: Any) -> str | None:
-    text = " ".join(
-        str(value or "")
-        for value in (finding.rule_id, finding.cwe_id, finding.category, finding.title, finding.message)
-    ).lower()
-    if "cwe-89" in text or "sql injection" in text:
-        return "sql_parameterization"
-    if "cwe-78" in text or "command injection" in text:
-        return "command_arguments"
-    if "cwe-22" in text or "path traversal" in text or "path containment" in text:
-        return "path_containment"
-    return None
+# The family decides support here and is named to the model by the agent loop.
+_rule_family = rule_family
 
 
 def _reason_response(
@@ -91,6 +82,8 @@ class GroupOutcome:
     evidence: dict[str, Any] = dataclass_field(default_factory=dict)
     # The group's findings the candidate does not claim, each with the verifier's reason.
     unproven: list[dict[str, str]] = dataclass_field(default_factory=list)
+    # Coverage revisions the agent ran for this group and why they stopped.
+    coverage: dict[str, Any] = dataclass_field(default_factory=dict)
 
     def report(self) -> dict[str, Any]:
         report: dict[str, Any] = {
@@ -104,6 +97,8 @@ class GroupOutcome:
             report["repaired_finding_ids"] = list(self.candidate.finding_ids)
         if self.unproven:
             report["unproven_findings"] = list(self.unproven)
+        if self.coverage:
+            report["coverage"] = dict(self.coverage)
         if self.evidence:
             report["reason_evidence"] = self.evidence
         return report
@@ -502,7 +497,10 @@ class RepairEngine:
             candidate = _build_candidate(request, snapshot, proven, result)
             accepted.append((candidate, result.bundle, result.verification))
             outcomes.append(
-                GroupOutcome(index, finding_ids, "ready", None, None, candidate, result.bundle, result.verification, result.trace, result.usage, True, {}, unproven)
+                GroupOutcome(
+                    index, finding_ids, "ready", None, None, candidate, result.bundle, result.verification, result.trace, result.usage, True, {}, unproven,
+                    dict(result.evidence.get("coverage") or {}),
+                )
             )
 
         group_report = [outcome.report() for outcome in outcomes]

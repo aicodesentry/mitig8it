@@ -32,6 +32,9 @@ class VerificationResult:
     # claims exactly `proven_finding_ids`; the rest are reported, never silently included.
     proven_finding_ids: list[str] = field(default_factory=list)
     unproven_findings: list[dict[str, str]] = field(default_factory=list)
+    # Which evidence check ran each finding's regression test, so a caller can show the
+    # test's own failure output for a finding that was not proven.
+    regression_checks: dict[str, str] = field(default_factory=dict)
 
 
 NOT_REPAIRED = "not_repaired"
@@ -143,23 +146,24 @@ class Verifier:
         limitations = self._limitations(effective, evidence, level)
         digest = evidence_digest(evidence)
         unproven = verdicts.unproven
+        checks_by_finding = {finding_id: check_id for check_id, finding_id in effective.regression_findings.items()}
         if not verdicts.proven:
             # Nothing was shown repaired. A reproducer that passed on the original code is an
             # unusable reproducer, not a failing repair; a reproducer that still fails on the
             # candidate is a failed repair the agent can inspect and correct.
             if any(item["code"] == NOT_REPRODUCING for item in unproven):
-                return VerificationResult("inconclusive", evidence, digest, NOT_REPRODUCING, level, limitations, [], unproven)
-            return VerificationResult("failed", evidence, digest, "verification_failed", level, limitations, [], unproven)
+                return VerificationResult("inconclusive", evidence, digest, NOT_REPRODUCING, level, limitations, [], unproven, checks_by_finding)
+            return VerificationResult("failed", evidence, digest, "verification_failed", level, limitations, [], unproven, checks_by_finding)
         if status == "passed":
             scanner_status, scanner_reason = self._scanner_verdict(request, evidence)
             if scanner_status != "passed":
-                return VerificationResult(scanner_status, evidence, digest, scanner_reason, level, limitations, [], unproven)
-            return VerificationResult("passed", evidence, digest, None, level, limitations, verdicts.proven, unproven)
+                return VerificationResult(scanner_status, evidence, digest, scanner_reason, level, limitations, [], unproven, checks_by_finding)
+            return VerificationResult("passed", evidence, digest, None, level, limitations, verdicts.proven, unproven, checks_by_finding)
         if status == "failed":
-            return VerificationResult("failed", evidence, digest, "verification_failed", level, limitations, [], unproven)
+            return VerificationResult("failed", evidence, digest, "verification_failed", level, limitations, [], unproven, checks_by_finding)
         if status == "unsupported":
-            return VerificationResult("unsupported", evidence, digest, "sandbox_profile_unsupported", level, limitations, [], unproven)
-        return VerificationResult("inconclusive", evidence, digest, "verification_inconclusive", level, limitations, [], unproven)
+            return VerificationResult("unsupported", evidence, digest, "sandbox_profile_unsupported", level, limitations, [], unproven, checks_by_finding)
+        return VerificationResult("inconclusive", evidence, digest, "verification_inconclusive", level, limitations, [], unproven, checks_by_finding)
 
     @staticmethod
     def _untested(finding_id: str) -> dict[str, str]:

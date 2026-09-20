@@ -106,6 +106,10 @@ class RepairPolicy(StrictModel):
     max_snapshot_bytes: int = Field(default=10_000_000, ge=1, le=100_000_000)
     max_tool_calls: int = Field(default=20, ge=1, le=50)
     max_attempts: int = Field(default=3, ge=1, le=5)
+    # After a verification proves only some of a group's findings, the agent is sent back this
+    # many times at most to add hunks and tests for the unproven ones. Each revision also
+    # spends one of `max_attempts`, so the attempt budget still bounds the run.
+    max_revisions: int = Field(default=2, ge=0, le=5)
     max_context_chars: int = Field(default=128_000, ge=1000, le=1_000_000)
     # One tool result never returns more than this many characters, so a single read cannot
     # dominate the prompt.
