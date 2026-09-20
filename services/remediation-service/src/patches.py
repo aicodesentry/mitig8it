@@ -193,8 +193,8 @@ def _reject_missing_dependencies(path: str, original: str, replacement: str, sna
             f"missing_dependency:{name}",
             f"{name!r} is not a Node built-in and no package.json in the snapshot declares it. "
             f"The snapshot declares: {', '.join(sorted(allowed)) or 'nothing'}. Rewrite the file to "
-            "use only those, Node built-ins, and relative repository paths: require the changed "
-            "module directly and call its exported handlers rather than adding a test framework.",
+            "use only those, Node built-ins, and relative repository paths; never add a test "
+            "framework. " + BEHAVIOR_TEST_GUIDANCE,
         )
 
 
@@ -253,10 +253,15 @@ def _path_forbidden(path: str, request: RepairRequest) -> bool:
 _FS_READ_RE = re.compile(r"\b(?:readFileSync|readFile)\s*\(")
 _DIRNAME_REQUIRE_RE = re.compile(r"\brequire\s*\([^)]*__dirname")
 BEHAVIOR_TEST_GUIDANCE = (
-    "Require the changed module by relative path, call the affected function or route handler "
-    "with fake req and res objects and stubbed collaborators (patch Module.prototype.require or "
-    "Module._load before the require so no package needs to be installed), and exit non-zero "
-    "only when the vulnerable behavior is observed."
+    "Nothing is installed, so stub every package the changed module requires by replacing "
+    "Module._load (from node:module) before requiring it: for example express as a function "
+    "whose Router() returns an object whose get/post record each path's handler, pg as { Pool } "
+    "whose query records sql and params and resolves { rows: [] }, child_process as exec and "
+    "execFile that record the command and call back. Then require the changed module by "
+    "relative path, call the recorded handler or exported function with fake req (params, "
+    "query, body) and res (status/json/type/send returning this) carrying an injection payload, "
+    "and exit non-zero only when the payload reaches the SQL text, the shell command, or a path "
+    "outside the base directory."
 )
 
 

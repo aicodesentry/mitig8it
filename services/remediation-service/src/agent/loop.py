@@ -27,7 +27,7 @@ Every change is one line-range hunk, never a whole file: original_lines quotes t
 A rejected call returns a reason and guidance: correct that exact problem, never resend the same arguments. Two identical rejections end the run.
 Never edit tests, scanner/policy/workflow/lock files, suppress findings, remove functionality, or claim verification.
 Every identifier a hunk uses must be imported in the same propose_patch call; a module that throws on load is rejected.
-The sandbox has no network: with sandbox.dependencies_installed false a test cannot load a declared dependency.
+No network and nothing installed: a test stubs each package the changed module requires via Module._load before requiring it.
 regression_tests: one behavior test per repaired finding, per that field's rules. A candidate claims only findings whose test fails on the original and passes on the patch; the rest are reported not repaired.
 Only request_verification can produce verification. If requirements are ambiguous or support is missing, call abstain.
 Do not expose chain-of-thought: give only hypothesis, behavior contract, assumptions, citations, and patch."""
