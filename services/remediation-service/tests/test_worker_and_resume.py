@@ -343,3 +343,135 @@ async def test_resume_after_a_tool_result_reserves_and_settles_the_next_call_nor
     assert result.usage["input_tokens"] >= 100
     assert "chatcmpl-earlier" in result.usage["provider_request_ids"]
     assert result.evidence["budget_reservation"]["settled_calls"] == 1
+
+
+class SlowCheckpoints:
+    async def load(self):
+        return None
+
+    async def reserve_provider_call(self, sequence, tokens, usd):
+        return True
+
+    async def save_provider_action(self, state, action, actual_tokens, actual_usd):
+        return None
+
+    async def save_completed_step(self, state):
+        return None
+
+
+def _local_backend(tmp_path, request):
+    from src.executions import LocalExecutionBackend
+
+    backend = LocalExecutionBackend(tmp_path / "state")
+    backend.enqueue(request)
+    return backend
+
+
+@pytest.mark.asyncio
+async def test_the_lease_survives_a_provider_and_sandbox_call_three_times_its_length(monkeypatch, tmp_path, request_payload):
+    """The live failure: one attempt held the lease for its whole length without one renewal.
+
+    The renewals run on their own task, so a model call and a blocking sandbox run that
+    together last three leases must still finish under the first attempt.
+    """
+    import asyncio
+    import time
+
+    from src.executions import LocalExecutionBackend
+
+    request = RepairRequest.model_validate(request_payload)
+    backend = _local_backend(tmp_path, request)
+    monkeypatch.setenv("REMEDIATION_WORKER_HEARTBEAT_SECONDS", "0.05")
+    monkeypatch.setenv("REMEDIATION_WORKER_LEASE_SECONDS", "1")
+    lease = worker.lease_seconds()
+
+    class SlowEngine:
+        def __init__(self, agent_factory=None):
+            pass
+
+        async def repair(self, req, checkpoints):
+            # A model call that never yields to a renewal, then a sandbox run in a thread.
+            await asyncio.sleep(lease * 1.6)
+            await asyncio.to_thread(time.sleep, lease * 1.6)
+            return response_for(req)
+
+    monkeypatch.setattr(worker, "RepairEngine", SlowEngine)
+    assert await worker.run_once(backend, "worker-slow") is True
+
+    with backend._lock, backend._connect() as connection:
+        state, attempt = connection.execute("SELECT state, attempt FROM executions").fetchone()
+    assert attempt == 1, "the lease was lost and the execution was reclaimed"
+    assert state == "unsupported"
+    assert isinstance(backend, LocalExecutionBackend)
+
+
+@pytest.mark.asyncio
+async def test_a_lost_lease_cancels_the_running_attempt_before_the_reclaim(monkeypatch, request_payload):
+    """Two attempts must never run at once, so the abandoned one is stopped and waited for."""
+    import asyncio
+
+    request = RepairRequest.model_validate(request_payload)
+    cancelled = asyncio.Event()
+
+    class RefusingBackend(StubBackend):
+        def __init__(self, req):
+            super().__init__(req, published=True)
+            self.heartbeats = 0
+
+        def heartbeat(self, execution_id, worker_id, lease_seconds=60):
+            self.heartbeats += 1
+            return False
+
+    class NeverEndingEngine:
+        def __init__(self, agent_factory=None):
+            pass
+
+        async def repair(self, req, checkpoints):
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return response_for(req)
+
+    monkeypatch.setenv("REMEDIATION_WORKER_HEARTBEAT_SECONDS", "0.05")
+    monkeypatch.setattr(worker, "RepairEngine", NeverEndingEngine)
+    backend = RefusingBackend(request)
+    assert await worker.run_once(backend, "worker-a") is True
+    # Set by the time run_once returns: the attempt is stopped before the loop can reclaim.
+    assert cancelled.is_set()
+    assert backend.heartbeats >= 1
+    assert worker.COUNTERS["results_published"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_attempt_error_releases_the_lease_and_is_logged(monkeypatch, tmp_path, request_payload, caplog):
+    """A raised attempt used to hold the lease to its full length with no log line."""
+    request = RepairRequest.model_validate(request_payload)
+    backend = _local_backend(tmp_path, request)
+
+    class RaisingEngine:
+        def __init__(self, agent_factory=None):
+            pass
+
+        async def repair(self, req, checkpoints):
+            raise FileNotFoundError("the sandbox workspace root is absent")
+
+    monkeypatch.setattr(worker, "RepairEngine", RaisingEngine)
+    with caplog.at_level("ERROR"):
+        assert await worker.run_once(backend, "worker-a") is True
+    assert any("unexpected error" in record.message for record in caplog.records)
+
+    with backend._lock, backend._connect() as connection:
+        state, owner, expires, history = connection.execute(
+            "SELECT state, lease_owner, lease_expires_at, attempt_history FROM executions"
+        ).fetchone()
+    assert (state, owner, expires) == ("queued", None, None), "the lease was held after a failed attempt"
+    import json as _json
+
+    attempts = _json.loads(history)
+    assert attempts[-1]["attempt"] == 1
+    assert attempts[-1]["reason"] == "internal_error:FileNotFoundError"
+    assert attempts[-1]["claimed_at"] and attempts[-1]["ended_at"]
+    # The released lease means the next attempt starts at once instead of waiting it out.
+    assert backend.claim("worker-b", 90) is not None

@@ -96,3 +96,56 @@ def test_cancel_revokes_durable_execution(monkeypatch, request_payload):
     cancelled = client.post(f"/v1/repair/{execution_id}/cancel", headers={"Authorization": "Bearer secret"})
     assert cancelled.status_code == 200
     assert client.get(f"/v1/repair/{execution_id}", headers={"Authorization": "Bearer secret"}).json()["state"] == "cancelled"
+
+
+class DeadLetteredBackend:
+    """An execution whose recovery budget was spent, with no result artifact to explain it."""
+
+    def __init__(self):
+        self.record = ExecutionRecord(
+            "sha256:" + "4" * 64,
+            "failed",
+            "sha256:" + "5" * 64,
+            "gs://bucket/input#sha256:x",
+            None,
+            None,
+            (
+                {
+                    "attempt": 1,
+                    "worker_id": "worker-a",
+                    "claimed_at": "2026-09-20T02:01:46.000+00:00",
+                    "lease_expires_at": "2026-09-20T02:03:16.000+00:00",
+                    "ended_at": "2026-09-20T02:01:48.000+00:00",
+                    "reason": "internal_error:FileNotFoundError",
+                },
+                {
+                    "attempt": 2,
+                    "worker_id": "worker-a",
+                    "claimed_at": "2026-09-20T02:03:18.000+00:00",
+                    "lease_expires_at": "2026-09-20T02:04:48.000+00:00",
+                    "ended_at": "2026-09-20T02:03:20.000+00:00",
+                    "reason": "lease_lost",
+                },
+            ),
+        )
+
+    def get(self, execution_id):
+        return self.record if execution_id == self.record.execution_id else None
+
+
+def test_a_dead_lettered_execution_reports_its_attempt_history(monkeypatch):
+    monkeypatch.setenv("REMEDIATION_SERVICE_INTERNAL_SECRET", "secret")
+    backend = DeadLetteredBackend()
+    monkeypatch.setattr(main, "get_execution_backend", lambda: backend)
+    response = TestClient(app).get(
+        f"/v1/repair/{backend.record.execution_id}", headers={"x-internal-secret": "secret"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "failed"
+    assert body["reason"]["code"] == "worker_attempts_exhausted"
+    attempts = body["attempts"]
+    assert [attempt["attempt"] for attempt in attempts] == [1, 2]
+    assert attempts[0]["reason"] == "internal_error:FileNotFoundError"
+    assert attempts[1]["reason"] == "lease_lost"
+    assert all(attempt["claimed_at"] and attempt["ended_at"] for attempt in attempts)
