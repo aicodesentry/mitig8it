@@ -95,6 +95,25 @@ test('snapshot verifies blob bytes and carries all tree metadata', async () => {
   expect(result.head_tree_oid).toBe(tree);
 });
 
+test('snapshot includes Python sources and dependency manifests so Python findings can be repaired', async () => {
+  const py = 'API_KEY = "x"\n';
+  const req = 'flask==3.0.0\n';
+  const blob = (text) => require('crypto').createHash('sha1').update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest('hex');
+  const entries = [{ path: 'text.py', type: 'blob', mode: '100644', sha: blob(py), size: Buffer.byteLength(py) },
+    { path: 'requirements.txt', type: 'blob', mode: '100644', sha: blob(req), size: Buffer.byteLength(req) },
+    { path: 'README.md', type: 'blob', mode: '100644', sha: 'e'.repeat(40), size: 10 }];
+  const contents = { [blob(py)]: py, [blob(req)]: req };
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/git/commits/')) return { data: { tree: { sha: tree } } };
+    if (request.url.includes('/git/trees/')) return { data: { truncated: false, tree: entries } };
+    if (request.url.includes('/git/blobs/')) { const sha = request.url.split('/git/blobs/')[1]; return { data: { encoding: 'base64', content: Buffer.from(contents[sha]).toString('base64') } }; }
+    return repositoryResponse(request);
+  });
+  const result = await fetchRemediationSnapshot({ ...payload(), finding_paths: ['text.py'] });
+  expect(result.files.map(file => file.path).sort()).toEqual(['requirements.txt', 'text.py']);
+  expect(result.files.find(file => file.path === 'text.py').content).toBe(py);
+});
+
 test('snapshot rejects truncated repository trees rather than guessing missing source', async () => {
   axios.mockImplementation(async request => {
     if (request.url.includes('/git/commits/')) return { data: { tree: { sha: tree } } };
