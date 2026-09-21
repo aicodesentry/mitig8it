@@ -880,6 +880,23 @@ test('the verification check blocks on any open finding severity and the residua
   assert.match(lastCheckRun.title, /no open findings remain/);
 });
 
+test('a failed automatic job does not block the next analysis from queuing a fresh automatic job for the same head', async () => {
+  const autoGenerate = require('../../src/services/remediationAutoGenerate');
+  const f = await fixture();
+  const open = await insertOpenFinding(f, f.run, { severity: 'high', path: 'src/app.js', title: 'SQL injection' });
+  await pool.query(`UPDATE analysis_run_findings SET snapshot = snapshot || $2::jsonb WHERE finding_id=$1`, [open, JSON.stringify({ fingerprint: `fp-${open}`, line_start: 10, line_end: 10 })]);
+  const first = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: f.pr, analysisRunId: f.run });
+  assert.equal(first.enqueued, true);
+  await workerQuery(`UPDATE remediation_jobs SET state='inconclusive', stage='inconclusive', failure_reason='{"code":"SNAPSHOT_UNAVAILABLE"}' WHERE id=$1`, [first.job_id]);
+  const retry = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: f.pr, analysisRunId: f.run });
+  assert.equal(retry.enqueued, true);
+  assert.notEqual(retry.job_id, first.job_id);
+  const jobs = await workerQuery(`SELECT state FROM remediation_jobs WHERE pull_request_id=$1 AND head_sha=$2 AND origin='automatic' ORDER BY created_at`, [f.pr, f.head]);
+  assert.deepEqual(jobs.rows.map((row) => row.state), ['inconclusive', 'queued']);
+  const again = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: f.pr, analysisRunId: f.run });
+  assert.deepEqual(again, { enqueued: false, reason: 'exists', job_id: retry.job_id });
+});
+
 test('one automatic job is queued per head after analysis, it is claimable without a creator, and its verified fixes are published once under the findings', async () => {
   const autoGenerate = require('../../src/services/remediationAutoGenerate');
   const f = await fixture();
