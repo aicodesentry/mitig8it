@@ -479,24 +479,42 @@ async function fetchRemediationSnapshot(payload) {
     : /(^|\/)(package\.json|tsconfig[^/]*\.json|requirements[^/]*\.txt|pyproject\.toml|setup\.cfg|Pipfile)$/.test(entry.path) ? 1
       : directories.some(directory => entry.path.startsWith(directory)) ? 2 : 3;
   const ranked = [...sources].sort((left, right) => rank(left) - rank(right) || left.path.localeCompare(right.path));
+  // The snapshot is context for the repair agent, not a repository mirror. Finding files
+  // and manifests always ship; sibling files and unrelated files are capped so a large
+  // repository does not push the fetch past the caller's deadline.
+  const RANK_LIMITS = { 2: 30, 3: 10 };
+  const rankCounts = { 2: 0, 3: 0 };
   const selected = [];
   let sourceBytes = 0;
   for (const entry of ranked) {
     const size = Number(entry.size);
-    if (!Number.isSafeInteger(size) || size < 0 || size > 500000 || sourceBytes + size > 500000 || selected.length >= 120) {
+    const entryRank = rank(entry);
+    const rankFull = entryRank >= 2 && rankCounts[entryRank] >= RANK_LIMITS[entryRank];
+    if (!Number.isSafeInteger(size) || size < 0 || size > 500000 || sourceBytes + size > 500000 || selected.length >= 60 || rankFull) {
       if (requiredPaths.has(entry.path)) throw new OperationError('Finding source exceeds the repair snapshot budget', 422);
       continue;
     }
     selected.push(entry);
+    if (entryRank >= 2) rankCounts[entryRank] += 1;
     sourceBytes += size;
   }
-  const files = [];
-  for (const entry of selected) {
+  const fetchBlob = async (entry) => {
     const blob = await githubRequest('get',
       `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/git/blobs/${entry.sha}`, token);
     if (blob.data?.encoding !== 'base64' || typeof blob.data.content !== 'string') {
       throw new OperationError('GitHub did not return the requested source blob', 502);
     }
+    return blob;
+  };
+  const BLOB_CONCURRENCY = 8;
+  const blobs = [];
+  for (let start = 0; start < selected.length; start += BLOB_CONCURRENCY) {
+    const batch = selected.slice(start, start + BLOB_CONCURRENCY);
+    blobs.push(...(await Promise.all(batch.map(fetchBlob))));
+  }
+  const files = [];
+  for (const [index, entry] of selected.entries()) {
+    const blob = blobs[index];
     const bytes = Buffer.from(blob.data.content, 'base64');
     if (bytes.length > 500000 || bytes.includes(0) || !Buffer.from(bytes.toString('utf8')).equals(bytes)) {
       throw new OperationError('Repair snapshot contains unsupported binary or oversized source', 422);
