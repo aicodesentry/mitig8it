@@ -19,10 +19,18 @@ from typing import Any
 from ..models import RepairRequest, VerificationCheck
 from ..patches import PatchBundle
 from ..retrieval import Snapshot
-from ..sandbox.harness import HARNESS_OCCUPIED_LIMITATION, HARNESS_PATH, harness_snapshot_entry
+from ..sandbox.harness import (
+    HARNESS_OCCUPIED_LIMITATION,
+    HARNESS_PATH,
+    PYTHON_HARNESS_OCCUPIED_LIMITATION,
+    PYTHON_HARNESS_PATH,
+    harness_snapshot_entry,
+    python_harness_snapshot_entry,
+)
 
 REGRESSION_CHECK_PREFIX = "generated_regression_test"
 SYNTAX_CHECK_PREFIX = "generated_node_syntax"
+PYTHON_SYNTAX_CHECK_PREFIX = "generated_python_syntax"
 REPOSITORY_TEST_CHECK_ID = "generated_repository_test_script"
 
 REGRESSION_TEST_TIMEOUT_SECONDS = 60
@@ -30,7 +38,12 @@ SYNTAX_CHECK_TIMEOUT_SECONDS = 30
 REPOSITORY_TEST_TIMEOUT_SECONDS = 300
 
 SYNTAX_CHECKED_SUFFIXES = {".js", ".cjs", ".mjs"}
+PYTHON_SUFFIXES = {".py"}
+PYTHON_TEST_SUFFIX = ".test.py"
 MAX_SYNTAX_CHECKS = 20
+# The sandbox images carry `python3` on PATH (the runner image installs Debian's python3; the
+# service image is the official python:3.12 image), so a fixed argv never needs a full path.
+PYTHON_EXECUTABLE = "python3"
 
 NO_REGRESSION_TEST_LIMITATION = "no agent-generated regression test was run"
 NO_REPOSITORY_TEST_SCRIPT_LIMITATION = (
@@ -106,39 +119,61 @@ def build_effective_checks(request: RepairRequest, snapshot: Snapshot, bundle: P
 
     # 1. The agent's reproducer. It runs on both trees, so the evidence distinguishes a repair
     #    from a candidate that merely removed the feature: baseline must fail, candidate pass.
+    python_tests = False
+    node_tests = False
     for test in bundle.generated_tests:
         check_id = _unique(REGRESSION_CHECK_PREFIX, used)
         regression_ids.add(check_id)
         regression_findings[check_id] = test.finding_id
         generated_files.append({"path": test.path, "content": test.content})
+        if test.path.endswith(PYTHON_TEST_SUFFIX):
+            # The Python harness is also the runner: it registers itself as `harness` and
+            # executes the test as __main__, so the test needs no sys.path preamble.
+            python_tests = True
+            argv = [PYTHON_EXECUTABLE, PYTHON_HARNESS_PATH, test.path]
+        else:
+            node_tests = True
+            argv = ["node", test.path]
         checks.append(
             VerificationCheck(
                 check_id=check_id,
                 kind="exploit",
-                argv=["node", test.path],
+                argv=argv,
                 timeout_seconds=REGRESSION_TEST_TIMEOUT_SECONDS,
             )
         )
     harness_files: list[dict[str, str]] = []
     if not bundle.generated_tests:
         limitations.append(NO_REGRESSION_TEST_LIMITATION)
-    elif HARNESS_PATH in snapshot.paths:
-        # The materializer refuses duplicate paths, so a repository that occupies the harness
-        # path keeps its own file and the limitation says the harness was not supplied.
-        limitations.append(HARNESS_OCCUPIED_LIMITATION)
-    else:
-        harness_files.append(harness_snapshot_entry())
+    # The materializer refuses duplicate paths, so a repository that occupies a harness path
+    # keeps its own file and the limitation says that harness was not supplied.
+    if node_tests:
+        if HARNESS_PATH in snapshot.paths:
+            limitations.append(HARNESS_OCCUPIED_LIMITATION)
+        else:
+            harness_files.append(harness_snapshot_entry())
+    if python_tests:
+        if PYTHON_HARNESS_PATH in snapshot.paths:
+            limitations.append(PYTHON_HARNESS_OCCUPIED_LIMITATION)
+        else:
+            harness_files.append(python_harness_snapshot_entry())
 
     # 2. `node --check` on every changed JavaScript file. It needs no fixture and no installed
     #    dependency, so it is the one behavior check every Node repository can always run.
+    #    Python files get `python3 -m py_compile`, the equivalent parse-only check.
     for patch in bundle.patches[:MAX_SYNTAX_CHECKS]:
-        if PurePosixPath(patch.path).suffix.lower() not in SYNTAX_CHECKED_SUFFIXES:
+        suffix = PurePosixPath(patch.path).suffix.lower()
+        if suffix in SYNTAX_CHECKED_SUFFIXES:
+            check_id, argv = _unique(SYNTAX_CHECK_PREFIX, used), ["node", "--check", patch.path]
+        elif suffix in PYTHON_SUFFIXES:
+            check_id, argv = _unique(PYTHON_SYNTAX_CHECK_PREFIX, used), [PYTHON_EXECUTABLE, "-m", "py_compile", patch.path]
+        else:
             continue
         checks.append(
             VerificationCheck(
-                check_id=_unique(SYNTAX_CHECK_PREFIX, used),
+                check_id=check_id,
                 kind="typecheck",
-                argv=["node", "--check", patch.path],
+                argv=argv,
                 timeout_seconds=SYNTAX_CHECK_TIMEOUT_SECONDS,
             )
         )
