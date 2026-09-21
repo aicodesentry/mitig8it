@@ -13,6 +13,7 @@ const OPERATION_NAMES = [
   'mergeRemediationAction',
   'postInlineComment',
   'prepareRemediationAction',
+  'publishFindingFixSections',
   'publishRemediationComment',
   'readMergeEligibility',
   'readPullRequestHead',
@@ -27,6 +28,7 @@ jest.mock('../services/githubInternalOperations', () => {
     'fetchFileContents', 'fetchPullRequestFiles', 'fetchRemediationSnapshot', 'mergeRemediationAction',
     'postInlineComment', 'prepareRemediationAction', 'readMergeEligibility', 'readPullRequestHead',
     'reconcileRemediationAction', 'submitPullRequestReview', 'authorizeRemediationActor', 'publishRemediationComment',
+    'publishFindingFixSections',
   ]) {
     operations[name] = jest.fn();
   }
@@ -489,6 +491,62 @@ const cases = [
       verification_check_name: response.getVerificationCheckName(),
     }),
   },
+  {
+    name: 'finding-fixes',
+    path: '/github/remediation/finding-fixes',
+    rpc: 'publishFindingFixSections',
+    operation: 'publishFindingFixSections',
+    body: {
+      ...envelopeBody,
+      preview_url: 'https://app.example.test/dashboard/pull-requests/pr-1/findings',
+      sections: [
+        {
+          candidate_id: 'candidate-0001', finding_fingerprint: 'fp-1', path: 'src/app.js', finding_line: 12,
+          hunk: { start_line: 12, end_line: 12, original_lines: ['old'], replacement_lines: ['new', 'more'] },
+          unified_diff: '@@ -12 +12,2 @@\n-old\n+new\n+more', not_suggestable_reason: '', behavior_preserved: 'Same result.',
+          evidence: ['test failed on original, passed on fix'], limitations: ['no build'], skipped_reason: '', verification_level: 'independent_sandbox',
+        },
+        {
+          candidate_id: '', finding_fingerprint: 'fp-2', path: 'src/app.js', finding_line: 30, hunk: null,
+          unified_diff: '', not_suggestable_reason: '', behavior_preserved: '', evidence: [], limitations: [],
+          skipped_reason: 'outside the enabled repair families', verification_level: '',
+        },
+      ],
+    },
+    request: () => {
+      const request = new githubPb.FindingFixSectionsRequest();
+      request.setEnvelope(buildEnvelope());
+      request.setPreviewUrl('https://app.example.test/dashboard/pull-requests/pr-1/findings');
+      const first = new githubPb.FindingFixSection();
+      first.setCandidateId('candidate-0001'); first.setFindingFingerprint('fp-1'); first.setPath('src/app.js'); first.setFindingLine(12);
+      const hunk = new githubPb.FindingFixHunk();
+      hunk.setStartLine(12); hunk.setEndLine(12); hunk.setOriginalLinesList(['old']); hunk.setReplacementLinesList(['new', 'more']);
+      first.setHunk(hunk);
+      first.setUnifiedDiff('@@ -12 +12,2 @@\n-old\n+new\n+more'); first.setBehaviorPreserved('Same result.');
+      first.setEvidenceList(['test failed on original, passed on fix']); first.setLimitationsList(['no build']); first.setVerificationLevel('independent_sandbox');
+      const second = new githubPb.FindingFixSection();
+      second.setFindingFingerprint('fp-2'); second.setPath('src/app.js'); second.setFindingLine(30);
+      second.setSkippedReason('outside the enabled repair families');
+      request.setSectionsList([first, second]);
+      return request;
+    },
+    result: {
+      state: 'published', operation_id: actionId,
+      results: [
+        { finding_fingerprint: 'fp-1', candidate_id: 'candidate-0001', comment_id: 77, mode: 'suggestion', updated: true, reason: '' },
+        { finding_fingerprint: 'fp-2', candidate_id: '', comment_id: 78, mode: 'skipped', updated: true, reason: 'outside the enabled repair families' },
+      ],
+      reason: '',
+    },
+    read: (response) => ({
+      state: response.getState(), operation_id: response.getOperationId(),
+      results: response.getResultsList().map((item) => ({
+        finding_fingerprint: item.getFindingFingerprint(), candidate_id: item.getCandidateId(), comment_id: item.getCommentId(),
+        mode: item.getMode(), updated: item.getUpdated(), reason: item.getReason(),
+      })),
+      reason: response.getReason(),
+    }),
+  },
 ];
 
 function callGrpc(rpc, request) {
@@ -505,7 +563,7 @@ test('the operations module exposes every function both transports dispatch to',
   for (const name of OPERATION_NAMES) {
     expect(typeof require('../services/githubInternalOperations')[name]).toBe('function');
   }
-  expect(cases).toHaveLength(12);
+  expect(cases).toHaveLength(13);
 });
 
 test.each(cases)('$name reaches the same operation with the same payload over HTTP and gRPC', async (testCase) => {

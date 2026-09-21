@@ -115,6 +115,28 @@ function deserialize_mitig8it_github_v1_FetchPullRequestFilesResponse(buffer_arg
   return github_pb.FetchPullRequestFilesResponse.deserializeBinary(new Uint8Array(buffer_arg));
 }
 
+function serialize_mitig8it_github_v1_FindingFixSectionsRequest(arg) {
+  if (!(arg instanceof github_pb.FindingFixSectionsRequest)) {
+    throw new Error('Expected argument of type mitig8it.github.v1.FindingFixSectionsRequest');
+  }
+  return Buffer.from(arg.serializeBinary());
+}
+
+function deserialize_mitig8it_github_v1_FindingFixSectionsRequest(buffer_arg) {
+  return github_pb.FindingFixSectionsRequest.deserializeBinary(new Uint8Array(buffer_arg));
+}
+
+function serialize_mitig8it_github_v1_FindingFixSectionsResponse(arg) {
+  if (!(arg instanceof github_pb.FindingFixSectionsResponse)) {
+    throw new Error('Expected argument of type mitig8it.github.v1.FindingFixSectionsResponse');
+  }
+  return Buffer.from(arg.serializeBinary());
+}
+
+function deserialize_mitig8it_github_v1_FindingFixSectionsResponse(buffer_arg) {
+  return github_pb.FindingFixSectionsResponse.deserializeBinary(new Uint8Array(buffer_arg));
+}
+
 function serialize_mitig8it_github_v1_MergeEligibilityRequest(arg) {
   if (!(arg instanceof github_pb.MergeEligibilityRequest)) {
     throw new Error('Expected argument of type mitig8it.github.v1.MergeEligibilityRequest');
@@ -545,6 +567,17 @@ var GitHubServiceService = exports.GitHubServiceService = {
     requestDeserialize: deserialize_mitig8it_github_v1_RemediationCommentRequest,
     responseSerialize: serialize_mitig8it_github_v1_RemediationCommentResponse,
     responseDeserialize: deserialize_mitig8it_github_v1_RemediationCommentResponse,
+  },
+  publishFindingFixSections: {
+    path: '/mitig8it.github.v1.GitHubService/PublishFindingFixSections',
+    requestStream: false,
+    responseStream: false,
+    requestType: github_pb.FindingFixSectionsRequest,
+    responseType: github_pb.FindingFixSectionsResponse,
+    requestSerialize: serialize_mitig8it_github_v1_FindingFixSectionsRequest,
+    requestDeserialize: deserialize_mitig8it_github_v1_FindingFixSectionsRequest,
+    responseSerialize: serialize_mitig8it_github_v1_FindingFixSectionsResponse,
+    responseDeserialize: deserialize_mitig8it_github_v1_FindingFixSectionsResponse,
   },
   authorizeRemediation: {
     path: '/mitig8it.github.v1.GitHubService/AuthorizeRemediation',

@@ -8,6 +8,7 @@ const { validateSuggestedFix, __private: validatorPrivate } = require('./suggest
 const findingsDb = require('../db/findings');
 const analysisRunsDb = require('../db/analysisRuns');
 const repositoriesDb = require('../db/repositories');
+const remediationAutoGenerate = require('./remediationAutoGenerate');
 
 const TIER2_SUPPORTED_EXTENSIONS = new Set([
   '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rb', '.php',
@@ -1068,6 +1069,15 @@ async function runAnalysisJob(payload) {
 
     if (shouldMarkBaselineSet) {
       await analysisRunsDb.markBaselineSet(repositoryId);
+    }
+
+    // The analysis is published and completed at this point. Automatic remediation
+    // is queued afterwards and never fails the run: the helper reports refusals, and
+    // even an unexpected throw is logged rather than surfaced as an analysis failure.
+    try {
+      await remediationAutoGenerate.enqueueForCompletedAnalysis({ pullRequestId, analysisRunId: runId });
+    } catch (enqueueError) {
+      logger.warn('Automatic remediation enqueue failed after analysis completion', { analysis_run_id: runId, error: enqueueError.message });
     }
   } catch (error) {
     const priorRetries = Number(payload.auto_retry_count || 0);

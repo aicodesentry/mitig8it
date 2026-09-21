@@ -376,6 +376,49 @@ class GitHubGrpcClient {
     };
   }
 
+  async publishFindingFixSections(payload) {
+    const request = new githubPb.FindingFixSectionsRequest();
+    request.setEnvelope(buildRemediationEnvelope(payload));
+    request.setPreviewUrl(payload.preview_url || '');
+    request.setSectionsList((payload.sections || []).map((section) => {
+      const message = new githubPb.FindingFixSection();
+      message.setCandidateId(section.candidate_id || '');
+      message.setFindingFingerprint(section.finding_fingerprint || '');
+      message.setPath(section.path || '');
+      message.setFindingLine(Number(section.finding_line || 0));
+      if (section.hunk) {
+        const hunk = new githubPb.FindingFixHunk();
+        hunk.setStartLine(Number(section.hunk.start_line || 0));
+        hunk.setEndLine(Number(section.hunk.end_line || 0));
+        hunk.setOriginalLinesList(section.hunk.original_lines || []);
+        hunk.setReplacementLinesList(section.hunk.replacement_lines || []);
+        message.setHunk(hunk);
+      }
+      message.setUnifiedDiff(section.unified_diff || '');
+      message.setNotSuggestableReason(section.not_suggestable_reason || '');
+      message.setBehaviorPreserved(section.behavior_preserved || '');
+      message.setEvidenceList(section.evidence || []);
+      message.setLimitationsList(section.limitations || []);
+      message.setSkippedReason(section.skipped_reason || '');
+      message.setVerificationLevel(section.verification_level || '');
+      return message;
+    }));
+    const response = await remediationUnary(this.client, 'publishFindingFixSections', request);
+    return {
+      state: response.getState(),
+      operation_id: response.getOperationId(),
+      results: response.getResultsList().map((item) => ({
+        finding_fingerprint: item.getFindingFingerprint(),
+        candidate_id: item.getCandidateId(),
+        comment_id: item.getCommentId(),
+        mode: item.getMode(),
+        updated: item.getUpdated(),
+        reason: item.getReason(),
+      })),
+      reason: response.getReason(),
+    };
+  }
+
   async createCheckRun(payload) {
     const request = new githubPb.CreateCheckRunRequest();
     request.setOwner(payload.owner || '');

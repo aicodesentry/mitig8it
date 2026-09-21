@@ -28,6 +28,14 @@ The dedicated worker is a separate `python -m src.worker` Deployment. It require
 3. Record only `applied`, `not_applied`, or `unresolved` based on reconciliation. An `unresolved` result blocks the action and pages the owner; it is not permission to regenerate or reapply a patch.
 4. Disable application (`REMEDIATION_ENABLED=false`) if any action appears to have bypassed exact-head/manifest checks. Preserve audit and GitHub response evidence before changing flags.
 
+## Automatic generation and inline publication
+
+With `REMEDIATION_GENERATE_ENABLED` and `REMEDIATION_PUBLISH_ENABLED` both on (the capabilities report shows `auto_generate.enabled: true`), the API queues one remediation job for the open, blocking findings of a pull request head right after that head's analysis is published. Rows carry `origin = 'automatic'` and a null `created_by`; a partial unique index allows one automatic job per head, whatever its state, and the queue step never fails or delays the analysis. When the job is ready, the `remediation.ready` outbox event publishes the verified fixes under the app's own inline finding comments: each section is wrapped in `<!-- mitig8it-fix:<candidate id> -->` markers and replaces earlier fix blocks in that comment, so a redelivery or a regeneration updates in place. A finding the repair service skipped receives one `No automatic fix: <reason>` line.
+
+1. To stop automatic generation only, set `REMEDIATION_PUBLISH_ENABLED=false`; manual generation from the panel keeps working. To stop both, set `REMEDIATION_GENERATE_ENABLED=false`.
+2. A `remediation.ready` event that fails on the GitHub adapter backs off and dead-letters after `REMEDIATION_OUTBOX_MAX_ATTEMPTS`; a refusal (`publish_disabled`, `head_moved`, `job_not_ready`) is recorded as delivered with nothing written. `remediation_jobs.inline_fixes_head_sha` records the head the sections were written for.
+3. The adapter reads the pull request head before writing and writes nothing when it moved; it edits only comments authored by the app. Applying a suggestion on GitHub is a normal human push that supersedes the job and starts a fresh analysis, exactly like any other push.
+
 ## Sandbox or verification failure
 
 1. Treat broker transport, invalid MAC, timeout, missing dependencies, network-policy failure, or an incomplete check as `inconclusive`, never passed.

@@ -17,6 +17,7 @@ const {
   createRemediationCheckRun,
   mergeRemediationAction,
   prepareRemediationAction,
+  publishFindingFixSections,
   publishRemediationComment,
   readMergeEligibility,
   readPullRequestHead,
@@ -714,4 +715,149 @@ test('remediation report comment reports reconciling on a lost write response wi
   const result = await publishRemediationComment(commentPayload());
   expect(result).toEqual({ state: 'reconciling', operation_id: actionId, reason: 'github_comment_outcome_ambiguous' });
   expect(axios.mock.calls.filter(([request]) => request.method === 'post')).toHaveLength(1);
+});
+
+// --- Verified fix sections under inline finding comments -------------------------
+
+const FINDING_MARKER = '<!-- mitig8it-finding:fp-sql-1 -->';
+const CANDIDATE = 'c1d2e3f4-0000-4000-8000-000000000001';
+
+function fixSection(overrides = {}) {
+  return {
+    candidate_id: CANDIDATE, finding_fingerprint: 'fp-sql-1', path: 'services/orders.js', finding_line: 12,
+    hunk: { start_line: 12, end_line: 12, original_lines: ['  const rows = await db.query(`SELECT * FROM orders WHERE id = ${id}`);'],
+      replacement_lines: ['  const rows = await db.query(\'SELECT * FROM orders WHERE id = $1\', [id]);'] },
+    unified_diff: '--- a/services/orders.js\n+++ b/services/orders.js\n@@ -12,1 +12,1 @@\n-  old\n+  new',
+    not_suggestable_reason: '', behavior_preserved: 'The order lookup returns the same row for the same id.',
+    evidence: ['Regression test tests/orders.regression.test.js: failed on the original code, passed on the fix.', 'Syntax check: passed on the fixed file.'],
+    limitations: ['verification ran in the development local sandbox without network, kernel, or filesystem isolation'],
+    verification_level: 'development_unverified', skipped_reason: '',
+    ...overrides,
+  };
+}
+
+function fixPayload(sections, overrides = {}) {
+  return payload({ preview_url: 'https://app.example.test/dashboard/pull-requests/pr-1/findings', sections, ...overrides });
+}
+
+// A scripted pull request with one bot finding comment. Writes are recorded in place.
+function findingCommentGitHub(comment, extra = {}) {
+  const comments = [comment];
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/pulls/9/comments') && request.method === 'get') return { data: comments };
+    if (request.url.includes('/pulls/comments/') && request.method === 'patch') {
+      const id = Number(request.url.split('/').pop());
+      const target = comments.find(item => item.id === id);
+      target.body = request.data.body;
+      return { data: { id } };
+    }
+    if (extra.handle) { const handled = extra.handle(request); if (handled) return handled; }
+    return repositoryResponse(request);
+  });
+  return comments;
+}
+
+test('a verified fix is appended to the existing finding comment as a suggestion and updated in place on a retry', async () => {
+  const comments = findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\n**SQL injection**\nUse parameters.`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
+  const first = await publishFindingFixSections(fixPayload([fixSection()]));
+  expect(first.state).toBe('published');
+  expect(first.results).toEqual([{ finding_fingerprint: 'fp-sql-1', candidate_id: CANDIDATE, comment_id: 77, mode: 'suggestion', updated: true, reason: '' }]);
+  const body = comments[0].body;
+  expect(body.startsWith(`${FINDING_MARKER}\n**SQL injection**\nUse parameters.`)).toBe(true);
+  expect(body).toContain(`<!-- mitig8it-fix:${CANDIDATE} -->`);
+  expect(body).toContain('**Recommended fix (verified in a development sandbox)**');
+  expect(body).toContain('```suggestion\n  const rows = await db.query(\'SELECT * FROM orders WHERE id = $1\', [id]);\n```');
+  expect(body).toContain('**Behavior preserved:** The order lookup returns the same row for the same id.');
+  expect(body).toContain('**Evidence:** Regression test tests/orders.regression.test.js: failed on the original code, passed on the fix. Syntax check: passed on the fixed file.');
+  expect(body).toContain('**Coverage limitations:** verification ran in the development local sandbox');
+  expect(body).toContain('Nothing is applied or merged automatically. Apply this suggestion on GitHub or use Apply this fix in [Mitig8it](https://app.example.test/dashboard/pull-requests/pr-1/findings)');
+  expect(body.trim().endsWith(`<!-- /mitig8it-fix:${CANDIDATE} -->`)).toBe(true);
+
+  // The same input again: the body is unchanged, so nothing is written.
+  const second = await publishFindingFixSections(fixPayload([fixSection()]));
+  expect(second.results[0]).toMatchObject({ mode: 'suggestion', updated: false });
+  expect(axios.mock.calls.filter(([request]) => request.method === 'patch')).toHaveLength(1);
+
+  // A regenerated candidate replaces the earlier block instead of stacking under it.
+  const regenerated = 'c1d2e3f4-0000-4000-8000-000000000002';
+  const third = await publishFindingFixSections(fixPayload([fixSection({ candidate_id: regenerated })]));
+  expect(third.results[0]).toMatchObject({ candidate_id: regenerated, mode: 'suggestion', updated: true });
+  expect(comments[0].body).not.toContain(`<!-- mitig8it-fix:${CANDIDATE} -->`);
+  expect(comments[0].body.match(/<!-- mitig8it-fix:/g)).toHaveLength(1);
+  expect(comments[0].body.startsWith(`${FINDING_MARKER}\n**SQL injection**\nUse parameters.`)).toBe(true);
+});
+
+test('a multi-line hunk inside a ranged finding comment becomes a suggestion for the whole comment range', async () => {
+  const file = ['const path = require(\'path\');', 'function read(base, name) {', '  const target = path.join(base, name);', '  return fs.readFileSync(target);', '}', 'module.exports = { read };'].join('\n');
+  const comments = findingCommentGitHub(
+    { id: 78, body: `${FINDING_MARKER}\n**Path traversal**`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', start_line: 2, line: 5, side: 'RIGHT' },
+    { handle: (request) => (request.url.includes('/contents/services/orders.js') ? { data: { content: Buffer.from(file).toString('base64') } } : null) }
+  );
+  const section = fixSection({ hunk: { start_line: 3, end_line: 4,
+    original_lines: ['  const target = path.join(base, name);', '  return fs.readFileSync(target);'],
+    replacement_lines: ['  const target = path.resolve(base, name);', '  if (!target.startsWith(base + path.sep)) throw new Error(\'outside base\');', '  return fs.readFileSync(target);'] } });
+  const result = await publishFindingFixSections(fixPayload([section]));
+  expect(result.results[0]).toMatchObject({ mode: 'suggestion', updated: true });
+  expect(comments[0].body).toContain([
+    '```suggestion', 'function read(base, name) {', '  const target = path.resolve(base, name);',
+    '  if (!target.startsWith(base + path.sep)) throw new Error(\'outside base\');', '  return fs.readFileSync(target);', '}', '```',
+  ].join('\n'));
+});
+
+test('a hunk outside the comment range or spanning several regions falls back to the unified diff with the reason', async () => {
+  const comments = findingCommentGitHub({ id: 79, body: `${FINDING_MARKER}\n**Command injection**`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
+  const outside = await publishFindingFixSections(fixPayload([fixSection({ hunk: { start_line: 10, end_line: 14, original_lines: [], replacement_lines: ['x'] } })]));
+  expect(outside.results[0]).toMatchObject({ mode: 'diff', updated: true, reason: 'the fix changes lines 10-14, and this comment can only carry a suggestion for line 12' });
+  expect(comments[0].body).toContain('This fix cannot be offered as a GitHub suggestion because the fix changes lines 10-14, and this comment can only carry a suggestion for line 12. The verified change is:');
+  expect(comments[0].body).toContain('```diff\n--- a/services/orders.js\n+++ b/services/orders.js\n@@ -12,1 +12,1 @@\n-  old\n+  new\n```');
+  expect(comments[0].body).not.toContain('```suggestion');
+
+  const regions = await publishFindingFixSections(fixPayload([fixSection({ hunk: null, not_suggestable_reason: 'multiple_regions' })]));
+  expect(regions.results[0]).toMatchObject({ mode: 'diff', reason: 'the fix changes several separate regions of the file' });
+});
+
+test('a skipped finding receives one "No automatic fix" line and an unknown marker is reported, never created', async () => {
+  const comments = findingCommentGitHub({ id: 80, body: `${FINDING_MARKER}\n**Open redirect**`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
+  const result = await publishFindingFixSections(fixPayload([
+    fixSection({ candidate_id: '', hunk: null, skipped_reason: 'This finding is outside the enabled repair families.' }),
+    fixSection({ finding_fingerprint: 'fp-unknown' }),
+  ]));
+  expect(result.results).toEqual([
+    { finding_fingerprint: 'fp-sql-1', candidate_id: '', comment_id: 80, mode: 'skipped', updated: true, reason: 'This finding is outside the enabled repair families.' },
+    { finding_fingerprint: 'fp-unknown', candidate_id: CANDIDATE, comment_id: 0, mode: 'comment_not_found', updated: false, reason: 'no finding comment carries this marker' },
+  ]);
+  expect(comments[0].body).toContain('<!-- mitig8it-fix:none -->\nNo automatic fix: This finding is outside the enabled repair families.\n<!-- /mitig8it-fix:none -->');
+  expect(axios.mock.calls.filter(([request]) => request.method === 'post')).toHaveLength(0);
+});
+
+test('fix sections never edit a marker comment by another author and are not written after the head moved', async () => {
+  findingCommentGitHub({ id: 81, body: `${FINDING_MARKER}\nforged`, user: { login: 'someone-else' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
+  const result = await publishFindingFixSections(fixPayload([fixSection()]));
+  expect(result.results[0]).toMatchObject({ mode: 'comment_not_found', updated: false });
+  expect(axios.mock.calls.filter(([request]) => request.method === 'patch')).toHaveLength(0);
+
+  jest.clearAllMocks();
+  githubAppAuth.getInstallationToken.mockResolvedValue('installation-token');
+  githubAppAuth.getAppBotLogin.mockResolvedValue('mitig8it[bot]');
+  axios.mockImplementation(async request => {
+    const response = repositoryResponse(request);
+    if (request.url.endsWith('/pulls/9')) response.data.head.sha = 'f'.repeat(40);
+    return response;
+  });
+  const stale = await publishFindingFixSections(fixPayload([fixSection()]));
+  expect(stale).toEqual({ state: 'stale', operation_id: actionId, results: [], reason: 'head_moved' });
+  expect(axios.mock.calls.filter(([request]) => request.method === 'patch')).toHaveLength(0);
+});
+
+test('fix sections report reconciling on a lost write response without a second attempt', async () => {
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/pulls/9/comments') && request.method === 'get') {
+      return { data: [{ id: 82, body: `${FINDING_MARKER}\nbody`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' }] };
+    }
+    if (request.method === 'patch') throw new Error('socket hang up');
+    return repositoryResponse(request);
+  });
+  const result = await publishFindingFixSections(fixPayload([fixSection()]));
+  expect(result).toEqual({ state: 'reconciling', operation_id: actionId, results: [], reason: 'github_comment_outcome_ambiguous' });
+  expect(axios.mock.calls.filter(([request]) => request.method === 'patch')).toHaveLength(1);
 });
