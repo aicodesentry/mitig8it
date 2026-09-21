@@ -217,8 +217,15 @@ async function postInlineComment({ owner, repo, pr_number, installation_id, comm
           `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/comments?per_page=100&page=${page}`, token);
         const comment = existing.data.find(c => c.user?.login === botLogin && c.path === path && c.body?.includes(marker));
         if (comment) {
-          if (comment.body !== body) await githubRequest('patch',
-            `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${comment.id}`, token, { body });
+          // A re-analysis of the same head re-renders the finding text. The verified fix
+          // sections under it were published for this same finding and this same head, so
+          // they are carried over verbatim instead of being overwritten away. The marker
+          // match is the fingerprint check, and the head check above is the head check:
+          // a different fingerprint finds a different comment, and a moved head has
+          // already refused this publication.
+          const nextBody = withPreservedFixBlocks(body, comment.body);
+          if (comment.body !== nextBody) await githubRequest('patch',
+            `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${comment.id}`, token, { body: nextBody });
           return { comment_id: comment.id, url: comment.html_url, success: true };
         }
         if (existing.data.length < 100) break;
@@ -1088,6 +1095,22 @@ const FIX_BLOCK_PATTERN = /\n*<!-- mitig8it-fix:[^>]+ -->[\s\S]*?<!-- \/mitig8it
 
 function stripFixBlocks(body) { return String(body || '').replace(FIX_BLOCK_PATTERN, '').replace(/\s+$/, ''); }
 
+// The fix blocks of an existing comment, trimmed of the blank lines the pattern eats
+// around them, in the order they appear.
+function extractFixBlocks(body) {
+  const matches = String(body || '').match(FIX_BLOCK_PATTERN) || [];
+  return matches.map((block) => block.replace(/^\n+/, '')).filter(Boolean);
+}
+
+// A freshly rendered finding comment plus the fix sections the old comment already
+// carried. Used when an analysis re-publishes a finding comment it published before:
+// the finding text is replaced, the verified fixes underneath are kept as they were.
+function withPreservedFixBlocks(nextBody, existingBody) {
+  const preserved = extractFixBlocks(existingBody);
+  if (!preserved.length) return nextBody;
+  return `${stripFixBlocks(nextBody)}\n\n${preserved.join('\n\n')}`;
+}
+
 function safeMarkerText(value, name, maxLength) {
   const text = requireString(value, name, maxLength);
   if (/[<>]|--/.test(text)) throw badRequest(`${name} contains characters that are not allowed`);
@@ -1459,4 +1482,5 @@ module.exports = {
   remediationMarker,
   remediationVerificationCheckName,
   submitPullRequestReview,
+  withPreservedFixBlocks,
 };
