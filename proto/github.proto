@@ -20,6 +20,7 @@ service GitHubService {
   rpc ReadPullRequestHead(PullRequestHeadRequest) returns (PullRequestHeadResponse);
   rpc CreateRemediationCheckRun(RemediationCheckRunRequest) returns (RemediationCheckRunResponse);
   rpc PublishRemediationComment(RemediationCommentRequest) returns (RemediationCommentResponse);
+  rpc PublishFindingFixSections(FindingFixSectionsRequest) returns (FindingFixSectionsResponse);
   rpc AuthorizeRemediation(RemediationAuthorizeRequest) returns (RemediationAuthorizeResponse);
   rpc HealthCheck(mitig8it.common.v1.HealthCheckRequest) returns (mitig8it.common.v1.HealthCheckResponse);
 }
@@ -305,6 +306,54 @@ message RemediationCommentResponse {
   string external_id = 4;
   bool updated = 5;
   string reason = 6;
+}
+
+// Verified fix sections appended to this app's own inline finding comments. One section
+// per candidate and finding, identified by the candidate marker and updated in place.
+message FindingFixHunk {
+  int32 start_line = 1;
+  int32 end_line = 2;
+  repeated string original_lines = 3;
+  repeated string replacement_lines = 4;
+}
+
+message FindingFixSection {
+  string candidate_id = 1;
+  string finding_fingerprint = 2;
+  string path = 3;
+  int32 finding_line = 4;
+  // Absent when the change is not one contiguous region of the file.
+  FindingFixHunk hunk = 5;
+  string unified_diff = 6;
+  string not_suggestable_reason = 7;
+  string behavior_preserved = 8;
+  repeated string evidence = 9;
+  repeated string limitations = 10;
+  // Set for a finding that received no fix; the section is then one line.
+  string skipped_reason = 11;
+  string verification_level = 12;
+}
+
+message FindingFixSectionsRequest {
+  RemediationEnvelope envelope = 1;
+  string preview_url = 2;
+  repeated FindingFixSection sections = 3;
+}
+
+message FindingFixSectionResult {
+  string finding_fingerprint = 1;
+  string candidate_id = 2;
+  int64 comment_id = 3;
+  string mode = 4;
+  bool updated = 5;
+  string reason = 6;
+}
+
+message FindingFixSectionsResponse {
+  string state = 1;
+  string operation_id = 2;
+  repeated FindingFixSectionResult results = 3;
+  string reason = 4;
 }
 
 // Live authorization pre-flight. The control plane calls this before persisting an

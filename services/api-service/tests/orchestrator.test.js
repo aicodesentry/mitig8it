@@ -14,6 +14,9 @@ jest.mock('../src/utils/logger', () => ({
   error: jest.fn(),
   warn: jest.fn(),
 }));
+jest.mock('../src/services/remediationAutoGenerate', () => ({
+  enqueueForCompletedAnalysis: jest.fn(async () => ({ enqueued: false, reason: 'generate_disabled' })),
+}));
 
 const { pool } = require('../src/config/database');
 const logger = require('../src/utils/logger');
@@ -949,6 +952,42 @@ describe('PR Analysis Orchestrator — pipeline', () => {
       (call) => typeof call[0] === 'string' && call[0].includes('check-runs')
     );
     expect(checkCall).toBeTruthy();
+  });
+
+  test('queues automatic remediation only after the run is completed, and a queue failure never fails the run', async () => {
+    setupAxiosMocks([
+      { pattern: '/pulls/files', data: { files: [] } },
+      { pattern: '/files/content', data: { files: [] } },
+      { pattern: '/tier1', data: { findings: [], tier: 1 } },
+      { pattern: '/tier2', data: { findings: [], tier: 2 } },
+      { pattern: '/tier3', data: { findings: [], filtered_count: 0, tier: 3 } },
+      { pattern: '/reviews/submit', data: { review_id: 1 } },
+      { pattern: '/check-runs', data: { check_run_id: 2 } },
+    ]);
+    pool.query.mockResolvedValue({ rowCount: 1, rows: [{ count: 1 }] });
+
+    let autoGenerate;
+    let db;
+    jest.isolateModules(() => {
+      autoGenerate = require('../src/services/remediationAutoGenerate');
+      db = require('../src/config/database');
+      db.pool.query.mockResolvedValue({ rowCount: 1, rows: [{ count: 1 }] });
+      autoGenerate.enqueueForCompletedAnalysis.mockRejectedValue(new Error('remediation database unavailable'));
+      const mod = require('../src/services/prAnalysisOrchestrator');
+      mod.triggerAnalysisJob(BASE_PAYLOAD);
+    });
+    await flushAsync();
+
+    expect(autoGenerate.enqueueForCompletedAnalysis).toHaveBeenCalledTimes(1);
+    expect(autoGenerate.enqueueForCompletedAnalysis).toHaveBeenCalledWith({ pullRequestId: 'pr-uuid-1', analysisRunId: 'run-uuid-1' });
+    const sql = db.pool.query.mock.calls.map(([text]) => String(text));
+    const completedAt = sql.findIndex((text) => text.includes("SET status = 'completed'"));
+    expect(completedAt).toBeGreaterThanOrEqual(0);
+    // The enqueue happens after completion and its failure does not mark the run failed.
+    expect(sql.slice(completedAt + 1).some((text) => text.includes("status = 'failed'"))).toBe(false);
+    const order = autoGenerate.enqueueForCompletedAnalysis.mock.invocationCallOrder[0];
+    const completion = db.pool.query.mock.invocationCallOrder[completedAt];
+    expect(order).toBeGreaterThan(completion);
   });
 
   test('posts review after tier1 returns findings', async () => {
