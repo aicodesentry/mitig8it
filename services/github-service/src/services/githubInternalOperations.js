@@ -468,7 +468,7 @@ async function fetchRemediationSnapshot(payload) {
   const entries = tree.data.tree.map(({ path, mode, type, sha }) => ({ path, mode, type, sha }));
   const sources = tree.data.tree.filter(entry => entry.type === 'blob' && ['100644', '100755'].includes(entry.mode)
     && !/(^|\/)(node_modules|dist|vendor|\.git|coverage)\//.test(entry.path)
-    && (/\.(js|jsx|ts|tsx|json)$/.test(entry.path))
+    && (/\.(js|jsx|ts|tsx|json|py|pyi|toml|txt|cfg|ini)$/.test(entry.path))
     && !/(^|\/)(\.env|credentials|secrets)(\.|\/|$)/i.test(entry.path));
   const requiredPaths = new Set(Array.isArray(payload.finding_paths) ? payload.finding_paths : []);
   if (requiredPaths.size > 200 || [...requiredPaths].some(path => typeof path !== 'string' || !sources.some(source => source.path === path))) {
@@ -476,7 +476,7 @@ async function fetchRemediationSnapshot(payload) {
   }
   const directories = [...requiredPaths].map(path => path.slice(0, path.lastIndexOf('/') + 1));
   const rank = entry => requiredPaths.has(entry.path) ? 0
-    : /(^|\/)(package\.json|tsconfig[^/]*\.json)$/.test(entry.path) ? 1
+    : /(^|\/)(package\.json|tsconfig[^/]*\.json|requirements[^/]*\.txt|pyproject\.toml|setup\.cfg|Pipfile)$/.test(entry.path) ? 1
       : directories.some(directory => entry.path.startsWith(directory)) ? 2 : 3;
   const ranked = [...sources].sort((left, right) => rank(left) - rank(right) || left.path.localeCompare(right.path));
   const selected = [];
