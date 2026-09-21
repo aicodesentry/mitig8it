@@ -396,11 +396,15 @@ class GitHubGrpcClient {
       }
       message.setUnifiedDiff(section.unified_diff || '');
       message.setNotSuggestableReason(section.not_suggestable_reason || '');
-      message.setBehaviorPreserved(section.behavior_preserved || '');
+      message.setStatedIntent(section.stated_intent || '');
       message.setEvidenceList(section.evidence || []);
       message.setLimitationsList(section.limitations || []);
       message.setSkippedReason(section.skipped_reason || '');
       message.setVerificationLevel(section.verification_level || '');
+      message.setFindingBody(section.finding_body || '');
+      message.setFindingIdsList(section.finding_ids || []);
+      message.setCoveredBy(section.covered_by || '');
+      message.setProof(section.proof || '');
       return message;
     }));
     const response = await remediationUnary(this.client, 'publishFindingFixSections', request);
@@ -414,6 +418,8 @@ class GitHubGrpcClient {
         mode: item.getMode(),
         updated: item.getUpdated(),
         reason: item.getReason(),
+        created: item.getCreated(),
+        placement: item.getPlacement(),
       })),
       reason: response.getReason(),
     };

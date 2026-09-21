@@ -70,11 +70,32 @@ describe('PR Analysis Orchestrator — pure functions', () => {
       line_start: 12,
     }], 'run-uuid-1');
 
-    expect(body).toContain('Detailed findings are annotated inline on the affected lines below.');
+    expect(body).toContain('The finding is annotated inline on the affected line below.');
+    expect(body).toContain('1 of 1 annotated inline');
     expect(body).not.toContain('### Findings');
     expect(body).not.toContain('Potential SQL injection');
     expect(body).not.toContain('**Fix:** Use parameterized queries.');
     expect(body).not.toContain('db.query("SELECT * FROM users WHERE id = ?", [userId]);');
+  });
+
+  // The summary says how many findings have an inline annotation and how many it lists
+  // only, instead of claiming every finding is annotated below.
+  test('buildReviewBody counts the findings annotated inline and the ones listed in the summary only', () => {
+    const { __private } = require('../src/services/prAnalysisOrchestrator');
+    const finding = (title, line) => ({ severity: 'high', title, evidence: 'x', remediation: 'y', file_path: 'src/app.js', line_start: line, confidence: 0.8 });
+    const findings = [finding('SQL injection', 12), finding('Path traversal', 35), finding('Unsafe eval', 40)];
+
+    const mixed = __private.buildReviewBody(findings, 'run-uuid-1', { inlineCount: 1 });
+    expect(mixed).toContain('1 finding is annotated inline on the affected lines below; 2 findings are listed here only (the line is outside the diff or the evidence is below the inline threshold), with details in the Mitig8it dashboard.');
+    expect(mixed).toContain('1 of 3 annotated inline');
+    expect(mixed).not.toContain('Detailed findings are annotated inline');
+
+    const none = __private.buildReviewBody(findings, 'run-uuid-1', { inlineCount: 0 });
+    expect(none).toContain('0 findings are annotated inline on the affected lines below; 3 findings are listed here only');
+
+    const all = __private.buildReviewBody(findings, 'run-uuid-1', { inlineCount: 3 });
+    expect(all).toContain('All 3 findings are annotated inline on the affected lines below.');
+    expect(all).toContain('3 of 3 annotated inline');
   });
 
   test('buildReviewComment renders GitHub suggestion blocks for validated Tier 3 patches', () => {
@@ -1023,7 +1044,8 @@ describe('PR Analysis Orchestrator — pipeline', () => {
     expect(reviewCall).toBeTruthy();
     expect(reviewCall[1].event).toBe('REQUEST_CHANGES');
     expect(reviewCall[1].body).not.toContain('**Fix code:**');
-    expect(reviewCall[1].body).toContain('Detailed findings are annotated inline on the affected lines below.');
+    expect(reviewCall[1].body).toContain('The finding is annotated inline on the affected line below.');
+    expect(reviewCall[1].body).toContain('1 of 1 annotated inline');
     expect(reviewCall[1].body).not.toContain('**Fix:** Replace eval/exec with safe alternatives.');
 
     const inlineCall = axios.post.mock.calls.find(

@@ -231,18 +231,7 @@ async function postInlineComment({ owner, repo, pr_number, installation_id, comm
         if (existing.data.length < 100) break;
       }
     }
-    const response = await githubRequest(
-      'post',
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/comments`,
-      token,
-      {
-        body,
-        commit_id: commit_sha,
-        path,
-        line,
-        side: 'RIGHT',
-      }
-    );
+    const response = await createInlineComment({ owner, repo, pr_number, token, commit_sha, path, line, body });
 
     return {
       comment_id: response.data.id,
@@ -253,6 +242,37 @@ async function postInlineComment({ owner, repo, pr_number, installation_id, comm
     if (error instanceof OperationError) throw error;
     throw externalError('Failed to post inline comment', error);
   }
+}
+
+// The one write that creates an inline review comment on the head commit. The analysis
+// and the verified fix publisher both post through it, so a finding comment created for
+// a verified fix has the same shape as one the analysis created. The publisher passes the
+// single-attempt mutation, because a retried ambiguous write could create two comments.
+function createInlineComment({ owner, repo, pr_number, token, commit_sha, path, line, body, request = githubRequest }) {
+  return request(
+    'post',
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/comments`,
+    token,
+    { body, commit_id: commit_sha, path, line, side: 'RIGHT' }
+  );
+}
+
+// The new-side line numbers a pull request diff shows for one file: every added and
+// context line of every hunk. GitHub accepts an inline comment only on those lines.
+function diffLinesOfPatch(patch) {
+  const lines = new Set();
+  let newLine = 0;
+  for (const raw of String(patch || '').split('\n')) {
+    if (raw.startsWith('@@')) {
+      const match = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      newLine = match ? Number(match[1]) : 0;
+      continue;
+    }
+    if (!newLine || raw.startsWith('-') || raw.startsWith('\\')) continue;
+    lines.add(newLine);
+    newLine += 1;
+  }
+  return lines;
 }
 
 async function createCheckRun({ owner, repo, installation_id, head_sha, conclusion, title, summary }) {
@@ -1117,9 +1137,14 @@ function safeMarkerText(value, name, maxLength) {
   return text;
 }
 
+const FINDING_BODY_LIMIT = 30000;
+
 function validateFixSection(raw, index) {
   if (!raw || typeof raw !== 'object') throw badRequest(`sections[${index}] must be an object`);
   const skipped = typeof raw.skipped_reason === 'string' && raw.skipped_reason ? raw.skipped_reason.slice(0, 500) : '';
+  const findingIds = Array.isArray(raw.finding_ids)
+    ? raw.finding_ids.filter((item) => typeof item === 'string' && item && !/[<>`]|--/.test(item)).map((item) => item.slice(0, 128)).slice(0, 50)
+    : [];
   const section = {
     finding_fingerprint: safeMarkerText(raw.finding_fingerprint, `sections[${index}].finding_fingerprint`, 255),
     candidate_id: skipped && !raw.candidate_id ? '' : safeMarkerText(raw.candidate_id, `sections[${index}].candidate_id`, 128),
@@ -1128,11 +1153,17 @@ function validateFixSection(raw, index) {
     hunk: null,
     unified_diff: typeof raw.unified_diff === 'string' ? raw.unified_diff.slice(0, 20000) : '',
     not_suggestable_reason: typeof raw.not_suggestable_reason === 'string' ? raw.not_suggestable_reason : '',
-    behavior_preserved: typeof raw.behavior_preserved === 'string' ? raw.behavior_preserved.slice(0, 2000) : '',
+    stated_intent: typeof raw.stated_intent === 'string' ? raw.stated_intent.slice(0, 2000) : '',
+    proof: typeof raw.proof === 'string' ? raw.proof.slice(0, 2000) : '',
     evidence: Array.isArray(raw.evidence) ? raw.evidence.filter((item) => typeof item === 'string').slice(0, 20) : [],
     limitations: Array.isArray(raw.limitations) ? raw.limitations.filter((item) => typeof item === 'string').slice(0, 40) : [],
     verification_level: typeof raw.verification_level === 'string' ? raw.verification_level : '',
     skipped_reason: skipped,
+    // The finding comment to create when none carries the marker. It is trimmed of any
+    // fix blocks so a stale copy can never smuggle a section past the candidate markers.
+    finding_body: typeof raw.finding_body === 'string' ? stripFixBlocks(raw.finding_body.slice(0, FINDING_BODY_LIMIT)) : '',
+    finding_ids: findingIds,
+    covered_by: typeof raw.covered_by === 'string' ? raw.covered_by.replace(/[<>`]/g, '').slice(0, 300) : '',
   };
   const hunk = raw.hunk;
   if (hunk && typeof hunk === 'object' && Number.isInteger(Number(hunk.start_line)) && Number(hunk.start_line) > 0
@@ -1156,6 +1187,7 @@ const NOT_SUGGESTABLE_TEXT = {
   comment_outdated: "this comment's line is no longer part of the pull request diff",
   contains_code_fence: 'the fixed lines contain a code fence, which a suggestion cannot carry',
   file_unavailable: 'the file could not be read at the pull request head',
+  line_outside_diff: "this finding's line is not part of the pull request diff, so GitHub allows neither an inline comment nor a suggestion there",
 };
 
 // A suggestion replaces exactly the lines the comment is anchored to. The hunk must lie
@@ -1203,9 +1235,13 @@ function buildFixSection(section, suggestion, previewUrl) {
     lines.push(section.unified_diff ? diffFence(section.unified_diff) : '_(no diff available)_');
   }
   lines.push('');
-  if (section.behavior_preserved) lines.push(`**Behavior preserved:** ${section.behavior_preserved}`);
+  // The intent is the model's own claim about the change; the proof and the evidence are
+  // what the sandbox run established. They are labelled apart so neither reads as the other.
+  if (section.stated_intent) lines.push(`**Model's stated intent:** ${section.stated_intent}`);
+  lines.push(`**Proof:** ${section.proof || 'the generated regression test failed on the original code and passed on the fix.'}`);
   lines.push(`**Evidence:** ${section.evidence.length ? section.evidence.join(' ') : 'verification passed in the sandbox.'}`);
   lines.push(`**Coverage limitations:** ${section.limitations.length ? section.limitations.join('; ') : 'none reported.'}`);
+  if (section.finding_ids.length > 1) lines.push(`**Findings covered:** ${findingIdList(section)}`);
   lines.push('');
   const preview = previewUrl ? ` or use Apply this fix in [Mitig8it](${previewUrl})` : '';
   lines.push(`Nothing is applied or merged automatically. Apply this suggestion on GitHub${preview}; either way the change is a normal human push that Mitig8it re-analyses, and merging stays a human action.`);
@@ -1213,14 +1249,47 @@ function buildFixSection(section, suggestion, previewUrl) {
   return lines.join('\n');
 }
 
+function findingIdList(section) {
+  return section.finding_ids.map((id) => `\`${id}\``).join(', ');
+}
+
 function buildSkippedSection(section) {
   return [fixMarker('none'), `No automatic fix: ${section.skipped_reason}`, fixEndMarker('none')].join('\n');
+}
+
+// A finding that another finding's verified candidate covers on the same lines: the fix
+// is published once, under that finding, and this comment says so instead of claiming
+// there is no fix. The candidate marker keeps a regeneration idempotent here too.
+function buildCoveredSection(section) {
+  const ids = section.finding_ids.length ? ` (findings ${findingIdList(section)})` : '';
+  return [
+    fixMarker(section.candidate_id),
+    `Fixed together with ${section.covered_by}: the verified fix published under that finding on the same lines resolves this finding as well${ids}.`,
+    fixEndMarker(section.candidate_id),
+  ].join('\n');
+}
+
+// The finding comment created when no comment carries the finding's marker: the same
+// marker the analysis writes, then the finding text the analysis renders. In a pull
+// request comment the header says why the comment is not on the line.
+function createdFindingBody(section, placement) {
+  const marker = findingMarker(section.finding_fingerprint);
+  if (placement === 'inline') return `${marker}\n${section.finding_body}`;
+  const location = `\`${section.path}\`${section.finding_line ? ` line ${section.finding_line}` : ''}`;
+  return [
+    marker,
+    `**Verified fix for ${location}.** This line is not part of the pull request diff, so GitHub does not accept an inline comment on it; the finding and its verified fix are reported here instead.`,
+    '',
+    section.finding_body,
+  ].join('\n');
 }
 
 // Verified fix sections under this app's own inline finding comments. Each finding
 // comment is identified by its finding marker; every earlier fix block is replaced by
 // the sections of this publication, so a regeneration updates in place and a retry
-// with the same input writes nothing. Comments by another author are never edited.
+// with the same input writes nothing. A finding with no comment of its own gets one
+// from the section's finding body: on its line when the diff shows that line, else as
+// a pull request comment that says why. Comments by another author are never edited.
 async function publishFindingFixSections(payload) {
   const envelope = validateActionEnvelope(payload);
   if (!Array.isArray(payload.sections) || !payload.sections.length || payload.sections.length > FIX_SECTION_LIMIT) {
@@ -1229,6 +1298,7 @@ async function publishFindingFixSections(payload) {
   const sections = payload.sections.map(validateFixSection);
   const previewUrl = typeof payload.preview_url === 'string' && /^https?:\/\//.test(payload.preview_url) && !/[\s()]/.test(payload.preview_url)
     ? payload.preview_url.slice(0, 500) : '';
+  const commentService = require('./githubCommentService');
   try {
     // System initiated after verification: actor write permission is not required
     // because the app edits only its own comments.
@@ -1262,6 +1332,36 @@ async function publishFindingFixSections(payload) {
       }
       return fileCache.get(path);
     };
+    // The pull request diff, read once and only when a finding has no comment yet: an
+    // inline comment can be created only on a line the diff shows.
+    let diffLinesByPath = null;
+    const diffLinesFor = async (path) => {
+      if (!diffLinesByPath) {
+        diffLinesByPath = new Map();
+        for (let page = 1; page <= 30; page += 1) {
+          const response = await githubRequest('get',
+            `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}/files?per_page=100&page=${page}`, token);
+          const batch = Array.isArray(response.data) ? response.data : [];
+          for (const file of batch) if (file?.filename) diffLinesByPath.set(file.filename, diffLinesOfPatch(file.patch));
+          if (batch.length < 100) break;
+        }
+      }
+      return diffLinesByPath.get(path) || new Set();
+    };
+    // Pull request comments, read once and only when a finding's line is outside the diff.
+    let pullRequestComments = null;
+    const pullRequestCommentWith = async (marker) => {
+      if (!pullRequestComments) {
+        pullRequestComments = [];
+        for (let page = 1; page <= 10; page += 1) {
+          const batch = await commentService.listSummaryComments(envelope.owner, envelope.repo, envelope.pr_number, token, page);
+          pullRequestComments.push(...batch);
+          if (batch.length < 100) break;
+        }
+      }
+      return pullRequestComments.find((item) => typeof item?.body === 'string' && item.body.includes(marker)
+        && (!botLogin || item.user?.login === botLogin)) || null;
+    };
     // Group by finding so one comment receives all of its sections in one write.
     const byFingerprint = new Map();
     for (const section of sections) {
@@ -1271,30 +1371,68 @@ async function publishFindingFixSections(payload) {
     const results = [];
     for (const [fingerprint, group] of byFingerprint) {
       const marker = findingMarker(fingerprint);
-      const comment = comments.find((item) => typeof item?.body === 'string' && item.body.includes(marker)
+      // Where the sections go: the app's own inline comment carrying the marker; else a
+      // comment created on the finding's line when the diff shows it; else the app's own
+      // pull request comment carrying the marker, created when there is none. Without a
+      // finding body nothing can be created, and the sections are reported as unplaced.
+      let comment = comments.find((item) => typeof item?.body === 'string' && item.body.includes(marker)
         && (!botLogin || item.user?.login === botLogin)) || null;
-      if (!comment) {
-        for (const section of group) results.push({ finding_fingerprint: fingerprint, candidate_id: section.candidate_id, comment_id: 0, mode: 'comment_not_found', updated: false, reason: 'no finding comment carries this marker' });
+      let placement = 'inline';
+      const withBody = group.find((section) => section.finding_body) || null;
+      if (!comment && withBody) {
+        const onDiff = withBody.finding_line > 0 && (await diffLinesFor(withBody.path)).has(withBody.finding_line);
+        if (!onDiff) {
+          placement = 'pull_request';
+          comment = await pullRequestCommentWith(marker);
+        }
+      }
+      if (!comment && !withBody) {
+        for (const section of group) results.push({ finding_fingerprint: fingerprint, candidate_id: section.candidate_id, comment_id: 0, mode: 'comment_not_found', updated: false, reason: 'no finding comment carries this marker', created: false, placement: '' });
         continue;
       }
+      const anchor = comment || { line: withBody.finding_line, side: 'RIGHT' };
       const blocks = [];
+      const groupResults = [];
       for (const section of group) {
+        const result = { finding_fingerprint: fingerprint, candidate_id: section.candidate_id, comment_id: Number(comment?.id || 0), mode: '', updated: false, reason: '', created: false, placement };
         if (section.skipped_reason) {
           blocks.push(buildSkippedSection(section));
-          results.push({ finding_fingerprint: fingerprint, candidate_id: '', comment_id: Number(comment.id), mode: 'skipped', updated: false, reason: section.skipped_reason });
-          continue;
+          Object.assign(result, { candidate_id: '', mode: 'skipped', reason: section.skipped_reason });
+        } else if (section.covered_by) {
+          blocks.push(buildCoveredSection(section));
+          Object.assign(result, { mode: 'covered', reason: `fixed together with ${section.covered_by}` });
+        } else {
+          const suggestion = placement === 'inline'
+            ? await suggestionFor(section, anchor, readFileLines)
+            : { ok: false, reason: NOT_SUGGESTABLE_TEXT.line_outside_diff };
+          blocks.push(buildFixSection(section, suggestion, previewUrl));
+          Object.assign(result, { mode: suggestion.ok ? 'suggestion' : 'diff', reason: suggestion.ok ? '' : suggestion.reason });
         }
-        const suggestion = await suggestionFor(section, comment, readFileLines);
-        blocks.push(buildFixSection(section, suggestion, previewUrl));
-        results.push({ finding_fingerprint: fingerprint, candidate_id: section.candidate_id, comment_id: Number(comment.id), mode: suggestion.ok ? 'suggestion' : 'diff', updated: false, reason: suggestion.ok ? '' : suggestion.reason });
+        groupResults.push(result);
+        results.push(result);
       }
-      const body = `${stripFixBlocks(comment.body)}\n\n${blocks.join('\n\n')}`;
+      const base = comment ? stripFixBlocks(comment.body) : createdFindingBody(withBody, placement);
+      const body = `${base}\n\n${blocks.join('\n\n')}`;
       if (body.length > 65000) throw new OperationError('Finding comment would exceed the GitHub comment size limit', 422);
-      if (body === comment.body) continue;
-      const response = await githubRestMutation('patch',
-        `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/comments/${comment.id}`, token, { body });
-      if (!response?.data?.id) throw new OperationError('GitHub did not return the updated finding comment', 502);
-      for (const result of results) if (result.comment_id === Number(comment.id)) result.updated = true;
+      if (comment && body === comment.body) continue;
+      let response;
+      if (!comment && placement === 'inline') {
+        response = await createInlineComment({ owner: envelope.owner, repo: envelope.repo, pr_number: envelope.pr_number, token,
+          commit_sha: envelope.head_sha, path: withBody.path, line: withBody.finding_line, body, request: githubRestMutation });
+      } else if (!comment) {
+        response = { data: await commentService.postSummaryComment(envelope.owner, envelope.repo, envelope.pr_number, body, token) };
+      } else if (placement === 'inline') {
+        response = await githubRestMutation('patch',
+          `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/comments/${comment.id}`, token, { body });
+      } else {
+        response = { data: await commentService.updateSummaryComment(envelope.owner, envelope.repo, comment.id, body, token) };
+      }
+      if (!response?.data?.id) throw new OperationError(comment ? 'GitHub did not return the updated finding comment' : 'GitHub did not return the created finding comment', 502);
+      for (const result of groupResults) {
+        result.comment_id = Number(response.data.id);
+        result.updated = true;
+        result.created = !comment;
+      }
     }
     return { state: 'published', operation_id: envelope.action_id, results, reason: '' };
   } catch (error) {
