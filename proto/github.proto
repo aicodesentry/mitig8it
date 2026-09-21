@@ -308,8 +308,9 @@ message RemediationCommentResponse {
   string reason = 6;
 }
 
-// Verified fix sections appended to this app's own inline finding comments. One section
-// per candidate and finding, identified by the candidate marker and updated in place.
+// Verified fix sections under this app's own inline finding comments. One section per
+// candidate and finding, identified by the candidate marker and updated in place; a
+// finding without a comment receives one from the section's finding_body.
 message FindingFixHunk {
   int32 start_line = 1;
   int32 end_line = 2;
@@ -326,12 +327,25 @@ message FindingFixSection {
   FindingFixHunk hunk = 5;
   string unified_diff = 6;
   string not_suggestable_reason = 7;
-  string behavior_preserved = 8;
+  // The model's own description of the behavior it meant to keep: a hypothesis, not evidence.
+  string stated_intent = 8;
   repeated string evidence = 9;
   repeated string limitations = 10;
   // Set for a finding that received no fix; the section is then one line.
   string skipped_reason = 11;
   string verification_level = 12;
+  // The rendered finding comment, without its marker, for a finding that has no inline
+  // comment yet. The section is then published under a new comment on the finding's line,
+  // or in a pull request comment when that line is outside the diff.
+  string finding_body = 13;
+  // The finding ids this section covers: the proven finding and every finding on the same
+  // lines that the same candidate covers.
+  repeated string finding_ids = 14;
+  // Set for a finding that another finding's candidate covers on the same lines: the rule
+  // of the finding whose comment carries the verified fix. The section is then one line.
+  string covered_by = 15;
+  // What the regression test asserted, in one sentence.
+  string proof = 16;
 }
 
 message FindingFixSectionsRequest {
@@ -347,6 +361,11 @@ message FindingFixSectionResult {
   string mode = 4;
   bool updated = 5;
   string reason = 6;
+  // True when this publication created the finding comment because none existed.
+  bool created = 7;
+  // "inline" for a review comment on the finding's line, "pull_request" for a pull
+  // request comment used because the line is outside the diff.
+  string placement = 8;
 }
 
 message FindingFixSectionsResponse {

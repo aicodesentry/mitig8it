@@ -475,11 +475,15 @@ const remediationService = {
           } : null,
           unified_diff: section.getUnifiedDiff(),
           not_suggestable_reason: section.getNotSuggestableReason(),
-          behavior_preserved: section.getBehaviorPreserved(),
+          stated_intent: section.getStatedIntent(),
           evidence: section.getEvidenceList(),
           limitations: section.getLimitationsList(),
           skipped_reason: section.getSkippedReason(),
           verification_level: section.getVerificationLevel(),
+          finding_body: section.getFindingBody(),
+          finding_ids: section.getFindingIdsList(),
+          covered_by: section.getCoveredBy(),
+          proof: section.getProof(),
         };
       }),
     }),
@@ -495,6 +499,8 @@ const remediationService = {
         message.setMode(item.mode || '');
         message.setUpdated(Boolean(item.updated));
         message.setReason(item.reason || '');
+        message.setCreated(Boolean(item.created));
+        message.setPlacement(item.placement || '');
         return message;
       }));
       response.setReason(result.reason || '');

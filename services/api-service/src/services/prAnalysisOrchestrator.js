@@ -222,6 +222,8 @@ function buildReviewBody(findings, runId, options = {}) {
     ].join('\n');
   }
 
+  const placement = buildPlacementLine(total, options);
+
   return [
     '<!-- mitig8it-review -->',
     `### 🛡️ Mitig8it — ${total} finding${total === 1 ? '' : 's'} detected`,
@@ -233,10 +235,30 @@ function buildReviewBody(findings, runId, options = {}) {
     `| **${counts.critical || 0}** | **${counts.high || 0}** | **${counts.medium || 0}** | **${counts.low || 0}** |`,
     '',
     ...testCodeLines,
-    'Detailed findings are annotated inline on the affected lines below.',
+    placement.sentence,
     '',
-    `<sub>Analyzed by <strong>Mitig8it</strong> · Run \`${runId.slice(0, 8)}\` · Findings are annotated on the affected lines below</sub>`,
+    `<sub>Analyzed by <strong>Mitig8it</strong> · Run \`${runId.slice(0, 8)}\` · ${placement.short}</sub>`,
   ].join('\n');
+}
+
+// How many of the runtime findings are annotated on their lines and how many appear in
+// this summary only. A finding stays summary only when its line is outside the diff or
+// its evidence is below the inline threshold; without the counts, all are taken as inline.
+function buildPlacementLine(total, options = {}) {
+  const inline = options.inlineCount == null ? total : Math.max(0, Math.min(total, Number(options.inlineCount) || 0));
+  const summaryOnly = Math.max(0, total - inline);
+  const noun = (count) => `${count} finding${count === 1 ? '' : 's'}`;
+  if (!summaryOnly) {
+    return {
+      sentence: total === 1 ? 'The finding is annotated inline on the affected line below.' : `All ${total} findings are annotated inline on the affected lines below.`,
+      short: `${inline} of ${total} annotated inline`,
+    };
+  }
+  const why = 'the line is outside the diff or the evidence is below the inline threshold';
+  return {
+    sentence: `${noun(inline)} ${inline === 1 ? 'is' : 'are'} annotated inline on the affected lines below; ${noun(summaryOnly)} ${summaryOnly === 1 ? 'is' : 'are'} listed here only (${why}), with details in the Mitig8it dashboard.`,
+    short: `${inline} of ${total} annotated inline`,
+  };
 }
 
 function buildReviewComment(finding, options = {}) {
@@ -880,6 +902,7 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
     const reviewBody = buildReviewBody(actionable, runId, {
       testFilesScanned,
       infoCommentsOmitted: inlinePlan.infoOmitted,
+      inlineCount: inlinePlan.comments.filter((comment) => !isInfoComment(comment)).length,
     });
 
     reviewResp = await submitReviewWithFallback({
