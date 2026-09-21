@@ -117,6 +117,7 @@ async function createAutomaticJob({ pullRequestId, analysisRunId, policy }) {
     if (!run.rowCount) return { kind: 'unsupported', reason: 'no_completed_analysis_for_head' };
     const existing = await client.query(
       `SELECT id, state FROM remediation_jobs WHERE pull_request_id = $1 AND head_sha = $2 AND origin = 'automatic'
+         AND state NOT IN ('cancelled','superseded','unsupported','inconclusive','failed','dead_letter')
         ORDER BY created_at DESC LIMIT 1`, [pullRequestId, pr.head_sha]
     );
     if (existing.rowCount) return { kind: 'exists', job: existing.rows[0] };
