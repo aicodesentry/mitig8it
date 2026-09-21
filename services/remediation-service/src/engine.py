@@ -16,9 +16,11 @@ from .git_tree import GitTreeError, compute_tree_oid, validate_snapshot_tree
 from .grouping import group_findings_by_language
 from .models import Candidate, FindingSnapshot, RepairPolicy, RepairRequest, RepairResponse, VerificationSummary
 from .patches import PatchBundle, PatchPolicyError, build_patch_bundle, bundles_conflict, combine_patch_bundles
+from .proofs import GeneratedProof, generate_proof
 from .retrieval import Snapshot, SnapshotError
 from .sandbox import BrokerConfigurationError, create_sandbox_broker
 from .splitting import DEPENDENT_HUNK_UNPROVEN, split_hunks
+from .templates import MODEL, TEMPLATE, TemplateFallback, combine_templates, generate_template
 from . import telemetry
 from .verification import VerificationResult, Verifier
 from .verification.verifier import DEVELOPMENT_VERIFICATION_LEVEL, VERIFICATION_LEVELS
@@ -35,6 +37,10 @@ BUDGET_EXHAUSTED_MESSAGE = (
     "The job's remaining tool, token, and spend budget was below the per-group floor, so no "
     "agent was launched for this finding group."
 )
+# A finding still unproven after the group pass gets one focused single-finding agent run with
+# this many verification attempts, funded from what the job has left.
+RETRY_ATTEMPTS = 2
+RETRY_SOURCE = "retry"
 
 
 # The family decides support here and is named to the model by the agent loop.
@@ -275,6 +281,7 @@ def _build_candidate(
     proposal: dict[str, Any],
     bundle: PatchBundle,
     verification: VerificationResult,
+    source: str = MODEL,
 ) -> Candidate:
     """Builds the immutable candidate for one proven finding.
 
@@ -339,6 +346,8 @@ def _build_candidate(
                 "verification_level": verification.verification_level,
                 "limitations": limitations,
                 "summary": evidence_summary(bundle, verification, limitations),
+                # Which path wrote the hunks: a deterministic template or the model.
+                "candidate_source": source,
             },
         },
     )
@@ -371,7 +380,7 @@ async def _per_finding_candidates(
     if not result.bundle.hunks:
         # A bundle without located hunks cannot be split; it ships as one candidate for every
         # finding it proved, exactly as before per-finding candidates existed.
-        candidate = _build_candidate(request, snapshot, list(proven), result.proposal, result.bundle, result.verification)
+        candidate = _build_candidate(request, snapshot, list(proven), result.proposal, result.bundle, result.verification, getattr(result, "source", MODEL))
         return [(candidate, result.bundle, result.verification)], []
     findings = list(group_request.findings)
     by_id = {finding.stable_id: finding for finding in findings}
@@ -408,8 +417,106 @@ async def _per_finding_candidates(
                     detail += f" ({verification.reason_code})"
                 dependent.append(_dependent(finding_id, detail))
                 continue
-        accepted.append((_build_candidate(request, snapshot, [finding_id], result.proposal, bundle, verification), bundle, verification))
+        candidate = _build_candidate(request, snapshot, [finding_id], result.proposal, bundle, verification, getattr(result, "source", MODEL))
+        accepted.append((candidate, bundle, verification))
     return accepted, dependent
+
+
+@dataclass
+class _Budget:
+    """What the job still has to spend on agent runs, charged after every run."""
+
+    tool_calls: int
+    tokens: int
+    usd: float
+
+    def allows(self) -> bool:
+        return self.tool_calls >= GROUP_TOOL_CALL_FLOOR and self.tokens >= GROUP_TOKEN_FLOOR and self.usd >= GROUP_SPEND_FLOOR_USD
+
+    def charge(self, policy: RepairPolicy, result: Any) -> None:
+        spent_input = int(result.usage.get("input_tokens", 0) or 0)
+        spent_output = int(result.usage.get("output_tokens", 0) or 0)
+        self.tool_calls = max(0, self.tool_calls - len(result.trace))
+        self.tokens = max(0, self.tokens - spent_input - spent_output)
+        self.usd = max(
+            0.0,
+            self.usd - (spent_input * policy.input_usd_per_million_tokens + spent_output * policy.output_usd_per_million_tokens) / 1_000_000,
+        )
+
+
+@dataclass
+class _Pass:
+    """One attempt at a group or a finding: a template candidate, a model run, or a focused retry."""
+
+    source: str
+    request: RepairRequest
+    state: str
+    proposal: dict[str, Any] | None
+    bundle: PatchBundle | None
+    verification: VerificationResult | None
+    reason_code: str | None
+    explanation: str | None
+    trace: list[dict[str, Any]]
+    usage: dict[str, Any]
+    evidence: dict[str, Any] = dataclass_field(default_factory=dict)
+
+    @property
+    def ready(self) -> bool:
+        return self.state == "ready" and self.bundle is not None and self.proposal is not None and self.verification is not None
+
+    @property
+    def proven(self) -> set[str]:
+        return set(self.verification.proven_finding_ids) if self.ready else set()
+
+
+def _agent_pass(source: str, request: RepairRequest, result: Any) -> _Pass:
+    return _Pass(
+        source, request, result.state, result.proposal, result.bundle, result.verification,
+        result.reason_code, result.explanation, list(result.trace), dict(result.usage), dict(result.evidence),
+    )
+
+
+def build_proofs(snapshot: Snapshot, findings: list[FindingSnapshot]) -> tuple[dict[str, GeneratedProof], dict[str, str]]:
+    """The service-generated proof per finding, and per finding which path supplies its test."""
+    proofs: dict[str, GeneratedProof] = {}
+    report: dict[str, str] = {}
+    for finding in findings:
+        generated = generate_proof(snapshot, finding, _rule_family(finding) or "", language_of_path(finding.affected_path) or "")
+        if isinstance(generated, GeneratedProof):
+            proofs[finding.stable_id] = generated
+            report[finding.stable_id] = "service"
+        else:
+            report[finding.stable_id] = f"model:{generated.reason}"
+    return proofs, report
+
+
+def _proof_specs(proofs: dict[str, GeneratedProof], findings: list[FindingSnapshot]) -> dict[str, dict[str, Any]]:
+    return {
+        finding.stable_id: {**proofs[finding.stable_id].spec(), "description": proofs[finding.stable_id].description}
+        for finding in findings
+        if finding.stable_id in proofs
+    }
+
+
+def _failure_entries(request: RepairRequest, bundle: PatchBundle | None, verification: VerificationResult | None, source: str) -> dict[str, dict[str, Any]]:
+    """Per unproven finding: the verifier's reason and its test's failure tail, tagged with the pass."""
+    if verification is None:
+        return {}
+    if bundle is None:
+        return {
+            str(item.get("finding_id")): {"source": source, "code": item.get("code"), "message": item.get("message")}
+            for item in verification.unproven_findings
+        }
+    entries = RepairAgent._unproven_entries(request, bundle, verification)
+    return {
+        str(entry["finding_id"]): {
+            "source": source,
+            "code": entry.get("code"),
+            "message": entry.get("message"),
+            **({"test_failure_tail": entry["test_failure_tail"]} if entry.get("test_failure_tail") else {}),
+        }
+        for entry in entries
+    }
 
 
 class RepairEngine:
@@ -422,6 +529,250 @@ class RepairEngine:
         provider.max_output_tokens = min(provider.max_output_tokens, request.policy.max_output_tokens_per_call)
         broker = create_sandbox_broker()
         return RepairAgent(provider, Verifier(broker), checkpoints)
+
+    async def _template_pass(
+        self,
+        group_request: RepairRequest,
+        snapshot: Snapshot,
+        verifier: Verifier,
+        proofs: dict[str, GeneratedProof],
+        report: dict[str, str],
+        failures: dict[str, dict[str, Any]],
+    ) -> _Pass | None:
+        """A deterministic candidate for every finding whose shape a template recognizes.
+
+        The template hunks of the group are combined into one bundle with the service proofs and
+        verified exactly like a model proposal. `report` records per finding whether the template
+        proved it, was not proven, or was not attempted and why.
+        """
+        by_id = {finding.stable_id: finding for finding in group_request.findings}
+        patches = []
+        for finding in group_request.findings:
+            finding_id = finding.stable_id
+            if finding_id not in proofs:
+                report[finding_id] = "not_attempted:no_service_proof"
+                continue
+            template = generate_template(snapshot, finding, _rule_family(finding) or "", language_of_path(finding.affected_path) or "")
+            if isinstance(template, TemplateFallback):
+                report[finding_id] = f"not_attempted:{template.reason}"
+                continue
+            patches.append(template)
+        if not patches:
+            return None
+        changes, dropped = combine_templates(patches)
+        for finding_id, reason in dropped.items():
+            report[finding_id] = f"not_attempted:{reason}"
+        templated = [patch for patch in patches if patch.finding_id not in dropped]
+        narrowed = group_request.model_copy(update={"findings": [by_id[patch.finding_id] for patch in templated]})
+        tests = [proofs[patch.finding_id].spec() for patch in templated]
+        step = {"sequence": 0, "tool": "template_patch", "arguments_digest_only": {"finding_ids": [patch.finding_id for patch in templated], "paths": sorted({change["path"] for change in changes})}, "outcome": "ok", "reason": None, "result_bytes": 0}
+        try:
+            bundle = await asyncio.to_thread(build_patch_bundle, narrowed, snapshot, changes, tests)
+        except PatchPolicyError as exc:
+            step["outcome"] = "rejected"
+            step["reason"] = str(exc.code)[:120]
+            for patch in templated:
+                report[patch.finding_id] = f"rejected:{exc.code}"
+                failures[patch.finding_id] = {"source": TEMPLATE, "code": exc.code, "message": str(exc.guidance or exc.code)[:400]}
+            return _Pass(TEMPLATE, narrowed, "unsupported", None, None, None, exc.code, str(exc.guidance or exc.code)[:400], [step], {"input_tokens": 0, "output_tokens": 0, "provider_request_ids": []})
+        with telemetry.stage_span("template_verification", **telemetry.request_attributes(group_request)) as span:
+            verification = await verifier.verify(narrowed, snapshot, bundle)
+            telemetry.record_outcome(span, verification.status, None if verification.status == "passed" else verification.reason_code)
+        for patch in templated:
+            if patch.finding_id in verification.proven_finding_ids:
+                report[patch.finding_id] = "proven"
+            else:
+                report[patch.finding_id] = "not_proven"
+        failures.update(_failure_entries(narrowed, bundle, verification, TEMPLATE))
+        proposal = {
+            "hypothesis": "Deterministic template repair: " + "; ".join(f"{patch.finding_id}: {patch.description}" for patch in templated) + ".",
+            "intended_behavior": "Legitimate input behaves as before; only the injected value is kept out of the sink.",
+            "assumptions": [],
+            "citations": [
+                {"path": change["path"], "line_start": int(change["start_line"]), "line_end": int(change["start_line"]) + len(change["original_lines"]) - 1}
+                for change in changes
+            ],
+        }
+        if verification.status != "passed" or not verification.proven_finding_ids:
+            step["outcome"] = "not_proven"
+            step["reason"] = str(verification.reason_code or "no_finding_proven")[:120]
+            return _Pass(TEMPLATE, narrowed, verification.status if verification.status in ("unsupported", "inconclusive") else "inconclusive", proposal, bundle, verification, verification.reason_code or "verification_failed", "The template candidate did not prove its findings.", [step], {"input_tokens": 0, "output_tokens": 0, "provider_request_ids": []})
+        return _Pass(TEMPLATE, narrowed, "ready", proposal, bundle, verification, None, None, [step], {"input_tokens": 0, "output_tokens": 0, "provider_request_ids": []})
+
+    async def _retry_agent(self, retry_request: RepairRequest, checkpoints: AgentCheckpointStore | None, finding_id: str) -> RepairAgent:
+        if self.agent_factory:
+            return self.agent_factory(retry_request)
+        scoped = None if checkpoints is None else GroupScopedCheckpointStore(checkpoints, digest_json([finding_id, RETRY_SOURCE]))
+        return self._default_agent(retry_request, scoped)
+
+    async def _repair_group(
+        self,
+        request: RepairRequest,
+        group_request: RepairRequest,
+        group: list[FindingSnapshot],
+        index: int,
+        snapshot: Snapshot,
+        agent: RepairAgent,
+        verifier: Verifier,
+        accepted: list[tuple[Candidate, PatchBundle, VerificationResult]],
+        budget: _Budget,
+        checkpoints: AgentCheckpointStore | None,
+    ) -> tuple[GroupOutcome, list[tuple[Candidate, PatchBundle, VerificationResult]], list[dict[str, str]]]:
+        """Repairs one connected group: templates first, then the model for what is left, then
+        one focused retry per finding still unproven, each verified with the service proofs."""
+        finding_ids = sorted(finding.stable_id for finding in group)
+        by_id = {finding.stable_id: finding for finding in group}
+        proofs, proof_report = build_proofs(snapshot, group)
+        template_report: dict[str, str] = {}
+        failures: dict[str, dict[str, Any]] = {}
+        passes: list[_Pass] = []
+        agent_ran = False
+
+        template = await self._template_pass(group_request, snapshot, verifier, proofs, template_report, failures)
+        if template is not None:
+            passes.append(template)
+        proven: set[str] = set().union(*(item.proven for item in passes))
+
+        remaining = [finding for finding in group if finding.stable_id not in proven]
+        model_pass: _Pass | None = None
+        if remaining:
+            model_request = group_request.model_copy(update={"findings": remaining})
+            with telemetry.stage_span("agent_attempt", **telemetry.request_attributes(request), **{"mitig8it.attempt": index + 1}) as span:
+                result = await agent.run(
+                    model_request, snapshot,
+                    proofs=_proof_specs(proofs, remaining),
+                    prior_attempts={finding.stable_id: failures[finding.stable_id] for finding in remaining if finding.stable_id in failures} or None,
+                )
+                telemetry.record_outcome(
+                    span, result.state, None if result.state == "ready" else result.reason_code,
+                    **{"mitig8it.input_tokens": int(result.usage.get("input_tokens", 0) or 0), "mitig8it.output_tokens": int(result.usage.get("output_tokens", 0) or 0)},
+                )
+            agent_ran = True
+            budget.charge(request.policy, result)
+            model_pass = _agent_pass(MODEL, model_request, result)
+            passes.append(model_pass)
+            proven |= model_pass.proven
+            failures.update(_failure_entries(model_request, model_pass.bundle, model_pass.verification, MODEL))
+
+        retries: dict[str, str] = {}
+        # A deliberate stop (an abstention or a repeated rejection) is not retried: the model
+        # said why it cannot repair the finding. A partial or failed verification is.
+        retry_allowed = model_pass is None or model_pass.state != "unsupported"
+        for finding in group:
+            finding_id = finding.stable_id
+            if finding_id in proven or not retry_allowed:
+                continue
+            if not budget.allows():
+                retries[finding_id] = "budget_exhausted"
+                continue
+            outstanding = max(1, sum(1 for item in group if item.stable_id not in proven))
+            policy = group_request.policy.model_copy(
+                update={
+                    "max_attempts": RETRY_ATTEMPTS,
+                    "max_revisions": 0,
+                    "max_tool_calls": _split_budget(group_request.policy.max_tool_calls, outstanding, budget.tool_calls, GROUP_TOOL_CALL_FLOOR),
+                    "max_total_tokens": _split_budget(group_request.policy.max_total_tokens, outstanding, budget.tokens, GROUP_TOKEN_FLOOR),
+                    "max_spend_usd": _split_spend(group_request.policy.max_spend_usd, outstanding, budget.usd, GROUP_SPEND_FLOOR_USD),
+                }
+            )
+            retry_request = group_request.model_copy(update={"findings": [finding], "policy": policy})
+            try:
+                retry_agent = await self._retry_agent(retry_request, checkpoints, finding_id)
+            except (ProviderError, BrokerConfigurationError, ValueError) as exc:
+                retries[finding_id] = f"runtime_prerequisite_missing:{str(exc)[:80]}"
+                continue
+            with telemetry.stage_span("agent_retry", **telemetry.request_attributes(request), **{"mitig8it.finding_id": finding_id}) as span:
+                result = await retry_agent.run(
+                    retry_request, snapshot,
+                    proofs=_proof_specs(proofs, [finding]),
+                    prior_attempts={finding_id: failures[finding_id]} if finding_id in failures else None,
+                )
+                telemetry.record_outcome(span, result.state, None if result.state == "ready" else result.reason_code)
+            agent_ran = True
+            budget.charge(request.policy, result)
+            retry_pass = _agent_pass(RETRY_SOURCE, retry_request, result)
+            passes.append(retry_pass)
+            retries[finding_id] = "proven" if finding_id in retry_pass.proven else (result.reason_code or result.state)
+            proven |= retry_pass.proven
+            failures.update(_failure_entries(retry_request, retry_pass.bundle, retry_pass.verification, RETRY_SOURCE))
+
+        # One candidate per proven finding, from whichever pass proved it first, each verified
+        # on its own hunks; a pass whose evidence policy refuses, or whose patch overlaps an
+        # earlier candidate, contributes nothing and says so.
+        entries: list[tuple[Candidate, PatchBundle, VerificationResult]] = []
+        claimed: set[str] = set()
+        candidate_sources: dict[str, str] = {}
+        dependent: list[dict[str, str]] = []
+        rejected_reason: tuple[str, str] | None = None
+        for item in passes:
+            if not item.ready:
+                continue
+            level = item.verification.verification_level
+            if level not in VERIFICATION_LEVELS or (level == DEVELOPMENT_VERIFICATION_LEVEL and not request.policy.allow_development_verification):
+                rejected_reason = ("verification_level_not_permitted", "The verification evidence does not carry a verification level this policy accepts.")
+                continue
+            if bundles_conflict(snapshot, [bundle for _, bundle, _ in accepted + entries], item.bundle):
+                rejected_reason = ("overlapping_candidates", "This pass's patch changes a line range an earlier verified candidate already changes.")
+                continue
+            newly = [finding_id for finding_id in finding_ids if finding_id in item.proven and finding_id not in claimed]
+            if not newly:
+                continue
+            group_candidates, pass_dependent = await _per_finding_candidates(request, item.request, snapshot, verifier, item, newly)
+            dependent.extend(pass_dependent)
+            for candidate, bundle, verification in group_candidates:
+                entries.append((candidate, bundle, verification))
+                for finding_id in candidate.finding_ids:
+                    claimed.add(finding_id)
+                    candidate_sources[finding_id] = item.source
+
+        unproven: list[dict[str, str]] = []
+        dependent_by_id = {str(item["finding_id"]): item for item in dependent}
+        for finding_id in finding_ids:
+            if finding_id in claimed:
+                continue
+            if finding_id in dependent_by_id:
+                unproven.append(dependent_by_id[finding_id])
+            elif finding_id in failures:
+                failure = failures[finding_id]
+                unproven.append({"finding_id": finding_id, "code": str(failure.get("code") or "not_repaired"), "message": str(failure.get("message") or "No candidate proved this finding.")})
+            else:
+                unproven.append({"finding_id": finding_id, "code": "not_repaired", "message": "No regression test reproduced this finding, so no candidate claims it."})
+
+        trace = [entry for item in passes for entry in item.trace]
+        usage = _aggregate_usage([GroupOutcome(index, finding_ids, item.state, None, None, [], None, None, item.trace, item.usage, True) for item in passes])
+        # The group's reason is the group pass's own: a focused retry that stopped is recorded
+        # under `retries`, and the verification-based reason of the pass before it stands.
+        last = model_pass if model_pass is not None else (passes[-1] if passes else None)
+        evidence: dict[str, Any] = {
+            "proofs": proof_report,
+            "templates": template_report,
+            "candidate_sources": candidate_sources,
+        }
+        if retries:
+            evidence["retries"] = retries
+        if model_pass is not None:
+            evidence.update({key: value for key, value in model_pass.evidence.items() if key != "coverage"})
+        coverage = dict(model_pass.evidence.get("coverage") or {}) if model_pass is not None else {}
+        if entries:
+            outcome = GroupOutcome(
+                index, finding_ids, "ready", None, None, [candidate for candidate, _, _ in entries], entries[0][1],
+                last.verification if last else None, trace, usage, agent_ran, evidence, unproven, coverage,
+            )
+            return outcome, entries, unproven
+        if rejected_reason is not None:
+            code, message = rejected_reason
+            state = "inconclusive" if code == "verification_level_not_permitted" else "unsupported"
+            return GroupOutcome(index, finding_ids, state, code, message, [], None, last.verification if last else None, trace, usage, agent_ran, evidence, unproven, coverage), [], unproven
+        if last is None:
+            return GroupOutcome(index, finding_ids, "unsupported", "budget_exhausted", BUDGET_EXHAUSTED_MESSAGE, [], None, None, [], usage, False, evidence, unproven), [], unproven
+        if dependent and all(finding_id in dependent_by_id for finding_id in finding_ids if finding_id in proven):
+            code, message = DEPENDENT_HUNK_UNPROVEN, "Every proven finding in this group depended on a hunk owned by an unproven finding, so no candidate ships."
+        elif last.ready:
+            code, message = "regression_test_not_reproducing", "No finding in this group was shown repaired by its own regression test."
+        else:
+            code, message = last.reason_code or "no_verified_candidate", last.explanation or "No verified repair was produced."
+        state = last.state if last.state in ("unsupported", "inconclusive") else "inconclusive"
+        return GroupOutcome(index, finding_ids, state, code, message, [], None, last.verification, trace, usage, agent_ran, evidence, unproven, coverage), [], unproven
 
     async def repair(self, request: RepairRequest, checkpoints: AgentCheckpointStore | None = None) -> RepairResponse:
         request_digest = digest_json(request.model_dump(mode="json"))
@@ -516,147 +867,22 @@ class RepairEngine:
                 agent = self.agent_factory(group_request) if self.agent_factory else self._default_agent(group_request, group_checkpoints)
             except (ProviderError, BrokerConfigurationError, ValueError) as exc:
                 return _reason_response(request, "unsupported", "runtime_prerequisite_missing", str(exc), request_digest, snapshot.manifest_digest, skipped=skipped)
-            with telemetry.stage_span(
-                "agent_attempt", **telemetry.request_attributes(request), **{"mitig8it.attempt": index + 1}
-            ) as span:
-                result = await agent.run(group_request, snapshot)
-                telemetry.record_outcome(
-                    span,
-                    result.state,
-                    None if result.state == "ready" else result.reason_code,
-                    **{
-                        "mitig8it.input_tokens": int(result.usage.get("input_tokens", 0) or 0),
-                        "mitig8it.output_tokens": int(result.usage.get("output_tokens", 0) or 0),
-                    },
-                )
             if verifier is None:
                 verifier = agent.verifier
-            spent_input = int(result.usage.get("input_tokens", 0) or 0)
-            spent_output = int(result.usage.get("output_tokens", 0) or 0)
-            remaining_tool_calls = max(0, remaining_tool_calls - len(result.trace))
-            remaining_tokens = max(0, remaining_tokens - spent_input - spent_output)
-            remaining_usd = max(
-                0.0,
-                remaining_usd
-                - (
-                    spent_input * request.policy.input_usd_per_million_tokens
-                    + spent_output * request.policy.output_usd_per_million_tokens
-                )
-                / 1_000_000,
+            budget = _Budget(remaining_tool_calls, remaining_tokens, remaining_usd)
+            outcome, entries, unproven = await self._repair_group(
+                request, group_request, list(group), index, snapshot, agent, verifier, accepted, budget, group_checkpoints
             )
-
-            if result.state != "ready" or not result.bundle or not result.proposal or not result.verification:
-                outcomes.append(
-                    GroupOutcome(
-                        index,
-                        finding_ids,
-                        result.state,
-                        result.reason_code or "no_verified_candidate",
-                        result.explanation or "No verified repair was produced.",
-                        [],
-                        None,
-                        result.verification,
-                        result.trace,
-                        result.usage,
-                        True,
-                        dict(result.evidence),
-                    )
+            remaining_tool_calls, remaining_tokens, remaining_usd = budget.tool_calls, budget.tokens, budget.usd
+            outcomes.append(outcome)
+            accepted.extend(entries)
+            if outcome.evidence.get("candidate_sources") or outcome.reason_code == DEPENDENT_HUNK_UNPROVEN:
+                # A finding the group could not prove beside one it did is reported, never
+                # carried silently; a group that proved nothing carries its reason instead.
+                skipped.extend(
+                    {"finding_id": str(item["finding_id"]), "code": str(item["code"]), "message": str(item["message"])}
+                    for item in unproven
                 )
-                continue
-            verification_level = result.verification.verification_level
-            if verification_level not in VERIFICATION_LEVELS or (
-                verification_level == DEVELOPMENT_VERIFICATION_LEVEL and not request.policy.allow_development_verification
-            ):
-                outcomes.append(
-                    GroupOutcome(
-                        index,
-                        finding_ids,
-                        "inconclusive",
-                        "verification_level_not_permitted",
-                        "The verification evidence does not carry a verification level this policy accepts.",
-                        [],
-                        None,
-                        result.verification,
-                        result.trace,
-                        result.usage,
-                        False,
-                    )
-                )
-                continue
-            if bundles_conflict(snapshot, [bundle for _, bundle, _ in accepted], result.bundle):
-                outcomes.append(
-                    GroupOutcome(
-                        index,
-                        finding_ids,
-                        "unsupported",
-                        "overlapping_candidates",
-                        "This group's patch changes a line range an earlier verified candidate already changes.",
-                        [],
-                        None,
-                        result.verification,
-                        result.trace,
-                        result.usage,
-                        False,
-                    )
-                )
-                continue
-            proven = [finding_id for finding_id in finding_ids if finding_id in set(result.verification.proven_finding_ids)]
-            unproven = [item for item in result.verification.unproven_findings if item.get("finding_id") in finding_ids]
-            if not proven:
-                outcomes.append(
-                    GroupOutcome(
-                        index,
-                        finding_ids,
-                        "inconclusive",
-                        "regression_test_not_reproducing",
-                        "No finding in this group was shown repaired by its own regression test.",
-                        [],
-                        None,
-                        result.verification,
-                        result.trace,
-                        result.usage,
-                        True,
-                        {},
-                        unproven,
-                    )
-                )
-                continue
-            # One candidate per proven finding, each verified on its own hunks. A hunk owned by
-            # an unproven finding is left out of every candidate, and a finding that was proven
-            # only with such a hunk is reported rather than shipped.
-            group_candidates, dependent = await _per_finding_candidates(request, group_request, snapshot, verifier, result, proven)
-            unproven = unproven + dependent
-            # A finding the candidate could not prove is reported, never carried silently.
-            skipped.extend(
-                {"finding_id": str(item["finding_id"]), "code": str(item["code"]), "message": str(item["message"])}
-                for item in unproven
-            )
-            if not group_candidates:
-                outcomes.append(
-                    GroupOutcome(
-                        index,
-                        finding_ids,
-                        "inconclusive",
-                        DEPENDENT_HUNK_UNPROVEN,
-                        "Every proven finding in this group depended on a hunk owned by an unproven finding, so no candidate ships.",
-                        [],
-                        None,
-                        result.verification,
-                        result.trace,
-                        result.usage,
-                        True,
-                        {},
-                        unproven,
-                    )
-                )
-                continue
-            accepted.extend(group_candidates)
-            outcomes.append(
-                GroupOutcome(
-                    index, finding_ids, "ready", None, None, [candidate for candidate, _, _ in group_candidates], result.bundle,
-                    result.verification, result.trace, result.usage, True, {}, unproven, dict(result.evidence.get("coverage") or {}),
-                )
-            )
 
         outcomes = [dataclass_replace(outcome, language=group_languages.get(outcome.index)) for outcome in outcomes]
         group_report = [outcome.report() for outcome in outcomes]

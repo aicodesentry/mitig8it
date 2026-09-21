@@ -473,6 +473,10 @@ const remediationService = {
             start_line: hunk.getStartLine(), end_line: hunk.getEndLine(),
             original_lines: hunk.getOriginalLinesList(), replacement_lines: hunk.getReplacementLinesList(),
           } : null,
+          extra_hunks: section.getExtraHunksList().map((item) => ({
+            start_line: item.getStartLine(), end_line: item.getEndLine(),
+            original_lines: item.getOriginalLinesList(), replacement_lines: item.getReplacementLinesList(),
+          })),
           unified_diff: section.getUnifiedDiff(),
           not_suggestable_reason: section.getNotSuggestableReason(),
           stated_intent: section.getStatedIntent(),

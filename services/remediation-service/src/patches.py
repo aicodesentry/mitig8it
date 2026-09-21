@@ -60,6 +60,8 @@ GENERATED_TEST_SUFFIXES = (".test.js", ".test.cjs", ".test.mjs", ".test.py")
 PYTHON_GENERATED_TEST_SUFFIX = ".test.py"
 MAX_GENERATED_TEST_BYTES = 64_000
 MAX_GENERATED_TESTS = 20
+# A finding runs its service-generated proof and, at most, one model-written test beside it.
+MAX_TESTS_PER_FINDING = 2
 
 _REQUIRE_RE = re.compile(r"""\brequire\s*\(\s*['"]([^'"\n]{1,200})['"]\s*\)""")
 _IMPORT_FROM_RE = re.compile(r"""\b(?:import|export)\b[^;\n]*?\bfrom\s*['"]([^'"\n]{1,200})['"]""")
@@ -674,7 +676,7 @@ def build_generated_tests(
     tests: list[GeneratedTest] = []
     limitations: list[str] = []
     seen: set[str] = set()
-    claimed: set[str] = set()
+    claimed: list[str] = []
     known = sorted(finding.stable_id for finding in request.findings)
     for spec in specs:
         if not isinstance(spec, dict) or set(spec) != {"finding_id", "path", "content"}:
@@ -689,12 +691,12 @@ def build_generated_tests(
                 "regression_test_finding_unknown",
                 f"finding_id must be one of the task's finding ids: {', '.join(known)}.",
             )
-        if finding_id in claimed:
+        if claimed.count(finding_id) >= MAX_TESTS_PER_FINDING:
             raise PatchPolicyError(
                 "duplicate_regression_test_finding",
-                f"Send exactly one regression test per finding; {finding_id} has two.",
+                f"Send at most one regression test per finding beside the service-generated proof; {finding_id} has more.",
             )
-        claimed.add(finding_id)
+        claimed.append(finding_id)
         if is_harness_path(str(spec["path"]).strip().strip("/")):
             raise PatchPolicyError(
                 f"harness_path_protected:{str(spec['path']).strip().strip('/')}",

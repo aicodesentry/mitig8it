@@ -18,6 +18,83 @@ function countHunks(unifiedDiff) {
   return (String(unifiedDiff || '').match(/^@@ /gm) || []).length;
 }
 
+// Every contiguous region of the original that the replacement changes, as hunks on the
+// original's line numbers in file order. The middle between the common prefix and suffix
+// is aligned line by line (longest common subsequence) while it is small enough; a larger
+// middle is one region. A pure insertion is anchored to the line after it (the finding's
+// own line when that is the neighbour), because a suggestion must replace at least one
+// line. Returns [] when nothing changes or the original is empty.
+const MAX_ALIGNED_LINES = 1500;
+
+function computeRegions(original, replacement, preferredLine) {
+  const before = splitLines(original);
+  const after = splitLines(replacement);
+  if (!before.length) return [];
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < before.length - prefix && suffix < after.length - prefix
+    && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix += 1;
+  const a = before.slice(prefix, before.length - suffix);
+  const b = after.slice(prefix, after.length - suffix);
+  if (!a.length && !b.length) return [];
+  // Changed blocks over the middle: [aStart, aEnd, bStart, bEnd].
+  let blocks;
+  if (a.length * b.length > MAX_ALIGNED_LINES * MAX_ALIGNED_LINES) {
+    blocks = [[0, a.length, 0, b.length]];
+  } else {
+    const table = Array.from({ length: a.length + 1 }, () => new Uint16Array(b.length + 1));
+    for (let i = a.length - 1; i >= 0; i -= 1) {
+      for (let j = b.length - 1; j >= 0; j -= 1) {
+        table[i][j] = a[i] === b[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
+      }
+    }
+    blocks = [];
+    let i = 0;
+    let j = 0;
+    let open = null;
+    while (i < a.length || j < b.length) {
+      if (i < a.length && j < b.length && a[i] === b[j]) {
+        if (open) { blocks.push(open); open = null; }
+        i += 1; j += 1;
+      } else {
+        if (!open) open = [i, i, j, j];
+        if (j < b.length && (i >= a.length || table[i][j + 1] >= table[i + 1][j])) { j += 1; open[3] = j; } else { i += 1; open[1] = i; }
+      }
+    }
+    if (open) blocks.push(open);
+  }
+  const regions = [];
+  for (const [aStart, aEnd, bStart, bEnd] of blocks) {
+    const replacementLines = b.slice(bStart, bEnd);
+    if (aEnd > aStart) {
+      regions.push({ start_line: prefix + aStart + 1, end_line: prefix + aEnd, original_lines: a.slice(aStart, aEnd), replacement_lines: replacementLines });
+      continue;
+    }
+    // Insertion between original lines `prefix + aStart` and `prefix + aStart + 1`.
+    const previous = prefix + aStart;
+    const next = previous + 1;
+    if (next <= before.length && (Number(preferredLine) === next || previous < 1)) {
+      regions.push({ start_line: next, end_line: next, original_lines: [before[next - 1]], replacement_lines: [...replacementLines, before[next - 1]] });
+    } else {
+      regions.push({ start_line: previous, end_line: previous, original_lines: [before[previous - 1]], replacement_lines: [before[previous - 1], ...replacementLines] });
+    }
+  }
+  // An insertion anchored on a line another region already replaces folds into that region.
+  const merged = [];
+  for (const region of regions) {
+    const last = merged[merged.length - 1];
+    if (last && region.start_line <= last.end_line) {
+      const anchored = region.original_lines.length === 1 && region.replacement_lines[region.replacement_lines.length - 1] === region.original_lines[0]
+        ? region.replacement_lines.slice(0, -1) : region.replacement_lines.slice(1);
+      last.replacement_lines = [...last.replacement_lines, ...anchored];
+      continue;
+    }
+    merged.push({ ...region });
+  }
+  return merged;
+}
+
 // The smallest contiguous region of the original that the replacement changes, as one
 // hunk on the original's line numbers. A pure insertion is anchored to a neighbouring
 // line, preferring the finding's own line, because a suggestion must replace at least
@@ -116,17 +193,30 @@ function previewUrl(job) {
 function emptySection(finding) {
   return {
     candidate_id: '', finding_fingerprint: finding.fingerprint, path: finding.file_path || '', finding_line: Number(finding.line_start) || 0,
-    hunk: null, unified_diff: '', not_suggestable_reason: '', stated_intent: '', proof: '', evidence: [], limitations: [],
+    hunk: null, extra_hunks: [], unified_diff: '', not_suggestable_reason: '', stated_intent: '', proof: '', evidence: [], limitations: [],
     skipped_reason: '', verification_level: '', finding_body: '', finding_ids: [String(finding.id)], covered_by: '',
   };
 }
 
+// The region a finding's comment carries: the one on the finding's line, else the nearest.
+function primaryRegion(regions, findingLine) {
+  const line = Number(findingLine) || 0;
+  const containing = regions.find((region) => region.start_line <= line && line <= region.end_line);
+  if (containing) return containing;
+  return regions.reduce((best, region) => {
+    const distance = Math.min(Math.abs(region.start_line - line), Math.abs(region.end_line - line));
+    return !best || distance < best.distance ? { region, distance } : best;
+  }, null).region;
+}
+
 // One section per candidate and per finding it proves, one line per finding that a
 // proven finding's candidate covers on the same lines, and one line per remaining
-// finding the repair service reported as skipped. A candidate is offered as a
-// suggestion only when the whole verified fix is one contiguous region of the finding's
-// own file; anything else is shown as a diff with the reason, because a partial
-// suggestion would not be the fix that was verified.
+// finding the repair service reported as skipped. The candidate's change in the
+// finding's file is split into its contiguous regions: the one on the finding's line
+// is the section's hunk and the rest travel as extra hunks, each a suggestion in its
+// own comment when its lines are in the diff. A fix in another file, or in several,
+// is shown as a diff with the reason, because a partial suggestion would not be the
+// fix that was verified.
 function buildSections({ job, candidates = [], findings = [] }) {
   const byId = new Map(findings.map((finding) => [finding.id, finding]));
   const sections = [];
@@ -141,18 +231,23 @@ function buildSections({ job, candidates = [], findings = [] }) {
       if (!finding?.fingerprint) continue;
       const change = changes.find((item) => item?.path === finding.file_path) || null;
       let hunk = null;
+      let extraHunks = [];
       let reason = '';
       if (!change) reason = 'changes_other_file';
       else if (changes.length > 1) reason = 'multiple_files';
-      else if (countHunks(change.unified_diff) > 1) reason = 'multiple_regions';
       else {
-        hunk = computeHunk(change.original, change.replacement, finding.line_start);
-        if (!hunk) reason = 'no_line_change';
+        const regions = computeRegions(change.original, change.replacement, finding.line_start);
+        if (!regions.length) reason = 'no_line_change';
+        else {
+          hunk = primaryRegion(regions, finding.line_start);
+          extraHunks = regions.filter((region) => region !== hunk);
+        }
       }
       const section = {
         ...emptySection(finding),
         candidate_id: candidate.id,
         hunk,
+        extra_hunks: extraHunks,
         unified_diff: truncateDiff(changes.map((item) => item?.unified_diff || '').filter(Boolean).join('\n')),
         not_suggestable_reason: reason,
         stated_intent: String(candidate.preview?.reasoning?.intended_behavior || candidate.preview?.rationale || ''),
@@ -261,4 +356,4 @@ async function publishInlineFixes(jobId, options = {}) {
   return { published: true, results, sections: sections.length, comments_created: created, pull_request_comments_created: fallback, unplaced };
 }
 
-module.exports = { publishInlineFixes, buildSections, attachFindingBodies, computeHunk, evidenceLines, countHunks, proofLine, sameLines };
+module.exports = { publishInlineFixes, buildSections, attachFindingBodies, computeHunk, computeRegions, evidenceLines, countHunks, proofLine, sameLines };

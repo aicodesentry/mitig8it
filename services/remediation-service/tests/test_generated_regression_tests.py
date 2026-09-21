@@ -109,7 +109,7 @@ def _run_engine(payload, *, source=JS_SOURCE, replacement=JS_REPAIRED, regressio
 
     class _Provider:
         async def next_action(self, messages, tools):
-            return next(actions)
+            return next(actions, ProviderAction("abstain", {"reason_code": "script_exhausted", "explanation": "The scripted provider has no further action."}))
 
     agent = RepairAgent(_Provider(), Verifier(InProcessSandboxBroker(LocalSubprocessDriver())))
     return RepairEngine(lambda request: agent).repair(RepairRequest.model_validate(payload))

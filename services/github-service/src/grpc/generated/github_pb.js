@@ -10581,7 +10581,7 @@ proto.mitig8it.github.v1.FindingFixHunk.prototype.clearReplacementLinesList = fu
  * @private {!Array<number>}
  * @const
  */
-proto.mitig8it.github.v1.FindingFixSection.repeatedFields_ = [9,10,14];
+proto.mitig8it.github.v1.FindingFixSection.repeatedFields_ = [9,10,14,17];
 
 
 
@@ -10629,7 +10629,9 @@ proto.mitig8it.github.v1.FindingFixSection.toObject = function(includeInstance, 
     findingBody: jspb.Message.getFieldWithDefault(msg, 13, ""),
     findingIdsList: (f = jspb.Message.getRepeatedField(msg, 14)) == null ? undefined : f,
     coveredBy: jspb.Message.getFieldWithDefault(msg, 15, ""),
-    proof: jspb.Message.getFieldWithDefault(msg, 16, "")
+    proof: jspb.Message.getFieldWithDefault(msg, 16, ""),
+    extraHunksList: jspb.Message.toObjectList(msg.getExtraHunksList(),
+    proto.mitig8it.github.v1.FindingFixHunk.toObject, includeInstance)
   };
 
   if (includeInstance) {
@@ -10730,6 +10732,11 @@ proto.mitig8it.github.v1.FindingFixSection.deserializeBinaryFromReader = functio
     case 16:
       var value = /** @type {string} */ (reader.readString());
       msg.setProof(value);
+      break;
+    case 17:
+      var value = new proto.mitig8it.github.v1.FindingFixHunk;
+      reader.readMessage(value,proto.mitig8it.github.v1.FindingFixHunk.deserializeBinaryFromReader);
+      msg.addExtraHunks(value);
       break;
     default:
       reader.skipField();
@@ -10871,6 +10878,14 @@ proto.mitig8it.github.v1.FindingFixSection.serializeBinaryToWriter = function(me
     writer.writeString(
       16,
       f
+    );
+  }
+  f = message.getExtraHunksList();
+  if (f.length > 0) {
+    writer.writeRepeatedMessage(
+      17,
+      f,
+      proto.mitig8it.github.v1.FindingFixHunk.serializeBinaryToWriter
     );
   }
 };
@@ -11237,6 +11252,44 @@ proto.mitig8it.github.v1.FindingFixSection.prototype.getProof = function() {
  */
 proto.mitig8it.github.v1.FindingFixSection.prototype.setProof = function(value) {
   return jspb.Message.setProto3StringField(this, 16, value);
+};
+
+
+/**
+ * repeated FindingFixHunk extra_hunks = 17;
+ * @return {!Array<!proto.mitig8it.github.v1.FindingFixHunk>}
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.getExtraHunksList = function() {
+  return /** @type{!Array<!proto.mitig8it.github.v1.FindingFixHunk>} */ (
+    jspb.Message.getRepeatedWrapperField(this, proto.mitig8it.github.v1.FindingFixHunk, 17));
+};
+
+
+/**
+ * @param {!Array<!proto.mitig8it.github.v1.FindingFixHunk>} value
+ * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
+*/
+proto.mitig8it.github.v1.FindingFixSection.prototype.setExtraHunksList = function(value) {
+  return jspb.Message.setRepeatedWrapperField(this, 17, value);
+};
+
+
+/**
+ * @param {!proto.mitig8it.github.v1.FindingFixHunk=} opt_value
+ * @param {number=} opt_index
+ * @return {!proto.mitig8it.github.v1.FindingFixHunk}
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.addExtraHunks = function(opt_value, opt_index) {
+  return jspb.Message.addToRepeatedWrapperField(this, 17, opt_value, proto.mitig8it.github.v1.FindingFixHunk, opt_index);
+};
+
+
+/**
+ * Clears the list making it empty but non-null.
+ * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.clearExtraHunksList = function() {
+  return this.setExtraHunksList([]);
 };
 
 

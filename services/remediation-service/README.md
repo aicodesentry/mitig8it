@@ -146,6 +146,49 @@ python -m pytest tests
 
 The deterministic suite injects scripted provider and broker doubles; those tests prove bounds, contracts, Git identity, and fail-closed decisions, not model quality or real sandbox isolation.
 
+## Service-generated proofs and template-first patches
+
+For every supported finding the engine first tries to write both halves of the repair itself,
+before any model call, and records which path produced each candidate.
+
+- `src/sites.py` derives the enclosing site over the exact snapshot: the Express route handler
+  (`router.get('/orders/:id', (req, res) => ...)`, with its method, path, request and response
+  names, and every `req.params/query/body` read) or the Python function or Flask view (its
+  parameters, rule, methods, and `request.args/form/json` reads).
+- `src/proofs.py` emits one harness regression test per finding from that site: it invokes the
+  route or function with the family's injection payload and asserts the family's contract
+  through the harness recorders (query text without the payload and values carrying it; an
+  `execFile`/`spawn` argument array with the payload as its own element; no read outside the
+  served directory and a 4xx for a traversal payload, then a legitimate name still read; the
+  secret taken from the environment with the literal gone; nothing run for an `eval` payload
+  while a literal still parses). The test is generated before the model is asked and handed to
+  it as `proofs` in the task message: it is always the test that runs for that finding, and a
+  test the model sends for it runs beside the proof (`.model.test.<ext>`), never instead.
+- `src/templates.py` attempts a deterministic hunk per family: the concatenated or template
+  literal query becomes `pg` placeholders with a values array (or the Python driver's
+  placeholders with bound parameters, sqlite3 `?`, psycopg `%s`, SQLAlchemy `:p1`); `exec` of a
+  command string becomes `execFile(command, args)` with the callback and options kept, widening
+  the `child_process` require when needed; `path.join(base, input)` becomes `path.resolve` with a
+  containment check that answers 400 before any read; a secret literal becomes
+  `os.environ["NAME"]` plus `import os`; `eval(x)` becomes `ast.literal_eval(x)` plus
+  `import ast`; a Python `subprocess.run("..." + x, shell=True)` becomes an argv list; a Flask
+  `os.path.join(base, name)` gains a realpath check that aborts 400. A template declines a shape
+  it does not recognize, and refuses to bind an interpolated name that is itself a SQL fragment.
+- The template hunks of a group are combined (identical hunks once, import insertions on one
+  anchor merged) into one bundle with the service proofs and verified exactly like a model
+  proposal. Findings it proves ship as template candidates; the rest go to the model with their
+  proofs and, for a template that failed its proof, the proof's failure tail (`prior_attempts`).
+- A finding still unproven after the group pass gets one focused single-finding agent run
+  (`max_attempts: 2`, no revisions, a slice of the remaining budget) with the same proof and the
+  failure tail of the last attempt, unless the model had deliberately abstained.
+
+`evidence.groups[].reason_evidence` records `proofs` (`service`, or `model:<reason>` when the
+site could not be derived), `templates` (`proven`, `not_proven`, `rejected:<code>`, or
+`not_attempted:<reason>`), `candidate_sources` (`template`, `model`, or `retry` per proven
+finding), and `retries`; each candidate's `preview.evidence.candidate_source` says the same.
+The agent trace carries one `template_patch` step per template pass. Findings whose
+site or shape no generator recognizes fall back to the model-written test and hunk as before.
+
 ## Generated regression tests
 
 Most repositories ship no verification fixture, so `policy.verification_checks` is often empty.

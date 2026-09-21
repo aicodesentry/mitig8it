@@ -248,12 +248,14 @@ async function postInlineComment({ owner, repo, pr_number, installation_id, comm
 // and the verified fix publisher both post through it, so a finding comment created for
 // a verified fix has the same shape as one the analysis created. The publisher passes the
 // single-attempt mutation, because a retried ambiguous write could create two comments.
-function createInlineComment({ owner, repo, pr_number, token, commit_sha, path, line, body, request = githubRequest }) {
+function createInlineComment({ owner, repo, pr_number, token, commit_sha, path, line, start_line, body, request = githubRequest }) {
+  const range = Number.isInteger(Number(start_line)) && Number(start_line) > 0 && Number(start_line) < Number(line)
+    ? { start_line: Number(start_line), start_side: 'RIGHT' } : {};
   return request(
     'post',
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/comments`,
     token,
-    { body, commit_id: commit_sha, path, line, side: 'RIGHT' }
+    { body, commit_id: commit_sha, path, line, side: 'RIGHT', ...range }
   );
 }
 
@@ -1111,6 +1113,10 @@ const FIX_LINE_LIMIT = 400;
 function findingMarker(fingerprint) { return `<!-- mitig8it-finding:${fingerprint} -->`; }
 function fixMarker(candidateId) { return `<!-- mitig8it-fix:${candidateId} -->`; }
 function fixEndMarker(candidateId) { return `<!-- /mitig8it-fix:${candidateId} -->`; }
+// A second inline comment carrying one more region of a finding's fix (an added import, or
+// a change away from the finding's line), keyed by the finding and the region's position.
+function extraMarker(fingerprint, index) { return `<!-- mitig8it-fix-extra:${fingerprint}:${index} -->`; }
+const EXTRA_HUNK_LIMIT = 10;
 const FIX_BLOCK_PATTERN = /\n*<!-- mitig8it-fix:[^>]+ -->[\s\S]*?<!-- \/mitig8it-fix:[^>]+ -->/g;
 
 function stripFixBlocks(body) { return String(body || '').replace(FIX_BLOCK_PATTERN, '').replace(/\s+$/, ''); }
@@ -1165,18 +1171,23 @@ function validateFixSection(raw, index) {
     finding_ids: findingIds,
     covered_by: typeof raw.covered_by === 'string' ? raw.covered_by.replace(/[<>`]/g, '').slice(0, 300) : '',
   };
-  const hunk = raw.hunk;
+  section.hunk = parseHunk(raw.hunk);
+  section.extra_hunks = (Array.isArray(raw.extra_hunks) ? raw.extra_hunks : []).map(parseHunk).filter(Boolean).slice(0, EXTRA_HUNK_LIMIT);
+  return section;
+}
+
+function parseHunk(hunk) {
   if (hunk && typeof hunk === 'object' && Number.isInteger(Number(hunk.start_line)) && Number(hunk.start_line) > 0
     && Number.isInteger(Number(hunk.end_line)) && Number(hunk.end_line) >= Number(hunk.start_line)
     && Array.isArray(hunk.replacement_lines) && hunk.replacement_lines.length <= FIX_LINE_LIMIT
     && hunk.replacement_lines.every((line) => typeof line === 'string')) {
-    section.hunk = {
+    return {
       start_line: Number(hunk.start_line), end_line: Number(hunk.end_line),
       original_lines: Array.isArray(hunk.original_lines) ? hunk.original_lines.filter((line) => typeof line === 'string') : [],
       replacement_lines: hunk.replacement_lines,
     };
   }
-  return section;
+  return null;
 }
 
 const NOT_SUGGESTABLE_TEXT = {
@@ -1215,10 +1226,9 @@ async function suggestionFor(section, comment, readFileLines) {
   return { ok: true, lines };
 }
 
-function fixHeading(section) {
-  const level = section.verification_level || '';
-  const wording = level === 'independent_sandbox' ? 'verified in an isolated sandbox' : 'verified in a development sandbox';
-  return `**Recommended fix (${wording})**`;
+function verifiedLine(section) {
+  const where = section.verification_level === 'independent_sandbox' ? 'isolated sandbox' : 'development sandbox';
+  return `Verified: regression test failed on the original code and passed with this change (${where}).`;
 }
 
 function diffFence(diff) {
@@ -1226,27 +1236,105 @@ function diffFence(diff) {
   return `${fence}diff\n${diff.replace(/\s+$/, '')}\n${fence}`;
 }
 
-function buildFixSection(section, suggestion, previewUrl) {
-  const lines = [fixMarker(section.candidate_id), '---', fixHeading(section), ''];
-  if (suggestion.ok) {
-    lines.push('```suggestion', ...suggestion.lines, '```');
-  } else {
-    lines.push(`This fix cannot be offered as a GitHub suggestion because ${suggestion.reason}. The verified change is:`, '');
-    lines.push(section.unified_diff ? diffFence(section.unified_diff) : '_(no diff available)_');
-  }
-  lines.push('');
-  // The intent is the model's own claim about the change; the proof and the evidence are
-  // what the sandbox run established. They are labelled apart so neither reads as the other.
-  if (section.stated_intent) lines.push(`**Model's stated intent:** ${section.stated_intent}`);
-  lines.push(`**Proof:** ${section.proof || 'the generated regression test failed on the original code and passed on the fix.'}`);
-  lines.push(`**Evidence:** ${section.evidence.length ? section.evidence.join(' ') : 'verification passed in the sandbox.'}`);
-  lines.push(`**Coverage limitations:** ${section.limitations.length ? section.limitations.join('; ') : 'none reported.'}`);
-  if (section.finding_ids.length > 1) lines.push(`**Findings covered:** ${findingIdList(section)}`);
-  lines.push('');
+function lineRange(hunk) {
+  return hunk.start_line === hunk.end_line ? `line ${hunk.start_line}` : `lines ${hunk.start_line}-${hunk.end_line}`;
+}
+
+const IMPORT_LINE = /^\s*(?:import\s+\S|from\s+\S+\s+import\s+\S|(?:const|let|var)\s+.+?=\s*require\()/;
+
+function addedLines(hunk) {
+  return hunk.replacement_lines.filter((line) => !hunk.original_lines.includes(line));
+}
+
+// A hunk that adds or rewrites nothing but import lines.
+function isImportHunk(hunk) {
+  const added = addedLines(hunk);
+  const removed = hunk.original_lines.filter((line) => !hunk.replacement_lines.includes(line));
+  return added.length > 0 && [...added, ...removed].every((line) => !line.trim() || IMPORT_LINE.test(line));
+}
+
+// The collapsed details under the suggestion: the model's own claim, then what the sandbox
+// run established, labelled apart so neither reads as the other, then the human-in-the-loop
+// sentence. Blank lines keep the Markdown rendering inside the HTML block.
+function detailsBlock(section, previewUrl) {
+  const lines = ['<details>', '<summary>Details</summary>', ''];
+  if (section.stated_intent) lines.push(`**Model's stated intent:** ${section.stated_intent}`, '');
+  lines.push(`**Proof:** ${section.proof || 'the generated regression test failed on the original code and passed on the fix.'}`, '');
+  lines.push(`**Evidence:** ${section.evidence.length ? section.evidence.join(' ') : 'verification passed in the sandbox.'}`, '');
+  lines.push(`**Limitations:** ${section.limitations.length ? section.limitations.join('; ') : 'none reported.'}`, '');
+  if (section.finding_ids.length > 1) lines.push(`**Findings covered:** ${findingIdList(section)}`, '');
   const preview = previewUrl ? ` or use Apply this fix in [Mitig8it](${previewUrl})` : '';
   lines.push(`Nothing is applied or merged automatically. Apply this suggestion on GitHub${preview}; either way the change is a normal human push that Mitig8it re-analyses, and merging stays a human action.`);
+  lines.push('</details>');
+  return lines;
+}
+
+// The fix section under a finding comment: the suggestion block first (or the diff and one
+// line saying why it is not a suggestion), the verified line, any short notes about regions
+// suggested elsewhere or folded in, then the collapsed details. No prose above the block.
+function buildFixSection(section, plan, previewUrl) {
+  const lines = [fixMarker(section.candidate_id)];
+  if (plan.suggestion) {
+    lines.push('```suggestion', ...plan.suggestion, '```');
+  } else if (!plan.extras.length) {
+    lines.push(section.unified_diff ? diffFence(section.unified_diff) : '_(no diff available)_');
+    lines.push(`Shown as a diff: ${plan.reason}.`);
+  }
+  lines.push(verifiedLine(section));
+  lines.push(...plan.notes);
+  lines.push('', ...detailsBlock(section, previewUrl));
   lines.push(fixEndMarker(section.candidate_id));
   return lines.join('\n');
+}
+
+// A second inline comment on the lines of one more region of the fix.
+function buildExtraComment(section, hunk, index) {
+  return [
+    extraMarker(section.finding_fingerprint, index),
+    fixMarker(section.candidate_id),
+    '```suggestion', ...hunk.replacement_lines, '```',
+    `Part of the verified fix for \`${section.path}\` line ${section.finding_line}; the finding comment there has the details.`,
+    fixEndMarker(section.candidate_id),
+  ].join('\n');
+}
+
+// Where each region of a section's fix goes: the region on the finding's line is the
+// suggestion in the finding comment when the comment can carry it; every other region in
+// the diff gets its own comment; an added import outside the diff is folded into a note;
+// any other region outside the diff means the fix cannot be a suggestion at all, and the
+// finding comment shows the diff with that reason.
+async function planSection(section, anchor, placement, readFileLines, diffLinesFor) {
+  const plan = { suggestion: null, reason: '', notes: [], extras: [] };
+  if (placement !== 'inline') {
+    plan.reason = NOT_SUGGESTABLE_TEXT.line_outside_diff;
+    return plan;
+  }
+  const primary = await suggestionFor(section, anchor, readFileLines);
+  const diffLines = await diffLinesFor(section.path);
+  const inDiff = (hunk) => {
+    for (let line = hunk.start_line; line <= hunk.end_line; line += 1) if (!diffLines.has(line)) return false;
+    return !hunk.replacement_lines.some((line) => line.includes('```'));
+  };
+  if (primary.ok) {
+    plan.suggestion = primary.lines;
+  } else if (section.hunk && inDiff(section.hunk)) {
+    plan.extras.push(section.hunk);
+    plan.notes.push(`The change is suggested in a separate comment on ${lineRange(section.hunk)}.`);
+  } else {
+    plan.reason = primary.reason;
+    return plan;
+  }
+  for (const hunk of section.extra_hunks) {
+    if (inDiff(hunk)) {
+      plan.extras.push(hunk);
+    } else if (isImportHunk(hunk)) {
+      const added = addedLines(hunk).map((line) => `\`${line.trim()}\``).join(' and ');
+      plan.notes.push(`Also add ${added} at ${lineRange(hunk)}, which is outside the pull request diff.`);
+    } else {
+      return { suggestion: null, reason: `the fix also changes ${lineRange(hunk)}, outside the pull request diff`, notes: [], extras: [] };
+    }
+  }
+  return plan;
 }
 
 function findingIdList(section) {
@@ -1393,6 +1481,7 @@ async function publishFindingFixSections(payload) {
       const anchor = comment || { line: withBody.finding_line, side: 'RIGHT' };
       const blocks = [];
       const groupResults = [];
+      const extraPlans = [];
       for (const section of group) {
         const result = { finding_fingerprint: fingerprint, candidate_id: section.candidate_id, comment_id: Number(comment?.id || 0), mode: '', updated: false, reason: '', created: false, placement };
         if (section.skipped_reason) {
@@ -1402,11 +1491,11 @@ async function publishFindingFixSections(payload) {
           blocks.push(buildCoveredSection(section));
           Object.assign(result, { mode: 'covered', reason: `fixed together with ${section.covered_by}` });
         } else {
-          const suggestion = placement === 'inline'
-            ? await suggestionFor(section, anchor, readFileLines)
-            : { ok: false, reason: NOT_SUGGESTABLE_TEXT.line_outside_diff };
-          blocks.push(buildFixSection(section, suggestion, previewUrl));
-          Object.assign(result, { mode: suggestion.ok ? 'suggestion' : 'diff', reason: suggestion.ok ? '' : suggestion.reason });
+          const plan = await planSection(section, anchor, placement, readFileLines, diffLinesFor);
+          blocks.push(buildFixSection(section, plan, previewUrl));
+          const suggested = Boolean(plan.suggestion) || plan.extras.length > 0;
+          Object.assign(result, { mode: suggested ? 'suggestion' : 'diff', reason: suggested ? '' : plan.reason });
+          extraPlans.push({ section, extras: plan.extras });
         }
         groupResults.push(result);
         results.push(result);
@@ -1433,6 +1522,7 @@ async function publishFindingFixSections(payload) {
         result.updated = true;
         result.created = !comment;
       }
+      await publishExtraComments(envelope, token, fingerprint, comments, botLogin, extraPlans);
     }
     return { state: 'published', operation_id: envelope.action_id, results, reason: '' };
   } catch (error) {
@@ -1441,6 +1531,38 @@ async function publishFindingFixSections(payload) {
       return { state: 'reconciling', operation_id: envelope.action_id, results: [], reason: 'github_comment_outcome_ambiguous' };
     }
     throw externalError('Failed to publish the verified fix sections', error);
+  }
+}
+
+// The second inline comments of a finding's fix, one per region placed outside the finding
+// comment, each identified by the finding and the region's position: an existing one with
+// the same body is left alone, a changed one is updated, a missing one is created on its
+// lines, and one a regeneration no longer needs is removed. Comments by another author are
+// never touched.
+async function publishExtraComments(envelope, token, fingerprint, comments, botLogin, extraPlans) {
+  const own = (item) => typeof item?.body === 'string' && (!botLogin || item.user?.login === botLogin);
+  const existing = comments.filter((item) => own(item) && item.body.includes(`<!-- mitig8it-fix-extra:${fingerprint}:`));
+  let index = 0;
+  for (const { section, extras } of extraPlans) {
+    for (const hunk of extras) {
+      const marker = extraMarker(fingerprint, index);
+      const body = buildExtraComment(section, hunk, index);
+      index += 1;
+      const current = existing.find((item) => item.body.includes(marker));
+      if (current && current.body === body) continue;
+      if (current) {
+        await githubRestMutation('patch', `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/comments/${current.id}`, token, { body });
+        continue;
+      }
+      await createInlineComment({ owner: envelope.owner, repo: envelope.repo, pr_number: envelope.pr_number, token,
+        commit_sha: envelope.head_sha, path: section.path, line: hunk.end_line, start_line: hunk.start_line, body, request: githubRestMutation });
+    }
+  }
+  for (const item of existing) {
+    const match = item.body.match(/<!-- mitig8it-fix-extra:[^:>]+:(\d+) -->/);
+    if (match && Number(match[1]) >= index) {
+      await githubRestMutation('delete', `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/comments/${item.id}`, token);
+    }
   }
 }
 
