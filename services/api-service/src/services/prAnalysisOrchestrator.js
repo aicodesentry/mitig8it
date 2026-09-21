@@ -1079,6 +1079,15 @@ async function runAnalysisJob(payload) {
     } catch (enqueueError) {
       logger.warn('Automatic remediation enqueue failed after analysis completion', { analysis_run_id: runId, error: enqueueError.message });
     }
+
+    // This run re-rendered the inline finding comments of its head. A ready job that
+    // had already published its verified fixes under them is not re-queued, so its
+    // sections are written again here; the publication is idempotent.
+    try {
+      await remediationAutoGenerate.republishInlineFixesForCompletedAnalysis({ pullRequestId, headSha: commitSha });
+    } catch (republishError) {
+      logger.warn('Inline fix republication failed after analysis completion', { analysis_run_id: runId, error: republishError.message });
+    }
   } catch (error) {
     const priorRetries = Number(payload.auto_retry_count || 0);
     const retryable = !analysisResultProduced

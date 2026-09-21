@@ -37,6 +37,45 @@ test('gRPC binary contract preserves queued commit SHA', () => {
  const request = new clientPb.FetchPullRequestFilesRequest(); request.setCommitSha('immutable-head');
  expect(serverPb.FetchPullRequestFilesRequest.deserializeBinary(request.serializeBinary()).getCommitSha()).toBe('immutable-head');
 });
+// A re-analysis of the same head re-renders the finding comment. The verified fix
+// sections published under it belong to that finding at that head, so they survive.
+const FIX_BLOCK = '<!-- mitig8it-fix:cand-1 -->\n---\n**Recommended fix (verified in a development sandbox)**\n\n```suggestion\nsafe();\n```\n<!-- /mitig8it-fix:cand-1 -->';
+function inlineCommentGitHub(body) {
+ const comment = {id:7, body, user:{type:'Bot',login:'fixture[bot]'}, path:'a.py', html_url:'fixture'};
+ axios.mockImplementation(async r => {
+  if (r.url.includes('/comments?')) return {data:[comment]};
+  if (r.method === 'patch') { comment.body = r.data.body; return {data:{id:7}}; }
+  return {data:{head:{sha:'head-a'}}};
+ });
+ return comment;
+}
+test('re-analysis of the same finding keeps the verified fix sections under the rewritten comment', async () => {
+ const comment = inlineCommentGitHub(`<!-- mitig8it-finding:fp1 -->\nold text\n\n${FIX_BLOCK}`);
+ await postInlineComment({owner:'owner',repo:'repo',pr_number:1,installation_id:1,commit_sha:'head-a',path:'a.py',line:1,body:'<!-- mitig8it-finding:fp1 -->\nnew text'});
+ expect(comment.body).toBe(`<!-- mitig8it-finding:fp1 -->\nnew text\n\n${FIX_BLOCK}`);
+ expect(comment.body.match(/<!-- mitig8it-fix:/g)).toHaveLength(1);
+ expect(axios.mock.calls.some(([r]) => r.method === 'post')).toBe(false);
+});
+test('several preserved fix sections are carried over in order and an unchanged body is never written', async () => {
+ const second = FIX_BLOCK.replace(/cand-1/g, 'cand-2');
+ const comment = inlineCommentGitHub(`<!-- mitig8it-finding:fp1 -->\nnew text\n\n${FIX_BLOCK}\n\n${second}`);
+ await postInlineComment({owner:'owner',repo:'repo',pr_number:1,installation_id:1,commit_sha:'head-a',path:'a.py',line:1,body:'<!-- mitig8it-finding:fp1 -->\nnew text'});
+ expect(comment.body).toBe(`<!-- mitig8it-finding:fp1 -->\nnew text\n\n${FIX_BLOCK}\n\n${second}`);
+ expect(axios.mock.calls.some(([r]) => r.method === 'patch')).toBe(false);
+});
+test('a fix section is never carried onto another finding, and a moved head publishes nothing at all', async () => {
+ const comment = inlineCommentGitHub(`<!-- mitig8it-finding:fp1 -->\nold text\n\n${FIX_BLOCK}`);
+ // Another fingerprint matches no existing comment, so a fresh one is created without it.
+ await postInlineComment({owner:'owner',repo:'repo',pr_number:1,installation_id:1,commit_sha:'head-a',path:'a.py',line:1,body:'<!-- mitig8it-finding:fp2 -->\nother finding'});
+ const posted = axios.mock.calls.find(([r]) => r.method === 'post');
+ expect(posted[0].data.body).toBe('<!-- mitig8it-finding:fp2 -->\nother finding');
+ expect(comment.body).toBe(`<!-- mitig8it-finding:fp1 -->\nold text\n\n${FIX_BLOCK}`);
+
+ jest.clearAllMocks();
+ axios.mockResolvedValue({data:{head:{sha:'head-b'}}});
+ await expect(postInlineComment({owner:'owner',repo:'repo',pr_number:1,installation_id:1,commit_sha:'head-a',path:'a.py',line:1,body:'<!-- mitig8it-finding:fp1 -->\nnew text'})).rejects.toThrow(/superseded/i);
+ expect(axios.mock.calls.every(([r]) => r.method === 'get')).toBe(true);
+});
 test('oversized file scope cannot be silently truncated', async () => {
  axios.mockImplementation(async r => ({data:r.url.includes('/files?') ? Array.from({length:r.url.endsWith('page=3')?1:100},(_,i)=>({filename:`src/${i}.py`,status:'added',patch:'+x=1'})) : {head:{sha:'head-a'}}}));
  await expect(fetchPullRequestFiles(request)).rejects.toThrow(/limit/i);
