@@ -125,8 +125,16 @@ class RepairPolicy(StrictModel):
     output_usd_per_million_tokens: float = Field(default=0, ge=0, le=1000)
     request_timeout_seconds: int = Field(default=900, ge=10, le=1800)
     supported_platform: Literal["linux"] = "linux"
-    allowed_rule_families: list[Literal["sql_parameterization", "command_arguments", "path_containment"]] = Field(
-        default_factory=lambda: ["sql_parameterization", "command_arguments", "path_containment"]
+    allowed_rule_families: list[
+        Literal["sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval"]
+    ] = Field(
+        default_factory=lambda: [
+            "sql_parameterization",
+            "command_arguments",
+            "path_containment",
+            "hardcoded_credential",
+            "code_injection_eval",
+        ]
     )
     sandbox_image_digest: str | None = None
     allow_development_verification: bool = False

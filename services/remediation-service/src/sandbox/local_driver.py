@@ -96,6 +96,9 @@ class LocalSubprocessDriver:
                     "CI": "true",
                     "NO_COLOR": "1",
                     "NODE_OPTIONS": "--disable-proto=throw",
+                    # Python checks: no .pyc litter in the workspace, no site customization.
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    "PYTHONNOUSERSITE": "1",
                 },
                 stdin=subprocess.DEVNULL,
                 capture_output=True,

@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import json
-import re
 from typing import Any, Callable
 
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass, field as dataclass_field, replace as dataclass_replace
 
 from .agent import OpenAICompatibleProvider, ProviderError, RepairAgent
 from .agent.checkpoint import AgentCheckpointStore, GroupScopedCheckpointStore
 from .batch import BatchPolicyError, ImmutableBatch, build_immutable_batch
 from .digests import digest_json
-from .families import rule_family
+from .families import family_supported, language_of_path, rule_family
+from .gates import UNSUPPORTED_LANGUAGE_MESSAGE, static_gate
 from .git_tree import GitTreeError, compute_tree_oid, validate_snapshot_tree
-from .grouping import group_findings
+from .grouping import group_findings_by_language
 from .models import Candidate, FindingSnapshot, RepairPolicy, RepairRequest, RepairResponse, VerificationSummary
 from .patches import PatchBundle, PatchPolicyError, bundles_conflict, combine_patch_bundles
 from .retrieval import Snapshot, SnapshotError
@@ -84,6 +83,8 @@ class GroupOutcome:
     unproven: list[dict[str, str]] = dataclass_field(default_factory=list)
     # Coverage revisions the agent ran for this group and why they stopped.
     coverage: dict[str, Any] = dataclass_field(default_factory=dict)
+    # The toolchain that checked this group, from its findings' file extension.
+    language: str | None = None
 
     def report(self) -> dict[str, Any]:
         report: dict[str, Any] = {
@@ -93,6 +94,8 @@ class GroupOutcome:
             "reason": None if self.reason_code is None else {"code": self.reason_code, "message": self.message},
             "candidate_id": self.candidate.candidate_id if self.candidate else None,
         }
+        if self.language:
+            report["language"] = self.language
         if self.candidate is not None:
             report["repaired_finding_ids"] = list(self.candidate.finding_ids)
         if self.unproven:
@@ -307,49 +310,41 @@ class RepairEngine:
                 return _reason_response(request, "unsupported", "invalid_git_tree", str(exc), request_digest, snapshot.manifest_digest)
 
         with telemetry.stage_span("retrieval", **telemetry.request_attributes(request)):
-            # Partial coverage: a finding outside the enabled families, or whose exact source is
-            # absent, is skipped with a reason and the remaining findings are still repaired.
+            # Partial coverage: a finding outside the enabled families, whose exact source is
+            # absent, whose file is in a language neither toolchain checks, or whose code the
+            # static gates cannot repair safely is skipped with a reason, and the remaining
+            # findings are still repaired.
             skipped: list[dict[str, str]] = []
             supported = []
             allowed = set(request.policy.allowed_rule_families)
             for finding in request.findings:
+                finding_id = str(finding.snapshot_id or finding.id or finding.rule_id or "")
                 family = _rule_family(finding)
+                language = language_of_path(finding.affected_path)
                 if family is None:
-                    skipped.append({"finding_id": str(finding.snapshot_id or finding.id or finding.rule_id or ""), "code": "unsupported_rule_family", "message": "This finding is outside the enabled repair families."})
+                    skipped.append({"finding_id": finding_id, "code": "unsupported_rule_family", "message": "This finding is outside the enabled repair families."})
                 elif family not in allowed:
-                    skipped.append({"finding_id": str(finding.snapshot_id or finding.id or finding.rule_id or ""), "code": "rule_family_disabled", "message": "The repair family is disabled by policy."})
+                    skipped.append({"finding_id": finding_id, "code": "rule_family_disabled", "message": "The repair family is disabled by policy."})
                 elif not finding.affected_path or finding.affected_path not in snapshot.paths:
-                    skipped.append({"finding_id": str(finding.snapshot_id or finding.id or finding.rule_id or ""), "code": "affected_source_missing", "message": "The exact affected source file is absent from the snapshot."})
+                    skipped.append({"finding_id": finding_id, "code": "affected_source_missing", "message": "The exact affected source file is absent from the snapshot."})
+                elif language is None:
+                    skipped.append({"finding_id": finding_id, "code": "unsupported_language", "message": UNSUPPORTED_LANGUAGE_MESSAGE})
+                elif not family_supported(family, language):
+                    skipped.append({"finding_id": finding_id, "code": "unsupported_rule_family", "message": f"The {family} family is not repaired for {language} sources yet."})
+                elif (gate := static_gate(snapshot, finding, family, language)) is not None:
+                    skipped.append({"finding_id": finding_id, "code": gate[0], "message": gate[1]})
                 else:
                     supported.append(finding)
             if not supported:
+                codes = {item["code"] for item in skipped}
+                if len(codes) == 1 and skipped:
+                    # One reason explains the whole request, so the response carries it rather
+                    # than a generic family message the skip list would contradict.
+                    return _reason_response(request, "unsupported", skipped[0]["code"], skipped[0]["message"], request_digest, snapshot.manifest_digest, skipped=skipped)
                 return _reason_response(request, "unsupported", "unsupported_rule_family", "No selected finding is inside the enabled repair families.", request_digest, snapshot.manifest_digest, skipped=skipped)
             request = request.model_copy(update={"findings": supported})
-            families = {_rule_family(finding) for finding in request.findings}
-            if not any(path.rsplit(".", 1)[-1].lower() in {"js", "jsx", "ts", "tsx", "mjs", "cjs"} for path in snapshot.paths):
-                return _reason_response(request, "unsupported", "unsupported_language", "No JavaScript or TypeScript application source was supplied.", request_digest, snapshot.manifest_digest, skipped=skipped)
-            if "sql_parameterization" in families:
-                pg_present = False
-                for path in snapshot.paths:
-                    if path.rsplit("/", 1)[-1] != "package.json":
-                        continue
-                    try:
-                        manifest = json.loads(snapshot.full_content(path))
-                    except (TypeError, ValueError):
-                        continue
-                    dependencies = {**(manifest.get("dependencies") or {}), **(manifest.get("devDependencies") or {})}
-                    pg_present = pg_present or "pg" in dependencies
-                if not pg_present:
-                    return _reason_response(request, "unsupported", "pg_dependency_not_proven", "SQL auto-repair requires an exact package manifest proving the pg driver.", request_digest, snapshot.manifest_digest, skipped=skipped)
-            if "command_arguments" in families:
-                for finding in request.findings:
-                    if _rule_family(finding) != "command_arguments" or not finding.line_start:
-                        continue
-                    hit = snapshot.read(finding.affected_path, max(1, finding.line_start - 3), (finding.line_end or finding.line_start) + 3)
-                    if re.search(r"\b(?:exec|spawn)\s*\([^\n]*(?:\||shell\s*:\s*true)", hit.content):
-                        return _reason_response(request, "unsupported", "shell_pipeline_unsupported", "Shell pipelines and shell-mode process execution require manual handling.", request_digest, snapshot.manifest_digest, skipped=skipped)
 
-        groups = group_findings(request.findings)
+        groups = group_findings_by_language(request.findings)
         group_count = len(groups)
         outcomes: list[GroupOutcome] = []
         accepted: list[tuple[Candidate, PatchBundle, VerificationResult]] = []
@@ -358,9 +353,12 @@ class RepairEngine:
         remaining_tokens = request.policy.max_total_tokens
         remaining_usd = float(request.policy.max_spend_usd)
 
+        group_languages: dict[int, str | None] = {}
+
         # One bounded agent loop per connected group, sequentially, sharing the job's budget.
         for index, group in enumerate(groups):
             finding_ids = sorted(finding.stable_id for finding in group)
+            group_languages[index] = language_of_path(group[0].affected_path)
             if index > 0 and (
                 remaining_tool_calls < GROUP_TOOL_CALL_FLOOR
                 or remaining_tokens < GROUP_TOKEN_FLOOR
@@ -503,6 +501,7 @@ class RepairEngine:
                 )
             )
 
+        outcomes = [dataclass_replace(outcome, language=group_languages.get(outcome.index)) for outcome in outcomes]
         group_report = [outcome.report() for outcome in outcomes]
         agent_trace = [entry for outcome in outcomes for entry in outcome.trace]
         usage = _aggregate_usage(outcomes)
