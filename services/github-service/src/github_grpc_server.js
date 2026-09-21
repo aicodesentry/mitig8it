@@ -9,6 +9,7 @@ const {
   createCheckRun,
   createRemediationCheckRun,
   publishRemediationComment,
+  publishFindingFixSections,
   fetchFileContents,
   fetchPullRequestFiles,
   fetchRemediationSnapshot,
@@ -452,6 +453,50 @@ const remediationService = {
       response.setCommentId(Number(result.comment_id || 0));
       response.setExternalId(result.external_id || '');
       response.setUpdated(Boolean(result.updated));
+      response.setReason(result.reason || '');
+      return response;
+    }
+  ),
+
+  publishFindingFixSections: unary(
+    async (request) => publishFindingFixSections({
+      ...fromRemediationEnvelope(request.getEnvelope()),
+      preview_url: request.getPreviewUrl(),
+      sections: request.getSectionsList().map((section) => {
+        const hunk = section.getHunk();
+        return {
+          candidate_id: section.getCandidateId(),
+          finding_fingerprint: section.getFindingFingerprint(),
+          path: section.getPath(),
+          finding_line: section.getFindingLine(),
+          hunk: hunk ? {
+            start_line: hunk.getStartLine(), end_line: hunk.getEndLine(),
+            original_lines: hunk.getOriginalLinesList(), replacement_lines: hunk.getReplacementLinesList(),
+          } : null,
+          unified_diff: section.getUnifiedDiff(),
+          not_suggestable_reason: section.getNotSuggestableReason(),
+          behavior_preserved: section.getBehaviorPreserved(),
+          evidence: section.getEvidenceList(),
+          limitations: section.getLimitationsList(),
+          skipped_reason: section.getSkippedReason(),
+          verification_level: section.getVerificationLevel(),
+        };
+      }),
+    }),
+    (result) => {
+      const response = new githubPb.FindingFixSectionsResponse();
+      response.setState(result.state || '');
+      response.setOperationId(result.operation_id || '');
+      response.setResultsList((result.results || []).map((item) => {
+        const message = new githubPb.FindingFixSectionResult();
+        message.setFindingFingerprint(item.finding_fingerprint || '');
+        message.setCandidateId(item.candidate_id || '');
+        message.setCommentId(Number(item.comment_id || 0));
+        message.setMode(item.mode || '');
+        message.setUpdated(Boolean(item.updated));
+        message.setReason(item.reason || '');
+        return message;
+      }));
       response.setReason(result.reason || '');
       return response;
     }
