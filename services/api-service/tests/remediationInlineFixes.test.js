@@ -70,6 +70,22 @@ beforeEach(() => {
 });
 afterAll(() => { for (const name of Object.keys(FLAGS)) delete process.env[name]; });
 
+test('computeRegions lists every contiguous region on the original line numbers, insertions anchored to the line after them', () => {
+  const twoRegions = ORIGINAL.replace('const db = require("./db");', 'const db = require("./db");\nconst { execFile } = require("child_process");')
+    .replace('db.query(`SELECT * FROM orders WHERE id = ${id}`)', "db.query('SELECT * FROM orders WHERE id = $1', [id])");
+  expect(inline.computeRegions(ORIGINAL, twoRegions, 3)).toEqual([
+    { start_line: 1, end_line: 1, original_lines: ['const db = require("./db");'], replacement_lines: ['const db = require("./db");', 'const { execFile } = require("child_process");'] },
+    { start_line: 3, end_line: 3, original_lines: ['  const rows = await db.query(`SELECT * FROM orders WHERE id = ${id}`);'], replacement_lines: ["  const rows = await db.query('SELECT * FROM orders WHERE id = $1', [id]);"] },
+  ]);
+  // A replacement that grows one line into three is one region; an unchanged file has none.
+  const grown = ORIGINAL.replace('  return rows[0];', '  if (!rows.length) return null;\n  if (rows.length > 1) return null;\n  return rows[0];');
+  expect(inline.computeRegions(ORIGINAL, grown, 4)).toEqual([
+    { start_line: 4, end_line: 4, original_lines: ['  return rows[0];'], replacement_lines: ['  if (!rows.length) return null;', '  if (rows.length > 1) return null;', '  return rows[0];'] },
+  ]);
+  expect(inline.computeRegions(ORIGINAL, ORIGINAL, 3)).toEqual([]);
+  expect(inline.computeRegions('', 'x\n', 1)).toEqual([]);
+});
+
 test('computeHunk finds the smallest contiguous region and anchors a pure insertion to the finding line', () => {
   expect(inline.computeHunk(ORIGINAL, FIXED, 3)).toEqual({
     start_line: 3, end_line: 3,
@@ -168,9 +184,7 @@ test('sections with a fix carry the finding comment text the analysis would rend
   expect((await inline.attachFindingBodies(job, inline.buildSections(context({ job }))))[0].finding_body).toBe('');
 });
 
-test('a fix touching several regions or files is sent as a diff with the reason, and stale candidates are not offered', () => {
-  const regions = inline.buildSections(context({ candidates: [candidate({ preview: { ...candidate().preview, changes: [{ ...candidate().preview.changes[0], unified_diff: '@@ -3 +3 @@\n-a\n+b\n@@ -40 +40 @@\n-c\n+d' }] } })] }));
-  expect(regions[0]).toMatchObject({ hunk: null, not_suggestable_reason: 'multiple_regions' });
+test('a fix touching several files is sent as a diff with the reason, and stale candidates are not offered', () => {
   const files = inline.buildSections(context({ candidates: [candidate({ preview: { ...candidate().preview, changes: [candidate().preview.changes[0], { path: 'lib/util.js', original: 'a\n', replacement: 'b\n', unified_diff: '@@ -1 +1 @@\n-a\n+b' }] } })] }));
   expect(files[0]).toMatchObject({ hunk: null, not_suggestable_reason: 'multiple_files' });
   expect(files[0].unified_diff).toContain('@@ -1 +1 @@');
@@ -211,7 +225,7 @@ function perFindingCandidate(id, findingId, replacement, unifiedDiff) {
   });
 }
 
-test('per-finding candidates each get their own section: a suggestion on the finding line, a diff when the fix also adds an import elsewhere', () => {
+test('per-finding candidates each get their own section: a suggestion on the finding line, plus an extra hunk when the fix also adds an import elsewhere', () => {
   const sections = inline.buildSections(context({
     candidates: [
       perFindingCandidate('c-cred', 'f-cred', CREDENTIAL_FIXED, '--- a/text.py\n+++ b/text.py\n@@ -8 +8,2 @@\n-API_KEY = "placeholder-not-a-key"\n+import os\n+API_KEY = os.environ["API_KEY"]'),
@@ -234,7 +248,13 @@ test('per-finding candidates each get their own section: a suggestion on the fin
     ],
   });
   expect(sections[0].unified_diff).not.toContain('literal_eval');
-  expect(sections[1]).toMatchObject({ path: 'text.py', finding_line: 13, hunk: null, not_suggestable_reason: 'multiple_regions' });
+  expect(sections[0].extra_hunks).toEqual([]);
+  // The eval fix is two regions: the finding's line is the hunk, the added import travels as an extra hunk.
+  expect(sections[1]).toMatchObject({
+    path: 'text.py', finding_line: 13, not_suggestable_reason: '',
+    hunk: { start_line: 13, end_line: 13, original_lines: ['    result = eval(user_input)'], replacement_lines: ['    result = ast.literal_eval(user_input)'] },
+    extra_hunks: [{ start_line: 1, end_line: 1, original_lines: ['import sqlite3'], replacement_lines: ['import sqlite3', 'import ast'] }],
+  });
   expect(sections[1].unified_diff).toContain('ast.literal_eval');
   expect(sections[1].evidence[0]).toBe('Regression test .mitig8it/regression/f-eval.test.py failed on the original code and passed on the fix.');
 });

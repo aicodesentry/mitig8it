@@ -28,7 +28,7 @@ TRACER_NAME = "mitig8it.remediation"
 ENDPOINT_VARIABLE = "OTEL_EXPORTER_OTLP_ENDPOINT"
 MAX_ATTRIBUTE_CHARS = 256
 
-STAGES = ("snapshot_bind", "retrieval", "agent_attempt", "verification", "batch")
+STAGES = ("snapshot_bind", "retrieval", "template_verification", "agent_attempt", "agent_retry", "verification", "batch")
 
 # The complete set of attributes this service is allowed to export. Everything else is
 # dropped, including anything a future caller adds without extending this list.

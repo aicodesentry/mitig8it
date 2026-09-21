@@ -251,7 +251,7 @@ async def test_engine_marks_a_harness_backed_repair_ready_with_no_installed_depe
 
     class _Provider:
         async def next_action(self, messages, tools):
-            return next(actions)
+            return next(actions, ProviderAction("abstain", {"reason_code": "script_exhausted", "explanation": "The scripted provider has no further action."}))
 
     agent = RepairAgent(_Provider(), Verifier(InProcessSandboxBroker(LocalSubprocessDriver())))
     response = await RepairEngine(lambda request: agent).repair(RepairRequest.model_validate(_orders_payload(request_payload)))
