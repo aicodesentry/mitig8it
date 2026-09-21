@@ -7,11 +7,13 @@ jest.mock('../src/db/remediation', () => ({
   hash: (value) => require('crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex'),
   claimJobById: jest.fn(), claimActionById: jest.fn(),
 }));
+jest.mock('../src/db/findings', () => ({ listByAnalysisRun: jest.fn(async () => []) }));
 jest.mock('../src/services/githubRemediationClient', () => ({ GitHubRemediationClient: jest.fn(() => ({})) }));
 jest.mock('../src/services/mergeController', () => ({ evaluateForPullRequest: jest.fn(), publishVerificationCheck: jest.fn(), evaluateForAction: jest.fn() }));
 jest.mock('../src/utils/logger', () => ({ warn: jest.fn(), error: jest.fn(), info: jest.fn() }));
 
 const remediationDb = require('../src/db/remediation');
+const findingsDb = require('../src/db/findings');
 const inline = require('../src/services/remediationInlineFixes');
 const outbox = require('../src/services/remediationOutbox');
 
@@ -85,18 +87,85 @@ test('computeHunk finds the smallest contiguous region and anchors a pure insert
   expect(inline.computeHunk(ORIGINAL, ORIGINAL, 3)).toBeNull();
 });
 
-test('sections carry a suggestion hunk, the behavior line, evidence, limitations, and one line per skipped finding', () => {
+test('sections carry a suggestion hunk, the stated intent, the proof, evidence, limitations, and one line per skipped finding', () => {
   const sections = inline.buildSections(context());
   expect(sections).toHaveLength(2);
   expect(sections[0]).toMatchObject({
     candidate_id: '77777777-7777-4777-8777-777777777777', finding_fingerprint: 'fp-sql', path: 'services/orders.js', finding_line: 3,
     hunk: { start_line: 3, end_line: 3 }, not_suggestable_reason: '', verification_level: 'development_unverified',
-    behavior_preserved: 'The order lookup returns the same row for the same id.',
+    stated_intent: 'The order lookup returns the same row for the same id.',
+    proof: 'regression test tests/orders.regression.test.js asserts that the SQL injection at services/orders.js:3 is no longer reproducible; it failed on the original code and passed on the fix.',
     evidence: ['Regression test tests/orders.regression.test.js: failed on the original code, passed on the fix.', 'Syntax check: passed on the fixed file.', 'Evidence digest: cccccccccccc.'],
     limitations: ['verification ran in the development local sandbox without network, kernel, or filesystem isolation'],
+    finding_ids: ['f1'], covered_by: '', finding_body: '',
   });
+  expect(sections[0]).not.toHaveProperty('behavior_preserved');
   expect(sections[0].unified_diff).toContain('@@ -3 +3 @@');
-  expect(sections[1]).toMatchObject({ candidate_id: '', finding_fingerprint: 'fp-redirect', skipped_reason: 'This finding is outside the enabled repair families.', hunk: null });
+  expect(sections[1]).toMatchObject({ candidate_id: '', finding_fingerprint: 'fp-redirect', skipped_reason: 'This finding is outside the enabled repair families.', hunk: null, finding_ids: ['f2'] });
+});
+
+test('the proof line quotes a test that states its own assertion and picks the test written for the finding', () => {
+  const stated = candidate({ preview: { ...candidate().preview, evidence: { ...candidate().preview.evidence, generated_tests: [
+    { path: 'tests/other.test.js', finding_id: 'f9' },
+    { path: 'tests/orders.regression.test.js', finding_id: 'f1', assertion: 'a quoted id cannot change the WHERE clause.' },
+  ] } } });
+  expect(inline.proofLine(stated, context().findings[0]))
+    .toBe('regression test tests/orders.regression.test.js asserts that a quoted id cannot change the WHERE clause; it failed on the original code and passed on the fix.');
+  expect(inline.proofLine(candidate({ preview: { ...candidate().preview, evidence: {} } }), context().findings[0]))
+    .toBe('the generated regression test failed on the original code and passed on the fix.');
+});
+
+// Two findings on the same lines of the same file (two rules for one traversal): the
+// candidate that proves one of them changes those lines for both. The other finding is
+// published as fixed together with the proven one, never as having no automatic fix.
+test('a finding on the same lines as a proven finding is covered by that candidate instead of reported as skipped', () => {
+  const findings = [
+    { id: 'f1', title: 'Path traversal', rule_id: 'js/path-traversal', file_path: 'services/orders.js', line_start: 35, line_end: 35, fingerprint: 'fp-traversal' },
+    { id: 'f3', title: 'Uncontrolled path', rule_id: 'js/uncontrolled-path', file_path: 'services/orders.js', line_start: 35, line_end: 36, fingerprint: 'fp-uncontrolled' },
+    { id: 'f2', title: 'Open redirect', rule_id: 'js/open-redirect', file_path: 'services/orders.js', line_start: 20, line_end: 20, fingerprint: 'fp-redirect' },
+    { id: 'f4', title: 'Path traversal', rule_id: 'js/path-traversal', file_path: 'lib/other.js', line_start: 35, line_end: 35, fingerprint: 'fp-other-file' },
+  ];
+  const job = { ...context().job, failure_reason: { skipped: [
+    { finding_id: 'f3', code: 'no_candidate', message: 'No candidate proved this finding.' },
+    { finding_id: 'f2', code: 'unsupported_rule_family', message: 'This finding is outside the enabled repair families.' },
+  ] } };
+  const sections = inline.buildSections(context({ job, findings }));
+  expect(sections.map((section) => [section.finding_fingerprint, section.candidate_id, section.covered_by, section.skipped_reason])).toEqual([
+    ['fp-traversal', '77777777-7777-4777-8777-777777777777', '', ''],
+    ['fp-uncontrolled', '77777777-7777-4777-8777-777777777777', 'js/path-traversal', ''],
+    ['fp-redirect', '', '', 'This finding is outside the enabled repair families.'],
+  ]);
+  expect(sections[0].finding_ids).toEqual(['f1', 'f3']);
+  expect(sections[1]).toMatchObject({ path: 'services/orders.js', finding_line: 35, finding_ids: ['f1', 'f3'], hunk: null, unified_diff: '' });
+  expect(inline.sameLines(findings[0], findings[3])).toBe(false);
+  expect(inline.sameLines({ file_path: 'a.js', line_start: 10, line_end: 12 }, { file_path: 'a.js', line_start: 12 })).toBe(true);
+  expect(inline.sameLines({ file_path: 'a.js', line_start: 10, line_end: 12 }, { file_path: 'a.js', line_start: 13 })).toBe(false);
+});
+
+// The finding comment text travels with every section that carries or is covered by a
+// fix, rendered by the analysis's own comment builder from the snapshotted finding, so
+// the adapter can create the comment for a finding the analysis kept summary only.
+test('sections with a fix carry the finding comment text the analysis would render; skipped findings carry none', async () => {
+  findingsDb.listByAnalysisRun.mockResolvedValueOnce([
+    { id: 'f1', fingerprint: 'fp-sql', title: 'SQL injection', severity: 'high', confidence: 0.85, cwe_id: 'CWE-89', file_path: 'services/orders.js', line_start: 3, line_end: 3,
+      description: 'User input reaches the query.', evidence: 'Template literal in db.query', remediation: 'Use a parameterized query.', remediation_patch: null },
+    { id: 'f2', fingerprint: 'fp-redirect', title: 'Open redirect', severity: 'medium', confidence: 0.7, file_path: 'services/orders.js', line_start: 20, description: 'x' },
+  ]);
+  const job = { ...context().job, analysis_run_id: 'run-1' };
+  const sections = await inline.attachFindingBodies(job, inline.buildSections(context({ job })));
+  expect(findingsDb.listByAnalysisRun).toHaveBeenCalledWith('run-1');
+  expect(sections[0].finding_body).toContain('**HIGH** — SQL injection');
+  expect(sections[0].finding_body).toContain('> Template literal in db.query');
+  expect(sections[0].finding_body).toContain('**CWE:** CWE-89');
+  expect(sections[0].finding_body).toContain('**Confidence:** 85%');
+  expect(sections[0].finding_body).toContain('**Fix:** Use a parameterized query.');
+  expect(sections[0].finding_body).not.toContain('mitig8it-finding');
+  expect(sections[1].finding_body).toBe('');
+
+  // No analysis run, or an unreadable snapshot, leaves the sections without bodies rather than failing the publication.
+  expect((await inline.attachFindingBodies(context().job, inline.buildSections(context())))[0].finding_body).toBe('');
+  findingsDb.listByAnalysisRun.mockRejectedValueOnce(new Error('connection lost'));
+  expect((await inline.attachFindingBodies(job, inline.buildSections(context({ job }))))[0].finding_body).toBe('');
 });
 
 test('a fix touching several regions or files is sent as a diff with the reason, and stale candidates are not offered', () => {
@@ -187,6 +256,35 @@ test('publication sends every section once with a stable idempotency key and rec
   // A retry produces the identical request: the adapter's candidate markers make the write idempotent.
   await inline.publishInlineFixes(JOB, { githubClient: github });
   expect(github.publishFindingFixSections.mock.calls[1][0]).toEqual(payload);
+});
+
+// A finding the analysis kept summary only has no comment for the adapter to update. The
+// publication sends the comment text with the section so the adapter creates the comment
+// on the finding's line, or as a pull request comment when that line is outside the diff,
+// and the result says which happened.
+test('publication carries the finding text for a finding without a comment and reports created and fallback comments', async () => {
+  findingsDb.listByAnalysisRun.mockResolvedValue([
+    { id: 'f1', fingerprint: 'fp-sql', title: 'SQL injection', severity: 'high', confidence: 0.85, file_path: 'services/orders.js', line_start: 3, description: 'User input reaches the query.' },
+  ]);
+  remediationDb.jobPublishContext.mockResolvedValue(context({ job: { ...context().job, analysis_run_id: 'run-1' } }));
+  const github = { publishFindingFixSections: jest.fn(async (payload) => ({ state: 'published', results: [
+    { finding_fingerprint: 'fp-sql', candidate_id: payload.sections[0].candidate_id, comment_id: 501, mode: 'suggestion', updated: true, reason: '', created: true, placement: 'inline' },
+    { finding_fingerprint: 'fp-redirect', candidate_id: '', comment_id: 0, mode: 'comment_not_found', updated: false, reason: 'no finding comment carries this marker', created: false, placement: '' },
+  ] })) };
+  const result = await inline.publishInlineFixes(JOB, { githubClient: github });
+  expect(result).toMatchObject({ published: true, sections: 2, comments_created: 1, pull_request_comments_created: 0, unplaced: 1 });
+  const [payload] = github.publishFindingFixSections.mock.calls[0];
+  expect(payload.sections[0]).toMatchObject({ path: 'services/orders.js', finding_line: 3, finding_ids: ['f1'] });
+  expect(payload.sections[0].finding_body).toContain('**HIGH** — SQL injection');
+  expect(payload.sections[1].finding_body).toBe('');
+
+  // The diff-range fallback: the adapter placed the fix in a pull request comment because the line is outside the diff.
+  github.publishFindingFixSections.mockResolvedValueOnce({ state: 'published', results: [
+    { finding_fingerprint: 'fp-sql', candidate_id: 'c', comment_id: 601, mode: 'diff', updated: true, reason: "this finding's line is not part of the pull request diff", created: true, placement: 'pull_request' },
+  ] });
+  expect(await inline.publishInlineFixes(JOB, { githubClient: github })).toMatchObject({ published: true, comments_created: 0, pull_request_comments_created: 1, unplaced: 0 });
+  findingsDb.listByAnalysisRun.mockReset();
+  findingsDb.listByAnalysisRun.mockResolvedValue([]);
 });
 
 test('publication is refused when the flag is off, the job is not ready, or the head moved, without any GitHub call', async () => {

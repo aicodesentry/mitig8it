@@ -775,13 +775,17 @@ function fixSection(overrides = {}) {
     hunk: { start_line: 12, end_line: 12, original_lines: ['  const rows = await db.query(`SELECT * FROM orders WHERE id = ${id}`);'],
       replacement_lines: ['  const rows = await db.query(\'SELECT * FROM orders WHERE id = $1\', [id]);'] },
     unified_diff: '--- a/services/orders.js\n+++ b/services/orders.js\n@@ -12,1 +12,1 @@\n-  old\n+  new',
-    not_suggestable_reason: '', behavior_preserved: 'The order lookup returns the same row for the same id.',
+    not_suggestable_reason: '', stated_intent: 'The order lookup returns the same row for the same id.',
+    proof: 'regression test tests/orders.regression.test.js asserts that the SQL injection at services/orders.js:12 is no longer reproducible; it failed on the original code and passed on the fix.',
     evidence: ['Regression test tests/orders.regression.test.js: failed on the original code, passed on the fix.', 'Syntax check: passed on the fixed file.'],
     limitations: ['verification ran in the development local sandbox without network, kernel, or filesystem isolation'],
-    verification_level: 'development_unverified', skipped_reason: '',
+    verification_level: 'development_unverified', skipped_reason: '', finding_body: '', finding_ids: ['f-sql-1'], covered_by: '',
     ...overrides,
   };
 }
+
+const FINDING_BODY = '🔴 **HIGH** — SQL injection\n\n> Template literal in db.query\n\n**Confidence:** 85%\n\n**Fix:** Use a parameterized query.';
+const PLACED = { created: false, placement: 'inline' };
 
 function fixPayload(sections, overrides = {}) {
   return payload({ preview_url: 'https://app.example.test/dashboard/pull-requests/pr-1/findings', sections, ...overrides });
@@ -808,13 +812,16 @@ test('a verified fix is appended to the existing finding comment as a suggestion
   const comments = findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\n**SQL injection**\nUse parameters.`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
   const first = await publishFindingFixSections(fixPayload([fixSection()]));
   expect(first.state).toBe('published');
-  expect(first.results).toEqual([{ finding_fingerprint: 'fp-sql-1', candidate_id: CANDIDATE, comment_id: 77, mode: 'suggestion', updated: true, reason: '' }]);
+  expect(first.results).toEqual([{ finding_fingerprint: 'fp-sql-1', candidate_id: CANDIDATE, comment_id: 77, mode: 'suggestion', updated: true, reason: '', ...PLACED }]);
   const body = comments[0].body;
   expect(body.startsWith(`${FINDING_MARKER}\n**SQL injection**\nUse parameters.`)).toBe(true);
   expect(body).toContain(`<!-- mitig8it-fix:${CANDIDATE} -->`);
   expect(body).toContain('**Recommended fix (verified in a development sandbox)**');
   expect(body).toContain('```suggestion\n  const rows = await db.query(\'SELECT * FROM orders WHERE id = $1\', [id]);\n```');
-  expect(body).toContain('**Behavior preserved:** The order lookup returns the same row for the same id.');
+  // The model's claim and the sandbox proof are labelled apart, and neither is called "behavior preserved".
+  expect(body).toContain("**Model's stated intent:** The order lookup returns the same row for the same id.\n**Proof:** regression test tests/orders.regression.test.js asserts that the SQL injection at services/orders.js:12 is no longer reproducible; it failed on the original code and passed on the fix.\n**Evidence:** ");
+  expect(body).not.toContain('Behavior preserved');
+  expect(body).not.toContain('**Findings covered:**');
   expect(body).toContain('**Evidence:** Regression test tests/orders.regression.test.js: failed on the original code, passed on the fix. Syntax check: passed on the fixed file.');
   expect(body).toContain('**Coverage limitations:** verification ran in the development local sandbox');
   expect(body).toContain('Nothing is applied or merged automatically. Apply this suggestion on GitHub or use Apply this fix in [Mitig8it](https://app.example.test/dashboard/pull-requests/pr-1/findings)');
@@ -870,8 +877,8 @@ test('a skipped finding receives one "No automatic fix" line and an unknown mark
     fixSection({ finding_fingerprint: 'fp-unknown' }),
   ]));
   expect(result.results).toEqual([
-    { finding_fingerprint: 'fp-sql-1', candidate_id: '', comment_id: 80, mode: 'skipped', updated: true, reason: 'This finding is outside the enabled repair families.' },
-    { finding_fingerprint: 'fp-unknown', candidate_id: CANDIDATE, comment_id: 0, mode: 'comment_not_found', updated: false, reason: 'no finding comment carries this marker' },
+    { finding_fingerprint: 'fp-sql-1', candidate_id: '', comment_id: 80, mode: 'skipped', updated: true, reason: 'This finding is outside the enabled repair families.', ...PLACED },
+    { finding_fingerprint: 'fp-unknown', candidate_id: CANDIDATE, comment_id: 0, mode: 'comment_not_found', updated: false, reason: 'no finding comment carries this marker', created: false, placement: '' },
   ]);
   expect(comments[0].body).toContain('<!-- mitig8it-fix:none -->\nNo automatic fix: This finding is outside the enabled repair families.\n<!-- /mitig8it-fix:none -->');
   expect(axios.mock.calls.filter(([request]) => request.method === 'post')).toHaveLength(0);
@@ -893,6 +900,124 @@ test('fix sections never edit a marker comment by another author and are not wri
   });
   const stale = await publishFindingFixSections(fixPayload([fixSection()]));
   expect(stale).toEqual({ state: 'stale', operation_id: actionId, results: [], reason: 'head_moved' });
+  expect(axios.mock.calls.filter(([request]) => request.method === 'patch')).toHaveLength(0);
+});
+
+// A scripted pull request without a finding comment: the diff shows services/orders.js
+// lines 10 to 14 (one hunk), inline and pull request comment creation are recorded.
+function emptyPullRequestGitHub({ patch = '@@ -10,3 +10,5 @@\n context\n+  const rows = await db.query(`SELECT * FROM orders WHERE id = ${id}`);\n+  more\n context\n context', issueComments = [] } = {}) {
+  const reviewComments = [];
+  const created = { inline: [], issue: [] };
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/pulls/9/comments') && request.method === 'get') return { data: reviewComments };
+    if (request.url.includes('/pulls/9/comments') && request.method === 'post') {
+      const comment = { id: 500 + reviewComments.length, body: request.data.body, path: request.data.path, line: request.data.line, side: request.data.side, user: { login: 'mitig8it[bot]' } };
+      reviewComments.push(comment); created.inline.push(request.data);
+      return { data: { id: comment.id } };
+    }
+    if (request.url.includes('/pulls/9/files')) return { data: [{ filename: 'services/orders.js', patch }] };
+    if (request.url.includes('/issues/9/comments') && request.method === 'get') return { data: issueComments };
+    if (request.url.includes('/issues/9/comments') && request.method === 'post') {
+      const comment = { id: 700 + issueComments.length, body: request.data.body, user: { login: 'mitig8it[bot]' } };
+      issueComments.push(comment); created.issue.push(request.data);
+      return { data: { id: comment.id } };
+    }
+    if (request.url.includes('/issues/comments/') && request.method === 'patch') {
+      const id = Number(request.url.split('/').pop());
+      issueComments.find(item => item.id === id).body = request.data.body;
+      return { data: { id } };
+    }
+    if (request.url.includes('/pulls/comments/') && request.method === 'patch') {
+      const id = Number(request.url.split('/').pop());
+      reviewComments.find(item => item.id === id).body = request.data.body;
+      return { data: { id } };
+    }
+    return repositoryResponse(request);
+  });
+  return { reviewComments, issueComments, created };
+}
+
+// A finding the analysis kept summary only has no comment. When the section carries the
+// finding text and the line is in the diff, the comment is created on that line with the
+// analysis marker and body, then the fix section; a retry finds it and writes nothing.
+test('a section with the finding text creates the finding comment on the line when the diff shows it, once', async () => {
+  const github = emptyPullRequestGitHub();
+  const first = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY })]));
+  expect(first.state).toBe('published');
+  expect(first.results).toEqual([{ finding_fingerprint: 'fp-sql-1', candidate_id: CANDIDATE, comment_id: 500, mode: 'suggestion', updated: true, reason: '', created: true, placement: 'inline' }]);
+  expect(github.created.inline).toEqual([expect.objectContaining({ path: 'services/orders.js', line: 12, side: 'RIGHT', commit_id: head })]);
+  const body = github.reviewComments[0].body;
+  expect(body.startsWith(`${FINDING_MARKER}\n${FINDING_BODY}\n\n<!-- mitig8it-fix:${CANDIDATE} -->`)).toBe(true);
+  expect(body).toContain('```suggestion\n  const rows = await db.query(\'SELECT * FROM orders WHERE id = $1\', [id]);\n```');
+  expect(body).toContain('**Proof:** regression test tests/orders.regression.test.js asserts');
+  expect(github.created.issue).toHaveLength(0);
+
+  const second = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY })]));
+  expect(second.results[0]).toMatchObject({ comment_id: 500, mode: 'suggestion', updated: false, created: false, placement: 'inline' });
+  expect(github.created.inline).toHaveLength(1);
+  expect(axios.mock.calls.filter(([request]) => request.method === 'patch')).toHaveLength(0);
+});
+
+// A finding body that arrives with stale fix blocks cannot smuggle a section past the
+// candidate markers: the blocks are dropped before the comment is created.
+test('fix blocks inside the finding text are stripped before the comment is created', async () => {
+  const github = emptyPullRequestGitHub();
+  await publishFindingFixSections(fixPayload([fixSection({ finding_body: `${FINDING_BODY}\n\n<!-- mitig8it-fix:stale -->\nold\n<!-- /mitig8it-fix:stale -->` })]));
+  expect(github.reviewComments[0].body).not.toContain('mitig8it-fix:stale');
+  expect(github.reviewComments[0].body.match(/<!-- mitig8it-fix:/g)).toHaveLength(1);
+});
+
+// GitHub refuses an inline comment on a line the diff does not show. The fix then goes
+// to a pull request comment carrying the same marker, the file and line, the reason,
+// and the change as a diff, and a retry updates that comment instead of adding one.
+test('a finding line outside the diff falls back to a pull request comment that says why and carries the diff', async () => {
+  const github = emptyPullRequestGitHub();
+  const section = fixSection({ finding_body: FINDING_BODY, finding_line: 35, hunk: { start_line: 35, end_line: 35, original_lines: ['old'], replacement_lines: ['new'] } });
+  const first = await publishFindingFixSections(fixPayload([section]));
+  expect(first.results).toEqual([{ finding_fingerprint: 'fp-sql-1', candidate_id: CANDIDATE, comment_id: 700, mode: 'diff', updated: true,
+    reason: "this finding's line is not part of the pull request diff, so GitHub allows neither an inline comment nor a suggestion there", created: true, placement: 'pull_request' }]);
+  expect(github.created.inline).toHaveLength(0);
+  const body = github.issueComments[0].body;
+  expect(body.startsWith(`${FINDING_MARKER}\n**Verified fix for \`services/orders.js\` line 35.** This line is not part of the pull request diff, so GitHub does not accept an inline comment on it; the finding and its verified fix are reported here instead.\n\n${FINDING_BODY}`)).toBe(true);
+  expect(body).toContain("This fix cannot be offered as a GitHub suggestion because this finding's line is not part of the pull request diff");
+  expect(body).toContain('```diff\n--- a/services/orders.js');
+  expect(body).not.toContain('```suggestion');
+
+  const regenerated = 'c1d2e3f4-0000-4000-8000-000000000003';
+  const second = await publishFindingFixSections(fixPayload([{ ...section, candidate_id: regenerated }]));
+  expect(second.results[0]).toMatchObject({ comment_id: 700, mode: 'diff', updated: true, created: false, placement: 'pull_request' });
+  expect(github.issueComments).toHaveLength(1);
+  expect(github.issueComments[0].body).toContain(`<!-- mitig8it-fix:${regenerated} -->`);
+  expect(github.issueComments[0].body).not.toContain(`<!-- mitig8it-fix:${CANDIDATE} -->`);
+});
+
+// Two findings on the same line: the candidate that proves one covers the other. The
+// covered finding's comment says so and names the proven rule; both sections carry both
+// finding ids; the covered comment never says there is no automatic fix.
+test('a covered finding is published as fixed together with the proven finding, under its own comment', async () => {
+  const covered = '<!-- mitig8it-finding:fp-traversal-2 -->';
+  const comments = findingCommentGitHub({ id: 90, body: `${FINDING_MARKER}\n**Path traversal**`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
+  comments.push({ id: 91, body: `${covered}\n**Uncontrolled path**`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
+  const result = await publishFindingFixSections(fixPayload([
+    fixSection({ finding_ids: ['f-1', 'f-2'] }),
+    fixSection({ finding_fingerprint: 'fp-traversal-2', hunk: null, unified_diff: '', evidence: [], finding_ids: ['f-1', 'f-2'], covered_by: 'js/path-traversal' }),
+  ]));
+  expect(result.results).toEqual([
+    { finding_fingerprint: 'fp-sql-1', candidate_id: CANDIDATE, comment_id: 90, mode: 'suggestion', updated: true, reason: '', ...PLACED },
+    { finding_fingerprint: 'fp-traversal-2', candidate_id: CANDIDATE, comment_id: 91, mode: 'covered', updated: true, reason: 'fixed together with js/path-traversal', ...PLACED },
+  ]);
+  expect(comments[0].body).toContain('**Findings covered:** `f-1`, `f-2`');
+  expect(comments[1].body).toContain(`<!-- mitig8it-fix:${CANDIDATE} -->\nFixed together with js/path-traversal: the verified fix published under that finding on the same lines resolves this finding as well (findings \`f-1\`, \`f-2\`).\n<!-- /mitig8it-fix:${CANDIDATE} -->`);
+  expect(comments[1].body).not.toContain('No automatic fix');
+  expect(comments[1].body).not.toContain('```suggestion');
+});
+
+test("a marker comment by another author is never edited; with the finding text the app creates its own comment instead", async () => {
+  const github = emptyPullRequestGitHub();
+  github.reviewComments.push({ id: 1, body: `${FINDING_MARKER}\nforged`, user: { login: 'someone-else' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
+  const result = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY })]));
+  expect(result.results[0]).toMatchObject({ comment_id: 501, mode: 'suggestion', created: true, placement: 'inline' });
+  expect(github.reviewComments[0].body).toBe(`${FINDING_MARKER}\nforged`);
   expect(axios.mock.calls.filter(([request]) => request.method === 'patch')).toHaveLength(0);
 });
 
