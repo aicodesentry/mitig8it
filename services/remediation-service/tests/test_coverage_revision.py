@@ -244,9 +244,14 @@ async def test_a_spent_revision_budget_leaves_the_proven_subset(request_payload)
     assert response.state == "ready", response.reason
     assert _claimed(response) == ["f-exec", "f-sql"]
     assert [(item["finding_id"], item["code"]) for item in response.skipped] == [("f-path", "regression_test_not_reproducing")]
-    assert len(provider.seen) == 4, "the run ended on the second verification"
-    assert [step["outcome"] for step in response.evidence["agent_trace"]] == ["ok", "revision_requested", "ok", "ok"]
+    # The group pass ended on the second verification: the third verify in the script was not
+    # reached by it. The finding still unproven then got one focused retry, which consumed that
+    # leftover verify (rejected: nothing proposed yet) and ended when the script ran out.
+    outcomes = [step["outcome"] for step in response.evidence["agent_trace"]]
+    assert outcomes[:4] == ["ok", "revision_requested", "ok", "ok"]
+    assert outcomes[4:] == ["rejected", "abstained"] and provider.exhausted_calls == 1
     assert response.evidence["groups"][0]["coverage"]["stopped"] == "revision_budget_spent"
+    assert response.evidence["groups"][0]["reason_evidence"]["retries"] == {"f-path": "script_exhausted"}
 
 
 @pytest.mark.asyncio
@@ -254,7 +259,8 @@ async def test_no_revision_budget_ships_the_first_proven_subset(request_payload)
     actions = [_propose(SQL_FIXED, ["f-sql"]), _verify("verify-1")]
     response, provider = await _run(_payload(request_payload, max_revisions=0), actions, SelectiveBroker({"f-sql"}))
     assert response.state == "ready" and _claimed(response) == ["f-sql"]
-    assert len(provider.seen) == 2
+    assert len(provider.seen) - provider.exhausted_calls == 2
+    assert provider.exhausted_calls == 2, "one focused retry per unproven finding"
     assert response.evidence["groups"][0]["coverage"]["stopped"] == "revision_budget_spent"
 
 
@@ -263,7 +269,7 @@ async def test_a_revision_needs_an_attempt_left(request_payload):
     actions = [_propose(SQL_FIXED, ["f-sql"]), _verify("verify-1")]
     response, provider = await _run(_payload(request_payload, max_attempts=1), actions, SelectiveBroker({"f-sql"}))
     assert response.state == "ready" and _claimed(response) == ["f-sql"]
-    assert len(provider.seen) == 2
+    assert len(provider.seen) - provider.exhausted_calls == 2
     assert response.evidence["groups"][0]["coverage"]["stopped"] == "attempt_budget_spent"
 
 
@@ -316,7 +322,10 @@ async def test_a_model_that_abstains_after_the_revision_request_ships_the_proven
     response, _ = await _run(_payload(request_payload), actions, SelectiveBroker({"f-sql"}))
     assert response.state == "ready", response.reason
     assert _claimed(response) == ["f-sql"]
-    assert [step["outcome"] for step in response.evidence["agent_trace"]] == ["ok", "revision_requested", "abstained"]
+    outcomes = [step["outcome"] for step in response.evidence["agent_trace"]]
+    assert outcomes[:3] == ["ok", "revision_requested", "abstained"]
+    # Then one focused retry per unproven finding, each ended by the exhausted script.
+    assert outcomes[3:] == ["abstained", "abstained"]
     coverage = response.evidence["groups"][0]["coverage"]
     assert coverage["revisions_used"] == 1 and coverage["stopped"] == "no_further_repair"
 
@@ -341,7 +350,8 @@ async def test_eviction_keeps_the_revision_request_in_the_working_set(request_pa
     payload = _payload(request_payload, max_working_set_tokens=2_000, max_tool_calls=20)
     response, provider = await _run(payload, actions, SelectiveBroker({"f-sql"}))
     assert response.state == "ready"
-    final = provider.seen[-1]
+    # The last call of the group pass, before the focused retries began.
+    final = provider.seen[len(provider.seen) - provider.exhausted_calls - 1]
     verification_message = next(message for message in final if message.get("tool_call_id") == "verify-1")
     assert "coverage_revision" in verification_message["content"]
     evicted = [message for message in final if message.get("role") == "tool" and "evicted_context" in message["content"]]

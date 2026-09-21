@@ -346,6 +346,10 @@ message FindingFixSection {
   string covered_by = 15;
   // What the regression test asserted, in one sentence.
   string proof = 16;
+  // The candidate's other contiguous regions of the same file, in file order: an added import
+  // on its own line, or a change away from the finding's line. Each becomes a suggestion in a
+  // second inline comment when its lines are in the diff.
+  repeated FindingFixHunk extra_hunks = 17;
 }
 
 message FindingFixSectionsRequest {

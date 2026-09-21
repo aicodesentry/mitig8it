@@ -70,15 +70,28 @@ def test_a_test_naming_a_finding_outside_the_task_is_rejected(request_payload):
     assert "finding-1" in info.value.guidance
 
 
-def test_two_tests_for_one_finding_are_rejected(request_payload):
+def test_a_finding_runs_its_proof_and_at_most_one_model_test_beside_it(request_payload):
+    """A service-generated proof and one model-written test may both prove a finding; a third
+    test for the same finding is rejected."""
     request = RepairRequest.model_validate(_no_profile_payload(request_payload))
     snapshot = Snapshot(request)
+    bundle = build_patch_bundle(
+        request,
+        snapshot,
+        [whole_file_change("src/db.js", JS_SOURCE, JS_REPAIRED)],
+        [_spec(JS_REGRESSION_TEST), _spec(JS_REGRESSION_TEST, path=SECOND_TEST_PATH)],
+    )
+    assert [test.finding_id for test in bundle.generated_tests] == ["finding-1", "finding-1"]
     with pytest.raises(PatchPolicyError, match="duplicate_regression_test_finding"):
         build_patch_bundle(
             request,
             snapshot,
             [whole_file_change("src/db.js", JS_SOURCE, JS_REPAIRED)],
-            [_spec(JS_REGRESSION_TEST), _spec(JS_REGRESSION_TEST, path=SECOND_TEST_PATH)],
+            [
+                _spec(JS_REGRESSION_TEST),
+                _spec(JS_REGRESSION_TEST, path=SECOND_TEST_PATH),
+                _spec(JS_REGRESSION_TEST, path=SECOND_TEST_PATH.replace(".test.js", ".third.test.js")),
+            ],
         )
 
 
