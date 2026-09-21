@@ -9,6 +9,12 @@ const DEFAULT_POLICY = Object.freeze({
   // what lets a repository with no verification fixture still produce an applicable fix.
   require_generated_regression_test: true,
   run_repository_tests: false,
+  // The families the repair service can repair and prove: the three JavaScript families plus
+  // the two Python-only ones (hardcoded credentials moved to the environment, eval replaced
+  // by ast.literal_eval). REMEDIATION_ALLOWED_RULE_FAMILIES_JSON narrows or overrides this.
+  allowed_rule_families: Object.freeze([
+    'sql_parameterization', 'command_arguments', 'path_containment', 'hardcoded_credential', 'code_injection_eval',
+  ]),
   repair_memory_expiry_days: 90,
   request_timeout_seconds: 45, supported_platform: 'linux',
   forbidden_path_prefixes: ['.github/', 'infra/', 'infrastructure/', 'deploy/', 'migrations/'],
@@ -35,7 +41,12 @@ function getPolicy() {
   // own reproducer. An absent profile becomes an empty list rather than "not configured", so
   // the repair service runs the generated regression test and its generic behavior checks.
   const verificationChecks = Array.isArray(declaredChecks) ? declaredChecks : (requireGeneratedTest ? [] : null);
-  const allowedRuleFamilies = jsonEnv('REMEDIATION_ALLOWED_RULE_FAMILIES_JSON');
+  const declaredFamilies = jsonEnv('REMEDIATION_ALLOWED_RULE_FAMILIES_JSON');
+  // An explicit list is the operator's choice, even a narrower one; an absent or unparseable
+  // list takes the service default rather than leaving the repair service unconfigured.
+  const allowedRuleFamilies = Array.isArray(declaredFamilies)
+    ? declaredFamilies.filter((family) => typeof family === 'string' && family)
+    : [...DEFAULT_POLICY.allowed_rule_families];
   const protectedBranchPatterns = jsonEnv('REMEDIATION_PROTECTED_BRANCH_PATTERNS_JSON');
   const sandboxImage = process.env.REMEDIATION_SANDBOX_IMAGE_DIGEST;
   return {

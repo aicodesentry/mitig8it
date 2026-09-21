@@ -1,12 +1,12 @@
 # Remediation benchmark seed
 
-This is an offline seed harness for repository-level repairs. It is deliberately not a quality claim: it contains seven authored fixtures, while the release manifest requires 120 externally reviewed cases before a release gate can pass.
+This is an offline seed harness for repository-level repairs. It is deliberately not a quality claim: it contains eleven authored fixtures, while the release manifest requires 120 externally reviewed cases before a release gate can pass.
 
-Four supported fixtures validate SQL parameterization, command argument construction, path containment, and a multi-file batch. Their checked-in original and reference-repaired sources are run by fixed, audited Node assertions. Negative and adversarial fixtures must abstain.
+Four JavaScript fixtures validate SQL parameterization, command argument construction, path containment, and a multi-file batch; three Python fixtures validate sqlite3 parameterization, moving a hardcoded credential into the environment, and replacing `eval` with `ast.literal_eval`. Their checked-in original and reference-repaired sources are run by fixed, audited Node or Python assertions (`trusted_fixture_test.runtime` is `node` or `python3`). Negative and adversarial fixtures must abstain: `python-ambiguous-sql` mirrors a query handed to an unknown `execute_query` helper, which the engine skips as `ambiguous_query_api` before any agent runs.
 
 `multi-file-batch` carries two findings in two files of one SQL injection chain. The engine groups them into two connected components, runs one bounded agent loop per group, and combines the two candidates into one batch that is verified again on the union. Either repair alone closes the chain, so each candidate tree and their union all satisfy the fixture's exploit check. A fixture declares extra affected files with `additional_units`, each carrying its own `source`, `reference_repair`, and `finding`.
 
-Every fixture declares a `verification_checks` array: fixed argv the sandbox runs on the baseline and the candidate tree, with the outcome the fixture expects from each. A supported fixture's `exploit` check must exit non-zero on the vulnerable tree and zero on the repaired tree, and its `behavior` check must exit zero on both. `tests/verify.js` implements both the sandbox modes (`--exploit`, `--behavior`) and the original two-path comparison the reference adapter uses.
+Every fixture declares a `verification_checks` array: fixed argv the sandbox runs on the baseline and the candidate tree, with the outcome the fixture expects from each. A supported fixture's `exploit` check must exit non-zero on the vulnerable tree and zero on the repaired tree, and its `behavior` check must exit zero on both. `tests/verify.js` (or `tests/verify.py`) implements both the sandbox modes (`--exploit`, `--behavior`) and the original two-path comparison the reference adapter uses.
 
 Run the deterministic seed suite:
 
