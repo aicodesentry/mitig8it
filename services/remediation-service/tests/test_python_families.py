@@ -298,8 +298,9 @@ async def test_engine_repairs_the_credential_and_eval_findings_and_skips_the_amb
     payload = _payload(request_payload, [("text.py", TEXT_PY)], TEXT_FINDINGS)
     response = await RepairEngine(lambda request: _local_agent(provider)).repair(RepairRequest.model_validate(payload))
     assert response.state == "ready", response.reason
-    [candidate] = response.candidates
-    assert candidate.finding_ids == ["eval-15", "secret-10"]
+    # One candidate per proven finding; the whole-file hunk covers both, so each carries it.
+    assert [candidate.finding_ids for candidate in response.candidates] == [["eval-15"], ["secret-10"]]
+    candidate = response.candidates[1]
     [skip] = response.skipped
     assert (skip["finding_id"], skip["code"]) == ("sql-6", "ambiguous_query_api")
     assert "execute()" in skip["message"]
