@@ -114,6 +114,34 @@ test('snapshot includes Python sources and dependency manifests so Python findin
   expect(result.files.find(file => file.path === 'text.py').content).toBe(py);
 });
 
+test('snapshot caps unrelated files and fetches blobs concurrently so large repositories stay within the deadline', async () => {
+  const text = 'x = 1\n';
+  const sha = require('crypto').createHash('sha1').update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest('hex');
+  const entries = [{ path: 'app/text.py', type: 'blob', mode: '100644', sha, size: Buffer.byteLength(text) }];
+  for (let i = 0; i < 40; i += 1) entries.push({ path: `app/sibling${i}.py`, type: 'blob', mode: '100644', sha, size: Buffer.byteLength(text) });
+  for (let i = 0; i < 200; i += 1) entries.push({ path: `elsewhere/other${i}.js`, type: 'blob', mode: '100644', sha, size: Buffer.byteLength(text) });
+  let inFlight = 0; let maxInFlight = 0;
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/git/commits/')) return { data: { tree: { sha: tree } } };
+    if (request.url.includes('/git/trees/')) return { data: { truncated: false, tree: entries } };
+    if (request.url.includes('/git/blobs/')) {
+      inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return { data: { encoding: 'base64', content: Buffer.from(text).toString('base64') } };
+    }
+    return repositoryResponse(request);
+  });
+  const result = await fetchRemediationSnapshot({ ...payload(), finding_paths: ['app/text.py'] });
+  const paths = result.files.map(file => file.path);
+  expect(paths).toContain('app/text.py');
+  expect(paths.filter(path => path.startsWith('app/sibling')).length).toBe(30);
+  expect(paths.filter(path => path.startsWith('elsewhere/')).length).toBe(10);
+  expect(result.files.length).toBe(41);
+  expect(maxInFlight).toBeGreaterThan(1);
+  expect(result.omitted_source_paths.length).toBe(entries.length - 41);
+});
+
 test('snapshot rejects truncated repository trees rather than guessing missing source', async () => {
   axios.mockImplementation(async request => {
     if (request.url.includes('/git/commits/')) return { data: { tree: { sha: tree } } };
