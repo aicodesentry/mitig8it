@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import re
 from typing import Any, Callable
 
 from dataclasses import dataclass, field as dataclass_field, replace as dataclass_replace
@@ -13,9 +15,10 @@ from .gates import UNSUPPORTED_LANGUAGE_MESSAGE, static_gate
 from .git_tree import GitTreeError, compute_tree_oid, validate_snapshot_tree
 from .grouping import group_findings_by_language
 from .models import Candidate, FindingSnapshot, RepairPolicy, RepairRequest, RepairResponse, VerificationSummary
-from .patches import PatchBundle, PatchPolicyError, bundles_conflict, combine_patch_bundles
+from .patches import PatchBundle, PatchPolicyError, build_patch_bundle, bundles_conflict, combine_patch_bundles
 from .retrieval import Snapshot, SnapshotError
 from .sandbox import BrokerConfigurationError, create_sandbox_broker
+from .splitting import DEPENDENT_HUNK_UNPROVEN, split_hunks
 from . import telemetry
 from .verification import VerificationResult, Verifier
 from .verification.verifier import DEVELOPMENT_VERIFICATION_LEVEL, VERIFICATION_LEVELS
@@ -71,7 +74,8 @@ class GroupOutcome:
     state: str
     reason_code: str | None
     message: str | None
-    candidate: Candidate | None
+    # One candidate per finding the group proved, each carrying only that finding's hunks.
+    candidates: list[Candidate]
     bundle: PatchBundle | None
     verification: VerificationResult | None
     trace: list[dict[str, Any]]
@@ -92,12 +96,13 @@ class GroupOutcome:
             "finding_ids": self.finding_ids,
             "state": self.state,
             "reason": None if self.reason_code is None else {"code": self.reason_code, "message": self.message},
-            "candidate_id": self.candidate.candidate_id if self.candidate else None,
+            "candidate_id": self.candidates[0].candidate_id if self.candidates else None,
+            "candidate_ids": [candidate.candidate_id for candidate in self.candidates],
         }
         if self.language:
             report["language"] = self.language
-        if self.candidate is not None:
-            report["repaired_finding_ids"] = list(self.candidate.finding_ids)
+        if self.candidates:
+            report["repaired_finding_ids"] = [finding_id for candidate in self.candidates for finding_id in candidate.finding_ids]
         if self.unproven:
             report["unproven_findings"] = list(self.unproven)
         if self.coverage:
@@ -174,6 +179,17 @@ async def combine_and_verify(
         request.tree_entries,
         {patch.path: patch.replacement_content for patch in combined.patches},
     )
+    claimed = {finding_id for candidate, _, _ in entries for finding_id in candidate.finding_ids}
+    for candidate, _, verification in entries:
+        if (
+            candidate.verified_tree_oid == verified_tree_oid
+            and verification.status == "passed"
+            and verification.evidence_digest
+            and claimed <= set(verification.proven_finding_ids)
+        ):
+            # Per-finding candidates that share one hunk union to a tree a run already verified
+            # with every claimed finding's test, so that evidence covers the batch.
+            return CombinedVerification(combined, verified_tree_oid, verification)
     verification = await verifier.verify(request, snapshot, combined)
     return CombinedVerification(combined, verified_tree_oid, verification)
 
@@ -211,39 +227,88 @@ async def build_verified_batch(
     return batch, combined
 
 
-def _build_candidate(request: RepairRequest, snapshot: Snapshot, finding_ids: list[str], result: Any) -> Candidate:
-    """Builds the immutable candidate for one connected finding group.
+# Limitations that say a check was skipped, unavailable, or never completed; the evidence
+# summary repeats them so a reviewer sees what did not run beside what did.
+_NOT_RUN_RE = re.compile(r"\b(?:not run|did not complete|skipped|unavailable|inconclusive|not supplied)\b|^no .* was run", re.I)
+_CHECK_LABELS = {
+    "typecheck": "Syntax check",
+    "build": "Build",
+    "existing_test": "Repository test suite",
+    "behavior": "Behavior check",
+    "scanner": "Scanner comparison",
+    "exploit": "Exploit check",
+}
 
-    `finding_ids` are exactly the group's findings whose own regression test failed on the
-    baseline and passed on the candidate, so a candidate states what its evidence covers rather
-    than every finding the group carried.
+
+def evidence_summary(bundle: PatchBundle, verification: VerificationResult, limitations: list[str]) -> list[str]:
+    """One line per piece of evidence behind a candidate, in the words the publication uses.
+
+    The regression test line states both halves of the proof, because a candidate exists only
+    when its finding's test failed on the original code and passed on the fix. Every other check
+    in the run is named with its outcome, and every limitation that says a check did not run is
+    repeated, so absent evidence is never read as coverage.
+    """
+    lines = [
+        f"Regression test {test.path} failed on the original code and passed on the fix."
+        for test in bundle.generated_tests
+    ]
+    checks = verification.evidence.get("checks") if isinstance(verification.evidence, dict) else None
+    regression_ids = set(verification.regression_checks.values())
+    for check in checks if isinstance(checks, list) else []:
+        if not isinstance(check, dict) or check.get("check_id") in regression_ids or check.get("kind") == "exploit":
+            continue
+        label = f"{_CHECK_LABELS.get(str(check.get('kind')), 'Check')} ({check.get('check_id')})"
+        baseline = check.get("baseline") if isinstance(check.get("baseline"), dict) else {}
+        candidate = check.get("candidate") if isinstance(check.get("candidate"), dict) else {}
+        if baseline.get("completed") is True and candidate.get("completed") is True and candidate.get("status") == "passed":
+            lines.append(f"{label} passed on the fix.")
+        else:
+            lines.append(f"{label} did not complete.")
+    lines.extend(f"Not run: {item.rstrip('.')}." for item in limitations if _NOT_RUN_RE.search(item))
+    return lines
+
+
+def _build_candidate(
+    request: RepairRequest,
+    snapshot: Snapshot,
+    finding_ids: list[str],
+    proposal: dict[str, Any],
+    bundle: PatchBundle,
+    verification: VerificationResult,
+) -> Candidate:
+    """Builds the immutable candidate for one proven finding.
+
+    `finding_ids` are exactly the findings whose own regression test failed on the baseline and
+    passed on this bundle, and the bundle holds only the hunks attributed to them, so a candidate
+    states what its evidence covers rather than every finding the group carried.
     """
     candidate_id = digest_json(
         {
             "job_id": request.job_id,
             "finding_ids": finding_ids,
-            "artifact_digest": result.bundle.artifact_digest,
-            "evidence_digest": result.verification.evidence_digest,
+            "artifact_digest": bundle.artifact_digest,
+            "evidence_digest": verification.evidence_digest,
         }
     )
     verified_tree_oid = compute_tree_oid(
         request.tree_entries,
-        {patch.path: patch.replacement_content for patch in result.bundle.patches},
+        {patch.path: patch.replacement_content for patch in bundle.patches},
     )
+    limitations = list(verification.limitations) + [item for item in bundle.limitations if item not in verification.limitations]
     return Candidate(
         candidate_id=candidate_id,
         finding_ids=finding_ids,
-        hypothesis=result.proposal["hypothesis"],
-        intended_behavior=result.proposal["intended_behavior"],
-        assumptions=result.proposal["assumptions"],
-        citations=result.proposal["citations"],
-        patch=list(result.bundle.patches),
-        file_manifest={"files": result.bundle.file_manifest, "verified_tree_oid": verified_tree_oid},
-        generated_tests=result.bundle.generated_test_manifest,
-        artifact_digest=result.bundle.artifact_digest,
+        hypothesis=proposal["hypothesis"],
+        intended_behavior=proposal["intended_behavior"],
+        assumptions=proposal["assumptions"],
+        citations=proposal["citations"],
+        patch=list(bundle.patches),
+        file_manifest={"files": bundle.file_manifest, "verified_tree_oid": verified_tree_oid},
+        generated_tests=bundle.generated_test_manifest,
+        artifact_digest=bundle.artifact_digest,
         context_manifest_digest=snapshot.manifest_digest,
         verified_tree_oid=verified_tree_oid,
-        verification=VerificationSummary(status="passed", evidence_digest=result.verification.evidence_digest),
+        verification=VerificationSummary(status="passed", evidence_digest=verification.evidence_digest),
         preview={
             "changes": [
                 {
@@ -253,29 +318,98 @@ def _build_candidate(request: RepairRequest, snapshot: Snapshot, finding_ids: li
                     "unified_diff": patch.unified_diff,
                     "new_sha256": patch.new_sha256,
                 }
-                for patch in result.bundle.patches
+                for patch in bundle.patches
             ],
-            "rationale": result.proposal["hypothesis"],
+            "hunks": bundle.hunk_manifest,
+            "rationale": proposal["hypothesis"],
             "reasoning": {
-                "hypothesis": result.proposal["hypothesis"],
-                "intended_behavior": result.proposal["intended_behavior"],
-                "assumptions": result.proposal["assumptions"],
+                "hypothesis": proposal["hypothesis"],
+                "intended_behavior": proposal["intended_behavior"],
+                "assumptions": proposal["assumptions"],
             },
             "evidence": {
                 "status": "passed",
-                "evidence_digest": result.verification.evidence_digest,
+                "evidence_digest": verification.evidence_digest,
                 "verified_tree_oid": verified_tree_oid,
                 # Generated reproducers are verification artifacts: reviewers see them beside
                 # the diff, but they are never part of the tree the batch applies.
-                "generated_tests": result.bundle.generated_test_manifest,
+                "generated_tests": bundle.generated_test_manifest,
                 # Per-candidate, not per-response: the API persists this level on the
                 # candidate row and the finding view renders this candidate's limitations.
-                "verification_level": result.verification.verification_level,
-                "limitations": list(result.verification.limitations)
-                + [item for item in result.bundle.limitations if item not in result.verification.limitations],
+                "verification_level": verification.verification_level,
+                "limitations": limitations,
+                "summary": evidence_summary(bundle, verification, limitations),
             },
         },
     )
+
+
+def _dependent(finding_id: str, detail: str) -> dict[str, str]:
+    return {
+        "finding_id": finding_id,
+        "code": DEPENDENT_HUNK_UNPROVEN,
+        "message": f"This finding was proven only together with hunks that are not shipped: {detail}.",
+    }
+
+
+async def _per_finding_candidates(
+    request: RepairRequest,
+    group_request: RepairRequest,
+    snapshot: Snapshot,
+    verifier: Verifier,
+    result: Any,
+    proven: list[str],
+) -> tuple[list[tuple[Candidate, PatchBundle, VerificationResult]], list[dict[str, str]]]:
+    """Splits one verified group proposal into one candidate per proven finding.
+
+    Each candidate holds the hunks attributed to its finding plus the prerequisites they use,
+    and nothing owned by an unproven finding. A candidate whose tree equals the tree the group
+    verification ran on keeps that evidence; any other candidate is verified on its own, and a
+    finding whose test does not pass on its own candidate is reported `dependent_hunk_unproven`
+    rather than shipped with the hunks it depended on.
+    """
+    if not result.bundle.hunks:
+        # A bundle without located hunks cannot be split; it ships as one candidate for every
+        # finding it proved, exactly as before per-finding candidates existed.
+        candidate = _build_candidate(request, snapshot, list(proven), result.proposal, result.bundle, result.verification)
+        return [(candidate, result.bundle, result.verification)], []
+    findings = list(group_request.findings)
+    by_id = {finding.stable_id: finding for finding in findings}
+    plan = split_hunks(findings, result.bundle.hunks, proven)
+    tests = {test.finding_id: test.spec() for test in result.bundle.generated_tests}
+    full_tree = {patch.path: patch.replacement_content for patch in result.bundle.patches}
+    accepted: list[tuple[Candidate, PatchBundle, VerificationResult]] = []
+    dependent: list[dict[str, str]] = []
+    for finding_id in proven:
+        hunks = plan.get(finding_id) or []
+        if not hunks:
+            dependent.append(_dependent(finding_id, "no hunk is attributed to this finding once the hunks of unproven findings are dropped"))
+            continue
+        try:
+            # Off the event loop: the bundle build shells out to the syntax and load checks.
+            bundle = await asyncio.to_thread(
+                build_patch_bundle,
+                group_request,
+                snapshot,
+                [hunk.spec() for hunk in hunks],
+                [tests[finding_id]] if finding_id in tests else None,
+            )
+        except PatchPolicyError as exc:
+            dependent.append(_dependent(finding_id, f"a candidate holding only this finding's hunks was rejected as {exc.code}"))
+            continue
+        if {patch.path: patch.replacement_content for patch in bundle.patches} == full_tree:
+            verification = result.verification
+        else:
+            narrowed = group_request.model_copy(update={"findings": [by_id[finding_id]]})
+            verification = await verifier.verify(narrowed, snapshot, bundle)
+            if verification.status != "passed" or finding_id not in verification.proven_finding_ids or not verification.evidence_digest:
+                detail = "its regression test does not pass on a candidate holding only this finding's hunks"
+                if verification.reason_code:
+                    detail += f" ({verification.reason_code})"
+                dependent.append(_dependent(finding_id, detail))
+                continue
+        accepted.append((_build_candidate(request, snapshot, [finding_id], result.proposal, bundle, verification), bundle, verification))
+    return accepted, dependent
 
 
 class RepairEngine:
@@ -365,7 +499,7 @@ class RepairEngine:
                 or remaining_usd < GROUP_SPEND_FLOOR_USD
             ):
                 outcomes.append(
-                    GroupOutcome(index, finding_ids, "unsupported", "budget_exhausted", BUDGET_EXHAUSTED_MESSAGE, None, None, None, [], {}, False)
+                    GroupOutcome(index, finding_ids, "unsupported", "budget_exhausted", BUDGET_EXHAUSTED_MESSAGE, [], None, None, [], {}, False)
                 )
                 continue
             group_request = (
@@ -419,7 +553,7 @@ class RepairEngine:
                         result.state,
                         result.reason_code or "no_verified_candidate",
                         result.explanation or "No verified repair was produced.",
-                        None,
+                        [],
                         None,
                         result.verification,
                         result.trace,
@@ -440,7 +574,7 @@ class RepairEngine:
                         "inconclusive",
                         "verification_level_not_permitted",
                         "The verification evidence does not carry a verification level this policy accepts.",
-                        None,
+                        [],
                         None,
                         result.verification,
                         result.trace,
@@ -457,7 +591,7 @@ class RepairEngine:
                         "unsupported",
                         "overlapping_candidates",
                         "This group's patch changes a line range an earlier verified candidate already changes.",
-                        None,
+                        [],
                         None,
                         result.verification,
                         result.trace,
@@ -476,7 +610,7 @@ class RepairEngine:
                         "inconclusive",
                         "regression_test_not_reproducing",
                         "No finding in this group was shown repaired by its own regression test.",
-                        None,
+                        [],
                         None,
                         result.verification,
                         result.trace,
@@ -487,17 +621,40 @@ class RepairEngine:
                     )
                 )
                 continue
+            # One candidate per proven finding, each verified on its own hunks. A hunk owned by
+            # an unproven finding is left out of every candidate, and a finding that was proven
+            # only with such a hunk is reported rather than shipped.
+            group_candidates, dependent = await _per_finding_candidates(request, group_request, snapshot, verifier, result, proven)
+            unproven = unproven + dependent
             # A finding the candidate could not prove is reported, never carried silently.
             skipped.extend(
                 {"finding_id": str(item["finding_id"]), "code": str(item["code"]), "message": str(item["message"])}
                 for item in unproven
             )
-            candidate = _build_candidate(request, snapshot, proven, result)
-            accepted.append((candidate, result.bundle, result.verification))
+            if not group_candidates:
+                outcomes.append(
+                    GroupOutcome(
+                        index,
+                        finding_ids,
+                        "inconclusive",
+                        DEPENDENT_HUNK_UNPROVEN,
+                        "Every proven finding in this group depended on a hunk owned by an unproven finding, so no candidate ships.",
+                        [],
+                        None,
+                        result.verification,
+                        result.trace,
+                        result.usage,
+                        True,
+                        {},
+                        unproven,
+                    )
+                )
+                continue
+            accepted.extend(group_candidates)
             outcomes.append(
                 GroupOutcome(
-                    index, finding_ids, "ready", None, None, candidate, result.bundle, result.verification, result.trace, result.usage, True, {}, unproven,
-                    dict(result.evidence.get("coverage") or {}),
+                    index, finding_ids, "ready", None, None, [candidate for candidate, _, _ in group_candidates], result.bundle,
+                    result.verification, result.trace, result.usage, True, {}, unproven, dict(result.evidence.get("coverage") or {}),
                 )
             )
 
