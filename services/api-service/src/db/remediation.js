@@ -190,6 +190,22 @@ async function jobPublishContext(jobId) {
   });
 }
 
+// Ready jobs of this pull request whose inline fixes were already published for this
+// head, whatever their origin. A re-analysis of the same head re-renders the finding
+// comments, so these are the jobs whose sections have to be written again.
+async function readyJobsWithPublishedInlineFixes({ pullRequestId, headSha }) {
+  if (!pullRequestId || !headSha) return [];
+  return scopedTransaction({ worker: true }, async (client) => {
+    const result = await client.query(
+      `SELECT id, origin FROM remediation_jobs
+        WHERE pull_request_id=$1 AND head_sha=$2 AND state='ready'
+          AND inline_fixes_published_at IS NOT NULL AND inline_fixes_head_sha=$2
+        ORDER BY created_at`, [pullRequestId, headSha]
+    );
+    return result.rows;
+  });
+}
+
 async function recordInlineFixesPublished(job, { headSha }) {
   await scopedTransaction({ tenantId: job.installation_id, worker: true }, (client) => client.query(
     `UPDATE remediation_jobs SET inline_fixes_published_at=NOW(), inline_fixes_head_sha=$2, updated_at=NOW() WHERE id=$1`,
@@ -1344,5 +1360,5 @@ module.exports = {
   getCandidateForFeedback,
   manifestDigestFor, selectCandidates, markCandidatesAfterApply, appliedReportForAction,
   recordResidualComment, listActionsNeedingResidualComment,
-  createAutomaticJob, jobPublishContext, recordInlineFixesPublished,
+  createAutomaticJob, jobPublishContext, recordInlineFixesPublished, readyJobsWithPublishedInlineFixes,
 };

@@ -964,3 +964,64 @@ test('one automatic job is queued per head after analysis, it is claimable witho
   assert.equal(publishedFixSections.length, before + 2);
   assert.deepEqual(publishedFixSections[before + 1], payload);
 });
+
+// Reopening a pull request re-runs the analysis on the same head. That run re-renders
+// the inline finding comments, and the ready job for that head is reused rather than
+// regenerated, so nothing would write the verified fix sections back under them. The
+// two hooks the orchestrator runs after a completed analysis are exercised here in
+// the order it runs them.
+test('a second completed analysis on the same head reuses the ready job and republishes its verified fixes exactly once', async () => {
+  const autoGenerate = require('../../src/services/remediationAutoGenerate');
+  const f = await fixture();
+  const open = await insertOpenFinding(f, f.run, { severity: 'high', path: 'src/app.js', title: 'SQL injection' });
+  await pool.query(`UPDATE analysis_run_findings SET snapshot = snapshot || $2::jsonb WHERE finding_id=$1`, [open, JSON.stringify({ fingerprint: `fp-${open}`, line_start: 10, line_end: 10 })]);
+  const queued = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: f.pr, analysisRunId: f.run });
+  assert.equal(queued.enqueued, true);
+
+  const original = 'const db = require("./db");\nasync function order(id) {\n  return db.query(`SELECT * FROM orders WHERE id = ${id}`);\n}\n';
+  const fixed = original.replace('${id}`)', "$1', [id])");
+  await workerQuery(
+    `INSERT INTO remediation_candidates (job_id,installation_id,repository_id,candidate_version,finding_snapshot_ids,artifact_digest,context_manifest_digest,file_manifest,preview,verification_level)
+     VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,'independent_sandbox')`,
+    [queued.job_id, f.installation, f.repo, [open], 'a'.repeat(64), 'c'.repeat(64),
+      JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64') }] }),
+      JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, unified_diff: '@@ -3 +3 @@\n-old\n+new' }],
+        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', limitations: [] } })]
+  );
+  await workerQuery(`UPDATE remediation_jobs SET state='ready', stage='ready' WHERE id=$1`, [queued.job_id]);
+
+  // The job's fixes are published for this head, as the ready event does.
+  const inlineFixes = require('../../src/services/remediationInlineFixes');
+  const before = publishedFixSections.length;
+  assert.equal((await inlineFixes.publishInlineFixes(queued.job_id)).published, true);
+  assert.equal(publishedFixSections.length, before + 1);
+  const published = await workerQuery('SELECT inline_fixes_published_at, inline_fixes_head_sha FROM remediation_jobs WHERE id=$1', [queued.job_id]);
+  assert.ok(published.rows[0].inline_fixes_published_at);
+  assert.equal(published.rows[0].inline_fixes_head_sha, f.head);
+
+  // The reopened pull request's analysis: a second completed run for the same head.
+  const second = (await pool.query(`INSERT INTO analysis_runs (repository_id,pull_request_id,pr_number,commit_sha,status,triggered_by,completed_at)
+    VALUES ($1,$2,1,$3,'completed','webhook',NOW()) RETURNING id`, [f.repo, f.pr, f.head])).rows[0].id;
+  await pool.query(`INSERT INTO analysis_run_findings (analysis_run_id,finding_id,snapshot)
+    SELECT $1, finding_id, snapshot FROM analysis_run_findings WHERE analysis_run_id=$2`, [second, f.run]);
+
+  // The ready job for this head and selection is reused, not regenerated.
+  const reused = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: f.pr, analysisRunId: second });
+  assert.deepEqual(reused, { enqueued: false, reason: 'exists', job_id: queued.job_id });
+  const jobs = await workerQuery(`SELECT COUNT(*)::int AS n FROM remediation_jobs WHERE pull_request_id=$1 AND head_sha=$2`, [f.pr, f.head]);
+  assert.equal(jobs.rows[0].n, 1);
+
+  // The republication hook writes the sections back exactly once.
+  const result = await autoGenerate.republishInlineFixesForCompletedAnalysis({ pullRequestId: f.pr, headSha: f.head });
+  assert.deepEqual(result, { republished: 1, jobs: 1 });
+  assert.equal(publishedFixSections.length, before + 2);
+  const republished = publishedFixSections[before + 1];
+  assert.equal(republished.head_sha, f.head);
+  assert.deepEqual(republished.sections.map((section) => section.finding_fingerprint), [`fp-${open}`]);
+  assert.deepEqual(republished.sections, publishedFixSections[before].sections);
+
+  // A head that has no ready job with published fixes writes nothing.
+  assert.deepEqual(await autoGenerate.republishInlineFixesForCompletedAnalysis({ pullRequestId: f.pr, headSha: 'c'.repeat(40) }),
+    { republished: 0, reason: 'no_published_ready_job' });
+  assert.equal(publishedFixSections.length, before + 2);
+});

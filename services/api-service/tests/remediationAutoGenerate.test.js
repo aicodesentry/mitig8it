@@ -2,6 +2,7 @@
 // by the file limit and the installation budget, and never throwing into the caller.
 jest.mock('../src/config/database', () => ({ pool: { query: jest.fn(), connect: jest.fn() }, transaction: jest.fn() }));
 jest.mock('../src/utils/logger', () => ({ warn: jest.fn(), error: jest.fn(), info: jest.fn() }));
+jest.mock('../src/services/remediationInlineFixes', () => ({ publishInlineFixes: jest.fn() }));
 
 const { pool } = require('../src/config/database');
 const connect = pool.connect;
@@ -149,4 +150,58 @@ test('a database failure is reported, never thrown into the analysis', async () 
   connect.mockRejectedValue(new Error('connection refused'));
   const result = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: PR, analysisRunId: RUN });
   expect(result).toEqual({ enqueued: false, reason: 'enqueue_failed', error: 'connection refused' });
+});
+
+// --- Republication after a re-analysis of the same head ---------------------------
+// A completed analysis re-renders the finding comments. A ready job that already
+// published its fixes for that head is not re-queued, so its sections are written
+// again here.
+
+const { publishInlineFixes } = require('../src/services/remediationInlineFixes');
+const READY_ROW = { id: 'job-ready', origin: 'automatic' };
+
+test('the republication is gated by the publish flag and never reaches the database while it is off', async () => {
+  process.env.REMEDIATION_PUBLISH_ENABLED = 'false';
+  expect(await autoGenerate.republishInlineFixesForCompletedAnalysis({ pullRequestId: PR, headSha: HEAD }))
+    .toEqual({ republished: 0, reason: 'publish_disabled' });
+  expect(connect).not.toHaveBeenCalled();
+  expect(publishInlineFixes).not.toHaveBeenCalled();
+});
+
+test('a ready job whose inline fixes were published for this head is republished exactly once', async () => {
+  const { calls } = scriptedClient([["state='ready'", { rowCount: 1, rows: [READY_ROW] }]]);
+  publishInlineFixes.mockResolvedValue({ published: true, sections: 2 });
+  expect(await autoGenerate.republishInlineFixesForCompletedAnalysis({ pullRequestId: PR, headSha: HEAD }))
+    .toEqual({ republished: 1, jobs: 1 });
+  expect(publishInlineFixes).toHaveBeenCalledTimes(1);
+  expect(publishInlineFixes).toHaveBeenCalledWith('job-ready');
+  // The selection is the ready jobs of this head only, in worker scope.
+  const select = calls.find((call) => call.text.includes("state='ready'"));
+  expect(select.params).toEqual([PR, HEAD]);
+  expect(select.text).toContain('inline_fixes_published_at IS NOT NULL');
+  expect(select.text).toContain('inline_fixes_head_sha=$2');
+  expect(calls.some((call) => call.text.includes("set_config('app.remediation_worker', '1', true)"))).toBe(true);
+});
+
+test('no ready job with published fixes for this head means nothing is published', async () => {
+  scriptedClient([["state='ready'", { rowCount: 0, rows: [] }]]);
+  expect(await autoGenerate.republishInlineFixesForCompletedAnalysis({ pullRequestId: PR, headSha: HEAD }))
+    .toEqual({ republished: 0, reason: 'no_published_ready_job' });
+  expect(publishInlineFixes).not.toHaveBeenCalled();
+});
+
+test('a refused or failing publication is reported and never thrown into the analysis', async () => {
+  scriptedClient([["state='ready'", { rowCount: 1, rows: [READY_ROW] }]]);
+  publishInlineFixes.mockResolvedValue({ published: false, reason: 'head_moved' });
+  expect(await autoGenerate.republishInlineFixesForCompletedAnalysis({ pullRequestId: PR, headSha: HEAD }))
+    .toEqual({ republished: 0, jobs: 1 });
+
+  scriptedClient([["state='ready'", { rowCount: 1, rows: [READY_ROW] }]]);
+  publishInlineFixes.mockRejectedValue(new Error('github unreachable'));
+  expect(await autoGenerate.republishInlineFixesForCompletedAnalysis({ pullRequestId: PR, headSha: HEAD }))
+    .toEqual({ republished: 0, jobs: 1 });
+
+  connect.mockRejectedValue(new Error('connection refused'));
+  expect(await autoGenerate.republishInlineFixesForCompletedAnalysis({ pullRequestId: PR, headSha: HEAD }))
+    .toEqual({ republished: 0, reason: 'republish_failed', error: 'connection refused' });
 });
