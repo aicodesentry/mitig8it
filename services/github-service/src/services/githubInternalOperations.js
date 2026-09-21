@@ -1058,6 +1058,213 @@ async function publishRemediationComment(payload) {
   }
 }
 
+// --- Verified fix sections under inline finding comments -------------------------
+
+const FIX_SECTION_LIMIT = 200;
+const FIX_LINE_LIMIT = 400;
+
+function findingMarker(fingerprint) { return `<!-- mitig8it-finding:${fingerprint} -->`; }
+function fixMarker(candidateId) { return `<!-- mitig8it-fix:${candidateId} -->`; }
+function fixEndMarker(candidateId) { return `<!-- /mitig8it-fix:${candidateId} -->`; }
+const FIX_BLOCK_PATTERN = /\n*<!-- mitig8it-fix:[^>]+ -->[\s\S]*?<!-- \/mitig8it-fix:[^>]+ -->/g;
+
+function stripFixBlocks(body) { return String(body || '').replace(FIX_BLOCK_PATTERN, '').replace(/\s+$/, ''); }
+
+function safeMarkerText(value, name, maxLength) {
+  const text = requireString(value, name, maxLength);
+  if (/[<>]|--/.test(text)) throw badRequest(`${name} contains characters that are not allowed`);
+  return text;
+}
+
+function validateFixSection(raw, index) {
+  if (!raw || typeof raw !== 'object') throw badRequest(`sections[${index}] must be an object`);
+  const skipped = typeof raw.skipped_reason === 'string' && raw.skipped_reason ? raw.skipped_reason.slice(0, 500) : '';
+  const section = {
+    finding_fingerprint: safeMarkerText(raw.finding_fingerprint, `sections[${index}].finding_fingerprint`, 255),
+    candidate_id: skipped && !raw.candidate_id ? '' : safeMarkerText(raw.candidate_id, `sections[${index}].candidate_id`, 128),
+    path: typeof raw.path === 'string' ? raw.path.slice(0, 1024) : '',
+    finding_line: Number.isInteger(Number(raw.finding_line)) ? Number(raw.finding_line) : 0,
+    hunk: null,
+    unified_diff: typeof raw.unified_diff === 'string' ? raw.unified_diff.slice(0, 20000) : '',
+    not_suggestable_reason: typeof raw.not_suggestable_reason === 'string' ? raw.not_suggestable_reason : '',
+    behavior_preserved: typeof raw.behavior_preserved === 'string' ? raw.behavior_preserved.slice(0, 2000) : '',
+    evidence: Array.isArray(raw.evidence) ? raw.evidence.filter((item) => typeof item === 'string').slice(0, 20) : [],
+    limitations: Array.isArray(raw.limitations) ? raw.limitations.filter((item) => typeof item === 'string').slice(0, 40) : [],
+    verification_level: typeof raw.verification_level === 'string' ? raw.verification_level : '',
+    skipped_reason: skipped,
+  };
+  const hunk = raw.hunk;
+  if (hunk && typeof hunk === 'object' && Number.isInteger(Number(hunk.start_line)) && Number(hunk.start_line) > 0
+    && Number.isInteger(Number(hunk.end_line)) && Number(hunk.end_line) >= Number(hunk.start_line)
+    && Array.isArray(hunk.replacement_lines) && hunk.replacement_lines.length <= FIX_LINE_LIMIT
+    && hunk.replacement_lines.every((line) => typeof line === 'string')) {
+    section.hunk = {
+      start_line: Number(hunk.start_line), end_line: Number(hunk.end_line),
+      original_lines: Array.isArray(hunk.original_lines) ? hunk.original_lines.filter((line) => typeof line === 'string') : [],
+      replacement_lines: hunk.replacement_lines,
+    };
+  }
+  return section;
+}
+
+const NOT_SUGGESTABLE_TEXT = {
+  multiple_regions: 'the fix changes several separate regions of the file',
+  multiple_files: 'the verified fix changes more than one file',
+  changes_other_file: 'the verified fix changes a different file than this finding',
+  no_line_change: 'the fix cannot be expressed as a line replacement',
+  comment_outdated: "this comment's line is no longer part of the pull request diff",
+  contains_code_fence: 'the fixed lines contain a code fence, which a suggestion cannot carry',
+  file_unavailable: 'the file could not be read at the pull request head',
+};
+
+// A suggestion replaces exactly the lines the comment is anchored to. The hunk must lie
+// inside that range; when it is smaller, the surrounding lines come from the file at
+// the pull request head, so the suggestion reproduces the verified content.
+async function suggestionFor(section, comment, readFileLines) {
+  const hunk = section.hunk;
+  if (!hunk) return { ok: false, reason: NOT_SUGGESTABLE_TEXT[section.not_suggestable_reason] || NOT_SUGGESTABLE_TEXT.no_line_change };
+  const commentEnd = Number(comment.line);
+  if (!Number.isInteger(commentEnd) || commentEnd < 1 || (comment.side && comment.side !== 'RIGHT')) {
+    return { ok: false, reason: NOT_SUGGESTABLE_TEXT.comment_outdated };
+  }
+  const commentStart = Number.isInteger(Number(comment.start_line)) && Number(comment.start_line) > 0 ? Number(comment.start_line) : commentEnd;
+  if (hunk.start_line < commentStart || hunk.end_line > commentEnd) {
+    const range = commentStart === commentEnd ? `line ${commentEnd}` : `lines ${commentStart}-${commentEnd}`;
+    return { ok: false, reason: `the fix changes lines ${hunk.start_line}-${hunk.end_line}, and this comment can only carry a suggestion for ${range}` };
+  }
+  let lines = hunk.replacement_lines;
+  if (hunk.start_line !== commentStart || hunk.end_line !== commentEnd) {
+    const fileLines = await readFileLines(section.path);
+    if (!fileLines || fileLines.length < commentEnd) return { ok: false, reason: NOT_SUGGESTABLE_TEXT.file_unavailable };
+    lines = [...fileLines.slice(commentStart - 1, hunk.start_line - 1), ...hunk.replacement_lines, ...fileLines.slice(hunk.end_line, commentEnd)];
+  }
+  if (lines.some((line) => line.includes('```'))) return { ok: false, reason: NOT_SUGGESTABLE_TEXT.contains_code_fence };
+  return { ok: true, lines };
+}
+
+function fixHeading(section) {
+  const level = section.verification_level || '';
+  const wording = level === 'independent_sandbox' ? 'verified in an isolated sandbox' : 'verified in a development sandbox';
+  return `**Recommended fix (${wording})**`;
+}
+
+function diffFence(diff) {
+  const fence = diff.includes('```') ? '~~~' : '```';
+  return `${fence}diff\n${diff.replace(/\s+$/, '')}\n${fence}`;
+}
+
+function buildFixSection(section, suggestion, previewUrl) {
+  const lines = [fixMarker(section.candidate_id), '---', fixHeading(section), ''];
+  if (suggestion.ok) {
+    lines.push('```suggestion', ...suggestion.lines, '```');
+  } else {
+    lines.push(`This fix cannot be offered as a GitHub suggestion because ${suggestion.reason}. The verified change is:`, '');
+    lines.push(section.unified_diff ? diffFence(section.unified_diff) : '_(no diff available)_');
+  }
+  lines.push('');
+  if (section.behavior_preserved) lines.push(`**Behavior preserved:** ${section.behavior_preserved}`);
+  lines.push(`**Evidence:** ${section.evidence.length ? section.evidence.join(' ') : 'verification passed in the sandbox.'}`);
+  lines.push(`**Coverage limitations:** ${section.limitations.length ? section.limitations.join('; ') : 'none reported.'}`);
+  lines.push('');
+  const preview = previewUrl ? ` or use Apply this fix in [Mitig8it](${previewUrl})` : '';
+  lines.push(`Nothing is applied or merged automatically. Apply this suggestion on GitHub${preview}; either way the change is a normal human push that Mitig8it re-analyses, and merging stays a human action.`);
+  lines.push(fixEndMarker(section.candidate_id));
+  return lines.join('\n');
+}
+
+function buildSkippedSection(section) {
+  return [fixMarker('none'), `No automatic fix: ${section.skipped_reason}`, fixEndMarker('none')].join('\n');
+}
+
+// Verified fix sections under this app's own inline finding comments. Each finding
+// comment is identified by its finding marker; every earlier fix block is replaced by
+// the sections of this publication, so a regeneration updates in place and a retry
+// with the same input writes nothing. Comments by another author are never edited.
+async function publishFindingFixSections(payload) {
+  const envelope = validateActionEnvelope(payload);
+  if (!Array.isArray(payload.sections) || !payload.sections.length || payload.sections.length > FIX_SECTION_LIMIT) {
+    throw badRequest(`sections must contain 1 to ${FIX_SECTION_LIMIT} entries`);
+  }
+  const sections = payload.sections.map(validateFixSection);
+  const previewUrl = typeof payload.preview_url === 'string' && /^https?:\/\//.test(payload.preview_url) && !/[\s()]/.test(payload.preview_url)
+    ? payload.preview_url.slice(0, 500) : '';
+  try {
+    // System initiated after verification: actor write permission is not required
+    // because the app edits only its own comments.
+    const token = await assertInstallationRepositoryAndActor(envelope, false);
+    const pull = await githubRequest('get', `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}`, token);
+    if ((pull.data?.head?.sha || '').toLowerCase() !== envelope.head_sha.toLowerCase()) {
+      return { state: 'stale', operation_id: envelope.action_id, results: [], reason: 'head_moved' };
+    }
+    const botLogin = await githubAppAuth.getAppBotLogin();
+    const comments = [];
+    for (let page = 1; page <= 10; page += 1) {
+      const response = await githubRequest('get',
+        `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}/comments?per_page=100&page=${page}`, token);
+      const batch = Array.isArray(response.data) ? response.data : [];
+      comments.push(...batch);
+      if (batch.length < 100) break;
+    }
+    const fileCache = new Map();
+    const readFileLines = async (path) => {
+      if (!path) return null;
+      if (!fileCache.has(path)) {
+        try {
+          const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+          const response = await githubRequest('get',
+            `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/contents/${encodedPath}?ref=${encodeURIComponent(envelope.head_sha)}`, token);
+          const content = typeof response.data === 'string' ? response.data : Buffer.from(response.data?.content || '', 'base64').toString('utf8');
+          fileCache.set(path, content.replace(/\r\n/g, '\n').split('\n'));
+        } catch (_) {
+          fileCache.set(path, null);
+        }
+      }
+      return fileCache.get(path);
+    };
+    // Group by finding so one comment receives all of its sections in one write.
+    const byFingerprint = new Map();
+    for (const section of sections) {
+      if (!byFingerprint.has(section.finding_fingerprint)) byFingerprint.set(section.finding_fingerprint, []);
+      byFingerprint.get(section.finding_fingerprint).push(section);
+    }
+    const results = [];
+    for (const [fingerprint, group] of byFingerprint) {
+      const marker = findingMarker(fingerprint);
+      const comment = comments.find((item) => typeof item?.body === 'string' && item.body.includes(marker)
+        && (!botLogin || item.user?.login === botLogin)) || null;
+      if (!comment) {
+        for (const section of group) results.push({ finding_fingerprint: fingerprint, candidate_id: section.candidate_id, comment_id: 0, mode: 'comment_not_found', updated: false, reason: 'no finding comment carries this marker' });
+        continue;
+      }
+      const blocks = [];
+      for (const section of group) {
+        if (section.skipped_reason) {
+          blocks.push(buildSkippedSection(section));
+          results.push({ finding_fingerprint: fingerprint, candidate_id: '', comment_id: Number(comment.id), mode: 'skipped', updated: false, reason: section.skipped_reason });
+          continue;
+        }
+        const suggestion = await suggestionFor(section, comment, readFileLines);
+        blocks.push(buildFixSection(section, suggestion, previewUrl));
+        results.push({ finding_fingerprint: fingerprint, candidate_id: section.candidate_id, comment_id: Number(comment.id), mode: suggestion.ok ? 'suggestion' : 'diff', updated: false, reason: suggestion.ok ? '' : suggestion.reason });
+      }
+      const body = `${stripFixBlocks(comment.body)}\n\n${blocks.join('\n\n')}`;
+      if (body.length > 65000) throw new OperationError('Finding comment would exceed the GitHub comment size limit', 422);
+      if (body === comment.body) continue;
+      const response = await githubRestMutation('patch',
+        `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/comments/${comment.id}`, token, { body });
+      if (!response?.data?.id) throw new OperationError('GitHub did not return the updated finding comment', 502);
+      for (const result of results) if (result.comment_id === Number(comment.id)) result.updated = true;
+    }
+    return { state: 'published', operation_id: envelope.action_id, results, reason: '' };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    if (isAmbiguousWriteError(error)) {
+      return { state: 'reconciling', operation_id: envelope.action_id, results: [], reason: 'github_comment_outcome_ambiguous' };
+    }
+    throw externalError('Failed to publish the verified fix sections', error);
+  }
+}
+
 async function cancelScheduledMerge(payload) {
   const envelope = validateActionEnvelope(payload);
   assertPullNumberMatches(payload, envelope);
@@ -1219,6 +1426,7 @@ module.exports = {
   createCheckRun,
   createRemediationCheckRun,
   publishRemediationComment,
+  publishFindingFixSections,
   fetchFileContents,
   fetchPullRequestFiles,
   fetchRemediationSnapshot,

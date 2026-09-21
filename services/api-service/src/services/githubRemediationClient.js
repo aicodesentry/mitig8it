@@ -60,6 +60,9 @@ class GitHubRemediationClient {
   async createCheckRun(payload) { return this.call('/internal/github/remediation/check-run', 'createRemediationCheckRun', payload); }
   // One residual report comment per action, updated in place when it already exists.
   async publishComment(payload) { return this.call('/internal/github/remediation/comment', 'publishRemediationComment', payload); }
+  // Verified fix sections under this app's own inline finding comments, one per
+  // candidate and finding, each updated in place by its candidate marker.
+  async publishFindingFixSections(payload) { return this.call('/internal/github/remediation/finding-fixes', 'publishFindingFixSections', payload); }
   async cancelScheduledMerge(payload) { return this.call('/internal/github/remediation/cancel-merge', 'cancelScheduledMerge', payload); }
   // Pre-flight reads. They report blockers and current revisions; they never mutate.
   async readMergeEligibility(payload) { return this.call('/internal/github/remediation/merge-eligibility', 'readMergeEligibility', payload); }

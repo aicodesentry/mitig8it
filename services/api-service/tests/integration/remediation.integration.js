@@ -39,9 +39,10 @@ const githubRemediationClient = require('../../src/services/githubRemediationCli
 let authorizeResponse = null;
 // Every adapter response the merge controller consumes is scripted here. No network
 // call is ever made, and each call is counted so "exactly once" can be asserted.
-const githubCalls = { authorize: 0, head: 0, eligibility: 0, merge: 0, check_run: 0, cancel: 0, comment: 0 };
+const githubCalls = { authorize: 0, head: 0, eligibility: 0, merge: 0, check_run: 0, cancel: 0, comment: 0, finding_fixes: 0 };
 let lastCheckRun = null;
 const publishedComments = new Map();
+const publishedFixSections = [];
 let headResponse = null;
 let eligibilityResponse = null;
 let mergeResponse = null;
@@ -83,6 +84,13 @@ githubRemediationClient.GitHubRemediationClient = class {
     const comment = { id: existing?.id || 700 + publishedComments.size, body: payload.body, head_sha: payload.head_sha, publications: (existing?.publications || 0) + 1 };
     publishedComments.set(payload.external_id, comment);
     return { state: 'published', operation_id: payload.action_id, comment_id: comment.id, external_id: payload.external_id, updated: Boolean(existing) };
+  }
+  // Verified fix sections under finding comments: recorded per job for assertions.
+  async publishFindingFixSections(payload) {
+    githubCalls.finding_fixes += 1;
+    publishedFixSections.push(payload);
+    return { state: 'published', operation_id: payload.action_id, reason: '',
+      results: payload.sections.map((section) => ({ finding_fingerprint: section.finding_fingerprint, candidate_id: section.candidate_id, comment_id: 900, mode: section.hunk ? 'suggestion' : 'diff', updated: true, reason: '' })) };
   }
   async cancelScheduledMerge(payload) {
     githubCalls.cancel += 1;
@@ -870,4 +878,71 @@ test('the verification check blocks on any open finding severity and the residua
   const republished = await mergeController.publishVerificationCheck(actionId);
   assert.equal(republished.conclusion, 'success');
   assert.match(lastCheckRun.title, /no open findings remain/);
+});
+
+test('one automatic job is queued per head after analysis, it is claimable without a creator, and its verified fixes are published once under the findings', async () => {
+  const autoGenerate = require('../../src/services/remediationAutoGenerate');
+  const f = await fixture();
+  const open = await insertOpenFinding(f, f.run, { severity: 'high', path: 'src/app.js', title: 'SQL injection' });
+  await pool.query(`UPDATE analysis_run_findings SET snapshot = snapshot || $2::jsonb WHERE finding_id=$1`, [open, JSON.stringify({ fingerprint: `fp-${open}`, line_start: 10, line_end: 10 })]);
+
+  const first = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: f.pr, analysisRunId: f.run });
+  assert.equal(first.enqueued, true);
+  assert.equal(first.findings, 1);
+  const second = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: f.pr, analysisRunId: f.run });
+  assert.deepEqual(second, { enqueued: false, reason: 'exists', job_id: first.job_id });
+  const jobs = await workerQuery(`SELECT id, origin, created_by, finding_snapshot_ids, state FROM remediation_jobs WHERE pull_request_id=$1 AND head_sha=$2`, [f.pr, f.head]);
+  assert.equal(jobs.rowCount, 1);
+  assert.equal(jobs.rows[0].origin, 'automatic');
+  assert.equal(jobs.rows[0].created_by, null);
+  assert.deepEqual(jobs.rows[0].finding_snapshot_ids, [open]);
+  const queued = await workerQuery(`SELECT COUNT(*)::int AS n FROM workflow_outbox WHERE aggregate_id=$1 AND event_type='remediation.queued'`, [first.job_id]);
+  assert.equal(queued.rows[0].n, 1);
+
+  // The worker can claim a job that has no creator; the snapshot actor falls back to the system login.
+  const claimed = await remediationDb.claimJobById(first.job_id, 'integration-auto');
+  assert.ok(claimed);
+  assert.equal(claimed.creator_login, null);
+  await workerQuery(`UPDATE remediation_jobs SET lease_owner=NULL, lease_expires_at=NULL WHERE id=$1`, [first.job_id]);
+
+  // Ready: one verified candidate for the open finding, then the outbox publishes its
+  // section once and a redelivered event produces the identical request.
+  const original = 'const db = require("./db");\nasync function order(id) {\n  return db.query(`SELECT * FROM orders WHERE id = ${id}`);\n}\n';
+  const fixed = original.replace('db.query(`SELECT * FROM orders WHERE id = ${id}`)', "db.query('SELECT * FROM orders WHERE id = $1', [id])");
+  await workerQuery(
+    `INSERT INTO remediation_candidates (job_id,installation_id,repository_id,candidate_version,finding_snapshot_ids,artifact_digest,context_manifest_digest,file_manifest,preview,verification_level)
+     VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,'independent_sandbox')`,
+    [first.job_id, f.installation, f.repo, [open], 'a'.repeat(64), 'c'.repeat(64),
+      JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64') }] }),
+      JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, unified_diff: '@@ -3 +3 @@\n-old\n+new' }], rationale: 'Parameterize the query.',
+        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', evidence_digest: 'e'.repeat(64), generated_tests: [{ path: 'tests/orders.regression.test.js' }], limitations: [] } })]
+  );
+  await workerQuery(`UPDATE remediation_jobs SET state='ready', stage='ready', state_version=state_version+1 WHERE id=$1`, [first.job_id]);
+  const readyJob = (await workerQuery('SELECT * FROM remediation_jobs WHERE id=$1', [first.job_id])).rows[0];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN'); await client.query("SELECT set_config('app.remediation_worker', '1', true)");
+    await remediationDb.appendEvent(client, readyJob, 'remediation.ready', { stage: 'ready', outcome: 'ready' });
+    await client.query('COMMIT');
+  } finally { client.release(); }
+  outbox.registerDefaultHandlers({ executeClaimedJob: async () => {}, executeClaimedAction: async () => {}, workerId: 'integration-auto' });
+  const before = publishedFixSections.length;
+  await outbox.processPending({ limit: 50, dispatcher: outbox.createDispatcher('inprocess') });
+  assert.equal(publishedFixSections.length, before + 1);
+  const payload = publishedFixSections[before];
+  assert.equal(payload.actor_login, 'system');
+  assert.equal(payload.head_sha, f.head);
+  assert.equal(payload.sections.length, 1);
+  assert.equal(payload.sections[0].finding_fingerprint, `fp-${open}`);
+  assert.deepEqual(payload.sections[0].hunk.replacement_lines, ["  return db.query('SELECT * FROM orders WHERE id = $1', [id]);"]);
+  assert.equal(payload.sections[0].hunk.start_line, 3);
+  const recorded = await workerQuery('SELECT inline_fixes_head_sha FROM remediation_jobs WHERE id=$1', [first.job_id]);
+  assert.equal(recorded.rows[0].inline_fixes_head_sha, f.head);
+
+  // A redelivery of the ready event is the same request again, which the adapter
+  // applies in place by candidate marker.
+  await workerQuery(`UPDATE workflow_outbox SET status='pending', next_attempt_at=NOW() WHERE aggregate_id=$1 AND event_type='remediation.ready'`, [first.job_id]);
+  await outbox.processPending({ limit: 50, dispatcher: outbox.createDispatcher('inprocess') });
+  assert.equal(publishedFixSections.length, before + 2);
+  assert.deepEqual(publishedFixSections[before + 1], payload);
 });
