@@ -139,6 +139,12 @@ test('the selection is bounded to the policy file limit by severity and refused 
   expect(await remediationDb.createAutomaticJob({ pullRequestId: PR, analysisRunId: RUN, policy: policy.getPolicy() })).toEqual({ kind: 'unsupported', reason: 'no_open_findings' });
 });
 
+test('a claimed job without any actor login stops before the snapshot envelope is sent', async () => {
+  const { loadSnapshot } = require('../src/services/remediationWorkflow');
+  await expect(loadSnapshot({ id: 'job-3', installation_id: 42, repository_full_name: 'owner/repo', creator_login: null, pr_number: 1, head_sha: HEAD, base_sha: BASE }))
+    .rejects.toMatchObject({ code: 'ACTOR_UNAVAILABLE' });
+});
+
 test('a database failure is reported, never thrown into the analysis', async () => {
   connect.mockRejectedValue(new Error('connection refused'));
   const result = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: PR, analysisRunId: RUN });

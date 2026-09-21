@@ -56,6 +56,12 @@ function repairPolicy(policy) {
 }
 
 async function loadSnapshot(job) {
+  // The adapter verifies the actor's live write permission before reading the tree. An
+  // automatic job borrows a connecting user's login for that; with none available the
+  // job cannot proceed and says so instead of sending an invalid envelope.
+  if (!job.creator_login) {
+    const error = new Error('No repository user is available to authorize the snapshot'); error.code = 'ACTOR_UNAVAILABLE'; throw error;
+  }
   const snapshot = await new GitHubRemediationClient().snapshot({ installation_id: job.installation_id, repository_full_name: job.repository_full_name,
     actor_login: job.creator_login, pr_number: job.pr_number, head_sha: job.head_sha, base_sha: job.base_sha,
     manifest_digest: remediationDb.hash({ job_id: job.id, head_sha: job.head_sha }), action_id: job.id, idempotency_key: `snapshot:${job.id}` });
