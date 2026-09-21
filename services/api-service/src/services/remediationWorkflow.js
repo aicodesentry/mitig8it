@@ -55,7 +55,7 @@ function repairPolicy(policy) {
   return selected;
 }
 
-async function loadSnapshot(job) {
+async function loadSnapshot(job, findingPaths = []) {
   // The adapter verifies the actor's live write permission before reading the tree. An
   // automatic job borrows a connecting user's login for that; with none available the
   // job cannot proceed and says so instead of sending an invalid envelope.
@@ -64,7 +64,10 @@ async function loadSnapshot(job) {
   }
   const snapshot = await new GitHubRemediationClient().snapshot({ installation_id: job.installation_id, repository_full_name: job.repository_full_name,
     actor_login: job.creator_login, pr_number: job.pr_number, head_sha: job.head_sha, base_sha: job.base_sha,
-    manifest_digest: remediationDb.hash({ job_id: job.id, head_sha: job.head_sha }), action_id: job.id, idempotency_key: `snapshot:${job.id}` });
+    manifest_digest: remediationDb.hash({ job_id: job.id, head_sha: job.head_sha }), action_id: job.id, idempotency_key: `snapshot:${job.id}`,
+    // The adapter selects these first and refuses the snapshot if any is missing, so the
+    // finding files are never crowded out of a large repository's bounded snapshot.
+    finding_paths: [...new Set(findingPaths.filter(Boolean))] });
   if (snapshot.head_sha !== job.head_sha || snapshot.base_sha !== job.base_sha || !Array.isArray(snapshot.files) || !Array.isArray(snapshot.tree_entries) || !snapshot.head_tree_oid) {
     const error = new Error('Immutable snapshot response is incomplete or stale'); error.code = 'SNAPSHOT_UNAVAILABLE'; throw error;
   }
@@ -119,8 +122,8 @@ async function executeClaimedJob(job) {
   }
   try {
     const findings = await selectedFindings(job);
-    const snapshot = await loadSnapshot(job);
     const requiredPaths = new Set(findings.map((finding) => finding.file_path).filter(Boolean));
+    const snapshot = await loadSnapshot(job, [...requiredPaths]);
     if (!requiredPaths.size || ![...requiredPaths].every((path) => snapshot.files.some((file) => file.path === path))) {
       throw Object.assign(new Error('Exact source snapshot does not cover the selected findings within policy'), { code: 'SNAPSHOT_UNAVAILABLE' });
     }
