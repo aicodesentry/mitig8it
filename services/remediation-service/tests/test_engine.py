@@ -270,7 +270,7 @@ async def test_two_findings_in_different_files_produce_two_candidates_and_one_co
 
 
 @pytest.mark.asyncio
-async def test_two_findings_in_the_same_file_are_one_group_with_one_candidate(request_payload):
+async def test_two_findings_in_the_same_file_are_one_group_with_one_candidate_per_finding(request_payload):
     payload = _two_file_payload(request_payload)
     payload["findings"][1] = {
         "snapshot_id": "finding-sql-2",
@@ -295,10 +295,14 @@ async def test_two_findings_in_the_same_file_are_one_group_with_one_candidate(re
     response = await RepairEngine(factory).repair(RepairRequest.model_validate(payload))
     assert calls == [["finding-sql", "finding-sql-2"]]
     assert response.state == "ready"
-    assert len(response.candidates) == 1
-    assert response.candidates[0].finding_ids == ["finding-sql", "finding-sql-2"]
+    # One agent run, one candidate per proven finding. Both findings sit on the same line, so
+    # the same hunk fixes both and each candidate carries it; the union is that one tree.
+    assert [candidate.finding_ids for candidate in response.candidates] == [["finding-sql"], ["finding-sql-2"]]
+    assert {candidate.patch[0].replacement_content for candidate in response.candidates} == {SQL_REPAIRED}
     assert response.skipped == []
     assert response.evidence["verified_tree_oid"] == response.candidates[0].verified_tree_oid
+    assert response.evidence["groups"][0]["repaired_finding_ids"] == ["finding-sql", "finding-sql-2"]
+    assert response.evidence["groups"][0]["candidate_ids"] == [candidate.candidate_id for candidate in response.candidates]
 
 
 @pytest.mark.asyncio

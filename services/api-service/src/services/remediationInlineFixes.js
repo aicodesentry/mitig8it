@@ -45,8 +45,17 @@ function computeHunk(original, replacement, preferredLine) {
   return { start_line: previous, end_line: previous, original_lines: [before[previous - 1]], replacement_lines: [before[previous - 1], ...replacementLines] };
 }
 
+// The repair service states each candidate's evidence in full sentences (its regression test
+// failed on the original code and passed on the fix, which checks passed, which did not run);
+// a candidate from an older service version without that summary gets the lines built here.
 function evidenceLines(candidate) {
   const evidence = candidate.preview?.evidence || {};
+  const summary = Array.isArray(evidence.summary) ? evidence.summary.map((item) => String(item ?? '').trim()).filter(Boolean) : [];
+  if (summary.length) {
+    const lines = summary.slice(0, 20);
+    if (evidence.evidence_digest) lines.push(`Evidence digest: ${String(evidence.evidence_digest).slice(0, 12)}.`);
+    return lines;
+  }
   const tests = (Array.isArray(evidence.generated_tests) ? evidence.generated_tests : [])
     .map((test) => test?.path || test?.name).filter(Boolean);
   const limitations = Array.isArray(evidence.limitations) ? evidence.limitations : [];

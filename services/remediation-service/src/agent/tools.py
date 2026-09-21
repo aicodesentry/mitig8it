@@ -55,8 +55,8 @@ def tool_definitions(language: str = JAVASCRIPT) -> list[dict[str, Any]]:
         tool(
             "read_file",
             (
-                "Read a line range of one snapshot file (null bounds: around the finding lines). "
-                "Returns lines as [line_number, text] pairs; text is what original_lines expects."
+                "Read a line range of one snapshot file (null bounds: around the finding lines) "
+                "as [line_number, text] pairs; text is what original_lines expects."
             ),
             {
                 "path": {"type": "string"},
@@ -66,7 +66,7 @@ def tool_definitions(language: str = JAVASCRIPT) -> list[dict[str, Any]]:
             ["path", "line_start", "line_end"],
         ),
         tool("find_references", text["references"], {"symbol": {"type": "string"}}, ["symbol"]),
-        tool("read_dependency", "Read an authorized dependency manifest by path.", {"path": {"type": "string"}}, ["path"]),
+        tool("read_dependency", "Read an allowed dependency manifest by path.", {"path": {"type": "string"}}, ["path"]),
         tool("read_tests", "Find tests nearest to an application source path.", {"source_path": {"type": "string"}}, ["source_path"]),
         tool(
             "propose_patch",
@@ -95,17 +95,19 @@ def tool_definitions(language: str = JAVASCRIPT) -> list[dict[str, Any]]:
                     "maxItems": 50,
                     "description": (
                         "Hunks: original_lines verbatim from read_file; start_line disambiguates "
-                        "repeats; replacement_lines replace them (empty deletes); no newlines in items."
+                        "repeats; replacement_lines replace them (empty deletes); no newlines in items; "
+                        "finding_id: finding fixed."
                     ),
                     "items": {
                         "type": "object",
                         "properties": {
                             "path": {"type": "string"},
+                            "finding_id": {"type": "string", "maxLength": 200},
                             "start_line": {"type": "integer", "minimum": 1},
                             "original_lines": {"type": "array", "items": {"type": "string", "maxLength": 4000}, "maxItems": 400},
                             "replacement_lines": {"type": "array", "items": {"type": "string", "maxLength": 4000}, "maxItems": 400},
                         },
-                        "required": ["path", "start_line", "original_lines", "replacement_lines"],
+                        "required": ["path", "finding_id", "start_line", "original_lines", "replacement_lines"],
                         "additionalProperties": False,
                     },
                 },
@@ -116,7 +118,7 @@ def tool_definitions(language: str = JAVASCRIPT) -> list[dict[str, Any]]:
                     "items": {
                         "type": "object",
                         "properties": {
-                            "finding_id": {"type": "string", "maxLength": 200, "description": "The finding id this test reproduces."},
+                            "finding_id": {"type": "string", "maxLength": 200},
                             "path": {"type": "string", "maxLength": 512, "description": text["test_path"]},
                             "content": {"type": "string", "maxLength": 64000},
                         },
@@ -128,6 +130,6 @@ def tool_definitions(language: str = JAVASCRIPT) -> list[dict[str, Any]]:
             ["hypothesis", "intended_behavior", "assumptions", "citations", "changes", "regression_tests"],
         ),
         tool("request_verification", "Verify the current proposal independently.", {}, []),
-        tool("inspect_failure", "Read bounded evidence from the last verification failure.", {}, []),
-        tool("abstain", "Stop safely when a reliable bounded repair is not possible.", {"reason_code": {"type": "string"}, "explanation": {"type": "string", "maxLength": 4000}}, ["reason_code", "explanation"]),
+        tool("inspect_failure", "Read bounded evidence of the last verification failure.", {}, []),
+        tool("abstain", "Stop safely when no reliable bounded repair is possible.", {"reason_code": {"type": "string"}, "explanation": {"type": "string", "maxLength": 4000}}, ["reason_code", "explanation"]),
     ]

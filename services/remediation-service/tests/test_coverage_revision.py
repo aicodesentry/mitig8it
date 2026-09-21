@@ -130,6 +130,12 @@ class RecordingProvider(ScriptedProvider):
         return await super().next_action(messages, tools)
 
 
+def _claimed(response) -> list[str]:
+    """The findings the response's candidates claim, one candidate per finding."""
+    assert all(len(candidate.finding_ids) == 1 for candidate in response.candidates), response.candidates
+    return sorted(finding_id for candidate in response.candidates for finding_id in candidate.finding_ids)
+
+
 def _tool_result(messages: list[dict], call_id: str) -> dict:
     return json.loads(next(message["content"] for message in messages if message.get("tool_call_id") == call_id))
 
@@ -184,9 +190,9 @@ async def test_a_partial_proof_is_revised_once_and_the_revision_proves_the_rest(
     response, provider = await _run(_payload(request_payload), actions, broker, checkpoints)
 
     assert response.state == "ready", response.reason
-    assert response.candidates[0].finding_ids == ["f-exec", "f-path", "f-sql"]
+    assert _claimed(response) == ["f-exec", "f-path", "f-sql"]
     assert response.skipped == []
-    assert response.candidates[0].patch[0].replacement_content == ALL_FIXED
+    assert all(candidate.patch[0].replacement_content == ALL_FIXED for candidate in response.candidates)
     # The revision message named exactly the unproven findings with lines, assertion, and test path.
     revision = _tool_result(provider.seen[2], "verify-1")["coverage_revision"]
     assert revision["proven_finding_ids"] == ["f-sql"]
@@ -220,7 +226,7 @@ async def test_the_revision_shows_the_failure_tail_of_a_test_that_did_not_reprod
     assert by_id["f-exec"]["test_failure_tail"]["candidate"] == CANDIDATE_TAIL
     assert by_id["f-path"]["code"] == "regression_test_not_reproducing"
     assert "exited 0" in by_id["f-path"]["test_failure_tail"]["baseline"]
-    assert response.state == "ready" and response.candidates[0].finding_ids == ["f-sql"]
+    assert response.state == "ready" and _claimed(response) == ["f-sql"]
 
 
 @pytest.mark.asyncio
@@ -236,7 +242,7 @@ async def test_a_spent_revision_budget_leaves_the_proven_subset(request_payload)
     broker = SelectiveBroker({"f-sql", "f-exec"})
     response, provider = await _run(_payload(request_payload, max_revisions=1), actions, broker)
     assert response.state == "ready", response.reason
-    assert response.candidates[0].finding_ids == ["f-exec", "f-sql"]
+    assert _claimed(response) == ["f-exec", "f-sql"]
     assert [(item["finding_id"], item["code"]) for item in response.skipped] == [("f-path", "regression_test_not_reproducing")]
     assert len(provider.seen) == 4, "the run ended on the second verification"
     assert [step["outcome"] for step in response.evidence["agent_trace"]] == ["ok", "revision_requested", "ok", "ok"]
@@ -247,7 +253,7 @@ async def test_a_spent_revision_budget_leaves_the_proven_subset(request_payload)
 async def test_no_revision_budget_ships_the_first_proven_subset(request_payload):
     actions = [_propose(SQL_FIXED, ["f-sql"]), _verify("verify-1")]
     response, provider = await _run(_payload(request_payload, max_revisions=0), actions, SelectiveBroker({"f-sql"}))
-    assert response.state == "ready" and response.candidates[0].finding_ids == ["f-sql"]
+    assert response.state == "ready" and _claimed(response) == ["f-sql"]
     assert len(provider.seen) == 2
     assert response.evidence["groups"][0]["coverage"]["stopped"] == "revision_budget_spent"
 
@@ -256,7 +262,7 @@ async def test_no_revision_budget_ships_the_first_proven_subset(request_payload)
 async def test_a_revision_needs_an_attempt_left(request_payload):
     actions = [_propose(SQL_FIXED, ["f-sql"]), _verify("verify-1")]
     response, provider = await _run(_payload(request_payload, max_attempts=1), actions, SelectiveBroker({"f-sql"}))
-    assert response.state == "ready" and response.candidates[0].finding_ids == ["f-sql"]
+    assert response.state == "ready" and _claimed(response) == ["f-sql"]
     assert len(provider.seen) == 2
     assert response.evidence["groups"][0]["coverage"]["stopped"] == "attempt_budget_spent"
 
@@ -282,8 +288,8 @@ async def test_a_revision_that_proves_less_keeps_the_earlier_candidate(request_p
 
     response, _ = await _run(_payload(request_payload, max_revisions=1), actions, BreakingBroker({"f-sql", "f-exec", "f-path"}))
     assert response.state == "ready", response.reason
-    assert response.candidates[0].finding_ids == ["f-exec", "f-sql"]
-    assert response.candidates[0].patch[0].replacement_content == SQL_FIXED
+    assert _claimed(response) == ["f-exec", "f-sql"]
+    assert all(candidate.patch[0].replacement_content == SQL_FIXED for candidate in response.candidates)
 
 
 @pytest.mark.asyncio
@@ -301,7 +307,7 @@ async def test_a_revision_may_not_drop_a_proven_test_and_must_propose_before_rev
     assert again["reason"] == "coverage_revision_requires_new_proposal"
     dropping = _tool_result(provider.seen[4], "propose-dropping")
     assert dropping["reason"] == "coverage_revision_drops_proven_test" and "f-sql" in dropping["guidance"]
-    assert response.state == "ready" and response.candidates[0].finding_ids == ["f-exec", "f-path", "f-sql"]
+    assert response.state == "ready" and _claimed(response) == ["f-exec", "f-path", "f-sql"]
 
 
 @pytest.mark.asyncio
@@ -309,7 +315,7 @@ async def test_a_model_that_abstains_after_the_revision_request_ships_the_proven
     actions = [_propose(SQL_FIXED, ["f-sql"]), _verify("verify-1"), _abstain()]
     response, _ = await _run(_payload(request_payload), actions, SelectiveBroker({"f-sql"}))
     assert response.state == "ready", response.reason
-    assert response.candidates[0].finding_ids == ["f-sql"]
+    assert _claimed(response) == ["f-sql"]
     assert [step["outcome"] for step in response.evidence["agent_trace"]] == ["ok", "revision_requested", "abstained"]
     coverage = response.evidence["groups"][0]["coverage"]
     assert coverage["revisions_used"] == 1 and coverage["stopped"] == "no_further_repair"
@@ -321,7 +327,7 @@ async def test_a_run_that_exhausts_its_tool_budget_mid_revision_ships_the_proven
     actions = [_propose(SQL_FIXED, ["f-sql"]), _verify("verify-1"), read, read, read, read, read, read]
     response, _ = await _run(_payload(request_payload, max_tool_calls=6), actions, SelectiveBroker({"f-sql"}))
     assert response.state == "ready", response.reason
-    assert response.candidates[0].finding_ids == ["f-sql"]
+    assert _claimed(response) == ["f-sql"]
     assert response.evidence["groups"][0]["coverage"]["stopped"] == "tool_budget_exhausted"
 
 
@@ -407,11 +413,18 @@ async def test_two_findings_across_files_in_one_group_are_both_proven_after_a_re
     response = await RepairEngine(factory).repair(RepairRequest.model_validate(payload))
     assert launched == [["f-sql", "f-exec"]]
     assert response.state == "ready", response.reason
-    assert len(response.candidates) == 1
-    assert response.candidates[0].finding_ids == ["f-exec", "f-sql"]
-    assert {patch.path for patch in response.candidates[0].patch} == {"src/db.js", "src/cmd.js"}
+    # One candidate per finding, each carrying only the file its finding's hunk changes and its
+    # own test; the batch combines both files and verifies the union.
+    assert _claimed(response) == ["f-exec", "f-sql"]
+    by_finding = {candidate.finding_ids[0]: candidate for candidate in response.candidates}
+    assert {patch.path for patch in by_finding["f-sql"].patch} == {"src/db.js"}
+    assert {patch.path for patch in by_finding["f-exec"].patch} == {"src/cmd.js"}
     assert response.skipped == []
-    assert {entry["path"] for entry in response.candidates[0].generated_tests} == {
+    assert {entry["path"] for candidate in response.candidates for entry in candidate.generated_tests} == {
+        ".mitig8it/regression/f-sql.test.js",
+        ".mitig8it/regression/f-exec.test.js",
+    }
+    assert {entry["path"] for entry in response.evidence["generated_tests"]} == {
         ".mitig8it/regression/f-sql.test.js",
         ".mitig8it/regression/f-exec.test.js",
     }
@@ -453,4 +466,4 @@ async def test_a_finding_on_the_same_lines_as_a_proven_one_is_named_co_located(r
     assert revision["unproven"][0]["co_located_with"] == ["f-path"]
     assert "copy of its test at .mitig8it/regression/f-path-2.test.js" in revision["unproven"][0]["hint"]
     assert "same lines as a proven one" in revision["instruction"]
-    assert response.state == "ready" and response.candidates[0].finding_ids == ["f-exec", "f-path", "f-path-2", "f-sql"]
+    assert response.state == "ready" and _claimed(response) == ["f-exec", "f-path", "f-path-2", "f-sql"]
