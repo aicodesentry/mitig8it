@@ -306,6 +306,25 @@ async function getPreview(jobId, userId) {
   });
 }
 
+// Read-only repair evidence for the job's authorized user. The same request scope the
+// preview uses, so the row level security policy decides access; there is no separate
+// authorization path to get wrong.
+async function getEvidenceForUser(jobId, userId) {
+  return requestScope(userId, async (client) => {
+    const jobResult = await client.query(
+      `SELECT id, state, stage, head_sha, base_sha, attempt_count, failure_reason, created_at, updated_at
+         FROM remediation_jobs WHERE id=$1`, [jobId]
+    );
+    const job = jobResult.rows[0];
+    if (!job) return null;
+    const records = await client.query(
+      `SELECT attempt, kind, payload, created_at FROM remediation_job_evidence
+        WHERE job_id=$1 ORDER BY attempt, kind`, [jobId]
+    );
+    return { job, records: records.rows };
+  });
+}
+
 // Claiming takes a lease and a fresh fencing token. It deliberately does not
 // consume an attempt: an attempt is consumed when a stage really fails, so an
 // expired lease reclaimed by the reconciler costs no retry budget.
@@ -483,7 +502,25 @@ function fileManifest(candidate) {
 // A failed or exhausted stage consumes one attempt. A successful stage does not.
 const ATTEMPT_CONSUMING_STATES = new Set(['queued', 'inconclusive', 'failed', 'dead_letter']);
 
-async function completeStage(job, { state, stage, outcome, candidates = [], verification, reason, outputDigest, stagePath = [] }) {
+// Evidence rows are bounded by the caller that shapes them; this is the last guard so a
+// single oversized payload can never be written. 256 KB of JSON is far above any shaped
+// record and far below anything that would strain a row.
+const MAX_EVIDENCE_PAYLOAD_BYTES = 262144;
+
+async function persistEvidence(client, row, attempt, records) {
+  for (const record of Array.isArray(records) ? records : []) {
+    if (!record || typeof record.kind !== 'string' || record.payload === undefined) continue;
+    const payload = JSON.stringify(record.payload);
+    if (Buffer.byteLength(payload, 'utf8') > MAX_EVIDENCE_PAYLOAD_BYTES) continue;
+    await client.query(
+      `INSERT INTO remediation_job_evidence (job_id, installation_id, repository_id, attempt, kind, payload)
+       VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (job_id, attempt, kind) DO NOTHING`,
+      [row.id, row.installation_id, row.repository_id, attempt, record.kind, payload]
+    );
+  }
+}
+
+async function completeStage(job, { state, stage, outcome, candidates = [], verification, reason, outputDigest, stagePath = [], evidence = [] }) {
   return scopedTransaction({ tenantId: job.installation_id, worker: true }, async (client) => {
     const current = await client.query(`SELECT * FROM remediation_jobs WHERE id=$1 FOR UPDATE`, [job.id]);
     const row = current.rows[0];
@@ -510,6 +547,9 @@ async function completeStage(job, { state, stage, outcome, candidates = [], veri
           'remediation-service',row.policy_version,verification.status === 'failed' ? 'failed' : verification.status === 'unsupported' ? 'unsupported' : verification.status === 'passed' || outcome === 'ready' ? 'passed' : 'inconclusive',verification.evidence_digest || null,JSON.stringify(verification.coverage_gaps || []),JSON.stringify(Array.isArray(verification.limitations) ? verification.limitations : [])]
       );
     }
+    // Written in the same transaction as the completion, under the attempt number
+    // `recordAttempt` used, so the evidence and the attempt it belongs to agree.
+    await persistEvidence(client, row, Number(row.attempt_count) + 1, evidence);
     const consumesAttempt = ATTEMPT_CONSUMING_STATES.has(state);
     const changed = await client.query(
       `UPDATE remediation_jobs SET state=$1, stage=$2, state_version=$3, lease_owner=NULL, lease_expires_at=NULL,
@@ -1347,6 +1387,7 @@ async function recordRepairMemoryObservation({ job, candidate, userId, outcome, 
 
 module.exports = {
   ACTIVE_STATES, TERMINAL_STATES, hash, scopedTransaction, createJob, getJobForUser, getLatestForPullRequest, getPreview,
+  getEvidenceForUser, MAX_EVIDENCE_PAYLOAD_BYTES,
   claimNextJob, claimJobById, recordAttempt, heartbeat, deferForExternalExecution, reserveUsage, settleUsage, budgetSnapshot,
   usageCost, releaseStrandedReservations,
   completeStage, cancelJob, createAction, getActionForUser, cancelMerge, claimNextAction, claimActionById, actionMaterial,

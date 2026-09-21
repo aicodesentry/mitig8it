@@ -158,6 +158,29 @@ router.get('/remediations/:id/preview', authenticateToken, async (req, res, next
   } catch (error) { return next(error); }
 });
 
+// Read-only repair evidence: the agent trace, the token usage and cost, the budget
+// settlements, the per-group coverage and the verification check outcomes the job
+// produced. Same authorization as the preview. Unlike the preview it is readable in any
+// state, because the evidence of a job that repaired nothing is exactly what an operator
+// needs to see, and nothing here can be applied.
+router.get('/remediations/:id/evidence', authenticateToken, async (req, res, next) => {
+  try {
+    if (!UUID.test(req.params.id)) return res.status(400).json({ error: 'Invalid remediation ID' });
+    const evidence = await remediationDb.getEvidenceForUser(req.params.id, req.user.user_id);
+    if (!evidence) return res.status(404).json({ error: 'Remediation not found' });
+    const byKind = Object.fromEntries(evidence.records.map((row) => [row.kind, row.payload]));
+    return res.json({
+      job_id: evidence.job.id, job_state: evidence.job.state, stage: evidence.job.stage,
+      head_sha: evidence.job.head_sha, base_sha: evidence.job.base_sha,
+      attempts: Number(evidence.job.attempt_count || 0), reason: failureReason(evidence.job),
+      agent_trace: byKind.agent_trace || null, usage: byKind.usage || null,
+      budget_reservation: byKind.budget_reservation || null, groups: byKind.groups || null,
+      verification: byKind.verification || null, candidates: byKind.candidate_evidence || null,
+      records: evidence.records.map((row) => ({ attempt: Number(row.attempt), kind: row.kind, recorded_at: row.created_at })),
+    });
+  } catch (error) { return next(error); }
+});
+
 router.post('/remediations/:id/apply', authenticateToken, async (req, res, next) => {
   try {
     const body = req.body || {};

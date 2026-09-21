@@ -44,6 +44,166 @@ function stagePathToEnd(currentStage) {
   return STAGE_SEQUENCE.slice(from);
 }
 function sha256(value) { return crypto.createHash('sha256').update(value || '').digest('hex'); }
+
+// --- Durable repair evidence -------------------------------------------------------
+// The repair service executes on a backend whose own record does not outlive the
+// instance that ran it, so minutes after a job finished the agent trace, the check
+// outcomes, the token usage, the cost and the budget settlements were unrecoverable and
+// the control plane held nothing but the candidate preview. Everything below is copied
+// out of the repair response at completion time and persisted with the job.
+//
+// What is copied is deliberately narrow. A trace entry keeps the tool, its place in the
+// sequence, its outcome, its reason code and the size of its result; file contents,
+// patch text, tool arguments and model prose are never persisted. A check keeps only the
+// end of its output, bounded, because that is what explains a failure.
+const MAX_TRACE_ENTRIES = 200;
+const MAX_OUTPUT_TAIL_BYTES = 2048;
+const MAX_CHECKS = 50;
+const MAX_SETTLEMENTS = 50;
+const MAX_GROUPS = 100;
+const MAX_SKIPPED = 200;
+const MAX_CODE_CHARS = 200;
+const MAX_MESSAGE_CHARS = 500;
+const MAX_IDS = 100;
+
+function text(value, limit) {
+  return typeof value === 'string' ? value.slice(0, limit) : null;
+}
+
+// A tail keeps the END of the output: the failure is at the bottom, not the top.
+function tail(value, limit = MAX_OUTPUT_TAIL_BYTES) {
+  if (typeof value !== 'string') return null;
+  const bytes = Buffer.from(value, 'utf8');
+  return bytes.length <= limit ? value : bytes.subarray(bytes.length - limit).toString('utf8');
+}
+
+function number(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function ids(value, limit = MAX_IDS) {
+  return (Array.isArray(value) ? value : []).slice(0, limit).map((id) => text(String(id), MAX_CODE_CHARS)).filter(Boolean);
+}
+
+function bounded(value, limit, map) {
+  const items = Array.isArray(value) ? value : [];
+  return { total: items.length, truncated: items.length > limit, items: items.slice(0, limit).map(map) };
+}
+
+function reasonShape(reason) {
+  if (!reason || typeof reason !== 'object') return null;
+  return { code: text(reason.code, MAX_CODE_CHARS), message: text(reason.message, MAX_MESSAGE_CHARS) };
+}
+
+function traceEntry(entry) {
+  const source = entry && typeof entry === 'object' ? entry : {};
+  return { sequence: number(source.sequence), tool: text(source.tool, MAX_CODE_CHARS),
+    outcome: text(source.outcome, MAX_CODE_CHARS), reason: text(source.reason, MAX_CODE_CHARS),
+    result_bytes: number(source.result_bytes) };
+}
+
+function checkSide(side) {
+  const source = side && typeof side === 'object' ? side : {};
+  return { completed: source.completed === true, status: text(source.status, MAX_CODE_CHARS),
+    exit_code: number(source.exit_code), duration_ms: number(source.duration_ms),
+    output_truncated: source.output_truncated === true || (typeof source.output_tail === 'string' && Buffer.byteLength(source.output_tail) > MAX_OUTPUT_TAIL_BYTES),
+    output_tail: tail(source.output_tail) };
+}
+
+function checkRecord(check) {
+  const source = check && typeof check === 'object' ? check : {};
+  return { check_id: text(source.check_id, MAX_CODE_CHARS), kind: text(source.kind, MAX_CODE_CHARS),
+    finding_id: text(source.finding_id, MAX_CODE_CHARS),
+    baseline: checkSide(source.baseline), candidate: checkSide(source.candidate) };
+}
+
+function groupRecord(group) {
+  const source = group && typeof group === 'object' ? group : {};
+  return { group_index: number(source.group_index), state: text(source.state, MAX_CODE_CHARS),
+    reason: reasonShape(source.reason), language: text(source.language, MAX_CODE_CHARS),
+    finding_ids: ids(source.finding_ids), repaired_finding_ids: ids(source.repaired_finding_ids),
+    candidate_ids: ids(source.candidate_ids),
+    coverage: source.coverage && typeof source.coverage === 'object' ? {
+      revisions_used: number(source.coverage.revisions_used), max_revisions: number(source.coverage.max_revisions),
+      proven_finding_ids: ids(source.coverage.proven_finding_ids), stopped: text(source.coverage.stopped, MAX_CODE_CHARS),
+    } : null,
+    unproven_findings: bounded(source.unproven_findings, MAX_SKIPPED,
+      (item) => ({ finding_id: text(item?.finding_id, MAX_CODE_CHARS), ...reasonShape(item) })).items };
+}
+
+function settlementRecord(settlement) {
+  const source = settlement && typeof settlement === 'object' ? settlement : {};
+  return { call_index: number(source.call_index), reserved_tokens: number(source.reserved_tokens),
+    reserved_usd: number(source.reserved_usd), actual_tokens: number(source.actual_tokens),
+    actual_usd: number(source.actual_usd), overage_tokens: number(source.overage_tokens),
+    overage_usd: number(source.overage_usd) };
+}
+
+// The response carries the combined verification run under `verification_run` when it is
+// ready and under `verification` when it is not; both are the same evidence shape.
+function verificationEvidence(evidence) {
+  return evidence?.verification_run || evidence?.verification || null;
+}
+
+function buildEvidenceRecords(result, { cost = null } = {}) {
+  const evidence = result?.evidence && typeof result.evidence === 'object' ? result.evidence : {};
+  const records = [];
+
+  const trace = bounded(evidence.agent_trace, MAX_TRACE_ENTRIES, traceEntry);
+  if (trace.total) records.push({ kind: 'agent_trace', payload: trace });
+
+  const usage = evidence.usage && typeof evidence.usage === 'object' ? evidence.usage : null;
+  if (usage || cost !== null) {
+    records.push({ kind: 'usage', payload: { input_tokens: number(usage?.input_tokens) ?? 0,
+      output_tokens: number(usage?.output_tokens) ?? 0, cost_usd: cost === null ? null : number(cost),
+      provider_request_ids: ids(usage?.provider_request_ids, MAX_SETTLEMENTS) } });
+  }
+
+  const reservation = evidence.budget_reservation;
+  if (reservation && typeof reservation === 'object') {
+    records.push({ kind: 'budget_reservation', payload: { settled_calls: number(reservation.settled_calls),
+      overage_calls: number(reservation.overage_calls), overage_tokens: number(reservation.overage_tokens),
+      overage_usd: number(reservation.overage_usd),
+      settlements: bounded(reservation.settlements, MAX_SETTLEMENTS, settlementRecord) } });
+  }
+
+  const skipped = bounded(result?.skipped, MAX_SKIPPED,
+    (item) => ({ finding_id: text(item?.finding_id, MAX_CODE_CHARS), ...reasonShape(item) }));
+  const groups = bounded(evidence.groups, MAX_GROUPS, groupRecord);
+  if (groups.total || skipped.total) records.push({ kind: 'groups', payload: { groups, skipped } });
+
+  const run = verificationEvidence(evidence);
+  if (run && typeof run === 'object') {
+    records.push({ kind: 'verification', payload: { outcome: text(run.outcome, MAX_CODE_CHARS),
+      reason_code: text(run.reason_code, MAX_CODE_CHARS),
+      verification_level: text(run.verification_level || evidence.verification_level, MAX_CODE_CHARS),
+      verified_tree_oid: text(run.verified_tree_oid || evidence.verified_tree_oid, MAX_CODE_CHARS),
+      evidence_digest: text(evidence.evidence_digest, MAX_CODE_CHARS),
+      checks: bounded(run.checks, MAX_CHECKS, checkRecord),
+      coverage_gaps: bounded(run.coverage_gaps, MAX_CHECKS, (gap) => (typeof gap === 'string' ? text(gap, MAX_MESSAGE_CHARS) : reasonShape(gap))),
+      limitations: bounded(evidence.limitations, MAX_CHECKS, (item) => text(String(item), MAX_MESSAGE_CHARS)) } });
+  }
+
+  // Each candidate's own `preview.evidence`: the per-candidate verification level, its
+  // limitations and the one-sentence summary of each piece of evidence it rests on.
+  const candidates = bounded(result?.candidates, MAX_GROUPS, (candidate) => ({
+    artifact_digest: text(candidate?.artifact_digest, MAX_CODE_CHARS),
+    finding_ids: ids(candidate?.finding_ids),
+    evidence: candidate?.preview?.evidence && typeof candidate.preview.evidence === 'object' ? {
+      status: text(candidate.preview.evidence.status, MAX_CODE_CHARS),
+      verification_level: text(candidate.preview.evidence.verification_level, MAX_CODE_CHARS),
+      evidence_digest: text(candidate.preview.evidence.evidence_digest, MAX_CODE_CHARS),
+      verified_tree_oid: text(candidate.preview.evidence.verified_tree_oid, MAX_CODE_CHARS),
+      summary: bounded(candidate.preview.evidence.summary, MAX_CHECKS, (line) => text(String(line), MAX_MESSAGE_CHARS)),
+      limitations: bounded(candidate.preview.evidence.limitations, MAX_CHECKS, (line) => text(String(line), MAX_MESSAGE_CHARS)),
+    } : null,
+  }));
+  if (candidates.total) records.push({ kind: 'candidate_evidence', payload: candidates });
+
+  return records;
+}
+
 function repairPolicy(policy) {
   const names = ['policy_version', 'max_files', 'max_changed_lines', 'max_snapshot_files', 'max_file_bytes', 'max_snapshot_bytes',
     'max_tool_calls', 'max_attempts', 'max_revisions', 'max_context_chars', 'max_output_chars', 'max_total_tokens', 'max_output_tokens_per_call',
@@ -164,8 +324,12 @@ async function executeClaimedJob(job) {
     const stagePath = result.state === 'ready' ? stagePathToEnd(stage) : [];
     // Settle before the job goes terminal: `completeStage` releases whatever is still
     // reserved, and a stage that really ran must be charged what it really cost.
-    await remediationDb.settleUsage(job, reservation, remediationDb.usageCost(job, result), result.usage?.provider_request_id);
-    await remediationDb.completeStage(job, { state: result.state, stage: result.state, outcome: result.state, candidates, verification, stagePath, reason: result.skipped?.length ? { code: result.reason?.code || null, skipped: result.skipped } : result.reason || null, outputDigest: remediationDb.hash(result) });
+    const cost = remediationDb.usageCost(job, result);
+    await remediationDb.settleUsage(job, reservation, cost, result.usage?.provider_request_id);
+    await remediationDb.completeStage(job, { state: result.state, stage: result.state, outcome: result.state, candidates, verification, stagePath, reason: result.skipped?.length ? { code: result.reason?.code || null, skipped: result.skipped } : result.reason || null, outputDigest: remediationDb.hash(result),
+      // The execution backend's own record is gone within minutes; this is the only
+      // durable account of what the repair did and why it ended as it did.
+      evidence: buildEvidenceRecords(result, { cost }) });
     metrics.stageAttempts.labels(stage, result.state).inc();
     metrics.stageDuration.labels(stage, result.state).observe(Number(process.hrtime.bigint() - started) / 1e9);
   } catch (error) {
@@ -178,4 +342,5 @@ async function executeClaimedJob(job) {
   }
 }
 
-module.exports = { executeClaimedJob, buildPayload, loadSnapshot, repairPolicy, planStageTransition, canonicalStage, stagePathToEnd };
+module.exports = { executeClaimedJob, buildPayload, loadSnapshot, repairPolicy, planStageTransition, canonicalStage, stagePathToEnd,
+  buildEvidenceRecords, MAX_TRACE_ENTRIES, MAX_OUTPUT_TAIL_BYTES };

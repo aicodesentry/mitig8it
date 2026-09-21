@@ -204,7 +204,27 @@ SECURITY_RULES: List[SecurityRule] = [
         severity="critical",
         confidence=0.92,
         exploitability="high",
-        pattern=re.compile(r"\b(eval|exec)\s*\(", re.IGNORECASE),
+        # A shell invocation is command injection (CWE-78), not code injection, and it
+        # already has its own rule. `child_process.exec`/`execFile` therefore must not
+        # match here: a duplicate CWE-95 finding on the same line carries a fix hint
+        # ("use JSON.parse") that does not apply to running a command.
+        pattern=re.compile(
+            r"(?:"
+            # eval in any language: Python's builtin and JavaScript's global alike.
+            r"\beval\s*\("
+            # JavaScript constructs that compile a string into executable code.
+            r"|\bnew\s+Function\s*\("
+            r"|\bvm\.(?:runInNewContext|runInThisContext|runInContext|compileFunction|Script)\s*\("
+            r"|\b(?:setTimeout|setInterval)\s*\(\s*[\"'`]"
+            # Python's `exec` builtin. `execFile`/`execSync` never reach this branch
+            # because the call paren must follow `exec` directly; a member call such as
+            # `child_process.exec(` is rejected by the lookbehind; and a destructured
+            # `exec(` is rejected when it is shaped like a shell call, that is when its
+            # command is a template literal or a callback follows it.
+            r"|(?<![.\w$])exec\s*\((?!\s*[`])(?![^;]*,\s*(?:\(|function\b|async\b))"
+            r")",
+            re.IGNORECASE,
+        ),
         description="Dynamic code execution can run attacker-controlled payloads.",
         remediation="Replace eval/exec with safe alternatives (JSON.parse, AST literal_eval, schema validation).",
     ),

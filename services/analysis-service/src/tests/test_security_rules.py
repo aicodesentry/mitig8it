@@ -136,6 +136,41 @@ class TestInjection:
     def test_exec_injection(self):
         assert _find("code.injection.eval").pattern.search("exec(code_string)")
 
+    def test_python_exec_with_namespace_still_matches(self):
+        assert _find("code.injection.eval").pattern.search('exec(compile(src, "<string>", "exec"), namespace)')
+
+    def test_js_new_function_matches(self):
+        assert _find("code.injection.eval").pattern.search("const fn = new Function('a', body);")
+
+    def test_js_set_timeout_string_matches(self):
+        assert _find("code.injection.eval").pattern.search('setTimeout("doThing(" + id + ")", 100)')
+
+    def test_js_vm_run_in_new_context_matches(self):
+        assert _find("code.injection.eval").pattern.search("vm.runInNewContext(userCode, sandbox)")
+
+    def test_child_process_exec_template_command_does_not_match(self):
+        """child_process.exec is CWE-78 command injection; it must not also report CWE-95."""
+        assert not _find("code.injection.eval").pattern.search(
+            "    exec(`invoice-render --order ${orderId}`, (error, stdout) => {"
+        )
+
+    def test_child_process_exec_member_call_does_not_match(self):
+        assert not _find("code.injection.eval").pattern.search('child_process.exec("ls " + dir, cb)')
+
+    def test_child_process_exec_with_callback_does_not_match(self):
+        assert not _find("code.injection.eval").pattern.search('exec(command, function (err, stdout) {')
+
+    def test_exec_file_does_not_match(self):
+        assert not _find("code.injection.eval").pattern.search('execFile("git", ["status"], cb)')
+
+    def test_exec_sync_does_not_match(self):
+        assert not _find("code.injection.eval").pattern.search('execSync(`rm -rf ${dir}`)')
+
+    def test_child_process_exec_is_still_command_injection(self):
+        assert _find("cmd.injection.shell_true").pattern.search(
+            'child_process.exec("invoice-render --order " + orderId, cb)'
+        )
+
     def test_xss_innerhtml(self):
         assert _find("xss.unsafe_html_render").pattern.search("element.innerHTML = data")
 

@@ -6,6 +6,7 @@ jest.mock('../src/db/remediation', () => {
   const actual = jest.requireActual('../src/db/remediation');
   return {
     getLatestForPullRequest: jest.fn(), createJob: jest.fn(), getJobForUser: jest.fn(), getPreview: jest.fn(),
+    getEvidenceForUser: jest.fn(),
     createAction: jest.fn(), cancelJob: jest.fn(), getActionForUser: jest.fn(), cancelMerge: jest.fn(),
     budgetSnapshot: jest.fn(), recordApplyDenial: jest.fn(),
     getCandidateForFeedback: jest.fn(), recordRepairMemoryObservation: jest.fn(),
@@ -192,6 +193,54 @@ describe('remediation API', () => {
     expect(failed.status).toBe(200);
     remediationDb.getPreview.mockResolvedValue({ ...previewRow(), job: { ...job, state: 'failed' } });
     expect((await request(createApp()).get(`/api/remediations/${id}/preview`).set('Authorization', `Bearer ${token()}`)).status).toBe(409);
+  });
+
+  test('evidence renders the trace, usage, settlements, groups and check outcomes for the job', async () => {
+    remediationDb.getEvidenceForUser.mockResolvedValue({
+      job: { ...job, state: 'ready', attempt_count: 1 },
+      records: [
+        { attempt: 1, kind: 'agent_trace', created_at: '2026-01-01', payload: { total: 1, truncated: false, items: [{ sequence: 1, tool: 'read_file', outcome: 'ok', reason: null, result_bytes: 12 }] } },
+        { attempt: 1, kind: 'budget_reservation', created_at: '2026-01-01', payload: { settled_calls: 2, overage_calls: 0, settlements: { total: 2, truncated: false, items: [] } } },
+        { attempt: 1, kind: 'candidate_evidence', created_at: '2026-01-01', payload: { total: 1, truncated: false, items: [{ artifact_digest: 'x'.repeat(64), finding_ids: [candidate], evidence: { verification_level: 'independent_sandbox' } }] } },
+        { attempt: 1, kind: 'groups', created_at: '2026-01-01', payload: { groups: { total: 1, truncated: false, items: [{ group_index: 0, state: 'ready' }] }, skipped: { total: 0, truncated: false, items: [] } } },
+        { attempt: 1, kind: 'usage', created_at: '2026-01-01', payload: { input_tokens: 10, output_tokens: 2, cost_usd: 0.001, provider_request_ids: [] } },
+        { attempt: 1, kind: 'verification', created_at: '2026-01-01', payload: { outcome: 'passed', checks: { total: 1, truncated: false, items: [{ check_id: 'generated_regression', candidate: { status: 'passed', output_tail: null } }] } } },
+      ],
+    });
+    const res = await request(createApp()).get(`/api/remediations/${id}/evidence`).set('Authorization', `Bearer ${token()}`);
+    expect(res.status).toBe(200);
+    expect(remediationDb.getEvidenceForUser).toHaveBeenCalledWith(id, id);
+    expect(res.body.job_id).toBe(id);
+    expect(res.body.job_state).toBe('ready');
+    expect(res.body.agent_trace.items[0].tool).toBe('read_file');
+    expect(res.body.usage).toEqual({ input_tokens: 10, output_tokens: 2, cost_usd: 0.001, provider_request_ids: [] });
+    expect(res.body.budget_reservation.settled_calls).toBe(2);
+    expect(res.body.groups.groups.items[0].state).toBe('ready');
+    expect(res.body.verification.checks.items[0].check_id).toBe('generated_regression');
+    expect(res.body.candidates.items[0].evidence.verification_level).toBe('independent_sandbox');
+    expect(res.body.records.map((r) => r.kind).sort()).toEqual(['agent_trace', 'budget_reservation', 'candidate_evidence', 'groups', 'usage', 'verification']);
+  });
+
+  test('evidence is readable for a job that repaired nothing, where the preview is not', async () => {
+    remediationDb.getEvidenceForUser.mockResolvedValue({
+      job: { ...job, state: 'inconclusive', stage: 'inconclusive', attempt_count: 3, failure_reason: { code: 'regression_test_not_reproducing' } },
+      records: [{ attempt: 3, kind: 'groups', created_at: '2026-01-01', payload: { groups: { total: 1, truncated: false, items: [{ group_index: 0, state: 'inconclusive' }] }, skipped: { total: 1, truncated: false, items: [{ finding_id: candidate, code: 'not_repaired' }] } } }],
+    });
+    const res = await request(createApp()).get(`/api/remediations/${id}/evidence`).set('Authorization', `Bearer ${token()}`);
+    expect(res.status).toBe(200);
+    expect(res.body.job_state).toBe('inconclusive');
+    expect(res.body.reason).toBe('regression_test_not_reproducing');
+    expect(res.body.attempts).toBe(3);
+    expect(res.body.groups.skipped.items[0].code).toBe('not_repaired');
+    expect(res.body.agent_trace).toBeNull();
+    expect(res.body.verification).toBeNull();
+  });
+
+  test('evidence requires authentication, a well formed id, and an authorized job', async () => {
+    expect((await request(createApp()).get(`/api/remediations/${id}/evidence`)).status).toBe(401);
+    expect((await request(createApp()).get('/api/remediations/not-a-uuid/evidence').set('Authorization', `Bearer ${token()}`)).status).toBe(400);
+    remediationDb.getEvidenceForUser.mockResolvedValue(null);
+    expect((await request(createApp()).get(`/api/remediations/${id}/evidence`).set('Authorization', `Bearer ${token()}`)).status).toBe(404);
   });
 
   test('status reports why an unavailable capability is unavailable', async () => {
