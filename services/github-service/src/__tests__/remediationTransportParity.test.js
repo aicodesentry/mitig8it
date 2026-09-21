@@ -503,19 +503,20 @@ const cases = [
         {
           candidate_id: 'candidate-0001', finding_fingerprint: 'fp-1', path: 'src/app.js', finding_line: 12,
           hunk: { start_line: 12, end_line: 12, original_lines: ['old'], replacement_lines: ['new', 'more'] },
+          extra_hunks: [{ start_line: 1, end_line: 1, original_lines: ['const a = 1;'], replacement_lines: ['const a = 1;', "const { execFile } = require('child_process');"] }],
           unified_diff: '@@ -12 +12,2 @@\n-old\n+new\n+more', not_suggestable_reason: '', stated_intent: 'Same result.',
           evidence: ['test failed on original, passed on fix'], limitations: ['no build'], skipped_reason: '', verification_level: 'independent_sandbox',
           finding_body: '**HIGH** — SQL injection\n\n> raw query', finding_ids: ['f-1', 'f-3'], covered_by: '',
           proof: 'regression test t.js asserts that the SQL injection is no longer reproducible; it failed on the original code and passed on the fix.',
         },
         {
-          candidate_id: '', finding_fingerprint: 'fp-2', path: 'src/app.js', finding_line: 30, hunk: null,
+          candidate_id: '', finding_fingerprint: 'fp-2', path: 'src/app.js', finding_line: 30, hunk: null, extra_hunks: [],
           unified_diff: '', not_suggestable_reason: '', stated_intent: '', evidence: [], limitations: [],
           skipped_reason: 'outside the enabled repair families', verification_level: '',
           finding_body: '', finding_ids: [], covered_by: '', proof: '',
         },
         {
-          candidate_id: 'candidate-0001', finding_fingerprint: 'fp-3', path: 'src/app.js', finding_line: 12, hunk: null,
+          candidate_id: 'candidate-0001', finding_fingerprint: 'fp-3', path: 'src/app.js', finding_line: 12, hunk: null, extra_hunks: [],
           unified_diff: '', not_suggestable_reason: '', stated_intent: '', evidence: [], limitations: [],
           skipped_reason: '', verification_level: '', finding_body: '', finding_ids: ['f-1', 'f-3'], covered_by: 'js/path-traversal', proof: '',
         },
@@ -530,6 +531,9 @@ const cases = [
       const hunk = new githubPb.FindingFixHunk();
       hunk.setStartLine(12); hunk.setEndLine(12); hunk.setOriginalLinesList(['old']); hunk.setReplacementLinesList(['new', 'more']);
       first.setHunk(hunk);
+      const extra = new githubPb.FindingFixHunk();
+      extra.setStartLine(1); extra.setEndLine(1); extra.setOriginalLinesList(['const a = 1;']); extra.setReplacementLinesList(['const a = 1;', "const { execFile } = require('child_process');"]);
+      first.setExtraHunksList([extra]);
       first.setUnifiedDiff('@@ -12 +12,2 @@\n-old\n+new\n+more'); first.setStatedIntent('Same result.');
       first.setEvidenceList(['test failed on original, passed on fix']); first.setLimitationsList(['no build']); first.setVerificationLevel('independent_sandbox');
       first.setFindingBody('**HIGH** — SQL injection\n\n> raw query'); first.setFindingIdsList(['f-1', 'f-3']);

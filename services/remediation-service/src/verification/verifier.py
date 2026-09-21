@@ -48,6 +48,8 @@ class FindingVerdicts:
     # Regression checks whose finding is unproven. They are left out of the pass/fail outcome:
     # the finding is dropped from the candidate instead of failing the whole verification.
     excluded_check_ids: frozenset[str]
+    # The check that decided each finding: its failing test when it has one, else its first test.
+    checks_by_finding: dict[str, str] = field(default_factory=dict)
 
 
 class Verifier:
@@ -146,7 +148,7 @@ class Verifier:
         limitations = self._limitations(effective, evidence, level)
         digest = evidence_digest(evidence)
         unproven = verdicts.unproven
-        checks_by_finding = {finding_id: check_id for check_id, finding_id in effective.regression_findings.items()}
+        checks_by_finding = verdicts.checks_by_finding
         if not verdicts.proven:
             # Nothing was shown repaired. A reproducer that passed on the original code is an
             # unusable reproducer, not a failing repair; a reproducer that still fails on the
@@ -186,7 +188,9 @@ class Verifier:
         for result in evidence.get("checks", []) if isinstance(evidence.get("checks"), list) else []:
             if isinstance(result, dict) and isinstance(result.get("check_id"), str):
                 results[result["check_id"]] = result
-        tested: dict[str, dict[str, str] | None] = {}
+        # Every test of a finding, in check order: a finding with a service-generated proof and a
+        # model-written test beside it is proven only when both prove it.
+        tested: dict[str, list[tuple[str, dict[str, str] | None]]] = {}
         excluded: set[str] = set()
         for check_id, finding_id in effective.regression_findings.items():
             result = results.get(check_id) or {}
@@ -212,23 +216,27 @@ class Verifier:
                     "code": NOT_REPAIRED,
                     "message": "The regression test for this finding did not complete on both trees.",
                 }
-            tested[finding_id] = verdict
-            if verdict is not None:
-                excluded.add(check_id)
+            tested.setdefault(finding_id, []).append((check_id, verdict))
+        for finding_id, verdicts in tested.items():
+            if any(verdict is not None for _, verdict in verdicts):
+                excluded.update(check_id for check_id, _ in verdicts)
         proven: list[str] = []
         unproven: list[dict[str, str]] = []
+        checks_by_finding: dict[str, str] = {}
         for finding in request.findings:
             finding_id = finding.stable_id
             if finding_id in tested:
-                if tested[finding_id] is None:
+                failed = [(check_id, verdict) for check_id, verdict in tested[finding_id] if verdict is not None]
+                checks_by_finding[finding_id] = failed[0][0] if failed else tested[finding_id][0][0]
+                if not failed:
                     proven.append(finding_id)
                 else:
-                    unproven.append(tested[finding_id])
+                    unproven.append(failed[0][1])
             elif request.policy.require_generated_regression_test:
                 unproven.append(Verifier._untested(finding_id))
             else:
                 proven.append(finding_id)
-        return FindingVerdicts(proven, unproven, frozenset(excluded))
+        return FindingVerdicts(proven, unproven, frozenset(excluded), checks_by_finding)
 
     @staticmethod
     def _effective_outcome(evidence: dict[str, Any], excluded: frozenset[str]) -> str:

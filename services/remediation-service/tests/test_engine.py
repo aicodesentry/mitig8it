@@ -12,11 +12,20 @@ from tests.conftest import regression_test_spec, whole_file_change
 
 
 class ScriptedProvider:
+    """Plays a script of actions. Once it is exhausted it abstains with `script_exhausted`, so a
+    pass the script did not anticipate (the focused per-finding retry) ends honestly and the
+    test can assert how often that happened."""
+
     def __init__(self, actions):
         self.actions = iter(actions)
+        self.exhausted_calls = 0
 
     async def next_action(self, messages, tools):
-        return next(self.actions)
+        try:
+            return next(self.actions)
+        except StopIteration:
+            self.exhausted_calls += 1
+            return ProviderAction("abstain", {"reason_code": "script_exhausted", "explanation": "The scripted provider has no further action."})
 
 
 class PassingBroker:

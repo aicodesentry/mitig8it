@@ -131,6 +131,15 @@ MAX_REVISION_TAIL_CHARS = 400
 # A revision needs at least a propose_patch and a request_verification to change anything.
 REVISION_MIN_TOOL_CALLS = 2
 COVERAGE_TASK_NOTE = "one regression test per finding you fix, keyed by id; an untested finding is reported not_repaired"
+PROOF_TASK_NOTE = (
+    "each finding listed under proofs is decided by that fixed test, which already fails on the "
+    "original code: read it and make the patch satisfy exactly its assertions; send no test for "
+    "such a finding (one you send runs in addition, never instead). A finding without a proof "
+    "needs one regression test from you, keyed by id, and an untested one is reported "
+    "not_repaired. prior_attempts quotes why an earlier candidate failed its proof."
+)
+# A model test for a finding that has a service proof runs beside the proof under this name.
+MODEL_TEST_SUFFIX = ".model.test"
 REVISION_INSTRUCTION = (
     "Some findings in this group are not proven. Call propose_patch once more with the complete "
     "proposal: every hunk and regression test already proven, unchanged, plus a test for each "
@@ -241,8 +250,22 @@ class RepairAgent:
             "settlements": list(self._settlements),
         }
 
-    async def run(self, request: RepairRequest, snapshot: Snapshot) -> AgentResult:
+    async def run(
+        self,
+        request: RepairRequest,
+        snapshot: Snapshot,
+        proofs: dict[str, dict[str, Any]] | None = None,
+        prior_attempts: dict[str, dict[str, Any]] | None = None,
+    ) -> AgentResult:
+        """One bounded repair loop for the request's findings.
+
+        `proofs` are the service-generated regression tests by finding id, each
+        `{path, content, description}`: they are always the tests that run for those findings,
+        whatever the model sends. `prior_attempts` names, per finding, why an earlier candidate
+        (a template or a previous model pass) failed its proof, with the test's failure tail.
+        """
         self._settlements = []
+        self._proofs = {finding_id: dict(spec) for finding_id, spec in (proofs or {}).items()}
         # The best verified candidate so far: a passed verification that proved a subset of the
         # group. A run that ends any other way after one exists still returns it.
         self._best: tuple[dict[str, Any], PatchBundle, VerificationResult, dict[str, Any]] | None = None
@@ -282,7 +305,18 @@ class RepairAgent:
                             "context_manifest_digest": snapshot.manifest_digest,
                         },
                         "findings": finding_payload,
-                        "coverage": COVERAGE_TASK_NOTE,
+                        "coverage": COVERAGE_TASK_NOTE if not self._proofs else PROOF_TASK_NOTE,
+                        **(
+                            {
+                                "proofs": [
+                                    {"finding_id": finding_id, "path": spec["path"], "description": spec.get("description", ""), "content": spec["content"]}
+                                    for finding_id, spec in self._proofs.items()
+                                ]
+                            }
+                            if self._proofs
+                            else {}
+                        ),
+                        **({"prior_attempts": prior_attempts} if prior_attempts else {}),
                         "profile_hint_untrusted": request.profile,
                         # The reproducer runs here, so the agent needs to know what the sandbox
                         # can load before it writes one.
@@ -600,10 +634,13 @@ class RepairAgent:
                         )
                     self._validate_proposal_metadata(action.arguments, snapshot)
                     self._validate_revision_keeps_proven_tests(action.arguments)
+                    # The service proofs are merged into the proposal before it is built, so a
+                    # checkpointed proposal carries them and a resume rebuilds the same bundle.
+                    action.arguments["regression_tests"] = self._merge_proofs(_regression_tests(action.arguments))
                     # Off the event loop: `node --check` is a blocking subprocess and the
                     # worker's heartbeats share this loop.
                     bundle = await asyncio.to_thread(
-                        build_patch_bundle, request, snapshot, action.arguments["changes"], _regression_tests(action.arguments)
+                        build_patch_bundle, request, snapshot, action.arguments["changes"], action.arguments["regression_tests"]
                     )
                     proposal = self._proposal_summary(action.arguments)
                     proposal_arguments = action.arguments
@@ -888,6 +925,26 @@ class RepairAgent:
         if not changed_paths.issubset(cited_paths):
             raise PatchPolicyError("every_changed_file_requires_source_citation")
 
+    def _merge_proofs(self, supplied: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The service proofs first, then the model's tests; a model test for a proven-by-proof
+        finding keeps its own path so it runs beside the proof instead of replacing it."""
+        proofs = getattr(self, "_proofs", {}) or {}
+        merged: list[dict[str, Any]] = [
+            {"finding_id": finding_id, "path": spec["path"], "content": spec["content"]} for finding_id, spec in proofs.items()
+        ]
+        proof_paths = {spec["path"] for spec in proofs.values()}
+        for spec in supplied:
+            if not isinstance(spec, dict):
+                merged.append(spec)
+                continue
+            item = dict(spec)
+            path = str(item.get("path", ""))
+            if item.get("finding_id") in proofs and path in proof_paths:
+                stem, dot, suffix = path.rpartition(".test.")
+                item["path"] = f"{stem}{MODEL_TEST_SUFFIX}.{suffix}" if dot else path
+            merged.append(item)
+        return merged
+
     @staticmethod
     def _proposal_summary(arguments: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -909,7 +966,7 @@ class RepairAgent:
         supplied = arguments.get("regression_tests")
         if not isinstance(supplied, list):
             return
-        carried = {spec.get("finding_id") for spec in supplied if isinstance(spec, dict)}
+        carried = {spec.get("finding_id") for spec in supplied if isinstance(spec, dict)} | set(getattr(self, "_proofs", {}) or {})
         missing = [finding_id for finding_id in proven if finding_id not in carried]
         if missing:
             raise PatchPolicyError(

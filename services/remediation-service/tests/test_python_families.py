@@ -123,9 +123,11 @@ def _payload(request_payload, files: list[tuple[str, str]], findings: list[dict]
 class _Scripted:
     def __init__(self, actions):
         self.actions = iter(actions)
+        self.calls = 0
 
     async def next_action(self, messages, tools):
-        return next(self.actions)
+        self.calls += 1
+        return next(self.actions, ProviderAction("abstain", {"reason_code": "script_exhausted", "explanation": "The scripted provider has no further action."}))
 
 
 def _local_agent(provider):
@@ -250,10 +252,11 @@ async def test_engine_skips_per_finding_by_language_family_and_gate(request_payl
         TEXT_FINDINGS[2],
     ]
     seen: list[list[str]] = []
+    provider = _Scripted([])
 
     def factory(group_request):
         seen.append([finding.stable_id for finding in group_request.findings])
-        return _local_agent(_Scripted([ProviderAction("abstain", {"reason_code": "eval_semantics_unknown", "explanation": "not a literal"})]))
+        return _local_agent(provider)
 
     response = await RepairEngine(factory).repair(RepairRequest.model_validate(_payload(request_payload, files, findings)))
     assert seen == [["eval-15"]]
@@ -263,8 +266,15 @@ async def test_engine_skips_per_finding_by_language_family_and_gate(request_payl
         "js-secret": "unsupported_rule_family",
         "js-sql": "pg_dependency_not_proven",
     }
-    assert response.state == "unsupported" and response.reason["code"] == "eval_semantics_unknown"
-    assert response.evidence["groups"][0]["language"] == PYTHON
+    # The eval finding is proven by the template path with the service-generated proof, so the
+    # model is never consulted for it.
+    assert response.state == "ready", response.reason
+    assert [candidate.finding_ids for candidate in response.candidates] == [["eval-15"]]
+    assert provider.calls == 0
+    group = response.evidence["groups"][0]
+    assert group["language"] == PYTHON
+    assert group["reason_evidence"]["candidate_sources"] == {"eval-15": "template"}
+    assert group["reason_evidence"]["proofs"] == {"eval-15": "service"}
 
 
 @pytest.mark.asyncio
@@ -281,26 +291,22 @@ async def test_a_request_whose_only_finding_is_ambiguous_reports_that_reason(req
 @requires_python
 @pytest.mark.asyncio
 async def test_engine_repairs_the_credential_and_eval_findings_and_skips_the_ambiguous_sql(request_payload):
-    """text.py end to end: the SQL finding is skipped as ambiguous before any agent runs, and one
-    Python agent proves the credential and eval findings with harness tests."""
-    proposal = {
-        "hypothesis": "Two literals are secrets and eval runs untrusted input.",
-        "intended_behavior": "Read the secrets from the environment; parse only literals.",
-        "assumptions": ["API_KEY and PASSWORD must be provided via the environment"],
-        "citations": [{"path": "text.py", "line_start": 10, "line_end": 15}],
-        "changes": [whole_file_change("text.py", TEXT_PY, TEXT_PY_REPAIRED)],
-        "regression_tests": [
-            {"finding_id": "secret-10", "path": ".mitig8it/regression/secret-10.test.py", "content": CREDENTIAL_TEST},
-            {"finding_id": "eval-15", "path": ".mitig8it/regression/eval-15.test.py", "content": EVAL_TEST},
-        ],
-    }
-    provider = _Scripted([ProviderAction("propose_patch", proposal), ProviderAction("request_verification", {})])
+    """text.py end to end: the SQL finding is skipped as ambiguous before any agent runs, and the
+    credential and eval findings are proven by template hunks with service-generated proofs, so
+    the model is never consulted."""
+    provider = _Scripted([])
     payload = _payload(request_payload, [("text.py", TEXT_PY)], TEXT_FINDINGS)
     response = await RepairEngine(lambda request: _local_agent(provider)).repair(RepairRequest.model_validate(payload))
     assert response.state == "ready", response.reason
-    # One candidate per proven finding; the whole-file hunk covers both, so each carries it.
+    assert provider.calls == 0
+    # One candidate per proven finding, each carrying only its own hunks.
     assert [candidate.finding_ids for candidate in response.candidates] == [["eval-15"], ["secret-10"]]
-    candidate = response.candidates[1]
+    eval_candidate, credential_candidate = response.candidates
+    assert "ast.literal_eval(user_input)" in eval_candidate.patch[0].replacement_content
+    assert "import ast" in eval_candidate.patch[0].replacement_content
+    assert 'API_KEY = "sk-' in eval_candidate.patch[0].replacement_content
+    assert 'API_KEY = os.environ["API_KEY"]' in credential_candidate.patch[0].replacement_content
+    assert "literal_eval" not in credential_candidate.patch[0].replacement_content
     [skip] = response.skipped
     assert (skip["finding_id"], skip["code"]) == ("sql-6", "ambiguous_query_api")
     assert "execute()" in skip["message"]
@@ -309,11 +315,14 @@ async def test_engine_repairs_the_credential_and_eval_findings_and_skips_the_amb
         assert checks[check_id]["argv"][:2] == ["python3", ".mitig8it/harness.py"]
         assert checks[check_id]["baseline"]["status"] == "failed" and checks[check_id]["candidate"]["status"] == "passed"
     assert checks["generated_python_syntax"]["argv"] == ["python3", "-m", "py_compile", "text.py"]
-    limitations = candidate.preview["evidence"]["limitations"]
+    limitations = credential_candidate.preview["evidence"]["limitations"]
     assert "text.py now reads API_KEY from the environment; the deployment must provide it" in limitations
-    assert "text.py now reads PASSWORD from the environment; the deployment must provide it" in limitations
     assert any(item.startswith("runtime load check skipped for text.py") for item in limitations)
-    assert response.evidence["groups"][0]["language"] == PYTHON
+    assert credential_candidate.preview["evidence"]["candidate_source"] == "template"
+    group = response.evidence["groups"][0]
+    assert group["language"] == PYTHON
+    assert group["reason_evidence"]["candidate_sources"] == {"eval-15": "template", "secret-10": "template"}
+    assert group["reason_evidence"]["templates"] == {"eval-15": "proven", "secret-10": "proven"}
 
 
 def _fixture_agent(fixture_dir: Path, fixture: dict, request: RepairRequest):

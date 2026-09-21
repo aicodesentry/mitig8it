@@ -394,6 +394,14 @@ class GitHubGrpcClient {
         hunk.setReplacementLinesList(section.hunk.replacement_lines || []);
         message.setHunk(hunk);
       }
+      message.setExtraHunksList((section.extra_hunks || []).map((item) => {
+        const extra = new githubPb.FindingFixHunk();
+        extra.setStartLine(Number(item.start_line || 0));
+        extra.setEndLine(Number(item.end_line || 0));
+        extra.setOriginalLinesList(item.original_lines || []);
+        extra.setReplacementLinesList(item.replacement_lines || []);
+        return extra;
+      }));
       message.setUnifiedDiff(section.unified_diff || '');
       message.setNotSuggestableReason(section.not_suggestable_reason || '');
       message.setStatedIntent(section.stated_intent || '');
