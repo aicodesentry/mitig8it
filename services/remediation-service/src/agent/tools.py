@@ -3,7 +3,37 @@ from __future__ import annotations
 from typing import Any
 
 
-def tool_definitions() -> list[dict[str, Any]]:
+JAVASCRIPT = "javascript"
+PYTHON = "python"
+
+# Per-language wording for the parts of a tool description that name a toolchain. The
+# JavaScript text is byte-for-byte what it was before Python support, so the JavaScript prompt
+# budget is unchanged.
+_LANGUAGE_TEXT = {
+    JAVASCRIPT: {
+        "references": "Find lexical references to a JS/TS identifier.",
+        "regression_tests": (
+            "One harness test (require('../harness')) per finding you fix, per the "
+            "system prompt; a test requiring supertest, express, pg, or jest, or only "
+            "reading the file as text, is rejected."
+        ),
+        "test_path": "'.mitig8it/regression/<finding-id>.test.js'.",
+    },
+    PYTHON: {
+        "references": "Find lexical references to a Python identifier.",
+        "regression_tests": (
+            "One harness test (import harness as h) per finding you fix, per the "
+            "system prompt; a test importing pytest, flask, requests, or a database driver, "
+            "or only reading the file as text, is rejected."
+        ),
+        "test_path": "'.mitig8it/regression/<finding-id>.test.py'.",
+    },
+}
+
+
+def tool_definitions(language: str = JAVASCRIPT) -> list[dict[str, Any]]:
+    text = _LANGUAGE_TEXT.get(language, _LANGUAGE_TEXT[JAVASCRIPT])
+
     def tool(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
         return {
             "type": "function",
@@ -35,7 +65,7 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
             ["path", "line_start", "line_end"],
         ),
-        tool("find_references", "Find lexical references to a JS/TS identifier.", {"symbol": {"type": "string"}}, ["symbol"]),
+        tool("find_references", text["references"], {"symbol": {"type": "string"}}, ["symbol"]),
         tool("read_dependency", "Read an authorized dependency manifest by path.", {"path": {"type": "string"}}, ["path"]),
         tool("read_tests", "Find tests nearest to an application source path.", {"source_path": {"type": "string"}}, ["source_path"]),
         tool(
@@ -82,16 +112,12 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "regression_tests": {
                     "type": "array",
                     "maxItems": 10,
-                    "description": (
-                        "One harness test (require('../harness')) per finding you fix, per the "
-                        "system prompt; a test requiring supertest, express, pg, or jest, or only "
-                        "reading the file as text, is rejected."
-                    ),
+                    "description": text["regression_tests"],
                     "items": {
                         "type": "object",
                         "properties": {
                             "finding_id": {"type": "string", "maxLength": 200, "description": "The finding id this test reproduces."},
-                            "path": {"type": "string", "maxLength": 512, "description": "'.mitig8it/regression/<finding-id>.test.js'."},
+                            "path": {"type": "string", "maxLength": 512, "description": text["test_path"]},
                             "content": {"type": "string", "maxLength": 64000},
                         },
                         "required": ["finding_id", "path", "content"],

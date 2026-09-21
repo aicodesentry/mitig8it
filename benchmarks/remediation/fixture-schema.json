@@ -54,7 +54,15 @@
         "runtime",
         "path",
         "timeout_seconds"
-      ]
+      ],
+      "properties": {
+        "runtime": {
+          "enum": [
+            "node",
+            "python3"
+          ]
+        }
+      }
     },
     "additional_units": {
       "type": "array",

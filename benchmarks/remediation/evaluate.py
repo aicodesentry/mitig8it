@@ -31,7 +31,10 @@ SERVICE_ROOT = REPOSITORY_ROOT / "services" / "remediation-service"
 FIXTURES = ROOT / "fixtures"
 DEFAULT_BUDGET = {"max_tool_calls": 20, "max_attempts": 3, "max_input_tokens": 120000,
                   "max_output_tokens": 120000, "max_cost_usd": 2.0}
-SUPPORTED_FAMILIES = {"sql_parameterization", "command_arguments", "path_containment"}
+SUPPORTED_FAMILIES = {"sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval"}
+# Trusted fixture tests run under a pinned interpreter by fixed argv: Node for JavaScript
+# fixtures, this Python for Python fixtures.
+FIXTURE_TEST_RUNTIMES = {"node": ["node"], "python3": [sys.executable]}
 NEGATIVE_KINDS = {"negative", "adversarial"}
 
 
@@ -140,8 +143,8 @@ def validate_fixture(fixture_dir: Path, fixture: dict[str, Any]) -> None:
                 raise FixtureError(f"{fixture['id']}: duplicate repair unit source: {source}")
             seen.add(source)
         test = fixture.get("trusted_fixture_test")
-        if not isinstance(test, dict) or test.get("runtime") != "node" or not isinstance(test.get("path"), str):
-            raise FixtureError(f"{fixture['id']}: trusted Node fixture test is required")
+        if not isinstance(test, dict) or test.get("runtime") not in FIXTURE_TEST_RUNTIMES or not isinstance(test.get("path"), str):
+            raise FixtureError(f"{fixture['id']}: trusted Node or Python fixture test is required")
         if not resolve_fixture_path(fixture_dir, test["path"]).is_file():
             raise FixtureError(f"{fixture['id']}: trusted fixture test is missing")
 
@@ -188,7 +191,7 @@ def assert_no_repository_leakage(fixtures: list[tuple[Path, dict[str, Any]]]) ->
 
 
 def run_trusted_fixture_test(fixture_dir: Path, fixture: dict[str, Any]) -> dict[str, Any]:
-    """Run only audited fixture source paths with a fixed Node argv, never shell."""
+    """Run only audited fixture source paths with a fixed Node or Python argv, never shell."""
     test = fixture["trusted_fixture_test"]
     script = resolve_fixture_path(fixture_dir, test["path"])
     # One original/repaired pair per repair unit, in fixture order.
@@ -198,9 +201,9 @@ def run_trusted_fixture_test(fixture_dir: Path, fixture: dict[str, Any]) -> dict
         pairs.append(str(resolve_fixture_path(fixture_dir, unit["reference_repair"])))
     try:
         completed = subprocess.run(
-            ["node", str(script), *pairs],
+            [*FIXTURE_TEST_RUNTIMES[test["runtime"]], str(script), *pairs],
             cwd=fixture_dir,
-            env={"PATH": os.environ.get("PATH", ""), "NODE_OPTIONS": "--disable-proto=throw"},
+            env={"PATH": os.environ.get("PATH", ""), "NODE_OPTIONS": "--disable-proto=throw", "PYTHONDONTWRITEBYTECODE": "1"},
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,

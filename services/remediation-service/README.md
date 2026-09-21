@@ -1,6 +1,6 @@
 # Mitig8it remediation service
 
-This service turns an authorized exact-commit JavaScript/TypeScript snapshot and confirmed SQL-injection, command-injection, or path-traversal findings into a bounded candidate. It is intentionally only a proposer: a candidate is `ready` only after a separate sandbox broker returns authenticated baseline/candidate evidence. The service has no GitHub, database, cloud, or shell tool available to the model and never executes repository code in its API process.
+This service turns an authorized exact-commit JavaScript/TypeScript or Python snapshot and confirmed SQL-injection, command-injection, path-traversal, hardcoded-credential, or eval code-injection findings into a bounded candidate. The affected file's extension selects the toolchain per finding group (`.js`, `.cjs`, `.mjs`, `.ts`, `.tsx`, `.jsx` run under Node; `.py` under Python), a group that mixes both is split by language, and the hardcoded-credential and eval families are repaired for Python only. It is intentionally only a proposer: a candidate is `ready` only after a separate sandbox broker returns authenticated baseline/candidate evidence. The service has no GitHub, database, cloud, or shell tool available to the model and never executes repository code in its API process.
 
 ## Components
 
@@ -150,13 +150,15 @@ the rest of the check set from the candidate itself.
 
 - `propose_patch` requires `regression_tests`, a list of `{finding_id, path, content}` with one
   entry per finding the patch repairs. The path must be
-  `.mitig8it/regression/<name>.test.{js,cjs,mjs}`, must not already exist in the snapshot, and
-  is rejected outright anywhere else, so a generated test can never overwrite repository code.
-  The content must parse under `node --check`, may import only Node built-ins, relative
-  repository paths, and the service harness, and must exercise behavior: load the changed
-  module through the harness and invoke it with an injection payload. A test that requires
-  `supertest`, `express`, `pg`, or a test framework is rejected as `missing_dependency`, and one
-  that only reads the file as text is rejected too.
+  `.mitig8it/regression/<name>.test.{js,cjs,mjs}` for a JavaScript group or
+  `.mitig8it/regression/<name>.test.py` for a Python group, must not already exist in the
+  snapshot, and is rejected outright anywhere else, so a generated test can never overwrite
+  repository code. The content must parse (`node --check` or `python -m py_compile`), may
+  import only the language's standard library or built-ins, repository modules, and the service
+  harness, and must exercise behavior: load the changed module through the harness and invoke
+  it with an injection payload. A test that requires `supertest`, `express`, `pg`, `pytest`,
+  `flask`, `requests`, or a test framework is rejected as `missing_dependency`, and one that
+  only reads the file as text is rejected too.
 - The sandbox has nothing installed, so the service materializes a dependency-free harness at
   `.mitig8it/harness.js` next to the tests in both workspaces. `require('../harness')` gives
   `load(path, options)`, which requires the target with fake `express`, `pg`, `child_process`,
@@ -164,19 +166,37 @@ the rest of the check set from the candidate itself.
   `pg.queries`, `child_process.calls`, and `fs.reads`, and `assert` helpers. It is never a patch
   or a manifest entry, and a proposal that writes to it is rejected as `harness_path_protected`.
   See [contracts/test-harness-v1.md](contracts/test-harness-v1.md).
+- Python groups get `.mitig8it/harness.py` instead, a standard-library-only file that is also
+  the test runner (`python3 .mitig8it/harness.py <test>`). `import harness as h` gives
+  `load(path, env=..., rows=..., stubs=...)`, which executes the module with fake `flask`,
+  `sqlite3`, `psycopg`, `sqlalchemy`, `subprocess`, `os.system`, a recording `os.environ`, and
+  a recording `open()`; `invoke(app, method, rule, params=..., query=..., json=...)` for Flask
+  views; `call(fn, ...)` for plain functions; recorders `db.queries`, `subprocess.calls`,
+  `fs.reads`, `env.reads`; and assertions per family (`assert_param`, `assert_argv`,
+  `assert_inside`, `assert_env_read`, `assert_not_in_source`, `assert_no_commands`). See
+  [contracts/test-harness-python-v1.md](contracts/test-harness-python-v1.md).
+- Python families are gated before an agent runs. A CWE-89 finding whose query reaches no
+  known driver `execute()` (sqlite3, psycopg, SQLAlchemy `text()`), such as a helper named
+  `execute_query`, is skipped as `ambiguous_query_api`; a process call with a pipe is skipped as
+  `shell_pipeline_unsupported`. A hardcoded-credential repair moves the literal to
+  `os.environ["NAME"]` and records the limitation `<path> now reads NAME from the environment;
+  the deployment must provide it`; an eval repair uses `ast.literal_eval` only where a literal
+  is all the code needs, otherwise the agent abstains with `eval_semantics_unknown`.
 - Each file is materialized into both the baseline and the candidate workspace and executed as
   its own `exploit` check with a 60-second timeout. A finding is proven when its test fails on
   the original tree and passes on the patched one; the candidate claims exactly the proven
   findings and the rest are reported in `skipped` as `not_repaired` or
   `regression_test_not_reproducing`. Test content is untrusted repository-adjacent code and
   runs only inside the sandbox driver, exactly like any other check.
-- After `node --check`, patch policy also loads every changed JavaScript file from a temporary
-  copy of the candidate tree. A module that throws on load, such as a `ReferenceError` for an
-  identifier used without its import, is rejected as `candidate_load_failed`; a dependency the
-  snapshot does not carry is recorded as a limitation instead.
-- Every changed `.js`, `.cjs`, and `.mjs` file also gets a `node --check` `typecheck` check.
-  It needs no fixture and no installed dependency, so it is the one behavior check every Node
-  repository can always run.
+- After the syntax check, patch policy also loads every changed JavaScript or Python file from
+  a temporary copy of the candidate tree (`require` under Node, `runpy.run_path` under Python
+  with a module name that is not `__main__`). A module that throws on load, such as a
+  `ReferenceError` or `NameError` for an identifier used without its import, is rejected as
+  `candidate_load_failed`; a dependency the snapshot does not carry, or an environment variable a
+  Python module reads at import time, is recorded as a limitation instead.
+- Every changed `.js`, `.cjs`, and `.mjs` file also gets a `node --check` `typecheck` check, and
+  every changed `.py` file a `python3 -m py_compile` one. They need no fixture and no installed
+  dependency, so they are the one behavior check every repository can always run.
 - With `run_repository_tests: true` and a root `package.json` `scripts.test`, the repository's
   own suite runs as an `existing_test` check on both trees. The sandbox has no network, so a
   snapshot without installed dependencies records a limitation instead of running it.
@@ -196,7 +216,7 @@ non-empty policy `verification_checks` with an `exploit` and a `behavior` check 
 ## External prerequisites and accurate limitations
 
 - The local execution backend and the local sandbox driver are development adapters. They satisfy no isolation, durability, or retention gate, and results from them are labelled `development_unverified`.
-- Candidate syntax validation runs `node --check` for `.js`, `.cjs`, and `.mjs` files. TypeScript and JSX candidates and hosts without a Node toolchain record an explicit limitation instead of a silent pass. A TypeScript-only patch therefore derives no generic behavior check, and without a policy-supplied one the result is `unsupported`.
+- Candidate syntax validation runs `node --check` for `.js`, `.cjs`, and `.mjs` files and `python -m py_compile` for `.py` files. TypeScript and JSX candidates and hosts without a Node toolchain record an explicit limitation instead of a silent pass. A TypeScript-only patch therefore derives no generic behavior check, and without a policy-supplied one the result is `unsupported`.
 - A generated regression test is model-written code. It proves that the candidate changes the behavior the test names on this exact snapshot; it is not a reviewed test suite and does not prove the repair is complete.
 - No real-model quality or real GKE isolation claim is made by local tests. Promotion requires the versioned repository evaluation suite and deployed attack fixtures.
 - The included broker supports inline immutable-Secret payloads up to 700 KB. A production one-use encrypted object transport is still required for larger snapshots; it must not expose credentials or signed URLs to the untrusted process.
