@@ -111,6 +111,7 @@ const githubUserAuth = require('../../src/services/githubUserAuth');
 githubUserAuth.getGithubAccessTokenForUser = async () => ({ githubUsername: 'integration-actor' });
 
 const remediationDb = require('../../src/db/remediation');
+const workflow = require('../../src/services/remediationWorkflow');
 const outbox = require('../../src/services/remediationOutbox');
 const reconciler = require('../../src/services/remediationReconciler');
 const mergeController = require('../../src/services/mergeController');
@@ -1024,4 +1025,91 @@ test('a second completed analysis on the same head reuses the ready job and repu
   assert.deepEqual(await autoGenerate.republishInlineFixesForCompletedAnalysis({ pullRequestId: f.pr, headSha: 'c'.repeat(40) }),
     { republished: 0, reason: 'no_published_ready_job' });
   assert.equal(publishedFixSections.length, before + 2);
+});
+
+test('repair evidence outlives the execution record: it is persisted with the completion and readable once the job is ready', async () => {
+  const f = await fixture();
+  const app = createApp();
+  const jobId = (await request(app).post(`/api/pull-requests/${f.pr}/remediations`).auth(f.token, { type: 'bearer' }).send({})).body.job.id;
+  const claimed = await remediationDb.claimJobById(jobId, 'worker-evidence', 60);
+  assert.ok(claimed);
+
+  // The response the repair service returns, carrying the evidence that until now lived
+  // only on the execution backend's own disk. The output tail is deliberately over bound.
+  const failureOutput = `${'x'.repeat(6000)}AssertionError: query was still concatenated`;
+  const repairResponse = {
+    state: 'ready', head_sha: f.head, base_sha: f.base, manifest_digest: 'm'.repeat(64),
+    candidates: [{ artifact_digest: 'a'.repeat(64), finding_ids: [f.finding],
+      preview: { changes: [{ path: 'src/app.js', contents_base64: Buffer.from('never persisted').toString('base64') }],
+        evidence: { status: 'passed', verification_level: 'independent_sandbox', evidence_digest: 'e'.repeat(64),
+          summary: ['Regression test tests/app.test.js failed on the original code and passed on the fix.'],
+          limitations: ['Not run: repository test suite.'] } },
+      verification: { status: 'passed' } }],
+    skipped: [{ finding_id: 'other-finding', code: 'not_repaired', message: 'No candidate proved this finding.' }],
+    usage: { provider_request_id: 'req_integration' },
+    evidence: {
+      context_manifest_digest: 'c'.repeat(64), verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40),
+      agent_trace: Array.from({ length: 260 }, (_, index) => ({ sequence: index + 1, tool: 'read_file',
+        arguments_digest_only: { path_digest: 'must-not-be-persisted' }, outcome: 'ok', reason: null, result_bytes: 100 + index })),
+      usage: { input_tokens: 9000, output_tokens: 1500, provider_request_ids: ['req_integration'] },
+      budget_reservation: { settled_calls: 3, overage_calls: 1, overage_tokens: 120, overage_usd: 0.004,
+        settlements: [{ call_index: 3, reserved_tokens: 800, reserved_usd: 0.01, actual_tokens: 920, actual_usd: 0.014, overage_tokens: 120, overage_usd: 0.004 }] },
+      groups: [{ group_index: 0, finding_ids: [f.finding, 'other-finding'], state: 'ready', reason: null,
+        candidate_ids: ['candidate-0'], repaired_finding_ids: [f.finding],
+        coverage: { revisions_used: 1, max_revisions: 2, proven_finding_ids: [f.finding], stopped: 'revision_budget_spent' },
+        unproven_findings: [{ finding_id: 'other-finding', code: 'not_repaired', message: 'no reproducing test' }] }],
+      limitations: ['Not run: repository test suite.'],
+      verification_run: { outcome: 'passed', reason_code: null, coverage_gaps: [],
+        checks: [{ check_id: 'generated_regression', kind: 'generated_test', finding_id: f.finding,
+          baseline: { completed: true, status: 'failed', exit_code: 1, duration_ms: 120, output_tail: failureOutput },
+          candidate: { completed: true, status: 'passed', exit_code: 0, duration_ms: 118, output_tail: null } }] },
+    },
+  };
+
+  assert.equal(await remediationDb.completeStage(claimed, {
+    state: 'ready', stage: 'ready', outcome: 'ready', stagePath: [],
+    candidates: repairResponse.candidates,
+    verification: { status: 'passed', evidence_digest: 'e'.repeat(64), candidate_tree_sha: 'f'.repeat(40), limitations: [] },
+    outputDigest: remediationDb.hash(repairResponse),
+    evidence: workflow.buildEvidenceRecords(repairResponse, { cost: 0.0271 }),
+  }), true);
+
+  // One row per kind, bound to the attempt that produced it.
+  const stored = await workerQuery('SELECT attempt, kind FROM remediation_job_evidence WHERE job_id=$1 ORDER BY kind', [jobId]);
+  assert.deepEqual(stored.rows.map((row) => row.kind),
+    ['agent_trace', 'budget_reservation', 'candidate_evidence', 'groups', 'usage', 'verification']);
+  assert.ok(stored.rows.every((row) => Number(row.attempt) === 1));
+
+  const evidence = await request(app).get(`/api/remediations/${jobId}/evidence`).auth(f.token, { type: 'bearer' });
+  assert.equal(evidence.status, 200);
+  assert.equal(evidence.body.job_state, 'ready');
+  assert.equal(evidence.body.agent_trace.total, 260);
+  assert.equal(evidence.body.agent_trace.truncated, true);
+  assert.equal(evidence.body.agent_trace.items.length, 200);
+  assert.deepEqual(Object.keys(evidence.body.agent_trace.items[0]).sort(), ['outcome', 'reason', 'result_bytes', 'sequence', 'tool']);
+  assert.deepEqual(evidence.body.usage, { input_tokens: 9000, output_tokens: 1500, cost_usd: 0.0271, provider_request_ids: ['req_integration'] });
+  assert.equal(evidence.body.budget_reservation.overage_calls, 1);
+  assert.equal(evidence.body.budget_reservation.settlements.items[0].actual_tokens, 920);
+  assert.equal(evidence.body.groups.groups.items[0].coverage.stopped, 'revision_budget_spent');
+  assert.equal(evidence.body.groups.skipped.items[0].finding_id, 'other-finding');
+  assert.equal(evidence.body.candidates.items[0].evidence.verification_level, 'independent_sandbox');
+
+  const check = evidence.body.verification.checks.items[0];
+  assert.equal(check.candidate.status, 'passed');
+  assert.equal(Buffer.byteLength(check.baseline.output_tail, 'utf8'), 2048, 'an output tail is bounded at 2 KB');
+  assert.ok(check.baseline.output_tail.endsWith('AssertionError: query was still concatenated'), 'the tail keeps the end, where the failure is');
+  assert.equal(check.baseline.output_truncated, true);
+
+  // No file contents, no patch text and no tool arguments are ever persisted.
+  const serialized = JSON.stringify(evidence.body);
+  assert.ok(!serialized.includes('contents_base64'));
+  assert.ok(!serialized.includes('must-not-be-persisted'));
+  assert.ok(!serialized.includes(Buffer.from('never persisted').toString('base64')));
+
+  // The preview keeps working. Authorization is the row level security scope the preview
+  // already uses, which this superuser-owned test database does not enforce; the route
+  // requires a token and refuses an id it cannot read.
+  assert.equal((await request(app).get(`/api/remediations/${jobId}/preview`).auth(f.token, { type: 'bearer' })).status, 200);
+  assert.equal((await request(app).get(`/api/remediations/${jobId}/evidence`)).status, 401);
+  assert.equal((await request(app).get(`/api/remediations/${randomUUID()}/evidence`).auth(f.token, { type: 'bearer' })).status, 404);
 });
