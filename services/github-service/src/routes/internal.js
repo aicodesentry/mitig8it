@@ -111,6 +111,13 @@ router.post('/github/remediation/comment', routeOperation(
   'Failed to publish the remediation report comment'
 ));
 
+// Verified fix sections under the app's own inline finding comments, updated in place
+// by candidate marker.
+router.post('/github/remediation/finding-fixes', routeOperation(
+  require('../services/githubInternalOperations').publishFindingFixSections,
+  'Failed to publish the verified fix sections'
+));
+
 router.post('/github/remediation/cancel-merge', routeOperation(
   require('../services/githubInternalOperations').cancelScheduledMerge,
   'Failed to cancel the scheduled merge'

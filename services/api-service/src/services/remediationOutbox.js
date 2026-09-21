@@ -82,9 +82,17 @@ function registerDefaultHandlers({ executeClaimedJob, executeClaimedAction, work
   for (const stage of ['queued', 'snapshotting', 'retrieving', 'planning', 'generating', 'verifying']) {
     registerHandler(`remediation.${stage}`, runJob);
   }
-  for (const state of ['ready', 'cancelled', 'superseded', 'unsupported', 'inconclusive', 'failed', 'dead_letter']) {
+  for (const state of ['cancelled', 'superseded', 'unsupported', 'inconclusive', 'failed', 'dead_letter']) {
     registerHandler(`remediation.${state}`, terminal);
   }
+  // A ready job publishes its verified fixes under the finding comments. A refusal
+  // (flag off, head moved) is recorded as handled; a transport failure throws so the
+  // outbox retries with backoff and dead-letters when exhausted.
+  registerHandler('remediation.ready', async (event) => {
+    const result = await require('./remediationInlineFixes').publishInlineFixes(event.aggregate_id);
+    if (!result) return { status: 'skipped', reason: 'job_not_found' };
+    return result.published ? { status: 'executed', sections: result.sections } : { status: 'skipped', reason: result.reason };
+  });
   registerHandler('remediation.action.requested', runAction);
   registerHandler('remediation.action.reconciling', runAction);
 

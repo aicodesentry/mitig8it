@@ -89,6 +89,113 @@ async function createJob({ pullRequestId, userId, findingIds, policy }) {
   });
 }
 
+const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+
+// Automatic generation after a completed analysis. There is no requesting user, so
+// the transaction runs in the worker role with the pull request's installation as the
+// tenant and the audit row carries no user. The selection is every open, blocking
+// finding of the immutable snapshot, bounded to the policy's file limit by severity.
+// At most one automatic job exists per pull request head: an earlier one, whatever
+// its state, means this call does nothing.
+async function createAutomaticJob({ pullRequestId, analysisRunId, policy }) {
+  return scopedTransaction({ worker: true }, async (client) => {
+    const prResult = await client.query(
+      `SELECT pr.id, pr.repository_id, pr.head_sha, pr.base_sha, r.installation_id, r.is_active, i.status AS installation_status
+         FROM pull_requests pr
+         JOIN repositories r ON r.id = pr.repository_id
+         JOIN installations i ON i.id = r.installation_id
+        WHERE pr.id = $1 FOR UPDATE OF pr`, [pullRequestId]
+    );
+    const pr = prResult.rows[0];
+    if (!pr || !pr.is_active || pr.installation_status !== 'active') return { kind: 'not_found' };
+    await client.query("SELECT set_config('app.tenant_id', $1, true)", [String(pr.installation_id)]);
+    if (!pr.head_sha || !pr.base_sha) return { kind: 'unsupported', reason: 'missing_immutable_revision' };
+    const run = await client.query(
+      `SELECT id FROM analysis_runs WHERE id = $1 AND pull_request_id = $2 AND status = 'completed' AND commit_sha = $3`,
+      [analysisRunId, pullRequestId, pr.head_sha]
+    );
+    if (!run.rowCount) return { kind: 'unsupported', reason: 'no_completed_analysis_for_head' };
+    const existing = await client.query(
+      `SELECT id, state FROM remediation_jobs WHERE pull_request_id = $1 AND head_sha = $2 AND origin = 'automatic'
+        ORDER BY created_at DESC LIMIT 1`, [pullRequestId, pr.head_sha]
+    );
+    if (existing.rowCount) return { kind: 'exists', job: existing.rows[0] };
+    const snapshots = await client.query(
+      `SELECT arf.finding_id, arf.snapshot
+         FROM analysis_run_findings arf JOIN findings f ON f.id = arf.finding_id
+        WHERE arf.analysis_run_id = $1 AND f.status = 'open' AND NOT COALESCE(f.suppression_applied, false)
+          AND NOT (LOWER(COALESCE(f.severity, '')) = 'info' OR COALESCE((f.evidence_details->'extra'->>'in_test_code')::boolean, false))`,
+      [run.rows[0].id]
+    );
+    const rows = snapshots.rows.filter((row) => row.snapshot?.file_path);
+    if (!rows.length) return { kind: 'unsupported', reason: 'no_open_findings' };
+    const rank = (row) => SEVERITY_RANK[String(row.snapshot?.severity || '').toLowerCase()] ?? 4;
+    rows.sort((a, b) => rank(a) - rank(b) || String(a.snapshot.file_path).localeCompare(String(b.snapshot.file_path)));
+    const maxFiles = Number(policy.max_files || 5);
+    const files = [];
+    for (const row of rows) if (!files.includes(row.snapshot.file_path) && files.length < maxFiles) files.push(row.snapshot.file_path);
+    const selected = rows.filter((row) => files.includes(row.snapshot.file_path));
+    const ceiling = Number(policy.max_spend_usd || 0);
+    const used = await client.query(OUTSTANDING_RESERVED_SQL, [pr.installation_id, [...TERMINAL_STATES]]);
+    if (ceiling - Number(used.rows[0].amount) <= 0) return { kind: 'budget_exhausted', reserved: Number(used.rows[0].amount), ceiling };
+    const selectionHash = hash(selected.map((row) => row.finding_id).sort());
+    const insert = await client.query(
+      `INSERT INTO remediation_jobs
+       (installation_id, repository_id, pull_request_id, analysis_run_id, head_sha, base_sha,
+        selection_hash, finding_snapshot_ids, state, stage, deadline_at, policy_version, policy_manifest, created_by, origin)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued','snapshotting',NOW() + ($9::int * INTERVAL '1 minute'),$10,$11,NULL,'automatic')
+       ON CONFLICT (repository_id, pull_request_id, analysis_run_id, head_sha, selection_hash, policy_version)
+       WHERE state NOT IN ('cancelled','superseded','unsupported','inconclusive','failed','dead_letter')
+       DO UPDATE SET updated_at = remediation_jobs.updated_at
+       RETURNING *, (xmax = 0) AS created`,
+      [pr.installation_id, pr.repository_id, pr.id, run.rows[0].id, pr.head_sha, pr.base_sha, selectionHash, selected.map((row) => row.finding_id),
+        policy.max_runtime_minutes, policy.version, JSON.stringify(policy)]
+    );
+    const job = insert.rows[0];
+    // The same selection already queued by a user is that user's job, not a new one.
+    if (!job.created) return { kind: 'exists', job };
+    await appendEvent(client, job, 'remediation.queued', { stage: 'snapshotting', origin: 'automatic' });
+    await audit(client, null, job.repository_id, 'remediation.requested', 'remediation_job', job.id,
+      { pull_request_id: pr.id, head_sha: job.head_sha, origin: 'automatic', selected_findings: selected.map((r) => r.finding_id) });
+    return { kind: 'ok', job, created: true, selected: selected.map((row) => row.finding_id) };
+  });
+}
+
+// Everything the inline fix publication needs, in worker scope: a ready job is
+// system-owned work with no requesting user.
+async function jobPublishContext(jobId) {
+  return scopedTransaction({ worker: true }, async (client) => {
+    const result = await client.query(
+      `SELECT j.*, r.full_name AS repository_full_name, r.is_active AS repository_active,
+              pr.pr_number, pr.head_sha AS current_head_sha, i.status AS installation_status,
+              u.github_username AS creator_login
+         FROM remediation_jobs j
+         JOIN repositories r ON r.id=j.repository_id
+         JOIN pull_requests pr ON pr.id=j.pull_request_id
+         JOIN installations i ON i.id=j.installation_id
+         LEFT JOIN users u ON u.id=j.created_by
+        WHERE j.id=$1`, [jobId]
+    );
+    const job = result.rows[0];
+    if (!job) return null;
+    const candidates = await client.query(
+      `SELECT id, finding_snapshot_ids, artifact_digest, context_manifest_digest, file_manifest, preview, verification_level, rejection_reason
+       FROM remediation_candidates WHERE job_id=$1 ORDER BY candidate_version`, [jobId]
+    );
+    const verification = await client.query(`SELECT outcome, evidence_digest, coverage_gaps, limitations, candidate_tree_sha FROM verification_runs WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1`, [jobId]);
+    const findings = await findingSnapshots(client, job);
+    return { job, candidates: candidates.rows, verification: verification.rows[0] || null,
+      manifestDigest: manifestDigestFor(job, candidates.rows), findings };
+  });
+}
+
+async function recordInlineFixesPublished(job, { headSha }) {
+  await scopedTransaction({ tenantId: job.installation_id, worker: true }, (client) => client.query(
+    `UPDATE remediation_jobs SET inline_fixes_published_at=NOW(), inline_fixes_head_sha=$2, updated_at=NOW() WHERE id=$1`,
+    [job.id, headSha]
+  ));
+}
+
 async function appendEvent(client, job, eventType, payload, sequenceOverride) {
   const sequence = Number(sequenceOverride || job.state_version || 1);
   await client.query(
@@ -162,6 +269,7 @@ async function findingSnapshots(client, job) {
     id: row.finding_id, title: row.snapshot?.title || null, file_path: row.snapshot?.file_path || null,
     line_start: row.snapshot?.line_start ?? null, line_end: row.snapshot?.line_end ?? null,
     severity: row.snapshot?.severity || null, rule_id: row.snapshot?.rule_id || null,
+    fingerprint: row.snapshot?.fingerprint || null,
   }));
 }
 
@@ -184,16 +292,17 @@ async function getPreview(jobId, userId) {
 // Claiming takes a lease and a fresh fencing token. It deliberately does not
 // consume an attempt: an attempt is consumed when a stage really fails, so an
 // expired lease reclaimed by the reconciler costs no retry budget.
+// An automatic job has no creator; the left join keeps it claimable with a null login.
 const CLAIM_SQL = `WITH candidate AS (
-         SELECT id FROM remediation_jobs
+         SELECT id, created_by FROM remediation_jobs
           WHERE state = ANY($1::text[]) AND next_attempt_at <= NOW()
             AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
             AND ($4::uuid IS NULL OR id = $4::uuid)
           ORDER BY next_attempt_at, created_at FOR UPDATE SKIP LOCKED LIMIT 1
        ) UPDATE remediation_jobs j SET lease_owner=$2, lease_expires_at=NOW()+($3::int * INTERVAL '1 second'),
           fencing_token=j.fencing_token+1, updated_at=NOW()
-        FROM candidate, repositories r, pull_requests pr, users u
-        WHERE j.id=candidate.id AND r.id=j.repository_id AND pr.id=j.pull_request_id AND u.id=j.created_by
+        FROM candidate LEFT JOIN users u ON u.id = candidate.created_by, repositories r, pull_requests pr
+        WHERE j.id=candidate.id AND r.id=j.repository_id AND pr.id=j.pull_request_id
         RETURNING j.*, r.full_name AS repository_full_name, pr.pr_number, u.github_username AS creator_login`;
 
 async function claimJob(workerId, leaseSeconds, jobId) {
@@ -1229,4 +1338,5 @@ module.exports = {
   getCandidateForFeedback,
   manifestDigestFor, selectCandidates, markCandidatesAfterApply, appliedReportForAction,
   recordResidualComment, listActionsNeedingResidualComment,
+  createAutomaticJob, jobPublishContext, recordInlineFixesPublished,
 };

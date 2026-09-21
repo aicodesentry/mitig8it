@@ -70,6 +70,10 @@ function capabilities() {
     publish: policy.enabled && policy.publish_enabled && policy.repair_service_configured,
     apply: policy.enabled && policy.apply_enabled && policy.github_write_configured,
     merge: policy.enabled && policy.merge_enabled && policy.github_write_configured,
+    // Generation after analysis is only useful when the result can be published under
+    // the findings, so it requires both flags and both dependencies.
+    auto_generate: policy.enabled && policy.generate_enabled && policy.publish_enabled
+      && policy.repair_service_configured && policy.github_write_configured,
   };
 }
 
@@ -87,6 +91,8 @@ function capabilityReasons() {
     publish: reason(policy.publish_enabled, policy.repair_service_configured),
     apply: reason(policy.apply_enabled, policy.github_write_configured),
     merge: reason(policy.merge_enabled, policy.github_write_configured),
+    auto_generate: reason(policy.generate_enabled && policy.publish_enabled,
+      policy.repair_service_configured && policy.github_write_configured),
   };
 }
 
