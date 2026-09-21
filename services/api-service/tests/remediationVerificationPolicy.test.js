@@ -77,6 +77,23 @@ describe('remediation verification policy', () => {
     expect(policy.getPolicy().run_repository_tests).toBe(true);
   });
 
+  test('a declared allowed-families list is passed through, even a narrower one', () => {
+    expect(policy.getPolicy().allowed_rule_families).toEqual(['sql_parameterization']);
+    expect(policy.getPolicy().repair_service_configured).toBe(true);
+  });
+
+  test('an absent allowed-families list takes the service default, which includes the Python families', () => {
+    delete process.env.REMEDIATION_ALLOWED_RULE_FAMILIES_JSON;
+    const current = policy.getPolicy();
+    expect(current.allowed_rule_families).toEqual([
+      'sql_parameterization', 'command_arguments', 'path_containment', 'hardcoded_credential', 'code_injection_eval',
+    ]);
+    expect(current.allowed_rule_families).toEqual([...policy.DEFAULT_POLICY.allowed_rule_families]);
+    expect(current.repair_service_configured).toBe(true);
+    process.env.REMEDIATION_ALLOWED_RULE_FAMILIES_JSON = 'not json';
+    expect(policy.getPolicy().allowed_rule_families).toEqual([...policy.DEFAULT_POLICY.allowed_rule_families]);
+  });
+
   test('the repair request policy carries both generated-test fields', () => {
     const { repairPolicy } = require('../src/services/remediationWorkflow');
     const selected = repairPolicy({ ...policy.DEFAULT_POLICY, ...policy.getPolicy() });

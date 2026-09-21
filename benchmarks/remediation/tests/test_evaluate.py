@@ -37,7 +37,7 @@ class RemediationHarnessTests(unittest.TestCase):
     def test_fixture_corpus_has_isolated_repositories_and_supported_families(self):
         fixtures = load_fixtures()
         families = {fixture["family"] for _, fixture in fixtures if fixture["kind"] == "supported"}
-        self.assertEqual(families, {"sql_parameterization", "command_arguments", "path_containment"})
+        self.assertEqual(families, {"sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval"})
         self.assertEqual(len({fixture["repository_id"] for _, fixture in fixtures}), len(fixtures))
 
     def test_repository_leakage_is_rejected(self):
@@ -55,8 +55,8 @@ class RemediationHarnessTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
-        self.assertEqual(report["summary"]["eligible_supported_cases"], 4)
-        self.assertEqual(report["summary"]["negative_adversarial_cases"], 3)
+        self.assertEqual(report["summary"]["eligible_supported_cases"], 7)
+        self.assertEqual(report["summary"]["negative_adversarial_cases"], 4)
         self.assertEqual(report["summary"]["failures"], [])
 
     def test_reference_candidate_must_match_the_expected_patch_not_only_claim_ready(self):
@@ -115,6 +115,22 @@ class EngineLocalPipelineTests(unittest.TestCase):
         self.assertEqual(result["state"], "unsupported")
         self.assertEqual(result["candidates"], [])
         self.assertNotEqual(result["verification_level"], "independent_sandbox")
+
+    def test_python_fixtures_reach_development_unverified_candidates(self):
+        for fixture_id in ("python-sql-sqlite-001", "python-hardcoded-secret-001", "python-eval-001"):
+            directory, fixture = self.fixtures[fixture_id]
+            result = self._run(fixture_id)
+            self.assertEqual(result["state"], "ready", (fixture_id, result.get("reason")))
+            self.assertEqual(result["verification_level"], "development_unverified")
+            self.assertTrue(matches_reference_patch(directory, fixture, result), fixture_id)
+        secret = self._run("python-hardcoded-secret-001")
+        self.assertTrue(any("reads API_KEY from the environment" in item for item in secret["limitations"]), secret["limitations"])
+
+    def test_python_ambiguous_query_fixture_is_skipped_as_ambiguous_query_api(self):
+        result = self._run("python-ambiguous-sql-001")
+        self.assertEqual(result["state"], "unsupported")
+        self.assertEqual(result["reason"], "ambiguous_query_api")
+        self.assertEqual(result["candidates"], [])
 
     def test_engine_live_requires_a_configured_provider(self):
         saved = {name: os.environ.pop(name, None) for name in ("REPAIR_LLM_BASE_URL", "REPAIR_LLM_API_KEY", "REPAIR_LLM_MODEL")}

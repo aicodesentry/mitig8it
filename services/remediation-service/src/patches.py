@@ -5,6 +5,7 @@ import base64
 import json
 import re
 import subprocess
+import sys
 import tempfile
 import os
 import shutil
@@ -16,7 +17,8 @@ from .digests import content_sha256, digest_json, git_blob_sha1
 from .models import FilePatch, RepairRequest
 from .retrieval import Snapshot, SnapshotError
 from .retrieval.snapshot import validate_repo_path
-from .sandbox.harness import HARNESS_PATH, is_harness_path
+from .families import PYTHON, language_of_path
+from .sandbox.harness import HARNESS_PATH, PYTHON_HARNESS_PATH, is_harness_path
 
 
 class PatchPolicyError(ValueError):
@@ -44,12 +46,16 @@ NODE_BUILTIN_MODULES = frozenset(
     }
 )
 
-SYNTAX_CHECKED_SUFFIXES = {".js", ".cjs", ".mjs"}
+NODE_SYNTAX_SUFFIXES = {".js", ".cjs", ".mjs"}
+PYTHON_SYNTAX_SUFFIXES = {".py"}
+SYNTAX_CHECKED_SUFFIXES = NODE_SYNTAX_SUFFIXES | PYTHON_SYNTAX_SUFFIXES
+APPLICATION_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".py"}
 
 # Agent-generated regression tests live in a dedicated directory that no repository file may
 # occupy, so a generated reproducer can never overwrite or shadow application or test code.
 GENERATED_TEST_DIRECTORY = ".mitig8it/regression"
-GENERATED_TEST_SUFFIXES = (".test.js", ".test.cjs", ".test.mjs")
+GENERATED_TEST_SUFFIXES = (".test.js", ".test.cjs", ".test.mjs", ".test.py")
+PYTHON_GENERATED_TEST_SUFFIX = ".test.py"
 MAX_GENERATED_TEST_BYTES = 64_000
 MAX_GENERATED_TESTS = 20
 
@@ -57,6 +63,12 @@ _REQUIRE_RE = re.compile(r"""\brequire\s*\(\s*['"]([^'"\n]{1,200})['"]\s*\)""")
 _IMPORT_FROM_RE = re.compile(r"""\b(?:import|export)\b[^;\n]*?\bfrom\s*['"]([^'"\n]{1,200})['"]""")
 _BARE_IMPORT_RE = re.compile(r"""\bimport\s*['"]([^'"\n]{1,200})['"]""")
 _DYNAMIC_IMPORT_RE = re.compile(r"""\bimport\s*\(\s*['"]([^'"\n]{1,200})['"]\s*\)""")
+_PYTHON_IMPORT_RE = re.compile(r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*))", re.MULTILINE)
+_PYTHON_RELATIVE_IMPORT_RE = re.compile(r"^[ \t]*from[ \t]+\.", re.MULTILINE)
+# Introduced reads of the process environment, so a candidate that moves a secret out of the
+# source names the variable a deployment has to provide.
+_PYTHON_ENV_READ_RE = re.compile(r"""\bos\.(?:environ\s*\[\s*|environ\.get\s*\(\s*|getenv\s*\(\s*)['"]([A-Za-z_][A-Za-z0-9_]{0,120})['"]""")
+PYTHON_STDLIB_MODULES = frozenset(getattr(sys, "stdlib_module_names", ()))
 
 
 @dataclass(frozen=True)
@@ -138,6 +150,70 @@ def module_specifiers(source: str) -> set[str]:
     return found
 
 
+def python_module_specifiers(source: str) -> set[str]:
+    """Extracts the dotted module names a Python file imports; relative imports are left out."""
+    found: set[str] = set()
+    for match in _PYTHON_IMPORT_RE.finditer(source):
+        if match.group(1):
+            found.add(match.group(1))
+        else:
+            found.update(part.strip() for part in match.group(2).split(",") if part.strip())
+    return found
+
+
+def python_top_level(specifier: str) -> str:
+    return specifier.split(".", 1)[0]
+
+
+def python_declared_dependencies(snapshot: Snapshot) -> set[str]:
+    """Distribution names a requirements file or pyproject declares, lower-cased with `-` as `_`."""
+    declared: set[str] = set()
+    for path in snapshot.paths:
+        name = PurePosixPath(path).name.lower()
+        if name.startswith("requirements") and name.endswith(".txt"):
+            for line in snapshot.full_content(path).splitlines():
+                line = line.split("#", 1)[0].strip()
+                match = re.match(r"([A-Za-z0-9][A-Za-z0-9._-]*)", line)
+                if match:
+                    declared.add(match.group(1).lower().replace("-", "_"))
+        elif name in {"pyproject.toml", "setup.cfg", "setup.py", "pipfile"}:
+            for match in re.finditer(r"""['"]([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:[<>=!~;\[ ]|['"])""", snapshot.full_content(path)):
+                declared.add(match.group(1).lower().replace("-", "_"))
+    return declared
+
+
+def python_local_modules(snapshot: Snapshot) -> set[str]:
+    """Top-level names the snapshot itself provides: a sibling `x.py` or package directory `x/`."""
+    names: set[str] = set()
+    for path in snapshot.paths:
+        parts = PurePosixPath(path).parts
+        if parts[-1].endswith(".py"):
+            names.add(parts[-1][:-3])
+            names.update(parts[:-1])
+    return names
+
+
+def _reject_missing_python_dependencies(
+    path: str, original: str, replacement: str, snapshot: Snapshot, *, allow_declared: bool = True
+) -> None:
+    introduced = {python_top_level(item) for item in python_module_specifiers(replacement) - python_module_specifiers(original)}
+    if not introduced:
+        return
+    local = python_local_modules(snapshot)
+    allowed = python_declared_dependencies(snapshot) if allow_declared else set()
+    for name in sorted(introduced):
+        if name in PYTHON_STDLIB_MODULES or name in local or name == "harness" or name.lower() in allowed:
+            continue
+        raise PatchPolicyError(
+            f"missing_dependency:{name}",
+            f"{name!r} is not in the Python standard library, no module of that name is in the snapshot, "
+            f"and no requirements file or pyproject in the snapshot declares it. Nothing is installed in "
+            f"the sandbox, so a regression test must import only the standard library, repository modules, "
+            f"and the service harness at {PYTHON_HARNESS_PATH} (import harness as h). "
+            + PYTHON_BEHAVIOR_TEST_GUIDANCE,
+        )
+
+
 def package_root(specifier: str) -> str | None:
     """Returns the installable package name, or None for a relative/absolute path import."""
     if not specifier or specifier.startswith((".", "/")):
@@ -187,6 +263,9 @@ def _reject_missing_dependencies(
     generated regression test may not, because the sandbox installs nothing, so for tests only
     Node built-ins, relative paths, and the service harness resolve.
     """
+    if language_of_path(path) == PYTHON:
+        _reject_missing_python_dependencies(path, original, replacement, snapshot, allow_declared=allow_declared)
+        return
     introduced = {
         root
         for root in (package_root(item) for item in module_specifiers(replacement) - module_specifiers(original))
@@ -216,8 +295,10 @@ def _syntax_check(path: str, replacement: str) -> str | None:
     recorded as an explicit limitation rather than treated as a passing check.
     """
     suffix = PurePosixPath(path).suffix.lower()
-    if suffix not in SYNTAX_CHECKED_SUFFIXES:
-        return f"syntax check skipped for {path}: only .js, .cjs, and .mjs are parsed by node --check"
+    if suffix in PYTHON_SYNTAX_SUFFIXES:
+        return _python_syntax_check(path, replacement)
+    if suffix not in NODE_SYNTAX_SUFFIXES:
+        return f"syntax check skipped for {path}: only .js, .cjs, .mjs, and .py are parsed"
     with tempfile.TemporaryDirectory(prefix="mitig8it-syntax-") as directory:
         target = Path(directory) / f"candidate{suffix}"
         target.write_text(replacement, encoding="utf-8")
@@ -251,6 +332,36 @@ def _syntax_check(path: str, replacement: str) -> str | None:
     return None
 
 
+def _python_syntax_check(path: str, replacement: str) -> str | None:
+    """Runs `python -m py_compile` on a candidate Python file. Returns a limitation, or None."""
+    with tempfile.TemporaryDirectory(prefix="mitig8it-syntax-") as directory:
+        target = Path(directory) / "candidate.py"
+        target.write_text(replacement, encoding="utf-8")
+        try:
+            completed = subprocess.run(  # noqa: S603 - fixed argv, no shell, temporary file only.
+                [sys.executable, "-m", "py_compile", str(target)],
+                cwd=directory,
+                env={"PATH": os.environ.get("PATH", ""), "PYTHONDONTWRITEBYTECODE": "1", "NO_COLOR": "1"},
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return f"syntax check unavailable for {path}: no usable python toolchain"
+        if completed.returncode != 0:
+            diagnostic = (completed.stderr or completed.stdout or "").replace(directory, "").replace("/candidate.py", f" {path}")
+            raise PatchPolicyError(
+                f"candidate_syntax_invalid:{path}",
+                f"The patched {path} does not compile under `python -m py_compile`. Python reports:\n"
+                f"{diagnostic.strip()[:MAX_SYNTAX_DIAGNOSTIC_CHARS]}\n"
+                "The line number is in the patched file. Re-read that range and send hunks whose "
+                "replacement_lines keep the indentation consistent.",
+            )
+    return None
+
+
 def _reject_service_path(path: str) -> None:
     """Rejects a proposal that targets the service-owned `.mitig8it/` tree.
 
@@ -260,10 +371,10 @@ def _reject_service_path(path: str) -> None:
     normalized = path.strip().strip("/")
     if is_harness_path(normalized):
         raise PatchPolicyError(
-            f"harness_path_protected:{HARNESS_PATH}",
-            f"{HARNESS_PATH} is the service test harness and is materialized by the sandbox; a "
-            "proposal may not write it. Change only application files and require the harness "
-            "from a regression test with require('../harness').",
+            f"harness_path_protected:{normalized}",
+            f"{normalized} is the service test harness and is materialized by the sandbox; a "
+            "proposal may not write it. Change only application files and load the harness "
+            "from a regression test with require('../harness') or import harness as h.",
         )
     if normalized == ".mitig8it" or normalized.startswith(".mitig8it/"):
         raise PatchPolicyError(
@@ -296,6 +407,28 @@ BEHAVIOR_TEST_GUIDANCE = (
     "unset), or h.fs.reads (a traversal payload records no read at all and every other read stays under the base directory). Wrap the body in "
     "h.run(async () => { ... }); it exits non-zero on the first failed h.assert."
 )
+
+
+PYTHON_BEHAVIOR_TEST_GUIDANCE = (
+    "Plain python3 only: no pytest, flask test client, or requests. Use the service harness: "
+    "import harness as h; m = h.load('<repository path of the changed file>', env={...}); it fakes "
+    "flask, sqlite3, psycopg, sqlalchemy, subprocess, os.system, os.environ, and open() and records "
+    "every call. Then h.invoke(m.app, 'GET', '/route/<id>', params=..., query=..., json=...) or "
+    "h.call(m.function, payload), and assert with h.assert_param(h.db.queries[0], payload), "
+    "h.assert_argv(h.subprocess.calls[0], payload), h.assert_inside(h.fs.reads, base, payload=payload), "
+    "h.assert_equal(m.NAME, value) with h.assert_env_read('NAME') and h.assert_not_in_source(m, literal), "
+    "or h.assert_no_commands(). Wrap the body in h.run(body); it exits non-zero on the first failed assertion."
+)
+_PYTHON_OPEN_RE = re.compile(r"\bopen\s*\(|\bread_text\s*\(|\bread_bytes\s*\(")
+_PYTHON_HARNESS_LOAD_RE = re.compile(r"""\b(?:h|harness)\.load\s*\(\s*['"]""")
+
+
+def _python_requires_repository_module(content: str, snapshot: Snapshot) -> bool:
+    """True when the test loads a repository module through the harness or imports one."""
+    if _PYTHON_HARNESS_LOAD_RE.search(content) or _PYTHON_RELATIVE_IMPORT_RE.search(content):
+        return True
+    local = python_local_modules(snapshot)
+    return any(python_top_level(item) in local for item in python_module_specifiers(content))
 
 
 def _requires_repository_module(content: str) -> bool:
@@ -355,9 +488,9 @@ def build_generated_tests(
         claimed.add(finding_id)
         if is_harness_path(str(spec["path"]).strip().strip("/")):
             raise PatchPolicyError(
-                f"harness_path_protected:{HARNESS_PATH}",
-                f"{HARNESS_PATH} is the service test harness; a regression test may require it but "
-                f"never replace it. Name the test {GENERATED_TEST_DIRECTORY}/<finding-id>.test.js.",
+                f"harness_path_protected:{str(spec['path']).strip().strip('/')}",
+                "The service test harness may be loaded by a regression test but never replaced. "
+                f"Name the test {GENERATED_TEST_DIRECTORY}/<finding-id>.test.js or .test.py.",
             )
         try:
             path = validate_repo_path(str(spec["path"]))
@@ -367,12 +500,12 @@ def build_generated_tests(
         if pure.parent.as_posix() != GENERATED_TEST_DIRECTORY:
             raise PatchPolicyError(
                 f"regression_test_outside_generated_directory:{path}",
-                f"The regression test path must be {GENERATED_TEST_DIRECTORY}/<name>.test.js.",
+                f"The regression test path must be {GENERATED_TEST_DIRECTORY}/<name>.test.js or .test.py.",
             )
         if not pure.name.endswith(GENERATED_TEST_SUFFIXES) or pure.name.startswith("."):
             raise PatchPolicyError(
                 f"regression_test_name_invalid:{path}",
-                "The regression test file name must end in .test.js, .test.cjs, or .test.mjs.",
+                "The regression test file name must end in .test.js, .test.cjs, .test.mjs, or .test.py.",
             )
         if path in snapshot.paths:
             raise PatchPolicyError(f"regression_test_overwrites_repository_file:{path}")
@@ -386,7 +519,14 @@ def build_generated_tests(
             raise PatchPolicyError("regression_test_content_required")
         if len(content.encode("utf-8")) > MAX_GENERATED_TEST_BYTES:
             raise PatchPolicyError(f"regression_test_too_large:{path}")
-        if _FS_READ_RE.search(content) and not _requires_repository_module(content):
+        if pure.name.endswith(PYTHON_GENERATED_TEST_SUFFIX):
+            if _PYTHON_OPEN_RE.search(content) and not _python_requires_repository_module(content, snapshot):
+                raise PatchPolicyError(
+                    f"regression_test_reads_source_as_text:{path}",
+                    "The test reads a file as text and never loads a repository module, so it proves "
+                    "nothing about behavior. " + PYTHON_BEHAVIOR_TEST_GUIDANCE,
+                )
+        elif _FS_READ_RE.search(content) and not _requires_repository_module(content):
             raise PatchPolicyError(
                 f"regression_test_reads_source_as_text:{path}",
                 "The test reads a file as text and never requires a repository module, so it proves "
@@ -429,6 +569,42 @@ load().then(() => { report({ mitig8it_load: 'ok' }); process.exit(0); }, (error)
 """
 
 
+# The Python loader runs the module the way `import` would (`__name__` is not `__main__`, so a
+# `if __name__ == "__main__":` server start does not fire). A missing third-party import is a
+# limitation, an environment variable the module reads at import time and the check did not
+# set is a limitation naming the variable, and any other exception is a rejection.
+_PYTHON_LOAD_SCRIPT = """
+import json, os, runpy, sys, traceback
+target = sys.argv[1]
+report = lambda value: sys.stdout.write("\\n" + json.dumps(value) + "\\n")
+sys.path.insert(0, os.path.dirname(os.path.abspath(target)))
+try:
+    runpy.run_path(target, run_name="mitig8it_load_check")
+except ImportError as error:
+    report({"mitig8it_load": "unavailable", "code": type(error).__name__, "message": str(error)[:400]})
+    sys.exit(0)
+except KeyError as error:
+    frames = traceback.extract_tb(sys.exc_info()[2])
+    last = frames[-1] if frames else None
+    if last is not None and last.name == "__getitem__" and (last.filename.endswith("os.py") or last.filename == "<frozen os>"):
+        report({"mitig8it_load": "unavailable", "code": "environment_variable_missing", "message": "environment variable %r is not set" % (error.args[0] if error.args else "")})
+        sys.exit(0)
+    report({"mitig8it_load": "error", "name": "KeyError", "message": str(error)[:400]})
+    sys.exit(1)
+except SystemExit as error:
+    if not error.code:
+        report({"mitig8it_load": "ok"})
+        sys.exit(0)
+    report({"mitig8it_load": "error", "name": "SystemExit", "message": "the module exited with %r at import time" % (error.code,)})
+    sys.exit(1)
+except BaseException as error:
+    report({"mitig8it_load": "error", "name": type(error).__name__, "message": str(error)[:400]})
+    sys.exit(1)
+report({"mitig8it_load": "ok"})
+sys.exit(0)
+"""
+
+
 def _materialize_snapshot(root: Path, snapshot: Snapshot, replacements: dict[str, str]) -> None:
     for path in snapshot.paths:
         target = root.joinpath(*PurePosixPath(path).parts)
@@ -454,16 +630,28 @@ def _load_report(output: str) -> dict[str, Any] | None:
 def _load_module(root: Path, path: str) -> dict[str, Any]:
     """Loads one file from a materialized tree. Returns `{state: ok|unavailable|error|timeout}`."""
     target = root.joinpath(*PurePosixPath(path).parts)
+    python = language_of_path(path) == PYTHON
+    argv = [sys.executable, "-c", _PYTHON_LOAD_SCRIPT, str(target)] if python else ["node", "-e", _LOAD_SCRIPT, str(target)]
+    # A Python module that reads a literal environment name at import time gets a placeholder,
+    # so the check reaches the imports and identifiers after it instead of stopping at KeyError.
+    placeholders = (
+        {name: "mitig8it-load-check" for name in _PYTHON_ENV_READ_RE.findall(target.read_text(encoding="utf-8", errors="replace"))}
+        if python
+        else {}
+    )
     try:
         completed = subprocess.run(  # noqa: S603 - fixed argv, no shell, temporary tree only.
-            ["node", "-e", _LOAD_SCRIPT, str(target)],
+            argv,
             cwd=root,
             env={
+                **placeholders,
                 "PATH": os.environ.get("PATH", ""),
                 "HOME": str(root.parent / "no-home"),
                 "CI": "true",
                 "NO_COLOR": "1",
                 "NODE_OPTIONS": "--disable-proto=throw",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONSAFEPATH": "1",
             },
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -474,7 +662,7 @@ def _load_module(root: Path, path: str) -> dict[str, Any]:
     except subprocess.TimeoutExpired:
         return {"state": "timeout", "message": f"the module did not finish loading within {LOAD_CHECK_TIMEOUT_SECONDS} seconds"}
     except (OSError, subprocess.SubprocessError):
-        return {"state": "toolchain", "message": "no usable node toolchain"}
+        return {"state": "toolchain", "message": f"no usable {'python' if python else 'node'} toolchain"}
     report = _load_report(completed.stdout or "")
     scrub = str(root.parent)
     if report is None:
@@ -499,9 +687,12 @@ def _load_checks(snapshot: Snapshot, replacements: dict[str, str]) -> list[str]:
     targets = [path for path in sorted(replacements) if PurePosixPath(path).suffix.lower() in SYNTAX_CHECKED_SUFFIXES]
     if not targets:
         return []
-    if shutil.which("node") is None:
-        return [f"runtime load check unavailable for {path}: no usable node toolchain" for path in targets]
     limitations: list[str] = []
+    if shutil.which("node") is None:
+        limitations.extend(f"runtime load check unavailable for {path}: no usable node toolchain" for path in targets if language_of_path(path) != PYTHON)
+        targets = [path for path in targets if language_of_path(path) == PYTHON]
+        if not targets:
+            return limitations
     with tempfile.TemporaryDirectory(prefix="mitig8it-load-") as directory:
         candidate_root = Path(directory) / "candidate"
         _materialize_snapshot(candidate_root, snapshot, replacements)
@@ -522,9 +713,10 @@ def _load_checks(snapshot: Snapshot, replacements: dict[str, str]) -> list[str]:
                         f"either ({original['message'][:MAX_LOAD_LIMITATION_CHARS]})"
                     )
                     continue
+                runtime = "Python" if language_of_path(path) == PYTHON else "Node"
                 raise PatchPolicyError(
                     f"candidate_load_failed:{path}",
-                    f"The patched {path} parses but throws when loaded. Node reports: "
+                    f"The patched {path} parses but raises when loaded. {runtime} reports: "
                     f"{outcome.get('name', 'Error')}: {outcome['message'][:MAX_LOAD_DIAGNOSTIC_CHARS]}\n"
                     "Every identifier a hunk uses must be imported or defined by the same proposal: "
                     "add the require or import in another hunk of the same propose_patch call.",
@@ -717,6 +909,22 @@ def apply_hunks(snapshot: Snapshot, proposed_changes: list[dict[str, Any]]) -> d
     return contents
 
 
+def environment_notes(path: str, original: str, replacement: str) -> list[str]:
+    """One note per environment variable a Python candidate newly reads.
+
+    A hardcoded-credential repair moves the value out of the source; the deployment now has to
+    supply it. The note is recorded with the candidate's limitations so a reviewer sees which
+    variables the patched module expects before it is applied.
+    """
+    if language_of_path(path) != PYTHON:
+        return []
+    before = set(_PYTHON_ENV_READ_RE.findall(original))
+    return [
+        f"{path} now reads {name} from the environment; the deployment must provide it"
+        for name in sorted(set(_PYTHON_ENV_READ_RE.findall(replacement)) - before)
+    ]
+
+
 def build_patch_bundle(
     request: RepairRequest,
     snapshot: Snapshot,
@@ -751,7 +959,7 @@ def _build_bundle_from_contents(
         original = snapshot.full_content(path)
         if _path_forbidden(path, request):
             raise PatchPolicyError(f"protected_path:{path}")
-        if PurePosixPath(path).suffix.lower() not in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
+        if PurePosixPath(path).suffix.lower() not in APPLICATION_SUFFIXES:
             raise PatchPolicyError(f"unsupported_application_file:{path}")
 
         base_digest = content_sha256(original)
@@ -791,6 +999,7 @@ def _build_bundle_from_contents(
         limitation = _syntax_check(path, replacement)
         if limitation:
             limitations.append(limitation)
+        limitations.extend(environment_notes(path, original, replacement))
         patches.append(
             FilePatch(
                 path=path,

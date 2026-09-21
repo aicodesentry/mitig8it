@@ -75,3 +75,23 @@ def group_findings(findings: list[FindingSnapshot]) -> list[list[FindingSnapshot
     for index, finding in enumerate(findings):
         components.setdefault(root(index), []).append(finding)
     return [components[key] for key in sorted(components)]
+
+
+def split_group_by_language(group: list[FindingSnapshot]) -> list[list[FindingSnapshot]]:
+    """Splits one connected group into one sub-group per toolchain, in first-appearance order.
+
+    A group is verified by one sandbox run of one language's harness, so a JavaScript finding
+    and a Python finding that happen to share a trace path still get separate agent loops. A
+    group whose findings all share a language is returned unchanged.
+    """
+    from .families import language_of_path
+
+    by_language: dict[str | None, list[FindingSnapshot]] = {}
+    for finding in group:
+        by_language.setdefault(language_of_path(finding.affected_path), []).append(finding)
+    return list(by_language.values())
+
+
+def group_findings_by_language(findings: list[FindingSnapshot]) -> list[list[FindingSnapshot]]:
+    """Connected components over shared paths, each further split by the affected file's language."""
+    return [sub_group for group in group_findings(findings) for sub_group in split_group_by_language(group)]

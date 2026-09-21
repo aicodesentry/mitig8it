@@ -99,6 +99,19 @@ const result = spawnSync(command, argv.slice(1), { cwd: process.cwd(), stdio: 'i
 process.exit(result.status === 0 ? 0 : 1);
 """
 
+PYTHON_GENERATED_TEST_TEMPLATE = """# Generated regression reproducer for %(fixture_id)s.
+# It must exit non-zero on the original tree and zero on the repaired tree. It runs the
+# fixture's audited reproducer from its own file so a development run exercises the
+# generated-test path without inventing a second, unreviewed reproducer.
+import subprocess
+import sys
+
+argv = %(argv)s
+command = sys.executable if argv[0] in ("python3", "python") else argv[0]
+result = subprocess.run([command, *argv[1:]], cwd=".")
+raise SystemExit(0 if result.returncode == 0 else 1)
+"""
+
 
 def fixture_regression_test(fixture: dict[str, Any], finding_id: str, suffix: str = "") -> dict[str, str]:
     """The generated regression test a development or benchmark run proposes for one finding.
@@ -115,10 +128,12 @@ def fixture_regression_test(fixture: dict[str, Any], finding_id: str, suffix: st
     if not isinstance(exploit, dict) or not isinstance(exploit.get("argv"), list) or not exploit["argv"]:
         raise FixtureLoadError(f"{fixture.get('id')}: an exploit check argv is required to generate a regression test")
     name = re.sub(r"[^A-Za-z0-9._-]", "-", f"{fixture.get('id')}-{finding_id}{suffix}").strip("-.") or "finding"
+    python = str(fixture.get("source") or "").endswith(".py")
+    template = PYTHON_GENERATED_TEST_TEMPLATE if python else GENERATED_TEST_TEMPLATE
     return {
         "finding_id": str(finding_id),
-        "path": f"{GENERATED_TEST_DIRECTORY}/{name}.test.js",
-        "content": GENERATED_TEST_TEMPLATE
+        "path": f"{GENERATED_TEST_DIRECTORY}/{name}.test.{'py' if python else 'js'}",
+        "content": template
         % {
             "fixture_id": json.dumps(str(fixture.get("id"))),
             "argv": json.dumps([str(part) for part in exploit["argv"]]),
