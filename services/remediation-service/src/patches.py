@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import builtins
 import difflib
 import base64
 import json
@@ -101,12 +103,60 @@ class GeneratedTest:
 
 
 @dataclass(frozen=True)
+class LocatedHunk:
+    """One line-range replacement located in the exact snapshot.
+
+    `finding_id` is the finding the proposer says the hunk fixes, or None when the caller did not
+    tag it; the engine attributes an untagged hunk by proximity to the group's finding ranges.
+    Lines are stored without line endings, so two hunks that make the same change at the same
+    place compare equal whatever the caller's line-ending convention.
+    """
+
+    path: str
+    start_line: int
+    end_line: int
+    original_lines: tuple[str, ...]
+    replacement_lines: tuple[str, ...]
+    finding_id: str | None = None
+
+    @property
+    def key(self) -> tuple[str, int, int, tuple[str, ...]]:
+        """Content and location: two hunks with the same key are the same change."""
+        return (self.path, self.start_line, self.end_line, self.replacement_lines)
+
+    def overlaps(self, other: "LocatedHunk") -> bool:
+        return self.path == other.path and self.start_line <= other.end_line and other.start_line <= self.end_line
+
+    def spec(self) -> dict[str, Any]:
+        """The hunk as a `propose_patch` change, so a subset of hunks can be rebuilt into a bundle."""
+        change: dict[str, Any] = {
+            "path": self.path,
+            "start_line": self.start_line,
+            "original_lines": list(self.original_lines),
+            "replacement_lines": list(self.replacement_lines),
+        }
+        if self.finding_id is not None:
+            change["finding_id"] = self.finding_id
+        return change
+
+    def manifest_entry(self) -> dict[str, Any]:
+        return {"path": self.path, "start_line": self.start_line, "end_line": self.end_line, "finding_id": self.finding_id}
+
+
+@dataclass(frozen=True)
 class PatchBundle:
     patches: tuple[FilePatch, ...]
     artifact_digest: str
     changed_lines: int
     limitations: tuple[str, ...] = ()
     generated_tests: tuple[GeneratedTest, ...] = ()
+    # The located hunks the bundle was built from, in proposal order. A bundle built from whole
+    # file contents (a combined batch of untracked bundles) carries none.
+    hunks: tuple[LocatedHunk, ...] = ()
+
+    @property
+    def hunk_manifest(self) -> list[dict[str, Any]]:
+        return [hunk.manifest_entry() for hunk in self.hunks]
 
     @property
     def file_manifest(self) -> list[dict[str, Any]]:
@@ -360,6 +410,165 @@ def _python_syntax_check(path: str, replacement: str) -> str | None:
                 "replacement_lines keep the indentation consistent.",
             )
     return None
+
+
+# Names every Python module can load without binding them itself.
+_PYTHON_IMPLICIT_NAMES = frozenset(
+    {
+        "__file__", "__name__", "__doc__", "__builtins__", "__spec__", "__loader__", "__package__",
+        "__path__", "__debug__", "__annotations__", "__dict__", "__module__", "__qualname__",
+        "__class__", "__cached__",
+    }
+)
+_PYTHON_DYNAMIC_SCOPE_RE = re.compile(r"\b(?:exec|globals|locals|vars)\s*\(")
+MAX_UNDEFINED_NAMES_REPORTED = 5
+
+
+def python_free_names(source: str) -> set[str] | None:
+    """Names loaded anywhere in `source` that nothing in the file binds.
+
+    Flow-insensitive on purpose: a name assigned anywhere, bound as a parameter, imported,
+    defined, or declared global counts as bound everywhere, so the check can only miss a
+    real error, never invent one from ordering. Returns None when the file cannot be parsed
+    or binds names the parser cannot see (a star import or a dynamic-scope call), in which
+    case the check abstains.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    if _PYTHON_DYNAMIC_SCOPE_RE.search(source):
+        return None
+    bound: set[str] = set(dir(builtins)) | set(_PYTHON_IMPLICIT_NAMES)
+    loaded: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
+            return None
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound.update((alias.asname or alias.name).split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Load):
+                loaded.add(node.id)
+            else:
+                bound.add(node.id)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bound.add(node.rest)
+    return loaded - bound
+
+
+# JavaScript and TypeScript names every module can use without binding them.
+JS_GLOBAL_NAMES = frozenset(
+    """
+    require module exports process console Buffer global globalThis __dirname __filename
+    setTimeout clearTimeout setInterval clearInterval setImmediate clearImmediate queueMicrotask
+    structuredClone fetch URL URLSearchParams TextEncoder TextDecoder AbortController AbortSignal
+    Headers Request Response FormData Blob File WebSocket EventTarget Event CustomEvent
+    performance crypto atob btoa navigator window document self location localStorage
+    sessionStorage alert requestAnimationFrame cancelAnimationFrame XMLHttpRequest HTMLElement
+    Object Array String Number Boolean Symbol BigInt Function Math JSON Date RegExp Promise
+    Error TypeError RangeError SyntaxError ReferenceError EvalError URIError AggregateError
+    Map Set WeakMap WeakSet WeakRef FinalizationRegistry Proxy Reflect Intl Atomics
+    ArrayBuffer SharedArrayBuffer DataView Int8Array Uint8Array Uint8ClampedArray Int16Array
+    Uint16Array Int32Array Uint32Array Float32Array Float64Array BigInt64Array BigUint64Array
+    ReadableStream WritableStream TransformStream Iterator Generator
+    parseInt parseFloat isNaN isFinite encodeURIComponent decodeURIComponent encodeURI decodeURI
+    escape unescape eval undefined NaN Infinity arguments this super new typeof instanceof
+    void delete in of if else for while do switch case default break continue return throw try
+    catch finally function class extends const let var import export from as async await yield
+    with debugger static get set enum interface type namespace declare implements private
+    protected public readonly abstract keyof satisfies unknown any never object string number
+    boolean symbol bigint null true false
+    describe it test expect beforeEach afterEach beforeAll afterAll jest vi
+    """.split()
+)
+_JS_COMMENT_RE = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+_JS_STRING_RE = re.compile(r"'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"|`(?:\\.|[^`\\])*`", re.S)
+# An identifier used as a call target or a member root, not preceded by `.` (member access),
+# `$`, or a word character.
+_JS_USE_RE = re.compile(r"(?<![\w$.])([A-Za-z_$][\w$]*)\s*(?=[.(])")
+
+
+def _js_strip(source: str) -> str:
+    return _JS_STRING_RE.sub('""', _JS_COMMENT_RE.sub(" ", source))
+
+
+def _js_binds(source: str, name: str) -> bool:
+    """True when the stripped file plausibly binds `name` anywhere, by any declaration form."""
+    ident = re.escape(name)
+    patterns = (
+        rf"\b(?:const|let|var|function|class|enum|interface|type|namespace|declare)\s+(?:async\s+)?(?:function\s+)?{ident}\b",
+        rf"\b(?:const|let|var)\s*\{{[^}}]*\b{ident}\b[^}}]*\}}",
+        rf"\b(?:const|let|var)\s*\[[^\]]*\b{ident}\b[^\]]*\]",
+        rf"\bimport\b[^;\n]*\b{ident}\b[^;\n]*\bfrom\b",
+        rf"\bimport\s+(?:\*\s+as\s+)?{ident}\b",
+        rf"\bfunction\b[^(]*\(([^)]*\b{ident}\b[^)]*)\)",
+        rf"\(([^()]*\b{ident}\b[^()]*)\)\s*(?::[^=]*)?=>",
+        rf"(?<![\w$.]){ident}\s*=>",
+        rf"\bcatch\s*\(\s*{ident}\b",
+        rf"(?m)^\s*(?:static\s+|async\s+|get\s+|set\s+|public\s+|private\s+|protected\s+)*{ident}\s*\([^)]*\)\s*(?::[^{{]*)?\{{",
+        rf"(?<![\w$.]){ident}\s*=[^=>]",
+    )
+    return any(re.search(pattern, source) for pattern in patterns)
+
+
+def javascript_free_names(original: str, replacement: str) -> set[str]:
+    """Identifiers the change introduces that are used as calls or member roots and bound nowhere.
+
+    A bounded lexical check, not a parser: only identifiers absent from the original file and
+    used as `name(` or `name.` in the candidate are considered, and any declaration form that
+    could bind the name anywhere in the candidate file clears it. It catches `execFile(...)`
+    added without a require or import; anything less clear-cut is left to the load check.
+    """
+    stripped_original = _js_strip(original)
+    stripped_replacement = _js_strip(replacement)
+    candidates = {
+        match.group(1)
+        for match in _JS_USE_RE.finditer(stripped_replacement)
+        if match.group(1) not in JS_GLOBAL_NAMES and not re.search(rf"(?<![\w$]){re.escape(match.group(1))}(?![\w$])", stripped_original)
+    }
+    return {name for name in candidates if not _js_binds(stripped_replacement, name)}
+
+
+def _reject_undefined_names(path: str, original: str, replacement: str) -> None:
+    """Rejects a candidate that loads a name nothing in the file binds.
+
+    `py_compile` and `node --check` prove a file parses; a name used without its import is a
+    NameError or ReferenceError at call time, which no parse catches and a load check only
+    catches at module top level. Only names the change introduces are held against it: a name
+    the original file already used unbound is not the candidate's mistake.
+    """
+    suffix = PurePosixPath(path).suffix.lower()
+    if suffix in PYTHON_SYNTAX_SUFFIXES:
+        after = python_free_names(replacement)
+        before = python_free_names(original)
+        if after is None:
+            return
+        undefined = sorted(after - (before or set()))
+        runtime = "NameError"
+    elif suffix in APPLICATION_SUFFIXES:
+        undefined = sorted(javascript_free_names(original, replacement))
+        runtime = "ReferenceError"
+    else:
+        return
+    if not undefined:
+        return
+    names = ", ".join(undefined[:MAX_UNDEFINED_NAMES_REPORTED])
+    raise PatchPolicyError(
+        f"undefined_name:{undefined[0]}",
+        f"The patched {path} uses {names} without importing or defining it, which raises {runtime} "
+        "when that line runs. Add the import or definition in another hunk of the same "
+        "propose_patch call (for Python eval fixes, `import ast` for ast.literal_eval).",
+    )
 
 
 def _reject_service_path(path: str) -> None:
@@ -735,7 +944,10 @@ def _load_checks(snapshot: Snapshot, replacements: dict[str, str]) -> list[str]:
 # disambiguates a block occurring more than once, and `end_line` and `replaced_sha256` are
 # tolerated from callers that already send them. Nothing asks a caller to count or to hash.
 HUNK_REQUIRED_FIELDS = {"path", "original_lines", "replacement_lines"}
-HUNK_OPTIONAL_FIELDS = {"start_line", "end_line", "replaced_sha256"}
+# `finding_id` names the finding the hunk fixes. The proposer tool schema requires it; a caller
+# that omits it gets proximity attribution in the engine, and one that sends an unknown id is
+# rejected against the task's findings.
+HUNK_OPTIONAL_FIELDS = {"start_line", "end_line", "replaced_sha256", "finding_id"}
 HUNK_FIELDS = HUNK_REQUIRED_FIELDS | HUNK_OPTIONAL_FIELDS
 # Candidate line numbers named in an ambiguity rejection, so the message stays bounded.
 MAX_REPORTED_OCCURRENCES = 10
@@ -861,21 +1073,22 @@ def _hunk_text(replacement_lines: Any, replaced_block: str) -> str:
     return "\n".join(replacement_lines) + trailing
 
 
-def apply_hunks(snapshot: Snapshot, proposed_changes: list[dict[str, Any]]) -> dict[str, str]:
-    """Applies line-range hunks to the exact snapshot and returns each file's new content.
+def locate_hunks(snapshot: Snapshot, proposed_changes: list[dict[str, Any]]) -> list[LocatedHunk]:
+    """Validates line-range hunks against the exact snapshot and locates each one.
 
     A hunk quotes the lines it replaces and the service finds them in the exact snapshot, so the
     agent can never edit a range it did not read, never has to compute a hash, and is not held to
-    a line number it miscounted. Hunks are applied bottom-up so earlier line numbers stay valid.
+    a line number it miscounted. Two hunks on one file may not cover the same line.
     """
     by_path: dict[str, list[dict[str, Any]]] = {}
     for change in proposed_changes:
         if not isinstance(change, dict) or not HUNK_REQUIRED_FIELDS <= set(change) or not set(change) <= HUNK_FIELDS:
             raise PatchPolicyError(
                 "change_schema_invalid",
-                "Each change must be {path, start_line, original_lines, replacement_lines}, "
-                "where original_lines are the snapshot lines the hunk replaces and start_line is "
-                "a hint used only when those lines occur more than once.",
+                "Each change must be {path, finding_id, start_line, original_lines, replacement_lines}, "
+                "where original_lines are the snapshot lines the hunk replaces, finding_id is the "
+                "finding the hunk fixes, and start_line is a hint used only when those lines occur "
+                "more than once.",
             )
         _reject_service_path(str(change.get("path", "")))
         try:
@@ -885,28 +1098,60 @@ def apply_hunks(snapshot: Snapshot, proposed_changes: list[dict[str, Any]]) -> d
             raise PatchPolicyError(str(exc), f"{change.get('path')!r} is not a readable snapshot path.") from exc
         by_path.setdefault(path, []).append(change)
 
-    contents: dict[str, str] = {}
+    located: list[LocatedHunk] = []
     for path, hunks in by_path.items():
         original_lines = snapshot.full_content(path).splitlines(keepends=True)
-        prepared: list[tuple[int, int, str]] = []
+        prepared: list[LocatedHunk] = []
         for hunk in hunks:
             # The quoted lines are the anchor: the service finds them and derives the range, so a
             # miscounted start_line never decides which lines are replaced.
             start, end = locate_hunk(path, original_lines, hunk)
             replaced_block = "".join(original_lines[start - 1 : end])
-            prepared.append((start, end, _hunk_text(hunk["replacement_lines"], replaced_block)))
-        prepared.sort(key=lambda item: (item[0], item[1]))
+            _hunk_text(hunk["replacement_lines"], replaced_block)
+            finding_id = hunk.get("finding_id")
+            if finding_id is not None and (not isinstance(finding_id, str) or not finding_id.strip()):
+                raise PatchPolicyError("hunk_finding_id_invalid", "finding_id must be one of the task's finding ids.")
+            prepared.append(
+                LocatedHunk(
+                    path,
+                    start,
+                    end,
+                    tuple(line.rstrip("\n\r") for line in original_lines[start - 1 : end]),
+                    tuple(hunk["replacement_lines"]),
+                    finding_id,
+                )
+            )
+        prepared.sort(key=lambda item: (item.start_line, item.end_line))
         for earlier, later in zip(prepared, prepared[1:]):
-            if later[0] <= earlier[1]:
+            if later.start_line <= earlier.end_line:
                 raise PatchPolicyError(
                     f"overlapping_hunks:{path}",
-                    f"Two hunks on {path} cover line {later[0]}. Send one hunk per line range.",
+                    f"Two hunks on {path} cover line {later.start_line}. Send one hunk per line range.",
                 )
+        located.extend(prepared)
+    return located
+
+
+def render_hunks(snapshot: Snapshot, hunks: list[LocatedHunk] | tuple[LocatedHunk, ...]) -> dict[str, str]:
+    """Applies located hunks to the exact snapshot, bottom-up so earlier line numbers stay valid."""
+    by_path: dict[str, list[LocatedHunk]] = {}
+    for hunk in hunks:
+        by_path.setdefault(hunk.path, []).append(hunk)
+    contents: dict[str, str] = {}
+    for path, items in by_path.items():
+        original_lines = snapshot.full_content(path).splitlines(keepends=True)
         updated = list(original_lines)
-        for start, end, text in reversed(prepared):
-            updated[start - 1 : end] = [text] if text else []
+        for hunk in sorted(items, key=lambda item: (item.start_line, item.end_line), reverse=True):
+            replaced_block = "".join(original_lines[hunk.start_line - 1 : hunk.end_line])
+            text = _hunk_text(list(hunk.replacement_lines), replaced_block)
+            updated[hunk.start_line - 1 : hunk.end_line] = [text] if text else []
         contents[path] = "".join(updated)
     return contents
+
+
+def apply_hunks(snapshot: Snapshot, proposed_changes: list[dict[str, Any]]) -> dict[str, str]:
+    """Applies line-range hunks to the exact snapshot and returns each file's new content."""
+    return render_hunks(snapshot, locate_hunks(snapshot, proposed_changes))
 
 
 def environment_notes(path: str, original: str, replacement: str) -> list[str]:
@@ -934,7 +1179,16 @@ def build_patch_bundle(
     """Builds a bundle from the agent's line-range hunks against the exact snapshot."""
     if not proposed_changes:
         raise PatchPolicyError("proposal_contains_no_changes", "Send at least one change hunk.")
-    return _build_bundle_from_contents(request, snapshot, apply_hunks(snapshot, proposed_changes), regression_tests)
+    hunks = locate_hunks(snapshot, proposed_changes)
+    known = sorted(finding.stable_id for finding in request.findings)
+    for hunk in hunks:
+        if hunk.finding_id is not None and hunk.finding_id not in known:
+            raise PatchPolicyError(
+                "hunk_finding_unknown",
+                f"Each hunk's finding_id must be one of the task's finding ids: {', '.join(known)}. "
+                "An import-only hunk names the finding whose fix needs it.",
+            )
+    return _build_bundle_from_contents(request, snapshot, render_hunks(snapshot, hunks), regression_tests, tuple(hunks))
 
 
 def _build_bundle_from_contents(
@@ -942,6 +1196,7 @@ def _build_bundle_from_contents(
     snapshot: Snapshot,
     replacements: dict[str, str],
     regression_tests: list[dict[str, Any]] | None = None,
+    hunks: tuple[LocatedHunk, ...] = (),
 ) -> PatchBundle:
     if not replacements:
         raise PatchPolicyError("proposal_contains_no_changes")
@@ -1012,6 +1267,10 @@ def _build_bundle_from_contents(
         )
 
     limitations.extend(_load_checks(snapshot, replacements))
+    for path, replacement in sorted(replacements.items()):
+        # After the load check: a name used at module top level already failed there with the
+        # runtime's own diagnostic, and this catches the ones inside function bodies.
+        _reject_undefined_names(path, snapshot.full_content(path), replacement)
     generated_tests, generated_limitations = build_generated_tests(request, snapshot, regression_tests)
     limitations.extend(generated_limitations)
     patches.sort(key=lambda item: item.path)
@@ -1034,6 +1293,7 @@ def _build_bundle_from_contents(
         total_changed,
         tuple(sorted(set(limitations))),
         tuple(generated_tests),
+        tuple(hunks),
     )
 
 
@@ -1081,6 +1341,11 @@ def combine_patch_bundles(request: RepairRequest, snapshot: Snapshot, bundles: l
     # Every accepted candidate's reproducer runs against the combined tree: a batch must still
     # demonstrate each finding's vulnerability on the baseline and its repair on the union.
     combined_tests = {test.path: test.spec() for bundle in bundles for test in bundle.generated_tests}
+    # The union of every candidate's located hunks, the same change at the same place kept once.
+    merged_hunks: dict[tuple[str, int, int, tuple[str, ...]], LocatedHunk] = {}
+    for bundle in bundles:
+        for hunk in bundle.hunks:
+            merged_hunks.setdefault(hunk.key, hunk)
     by_path: dict[str, list[FilePatch]] = {}
     for bundle in bundles:
         for patch in bundle.patches:
@@ -1095,6 +1360,11 @@ def combine_patch_bundles(request: RepairRequest, snapshot: Snapshot, bundles: l
         accepted: list[tuple[int, int, list[str]]] = []
         for patch in patches:
             for candidate_range in _changed_ranges(original_lines, patch.replacement_content.splitlines(keepends=True)):
+                # Per-finding candidates from one group may share a prerequisite change (an
+                # added import both fixes need): the same lines at the same place are applied
+                # once. A different change on an overlapping range cannot be combined.
+                if candidate_range in accepted:
+                    continue
                 if any(_ranges_conflict(candidate_range, existing) for existing in accepted):
                     raise PatchPolicyError("overlapping_candidates")
                 accepted.append(candidate_range)
@@ -1107,7 +1377,11 @@ def combine_patch_bundles(request: RepairRequest, snapshot: Snapshot, bundles: l
         merged.extend(original_lines[cursor:])
         replacements[path] = "".join(merged)
     return _build_bundle_from_contents(
-        request, snapshot, replacements, [combined_tests[path] for path in sorted(combined_tests)]
+        request,
+        snapshot,
+        replacements,
+        [combined_tests[path] for path in sorted(combined_tests)],
+        tuple(sorted(merged_hunks.values(), key=lambda item: (item.path, item.start_line, item.end_line))),
     )
 
 
