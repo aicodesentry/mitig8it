@@ -503,13 +503,21 @@ const cases = [
         {
           candidate_id: 'candidate-0001', finding_fingerprint: 'fp-1', path: 'src/app.js', finding_line: 12,
           hunk: { start_line: 12, end_line: 12, original_lines: ['old'], replacement_lines: ['new', 'more'] },
-          unified_diff: '@@ -12 +12,2 @@\n-old\n+new\n+more', not_suggestable_reason: '', behavior_preserved: 'Same result.',
+          unified_diff: '@@ -12 +12,2 @@\n-old\n+new\n+more', not_suggestable_reason: '', stated_intent: 'Same result.',
           evidence: ['test failed on original, passed on fix'], limitations: ['no build'], skipped_reason: '', verification_level: 'independent_sandbox',
+          finding_body: '**HIGH** — SQL injection\n\n> raw query', finding_ids: ['f-1', 'f-3'], covered_by: '',
+          proof: 'regression test t.js asserts that the SQL injection is no longer reproducible; it failed on the original code and passed on the fix.',
         },
         {
           candidate_id: '', finding_fingerprint: 'fp-2', path: 'src/app.js', finding_line: 30, hunk: null,
-          unified_diff: '', not_suggestable_reason: '', behavior_preserved: '', evidence: [], limitations: [],
+          unified_diff: '', not_suggestable_reason: '', stated_intent: '', evidence: [], limitations: [],
           skipped_reason: 'outside the enabled repair families', verification_level: '',
+          finding_body: '', finding_ids: [], covered_by: '', proof: '',
+        },
+        {
+          candidate_id: 'candidate-0001', finding_fingerprint: 'fp-3', path: 'src/app.js', finding_line: 12, hunk: null,
+          unified_diff: '', not_suggestable_reason: '', stated_intent: '', evidence: [], limitations: [],
+          skipped_reason: '', verification_level: '', finding_body: '', finding_ids: ['f-1', 'f-3'], covered_by: 'js/path-traversal', proof: '',
         },
       ],
     },
@@ -522,19 +530,25 @@ const cases = [
       const hunk = new githubPb.FindingFixHunk();
       hunk.setStartLine(12); hunk.setEndLine(12); hunk.setOriginalLinesList(['old']); hunk.setReplacementLinesList(['new', 'more']);
       first.setHunk(hunk);
-      first.setUnifiedDiff('@@ -12 +12,2 @@\n-old\n+new\n+more'); first.setBehaviorPreserved('Same result.');
+      first.setUnifiedDiff('@@ -12 +12,2 @@\n-old\n+new\n+more'); first.setStatedIntent('Same result.');
       first.setEvidenceList(['test failed on original, passed on fix']); first.setLimitationsList(['no build']); first.setVerificationLevel('independent_sandbox');
+      first.setFindingBody('**HIGH** — SQL injection\n\n> raw query'); first.setFindingIdsList(['f-1', 'f-3']);
+      first.setProof('regression test t.js asserts that the SQL injection is no longer reproducible; it failed on the original code and passed on the fix.');
       const second = new githubPb.FindingFixSection();
       second.setFindingFingerprint('fp-2'); second.setPath('src/app.js'); second.setFindingLine(30);
       second.setSkippedReason('outside the enabled repair families');
-      request.setSectionsList([first, second]);
+      const third = new githubPb.FindingFixSection();
+      third.setCandidateId('candidate-0001'); third.setFindingFingerprint('fp-3'); third.setPath('src/app.js'); third.setFindingLine(12);
+      third.setFindingIdsList(['f-1', 'f-3']); third.setCoveredBy('js/path-traversal');
+      request.setSectionsList([first, second, third]);
       return request;
     },
     result: {
       state: 'published', operation_id: actionId,
       results: [
-        { finding_fingerprint: 'fp-1', candidate_id: 'candidate-0001', comment_id: 77, mode: 'suggestion', updated: true, reason: '' },
-        { finding_fingerprint: 'fp-2', candidate_id: '', comment_id: 78, mode: 'skipped', updated: true, reason: 'outside the enabled repair families' },
+        { finding_fingerprint: 'fp-1', candidate_id: 'candidate-0001', comment_id: 77, mode: 'suggestion', updated: true, reason: '', created: true, placement: 'inline' },
+        { finding_fingerprint: 'fp-2', candidate_id: '', comment_id: 78, mode: 'skipped', updated: true, reason: 'outside the enabled repair families', created: false, placement: 'inline' },
+        { finding_fingerprint: 'fp-3', candidate_id: 'candidate-0001', comment_id: 79, mode: 'covered', updated: true, reason: 'fixed together with js/path-traversal', created: true, placement: 'pull_request' },
       ],
       reason: '',
     },
@@ -542,7 +556,7 @@ const cases = [
       state: response.getState(), operation_id: response.getOperationId(),
       results: response.getResultsList().map((item) => ({
         finding_fingerprint: item.getFindingFingerprint(), candidate_id: item.getCandidateId(), comment_id: item.getCommentId(),
-        mode: item.getMode(), updated: item.getUpdated(), reason: item.getReason(),
+        mode: item.getMode(), updated: item.getUpdated(), reason: item.getReason(), created: item.getCreated(), placement: item.getPlacement(),
       })),
       reason: response.getReason(),
     }),

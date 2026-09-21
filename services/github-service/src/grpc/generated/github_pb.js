@@ -10581,7 +10581,7 @@ proto.mitig8it.github.v1.FindingFixHunk.prototype.clearReplacementLinesList = fu
  * @private {!Array<number>}
  * @const
  */
-proto.mitig8it.github.v1.FindingFixSection.repeatedFields_ = [9,10];
+proto.mitig8it.github.v1.FindingFixSection.repeatedFields_ = [9,10,14];
 
 
 
@@ -10621,11 +10621,15 @@ proto.mitig8it.github.v1.FindingFixSection.toObject = function(includeInstance, 
     hunk: (f = msg.getHunk()) && proto.mitig8it.github.v1.FindingFixHunk.toObject(includeInstance, f),
     unifiedDiff: jspb.Message.getFieldWithDefault(msg, 6, ""),
     notSuggestableReason: jspb.Message.getFieldWithDefault(msg, 7, ""),
-    behaviorPreserved: jspb.Message.getFieldWithDefault(msg, 8, ""),
+    statedIntent: jspb.Message.getFieldWithDefault(msg, 8, ""),
     evidenceList: (f = jspb.Message.getRepeatedField(msg, 9)) == null ? undefined : f,
     limitationsList: (f = jspb.Message.getRepeatedField(msg, 10)) == null ? undefined : f,
     skippedReason: jspb.Message.getFieldWithDefault(msg, 11, ""),
-    verificationLevel: jspb.Message.getFieldWithDefault(msg, 12, "")
+    verificationLevel: jspb.Message.getFieldWithDefault(msg, 12, ""),
+    findingBody: jspb.Message.getFieldWithDefault(msg, 13, ""),
+    findingIdsList: (f = jspb.Message.getRepeatedField(msg, 14)) == null ? undefined : f,
+    coveredBy: jspb.Message.getFieldWithDefault(msg, 15, ""),
+    proof: jspb.Message.getFieldWithDefault(msg, 16, "")
   };
 
   if (includeInstance) {
@@ -10693,7 +10697,7 @@ proto.mitig8it.github.v1.FindingFixSection.deserializeBinaryFromReader = functio
       break;
     case 8:
       var value = /** @type {string} */ (reader.readString());
-      msg.setBehaviorPreserved(value);
+      msg.setStatedIntent(value);
       break;
     case 9:
       var value = /** @type {string} */ (reader.readString());
@@ -10710,6 +10714,22 @@ proto.mitig8it.github.v1.FindingFixSection.deserializeBinaryFromReader = functio
     case 12:
       var value = /** @type {string} */ (reader.readString());
       msg.setVerificationLevel(value);
+      break;
+    case 13:
+      var value = /** @type {string} */ (reader.readString());
+      msg.setFindingBody(value);
+      break;
+    case 14:
+      var value = /** @type {string} */ (reader.readString());
+      msg.addFindingIds(value);
+      break;
+    case 15:
+      var value = /** @type {string} */ (reader.readString());
+      msg.setCoveredBy(value);
+      break;
+    case 16:
+      var value = /** @type {string} */ (reader.readString());
+      msg.setProof(value);
       break;
     default:
       reader.skipField();
@@ -10790,7 +10810,7 @@ proto.mitig8it.github.v1.FindingFixSection.serializeBinaryToWriter = function(me
       f
     );
   }
-  f = message.getBehaviorPreserved();
+  f = message.getStatedIntent();
   if (f.length > 0) {
     writer.writeString(
       8,
@@ -10822,6 +10842,34 @@ proto.mitig8it.github.v1.FindingFixSection.serializeBinaryToWriter = function(me
   if (f.length > 0) {
     writer.writeString(
       12,
+      f
+    );
+  }
+  f = message.getFindingBody();
+  if (f.length > 0) {
+    writer.writeString(
+      13,
+      f
+    );
+  }
+  f = message.getFindingIdsList();
+  if (f.length > 0) {
+    writer.writeRepeatedString(
+      14,
+      f
+    );
+  }
+  f = message.getCoveredBy();
+  if (f.length > 0) {
+    writer.writeString(
+      15,
+      f
+    );
+  }
+  f = message.getProof();
+  if (f.length > 0) {
+    writer.writeString(
+      16,
       f
     );
   }
@@ -10974,10 +11022,10 @@ proto.mitig8it.github.v1.FindingFixSection.prototype.setNotSuggestableReason = f
 
 
 /**
- * optional string behavior_preserved = 8;
+ * optional string stated_intent = 8;
  * @return {string}
  */
-proto.mitig8it.github.v1.FindingFixSection.prototype.getBehaviorPreserved = function() {
+proto.mitig8it.github.v1.FindingFixSection.prototype.getStatedIntent = function() {
   return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 8, ""));
 };
 
@@ -10986,7 +11034,7 @@ proto.mitig8it.github.v1.FindingFixSection.prototype.getBehaviorPreserved = func
  * @param {string} value
  * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
  */
-proto.mitig8it.github.v1.FindingFixSection.prototype.setBehaviorPreserved = function(value) {
+proto.mitig8it.github.v1.FindingFixSection.prototype.setStatedIntent = function(value) {
   return jspb.Message.setProto3StringField(this, 8, value);
 };
 
@@ -11098,6 +11146,97 @@ proto.mitig8it.github.v1.FindingFixSection.prototype.getVerificationLevel = func
  */
 proto.mitig8it.github.v1.FindingFixSection.prototype.setVerificationLevel = function(value) {
   return jspb.Message.setProto3StringField(this, 12, value);
+};
+
+
+/**
+ * optional string finding_body = 13;
+ * @return {string}
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.getFindingBody = function() {
+  return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 13, ""));
+};
+
+
+/**
+ * @param {string} value
+ * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.setFindingBody = function(value) {
+  return jspb.Message.setProto3StringField(this, 13, value);
+};
+
+
+/**
+ * repeated string finding_ids = 14;
+ * @return {!Array<string>}
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.getFindingIdsList = function() {
+  return /** @type {!Array<string>} */ (jspb.Message.getRepeatedField(this, 14));
+};
+
+
+/**
+ * @param {!Array<string>} value
+ * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.setFindingIdsList = function(value) {
+  return jspb.Message.setField(this, 14, value || []);
+};
+
+
+/**
+ * @param {string} value
+ * @param {number=} opt_index
+ * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.addFindingIds = function(value, opt_index) {
+  return jspb.Message.addToRepeatedField(this, 14, value, opt_index);
+};
+
+
+/**
+ * Clears the list making it empty but non-null.
+ * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.clearFindingIdsList = function() {
+  return this.setFindingIdsList([]);
+};
+
+
+/**
+ * optional string covered_by = 15;
+ * @return {string}
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.getCoveredBy = function() {
+  return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 15, ""));
+};
+
+
+/**
+ * @param {string} value
+ * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.setCoveredBy = function(value) {
+  return jspb.Message.setProto3StringField(this, 15, value);
+};
+
+
+/**
+ * optional string proof = 16;
+ * @return {string}
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.getProof = function() {
+  return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 16, ""));
+};
+
+
+/**
+ * @param {string} value
+ * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.setProof = function(value) {
+  return jspb.Message.setProto3StringField(this, 16, value);
 };
 
 
@@ -11379,7 +11518,9 @@ proto.mitig8it.github.v1.FindingFixSectionResult.toObject = function(includeInst
     commentId: jspb.Message.getFieldWithDefault(msg, 3, 0),
     mode: jspb.Message.getFieldWithDefault(msg, 4, ""),
     updated: jspb.Message.getBooleanFieldWithDefault(msg, 5, false),
-    reason: jspb.Message.getFieldWithDefault(msg, 6, "")
+    reason: jspb.Message.getFieldWithDefault(msg, 6, ""),
+    created: jspb.Message.getBooleanFieldWithDefault(msg, 7, false),
+    placement: jspb.Message.getFieldWithDefault(msg, 8, "")
   };
 
   if (includeInstance) {
@@ -11439,6 +11580,14 @@ proto.mitig8it.github.v1.FindingFixSectionResult.deserializeBinaryFromReader = f
     case 6:
       var value = /** @type {string} */ (reader.readString());
       msg.setReason(value);
+      break;
+    case 7:
+      var value = /** @type {boolean} */ (reader.readBool());
+      msg.setCreated(value);
+      break;
+    case 8:
+      var value = /** @type {string} */ (reader.readString());
+      msg.setPlacement(value);
       break;
     default:
       reader.skipField();
@@ -11508,6 +11657,20 @@ proto.mitig8it.github.v1.FindingFixSectionResult.serializeBinaryToWriter = funct
   if (f.length > 0) {
     writer.writeString(
       6,
+      f
+    );
+  }
+  f = message.getCreated();
+  if (f) {
+    writer.writeBool(
+      7,
+      f
+    );
+  }
+  f = message.getPlacement();
+  if (f.length > 0) {
+    writer.writeString(
+      8,
       f
     );
   }
@@ -11619,6 +11782,42 @@ proto.mitig8it.github.v1.FindingFixSectionResult.prototype.getReason = function(
  */
 proto.mitig8it.github.v1.FindingFixSectionResult.prototype.setReason = function(value) {
   return jspb.Message.setProto3StringField(this, 6, value);
+};
+
+
+/**
+ * optional bool created = 7;
+ * @return {boolean}
+ */
+proto.mitig8it.github.v1.FindingFixSectionResult.prototype.getCreated = function() {
+  return /** @type {boolean} */ (jspb.Message.getBooleanFieldWithDefault(this, 7, false));
+};
+
+
+/**
+ * @param {boolean} value
+ * @return {!proto.mitig8it.github.v1.FindingFixSectionResult} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSectionResult.prototype.setCreated = function(value) {
+  return jspb.Message.setProto3BooleanField(this, 7, value);
+};
+
+
+/**
+ * optional string placement = 8;
+ * @return {string}
+ */
+proto.mitig8it.github.v1.FindingFixSectionResult.prototype.getPlacement = function() {
+  return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 8, ""));
+};
+
+
+/**
+ * @param {string} value
+ * @return {!proto.mitig8it.github.v1.FindingFixSectionResult} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSectionResult.prototype.setPlacement = function(value) {
+  return jspb.Message.setProto3StringField(this, 8, value);
 };
 
 
