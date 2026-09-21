@@ -899,10 +899,11 @@ test('one automatic job is queued per head after analysis, it is claimable witho
   const queued = await workerQuery(`SELECT COUNT(*)::int AS n FROM workflow_outbox WHERE aggregate_id=$1 AND event_type='remediation.queued'`, [first.job_id]);
   assert.equal(queued.rows[0].n, 1);
 
-  // The worker can claim a job that has no creator; the snapshot actor falls back to the system login.
+  // The worker can claim a job that has no creator; the snapshot actor is a user who
+  // connected the repository, whose live write permission the adapter still checks.
   const claimed = await remediationDb.claimJobById(first.job_id, 'integration-auto');
   assert.ok(claimed);
-  assert.equal(claimed.creator_login, null);
+  assert.equal(claimed.creator_login, `user${f.n}`);
   await workerQuery(`UPDATE remediation_jobs SET lease_owner=NULL, lease_expires_at=NULL WHERE id=$1`, [first.job_id]);
 
   // Ready: one verified candidate for the open finding, then the outbox publishes its

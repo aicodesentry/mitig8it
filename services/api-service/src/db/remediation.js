@@ -292,7 +292,12 @@ async function getPreview(jobId, userId) {
 // Claiming takes a lease and a fresh fencing token. It deliberately does not
 // consume an attempt: an attempt is consumed when a stage really fails, so an
 // expired lease reclaimed by the reconciler costs no retry budget.
-// An automatic job has no creator; the left join keeps it claimable with a null login.
+// An automatic job has no creator. Its snapshot is fetched under the authority of a user
+// who connected the repository (admin or write role first); the adapter still checks
+// that user's live write permission on GitHub before reading anything.
+const FALLBACK_ACTOR_SQL = `(SELECT fu.github_username FROM repository_access ra JOIN users fu ON fu.id = ra.user_id
+          WHERE ra.repository_id = j.repository_id AND fu.github_username IS NOT NULL
+          ORDER BY CASE ra.role WHEN 'admin' THEN 0 WHEN 'write' THEN 1 ELSE 2 END, ra.created_at LIMIT 1)`;
 const CLAIM_SQL = `WITH candidate AS (
          SELECT id, created_by FROM remediation_jobs
           WHERE state = ANY($1::text[]) AND next_attempt_at <= NOW()
@@ -303,7 +308,7 @@ const CLAIM_SQL = `WITH candidate AS (
           fencing_token=j.fencing_token+1, updated_at=NOW()
         FROM candidate LEFT JOIN users u ON u.id = candidate.created_by, repositories r, pull_requests pr
         WHERE j.id=candidate.id AND r.id=j.repository_id AND pr.id=j.pull_request_id
-        RETURNING j.*, r.full_name AS repository_full_name, pr.pr_number, u.github_username AS creator_login`;
+        RETURNING j.*, r.full_name AS repository_full_name, pr.pr_number, COALESCE(u.github_username, ${FALLBACK_ACTOR_SQL}) AS creator_login`;
 
 async function claimJob(workerId, leaseSeconds, jobId) {
   const client = await pool.connect();
