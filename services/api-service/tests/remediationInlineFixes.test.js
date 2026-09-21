@@ -109,6 +109,67 @@ test('a fix touching several regions or files is sent as a diff with the reason,
   expect(stale.map((section) => section.finding_fingerprint)).toEqual(['fp-redirect']);
 });
 
+// The repair service emits one candidate per proven finding, each carrying only that finding's
+// hunks, its own regression test, and an evidence summary in full sentences. A candidate whose
+// hunk lies on the finding's line becomes a suggestion; one that also adds an import elsewhere
+// in the file is shown as a diff with the reason.
+const TEXT_PY = [
+  'import sqlite3', '', 'def get_user(user_id):', '    query = "SELECT * FROM users WHERE id = " + user_id', '    return execute_query(query)', '',
+  '# Hardcoded credentials', 'API_KEY = "placeholder-not-a-key"', 'PASSWORD = "admin123"', '', '# Insecure eval', 'def process_input(user_input):',
+  '    result = eval(user_input)', '    return result',
+].join('\n') + '\n';
+const CREDENTIAL_FIXED = TEXT_PY.replace('API_KEY = "placeholder-not-a-key"', 'import os\nAPI_KEY = os.environ["API_KEY"]');
+const EVAL_FIXED = TEXT_PY.replace('import sqlite3\n', 'import sqlite3\nimport ast\n').replace('eval(user_input)', 'ast.literal_eval(user_input)');
+
+function perFindingCandidate(id, findingId, replacement, unifiedDiff) {
+  return candidate({
+    id, finding_snapshot_ids: [findingId],
+    preview: {
+      changes: [{ path: 'text.py', original: TEXT_PY, replacement, unified_diff: unifiedDiff }],
+      rationale: 'One finding, one candidate.',
+      reasoning: { intended_behavior: 'Legitimate input behaves as before.' },
+      evidence: {
+        status: 'passed', evidence_digest: `sha256:${findingId.padEnd(64, '0')}`, verification_level: 'development_unverified',
+        generated_tests: [{ path: `.mitig8it/regression/${findingId}.test.py`, finding_id: findingId }],
+        limitations: ["the repository's original test suite was not run"],
+        summary: [
+          `Regression test .mitig8it/regression/${findingId}.test.py failed on the original code and passed on the fix.`,
+          'Syntax check (generated_python_syntax) passed on the fix.',
+          "Not run: the repository's original test suite was not run.",
+        ],
+      },
+    },
+  });
+}
+
+test('per-finding candidates each get their own section: a suggestion on the finding line, a diff when the fix also adds an import elsewhere', () => {
+  const sections = inline.buildSections(context({
+    candidates: [
+      perFindingCandidate('c-cred', 'f-cred', CREDENTIAL_FIXED, '--- a/text.py\n+++ b/text.py\n@@ -8 +8,2 @@\n-API_KEY = "placeholder-not-a-key"\n+import os\n+API_KEY = os.environ["API_KEY"]'),
+      perFindingCandidate('c-eval', 'f-eval', EVAL_FIXED, '--- a/text.py\n+++ b/text.py\n@@ -1 +1,2 @@\n import sqlite3\n+import ast\n@@ -13 +14 @@\n-    result = eval(user_input)\n+    result = ast.literal_eval(user_input)'),
+    ],
+    findings: [
+      { id: 'f-cred', title: 'Hardcoded credential', file_path: 'text.py', line_start: 8, line_end: 8, fingerprint: 'fp-cred' },
+      { id: 'f-eval', title: 'Code injection via eval', file_path: 'text.py', line_start: 13, line_end: 13, fingerprint: 'fp-eval' },
+    ],
+  }));
+  expect(sections.map((section) => [section.finding_fingerprint, section.candidate_id])).toEqual([['fp-cred', 'c-cred'], ['fp-eval', 'c-eval']]);
+  expect(sections[0]).toMatchObject({
+    path: 'text.py', finding_line: 8, not_suggestable_reason: '',
+    hunk: { start_line: 8, end_line: 8, original_lines: ['API_KEY = "placeholder-not-a-key"'], replacement_lines: ['import os', 'API_KEY = os.environ["API_KEY"]'] },
+    evidence: [
+      'Regression test .mitig8it/regression/f-cred.test.py failed on the original code and passed on the fix.',
+      'Syntax check (generated_python_syntax) passed on the fix.',
+      "Not run: the repository's original test suite was not run.",
+      'Evidence digest: sha256:f-cre.',
+    ],
+  });
+  expect(sections[0].unified_diff).not.toContain('literal_eval');
+  expect(sections[1]).toMatchObject({ path: 'text.py', finding_line: 13, hunk: null, not_suggestable_reason: 'multiple_regions' });
+  expect(sections[1].unified_diff).toContain('ast.literal_eval');
+  expect(sections[1].evidence[0]).toBe('Regression test .mitig8it/regression/f-eval.test.py failed on the original code and passed on the fix.');
+});
+
 test('publication sends every section once with a stable idempotency key and records the head it was written for', async () => {
   remediationDb.jobPublishContext.mockResolvedValue(context());
   const github = { publishFindingFixSections: jest.fn(async () => ({ state: 'published', results: [{ finding_fingerprint: 'fp-sql', mode: 'suggestion', updated: true }] })) };
