@@ -180,7 +180,10 @@ async def combine_and_verify(
     if len(entries) == 1:
         candidate, bundle, verification = entries[0]
         return CombinedVerification(bundle, candidate.verified_tree_oid, verification)
-    combined = combine_patch_bundles(request, snapshot, [bundle for _, bundle, _ in entries])
+    # Combining shells out for syntax and load checks and diffs every hunk pair, so it
+    # runs off the loop: the worker's lease renewal shares this loop and a combine
+    # longer than the lease would otherwise lose the job mid-verification.
+    combined = await asyncio.to_thread(combine_patch_bundles, request, snapshot, [bundle for _, bundle, _ in entries])
     verified_tree_oid = compute_tree_oid(
         request.tree_entries,
         {patch.path: patch.replacement_content for patch in combined.patches},
@@ -711,7 +714,7 @@ class RepairEngine:
             if level not in VERIFICATION_LEVELS or (level == DEVELOPMENT_VERIFICATION_LEVEL and not request.policy.allow_development_verification):
                 rejected_reason = ("verification_level_not_permitted", "The verification evidence does not carry a verification level this policy accepts.")
                 continue
-            if bundles_conflict(snapshot, [bundle for _, bundle, _ in accepted + entries], item.bundle):
+            if await asyncio.to_thread(bundles_conflict, snapshot, [bundle for _, bundle, _ in accepted + entries], item.bundle):
                 rejected_reason = ("overlapping_candidates", "This pass's patch changes a line range an earlier verified candidate already changes.")
                 continue
             newly = [finding_id for finding_id in finding_ids if finding_id in item.proven and finding_id not in claimed]
