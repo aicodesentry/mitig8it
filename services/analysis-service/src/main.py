@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -90,7 +91,9 @@ def require_internal_auth(request: Request) -> None:
         raise HTTPException(status_code=503, detail="Internal analysis auth is not configured")
 
     provided = request.headers.get("x-internal-secret", "")
-    if provided != expected:
+    # Constant-time comparison: `!=` returns at the first differing byte, which lets
+    # a caller measure how much of the secret it has guessed.
+    if not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
