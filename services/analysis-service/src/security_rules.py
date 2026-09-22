@@ -36,10 +36,14 @@ SECURITY_RULES: List[SecurityRule] = [
         severity="high",
         confidence=0.62,
         exploitability="medium",
+        # The exclusion is a lookahead anchored at the start of the line, so it rejects
+        # the line when an auth token appears anywhere on it. A lookahead placed after
+        # a greedy `.*` (the previous shape) can always be satisfied at the end of the
+        # line, so it excluded nothing and the rule fired on guarded routes.
         pattern=re.compile(
-            r"(app\.(get|post|put|delete)\(|@app\.(get|post|put|delete)|router\.(get|post|put|delete))"
-            r".*(admin|internal|user|private|settings|config)"
-            r".*(?!auth|jwt|permission|middleware|protect|guard)",
+            r"^(?!.*(?:auth|jwt|permission|middleware|protect|guard|session|login_required|depends\())"
+            r".*(app\.(get|post|put|delete)\(|@app\.(get|post|put|delete)|router\.(get|post|put|delete))"
+            r".*(admin|internal|user|private|settings|config)",
             re.IGNORECASE,
         ),
         description="Sensitive endpoint appears to lack explicit auth/authorization checks.",
