@@ -16,7 +16,18 @@ const DEFAULT_POLICY = Object.freeze({
     'sql_parameterization', 'command_arguments', 'path_containment', 'hardcoded_credential', 'code_injection_eval',
   ]),
   repair_memory_expiry_days: 90,
-  request_timeout_seconds: 45, supported_platform: 'linux',
+  // The sandbox deadline for one verification, enforced by the broker across every
+  // baseline and candidate check. This is the single source: the repair service uses it
+  // as the broker's deadline_seconds and waits a fixed margin longer for the response.
+  // A verification runs each check on the baseline tree and on the candidate tree in
+  // separate sandbox pods (tens of seconds each to schedule), the generated regression
+  // test has a 60 s budget per run, the syntax check 30 s, and repository tests, when
+  // enabled, 300 s per run. The previous 45 s could not cover one pod pair, so long
+  // verifications timed out client-side and were reported as the broker being
+  // unavailable. 900 s is the 15 minute job runtime ceiling above, and matches the
+  // repair service's own default, so one verification may use the whole job budget
+  // and the job's runtime limit is what bounds it.
+  request_timeout_seconds: 900, supported_platform: 'linux',
   forbidden_path_prefixes: ['.github/', 'infra/', 'infrastructure/', 'deploy/', 'migrations/'],
   forbidden_filenames: ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'],
   // Per-stage reservations. Reserving the whole ceiling for every stage would
