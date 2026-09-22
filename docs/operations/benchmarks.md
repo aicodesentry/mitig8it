@@ -23,8 +23,8 @@ benchmarks/
 
 ## Dataset
 
-- **24 true positives** — code with confirmed vulnerabilities, labeled with CWE and severity
-- **15 true negatives** — safe code that naive scanners might flag (parameterized queries, safe loaders, etc.)
+- **24 true positives**: code with confirmed vulnerabilities, labeled with CWE and severity
+- **15 true negatives**: safe code that naive scanners might flag (parameterized queries, safe loaders, etc.)
 - Covers: Python, JavaScript/TypeScript, Java, Go
 - Derived from Mitig8it's existing regex and OpenGrep rule sets
 
@@ -57,11 +57,11 @@ python benchmarks/eval.py --provider openai --model gpt-4o-mini --samples 5
 ## Metrics
 
 The eval script measures:
-- **Precision** — of flagged code, how much is actually vulnerable
-- **Recall** — of all vulnerabilities, how many were caught
-- **F1 Score** — harmonic mean of precision and recall
-- **Latency** — average response time per snippet
-- **Cost** — total and per-scan API cost
+- **Precision**: of flagged code, how much is actually vulnerable
+- **Recall**: of all vulnerabilities, how many were caught
+- **F1 Score**: harmonic mean of precision and recall
+- **Latency**: average response time per snippet
+- **Cost**: total and per-scan API cost
 
 ## Adding samples
 
