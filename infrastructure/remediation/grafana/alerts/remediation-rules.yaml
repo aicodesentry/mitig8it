@@ -1,3 +1,7 @@
+# Grafana-managed alerting: import these with "No data" handled as NoData or OK, never
+# as Alerting. The pending group below queries metrics that are not emitted yet, and a
+# rule with no series must read as "no data", not as an incident. A single lease
+# reclaim is normal recovery; the reclaim rule needs several inside half an hour.
 # Alert rules for the remediation workflow.
 #
 # Rules in the mitig8it-remediation group query metrics that the control plane
@@ -17,7 +21,7 @@ groups:
           summary: "A remediation GitHub write needs reconciliation"
           runbook_url: "docs/runbooks/remediation.md#ambiguous-github-write"
       - alert: Mitig8itRemediationLeaseReclaim
-        expr: increase(mitig8it_remediation_lease_reclaims_total[15m]) > 0
+        expr: increase(mitig8it_remediation_lease_reclaims_total[30m]) > 3
         for: 10m
         labels: {severity: warning}
         annotations:
