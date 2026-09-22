@@ -1,7 +1,8 @@
 import hashlib
 import os
 import time
-from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, List
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -268,12 +269,9 @@ def dependency_findings(path: str, patch: str) -> List[Dict[str, Any]]:
     return findings
 
 
-def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
-    if len(payload.files) > 300:
-        raise ValueError("Too many files in PR payload")
-
+def pattern_findings(scannable_files: List[ChangedFile]) -> List[Dict[str, Any]]:
+    """Tier 1: regex rules and dependency risk patterns over the reviewable patch text."""
     findings: List[Dict[str, Any]] = []
-    scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
     repo_has_llm_flow = any(likely_llm_repo(f.path, f.patch) for f in scannable_files)
 
     for changed_file in scannable_files:
@@ -296,12 +294,41 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
 
         findings.extend(dependency_findings(path, patch))
 
-    try:
-        opengrep_files = [{"path": f.path, "patch": f.patch} for f in scannable_files]
-        opengrep_findings = run_opengrep(opengrep_files)
-        findings.extend(opengrep_findings)
-    except Exception as e:
-        raise RuntimeError("Required OpenGrep analysis failed") from e
+    return findings
+
+
+def run_tiers_concurrently(
+    tier1: Callable[[], List[Dict[str, Any]]],
+    tier2: Callable[[], List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Runs both tiers at once and returns tier 1 findings followed by tier 2 findings.
+
+    The merge order is fixed by tier, not by completion time, so fingerprints,
+    clustering and the published review are stable across runs. A tier 2 failure
+    fails the scan closed even when tier 1 finished cleanly; tier 1 is never
+    reported alone as if it were the whole analysis.
+    """
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="analysis-tier") as pool:
+        tier1_future = pool.submit(tier1)
+        tier2_future = pool.submit(tier2)
+        tier1_findings = tier1_future.result()
+        try:
+            tier2_findings = tier2_future.result()
+        except Exception as e:
+            raise RuntimeError("Required OpenGrep analysis failed") from e
+    return [*tier1_findings, *tier2_findings]
+
+
+def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
+    if len(payload.files) > 300:
+        raise ValueError("Too many files in PR payload")
+
+    scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
+    opengrep_files = [{"path": f.path, "patch": f.patch} for f in scannable_files]
+    findings = run_tiers_concurrently(
+        lambda: pattern_findings(scannable_files),
+        lambda: run_opengrep(opengrep_files),
+    )
 
     try:
         file_patches = {f.path: f.patch for f in scannable_files}
@@ -328,26 +355,8 @@ def analyze_tier1_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
     if len(payload.files) > 300:
         raise ValueError("Too many files in PR payload")
 
-    findings: List[Dict[str, Any]] = []
     scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
-    repo_has_llm_flow = any(likely_llm_repo(f.path, f.patch) for f in scannable_files)
-
-    for changed_file in scannable_files:
-        path = changed_file.path
-        patch = changed_file.patch or ""
-        if len(patch) > 200_000:
-            continue
-        for rule in SECURITY_RULES:
-            if rule.category == "unsafe LLM/prompt injection patterns" and not repo_has_llm_flow:
-                continue
-            if not pattern_matches_reviewable_content(patch, rule.pattern):
-                continue
-            if rule.category == "path traversal" and has_path_containment_guard(patch, rule.pattern):
-                # The read resolves the candidate path and rejects anything outside the
-                # base directory, which is what the taint rule accepts as a sanitizer.
-                continue
-            findings.append(generate_finding(rule, path, patch))
-        findings.extend(dependency_findings(path, patch))
+    findings = pattern_findings(scannable_files)
 
     normalized = cluster_findings(classify_findings(findings))
     return {
@@ -444,8 +453,12 @@ async def metrics(request: Request):
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
+# The analysis handlers are plain functions on purpose. They run a semgrep
+# subprocess with a two-minute timeout and blocking LLM HTTP calls; as `async def`
+# they ran on the event loop and one request stalled every other request,
+# including /health. FastAPI runs plain functions in its threadpool.
 @app.post("/analyze/pr")
-async def analyze_pr(payload: AnalyzePRRequest, request: Request):
+def analyze_pr(payload: AnalyzePRRequest, request: Request):
     require_internal_auth(request)
     try:
         return analyze_pull_request_payload(payload)
@@ -454,7 +467,7 @@ async def analyze_pr(payload: AnalyzePRRequest, request: Request):
 
 
 @app.post("/analyze/pr/tier1")
-async def analyze_pr_tier1(payload: AnalyzePRRequest, request: Request):
+def analyze_pr_tier1(payload: AnalyzePRRequest, request: Request):
     """Tier 1: Regex pattern matching + dependency checks. Fast (<100ms)."""
     require_internal_auth(request)
     try:
@@ -464,7 +477,7 @@ async def analyze_pr_tier1(payload: AnalyzePRRequest, request: Request):
 
 
 @app.post("/analyze/pr/tier2")
-async def analyze_pr_tier2(payload: AnalyzePRRequest, request: Request):
+def analyze_pr_tier2(payload: AnalyzePRRequest, request: Request):
     """Tier 2: OpenGrep AST analysis with taint tracking (2-5s)."""
     require_internal_auth(request)
     try:
@@ -474,7 +487,7 @@ async def analyze_pr_tier2(payload: AnalyzePRRequest, request: Request):
 
 
 @app.post("/analyze/pr/tier3")
-async def analyze_pr_tier3(payload: TriageRequest, request: Request):
+def analyze_pr_tier3(payload: TriageRequest, request: Request):
     """Tier 3: LLM triage of existing findings. Filters false positives."""
     require_internal_auth(request)
     return triage_findings_payload(payload)
