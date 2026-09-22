@@ -166,10 +166,10 @@ class InProcessSandboxBroker:
     def __init__(self, driver: Any | None = None):
         self.driver = driver or LocalSubprocessDriver()
 
-    async def verify(self, payload: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
+    async def verify(self, payload: dict[str, Any], deadline_seconds: int) -> dict[str, Any]:
         import asyncio
 
-        deadline = int(payload["execution_policy"].get("deadline_seconds") or timeout_seconds)
+        deadline = int(payload["execution_policy"].get("deadline_seconds") or deadline_seconds)
         try:
             result = await asyncio.to_thread(self.driver.execute, payload, deadline)
         except (LocalExecutionError, OSError, KeyError, TypeError, ValueError):

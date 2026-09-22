@@ -219,6 +219,50 @@ def test_the_lease_is_never_shorter_than_three_heartbeat_intervals(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_combining_candidates_keeps_the_lease_alive(monkeypatch, request_payload):
+    """`combine_patch_bundles` runs subprocess syntax and load checks and diffs every hunk pair.
+
+    Called on the loop it stopped every renewal for as long as it took, which for a large
+    batch was longer than the lease. `combine_and_verify` now runs it in a worker thread.
+    A blocking sleep longer than several heartbeat intervals stands in for the subprocesses.
+    """
+    import asyncio
+    import time
+    from types import SimpleNamespace
+
+    import src.engine as engine
+    from src.verification import VerificationResult
+
+    request = RepairRequest.model_validate(request_payload)
+    backend = HeartbeatCountingBackend(request)
+
+    def blocking_combine(req, snapshot, bundles):
+        time.sleep(0.25)
+        return SimpleNamespace(patches=[])
+
+    monkeypatch.setattr(engine, "combine_patch_bundles", blocking_combine)
+
+    class StubVerifier:
+        async def verify(self, req, snapshot, bundle):
+            return VerificationResult("passed", {}, "sha256:" + "4" * 64, None, "independent_sandbox", proven_finding_ids=["f1", "f2"])
+
+    def entry(finding_id):
+        candidate = SimpleNamespace(finding_ids=[finding_id], verified_tree_oid="not-the-combined-tree")
+        return candidate, SimpleNamespace(patches=[]), VerificationResult("passed", {}, None)
+
+    lost = asyncio.Event()
+    renewals = asyncio.create_task(worker.renew_lease(backend, "exec", "worker-a", 60, 0.02, lost))
+    try:
+        combined = await engine.combine_and_verify(request, SimpleNamespace(), StubVerifier(), [entry("f1"), entry("f2")])
+    finally:
+        await worker._cancel(renewals)
+
+    assert combined.verification.status == "passed"
+    # Several renewals across 0.25s of combining, where a blocked loop sends only the first.
+    assert backend.heartbeats >= 3
+
+
+@pytest.mark.asyncio
 async def test_the_claim_and_heartbeat_use_the_configured_lease(monkeypatch, request_payload):
     """The configured lease has to reach the store, or configuring it changes nothing."""
     import asyncio
