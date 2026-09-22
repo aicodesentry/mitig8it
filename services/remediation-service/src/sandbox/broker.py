@@ -24,8 +24,19 @@ class BrokerEvidenceError(RuntimeError):
     pass
 
 
+# The policy's `request_timeout_seconds` is the sandbox deadline: the budget the broker
+# enforces across every baseline and candidate check. The transport must wait longer than
+# that, otherwise a verification that the broker is still allowed to finish is abandoned
+# client-side and reported as the broker being unavailable.
+CLIENT_TIMEOUT_MARGIN_SECONDS = 30
+
+
+def client_timeout_seconds(deadline_seconds: int) -> int:
+    return int(deadline_seconds) + CLIENT_TIMEOUT_MARGIN_SECONDS
+
+
 class SandboxBroker(Protocol):
-    async def verify(self, payload: dict[str, Any], timeout_seconds: int) -> dict[str, Any]: ...
+    async def verify(self, payload: dict[str, Any], deadline_seconds: int) -> dict[str, Any]: ...
 
 
 class HttpSandboxBroker:
@@ -64,7 +75,7 @@ class HttpSandboxBroker:
             raise BrokerConfigurationError("sandbox broker is not fully configured")
         return cls(**values)
 
-    async def verify(self, payload: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
+    async def verify(self, payload: dict[str, Any], deadline_seconds: int) -> dict[str, Any]:
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
@@ -72,15 +83,9 @@ class HttpSandboxBroker:
         }
         client = self._client or httpx.AsyncClient()
         owns_client = self._client is None
+        timeout = httpx.Timeout(client_timeout_seconds(deadline_seconds))
         try:
-            response = await client.post(
-                f"{self.base_url}/v1/verifications",
-                json=payload,
-                headers=headers,
-                timeout=httpx.Timeout(timeout_seconds),
-            )
-            response.raise_for_status()
-            data = response.json()
+            data = await self._post_verification(client, payload, headers, timeout)
         except asyncio.CancelledError:
             try:
                 await client.delete(
@@ -97,6 +102,29 @@ class HttpSandboxBroker:
                 await client.aclose()
         self._validate_attestation(data, payload)
         return data
+
+    async def _post_verification(
+        self, client: httpx.AsyncClient, payload: dict[str, Any], headers: dict[str, str], timeout: httpx.Timeout
+    ) -> Any:
+        # A client-side timeout is retried once with the same Idempotency-Key. The broker
+        # owns the execution under that key: if it has finished, the repeat returns the
+        # attested evidence; if it is still running, the repeat waits for it. The repeat
+        # never starts a second execution. Any other transport failure is not retried.
+        for attempt in (1, 2):
+            try:
+                response = await client.post(
+                    f"{self.base_url}/v1/verifications",
+                    json=payload,
+                    headers=headers,
+                    timeout=timeout,
+                )
+            except httpx.TimeoutException:
+                if attempt == 2:
+                    raise
+                continue
+            response.raise_for_status()
+            return response.json()
+        raise AssertionError("unreachable")
 
     def _validate_attestation(self, data: Any, request: dict[str, Any]) -> None:
         if not isinstance(data, dict):
