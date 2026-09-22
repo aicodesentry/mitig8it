@@ -35,6 +35,38 @@ class TestBrokenAccessControl:
     def test_safe_route_with_auth(self):
         assert not _find("auth.bypass.missing_check").pattern.search("app.get('/public', handler)")
 
+    # Sensitive routes with no auth token on the route line.
+    @pytest.mark.parametrize("line", [
+        "app.get('/admin/users', handler)",
+        "router.post('/internal/reindex', reindexHandler)",
+        "router.delete('/user/:id', deleteUser)",
+        "app.put('/private/config', updateConfig)",
+        '@app.get("/settings")',
+        '@app.post("/admin/config")',
+        "router.get('/users/:id', async (req, res) => res.json(await loadUser(req.params.id)))",
+    ])
+    def test_unauthenticated_sensitive_route_is_reported(self, line):
+        assert _find("auth.bypass.missing_check").pattern.search(line), line
+
+    # The same routes guarded on the route line. The previous pattern reported every one
+    # of these: its exclusion was a lookahead after a greedy `.*`, which always succeeds.
+    @pytest.mark.parametrize("line", [
+        "app.get('/admin/users', requireAuth, handler)",
+        "router.post('/internal/reindex', passport.authenticate('jwt', { session: false }), reindexHandler)",
+        "app.delete('/user/:id', jwtMiddleware, deleteUser)",
+        "router.get('/settings', ensureSession, handler)",
+        "router.get('/private/config', isAuthenticated, handler)",
+        "app.get('/admin', permissionGuard('admin'), handler)",
+        "router.put('/user/:id', protect, updateUser)",
+        "app.post('/internal/jobs', authMiddleware, enqueueJob)",
+        '@app.get("/admin/users", dependencies=[Depends(require_admin)])',
+        '@router.get("/users/{id}", dependencies=[Depends(get_current_user)])',
+        '@app.get("/settings", dependencies=[Depends(JWTBearer())])',
+        '@app.post("/admin/config", dependencies=[Depends(login_required)])',
+    ])
+    def test_authenticated_sensitive_route_is_not_reported(self, line):
+        assert not _find("auth.bypass.missing_check").pattern.search(line), line
+
     def test_path_traversal_concat(self):
         assert _find("path.traversal.user_path").pattern.search('open("/data/" + filename)')
 

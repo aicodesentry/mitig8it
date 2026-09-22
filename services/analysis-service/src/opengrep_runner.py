@@ -607,6 +607,28 @@ def _build_finding(
     return finding
 
 
+class ScanPathError(RuntimeError):
+    """A request-supplied path would land outside the scan directory."""
+
+
+def contained_scan_path(root: Path, relative_path: str) -> Path:
+    """The file under `root` that a snapshot entry may be written to.
+
+    Entry paths come from the request. `Path(root) / path` discards `root` for an
+    absolute path and `..` climbs out of it, so the target is resolved (which also
+    follows any symlink already under `root`) and must remain inside the resolved root.
+    """
+    if not relative_path or Path(relative_path).is_absolute():
+        raise ScanPathError(f"OpenGrep refused a path outside the scan directory: {relative_path!r}")
+    resolved_root = root.resolve()
+    target = (resolved_root / relative_path).resolve()
+    if target == resolved_root or not target.is_relative_to(resolved_root):
+        raise ScanPathError(f"OpenGrep refused a path outside the scan directory: {relative_path!r}")
+    # The unresolved form keeps the file under the directory semgrep is pointed at, so
+    # reported paths map back to the request the same way they did before.
+    return root / relative_path
+
+
 def _scan_batch(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Scan one batch. Any failure raises, so the tier fails closed."""
     findings: List[Dict[str, Any]] = []
@@ -614,7 +636,7 @@ def _scan_batch(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     with tempfile.TemporaryDirectory(prefix="mitig8it_") as tmpdir:
         extracted_content_by_path: Dict[str, str] = {}
         for entry in batch:
-            file_path = Path(tmpdir) / entry["path"]
+            file_path = contained_scan_path(Path(tmpdir), entry["path"])
             file_path.parent.mkdir(parents=True, exist_ok=True)
             extracted_content_by_path[entry["path"]] = entry["content"]
             file_path.write_text(entry["content"], encoding="utf-8")

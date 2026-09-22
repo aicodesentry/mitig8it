@@ -124,6 +124,9 @@ class Verifier:
         }
         payload = {**core, "request_digest": digest_json(core)}
         try:
+            # The policy value is the sandbox deadline the broker enforces; the transport
+            # derives its own, longer, wait from it so it never gives up on a verification
+            # the broker is still allowed to finish.
             evidence = await self.broker.verify(payload, request.policy.request_timeout_seconds)
             level = self._verification_level(evidence)
             if level == DEVELOPMENT_VERIFICATION_LEVEL and not request.policy.allow_development_verification:

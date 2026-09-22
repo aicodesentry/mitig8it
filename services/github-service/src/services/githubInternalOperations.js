@@ -30,29 +30,117 @@ function validateOwnerRepo(owner, repo) {
   }
 }
 
-async function githubRequest(method, url, token, data) {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      return await axios({
-        method,
-        url,
-        data,
-        timeout: 25000,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-      });
-    } catch (error) {
-      const status = error.response?.status;
-      const retryable = [429, 500, 502, 503, 504].includes(status);
-      if (!retryable || attempt === maxAttempts) throw error;
-      const delayMs = 1000 * Math.pow(2, attempt - 1);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+const GITHUB_TIMEOUT_MS = 25000;
+const READ_METHODS = new Set(['get', 'head']);
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+function githubHeaders(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+}
+
+// GitHub sends Retry-After either as a delay in seconds or as an HTTP date.
+function retryAfterMs(value, now) {
+  if (value === undefined || value === null || value === '') return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
+// A read can be repeated freely, so the reader retries a transient failure with
+// jittered backoff and honours Retry-After. It refuses mutating methods: a retry of a
+// POST after a 502 that GitHub had already applied created duplicate comments.
+class GitHubReader {
+  constructor({ maxAttempts = 4, baseDelayMs = 1000, maxDelayMs = 60000, sleep, now, random } = {}) {
+    this.maxAttempts = maxAttempts;
+    this.baseDelayMs = baseDelayMs;
+    this.maxDelayMs = maxDelayMs;
+    this.sleep = sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.now = now || Date.now;
+    this.random = random || Math.random;
+  }
+
+  async request(method, url, token, data) {
+    const verb = String(method).toLowerCase();
+    if (!READ_METHODS.has(verb)) throw new Error(`GitHubReader refuses ${verb.toUpperCase()}; mutations go through GitHubWriter`);
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await axios({ method: verb, url, data, timeout: GITHUB_TIMEOUT_MS, headers: githubHeaders(token) });
+      } catch (error) {
+        const status = error.response?.status;
+        if (!RETRYABLE_STATUSES.has(status) || attempt === this.maxAttempts) throw error;
+        await this.sleep(this.delayMs(attempt, error.response?.headers?.['retry-after']));
+      }
     }
   }
+
+  delayMs(attempt, retryAfter) {
+    const requested = retryAfterMs(retryAfter, this.now());
+    if (requested !== null) return Math.min(requested, this.maxDelayMs);
+    // Full jitter keeps a burst of readers that failed together from retrying together.
+    const ceiling = Math.min(this.baseDelayMs * 2 ** (attempt - 1), this.maxDelayMs);
+    return Math.round(ceiling * (0.5 + this.random() * 0.5));
+  }
+}
+
+// A write is sent exactly once. When the response is lost (timeout, connection error,
+// 5xx) GitHub may or may not have applied it, so the writer reports that as an
+// ambiguous outcome rather than retrying or failing. The caller decides how to
+// reconcile: the remediation writes return `reconciling` to the control plane, and
+// the analysis writes report the ambiguity because their next run reads GitHub
+// (comment by marker, review by body and commit, check run by name) before writing.
+class GitHubWriter {
+  async request(method, url, token, data) {
+    const verb = String(method).toLowerCase();
+    if (READ_METHODS.has(verb)) throw new Error(`GitHubWriter refuses ${verb.toUpperCase()}; reads go through GitHubReader`);
+    try {
+      const response = await axios({ method: verb, url, data, timeout: GITHUB_TIMEOUT_MS, headers: githubHeaders(token) });
+      return { outcome: 'completed', response };
+    } catch (error) {
+      if (!isAmbiguousWriteError(error)) throw error;
+      const status = error.response?.status;
+      return { outcome: 'ambiguous', reason: status ? `github_status_${status}` : (error.code || 'no_response'), error };
+    }
+  }
+}
+
+// A response was never received, or GitHub answered after it may already have applied
+// the mutation. A 429 is included: GitHub's secondary rate limit can reject a request
+// it has partially processed.
+function isAmbiguousWriteError(error) {
+  const status = error.response?.status;
+  return !status || RETRYABLE_STATUSES.has(status);
+}
+
+class AmbiguousWriteError extends OperationError {
+  constructor(result) {
+    super('GitHub write outcome is unknown; reconcile by reading before retrying', 502, {
+      code: 'github_write_outcome_ambiguous',
+      reason: result.reason,
+    });
+    this.ambiguous = true;
+  }
+}
+
+const githubReader = new GitHubReader();
+const githubWriter = new GitHubWriter();
+
+// Retained name: every read in this module calls it.
+function githubRequest(method, url, token, data) {
+  return githubReader.request(method, url, token, data);
+}
+
+// The analysis writes. An ambiguous outcome surfaces as an error the route reports,
+// never as a retry: the next analysis of the same head reads first, and that read is
+// the reconciliation.
+async function githubAnalysisWrite(method, url, token, data) {
+  const result = await githubWriter.request(method, url, token, data);
+  if (result.outcome === 'ambiguous') throw new AmbiguousWriteError(result);
+  return result.response;
 }
 
 async function fetchPullRequestFiles({ repository_full_name, pull_request_number, installation_id, commit_sha }) {
@@ -162,7 +250,7 @@ async function submitPullRequestReview({ owner, repo, pr_number, installation_id
     const existing = owned.find(review => review.commit_id === commit_sha && review.body === body && review.state === expectedState);
     for (const review of owned) {
       if (review.id !== existing?.id && review.state === 'CHANGES_REQUESTED') {
-        await githubRequest('put',
+        await githubAnalysisWrite('put',
           `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/reviews/${review.id}/dismissals`,
           token, { message: 'Superseded by new analysis run.' });
       }
@@ -181,7 +269,7 @@ async function submitPullRequestReview({ owner, repo, pr_number, installation_id
       })),
     };
 
-    const response = await githubRequest(
+    const response = await githubAnalysisWrite(
       'post',
       `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/reviews`,
       token,
@@ -224,7 +312,7 @@ async function postInlineComment({ owner, repo, pr_number, installation_id, comm
           // a different fingerprint finds a different comment, and a moved head has
           // already refused this publication.
           const nextBody = withPreservedFixBlocks(body, comment.body);
-          if (comment.body !== nextBody) await githubRequest('patch',
+          if (comment.body !== nextBody) await githubAnalysisWrite('patch',
             `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${comment.id}`, token, { body: nextBody });
           return { comment_id: comment.id, url: comment.html_url, success: true };
         }
@@ -247,8 +335,8 @@ async function postInlineComment({ owner, repo, pr_number, installation_id, comm
 // The one write that creates an inline review comment on the head commit. The analysis
 // and the verified fix publisher both post through it, so a finding comment created for
 // a verified fix has the same shape as one the analysis created. The publisher passes the
-// single-attempt mutation, because a retried ambiguous write could create two comments.
-function createInlineComment({ owner, repo, pr_number, token, commit_sha, path, line, start_line, body, request = githubRequest }) {
+// remediation mutation so an ambiguous outcome reaches its own `reconciling` path.
+function createInlineComment({ owner, repo, pr_number, token, commit_sha, path, line, start_line, body, request = githubAnalysisWrite }) {
   const range = Number.isInteger(Number(start_line)) && Number(start_line) > 0 && Number(start_line) < Number(line)
     ? { start_line: Number(start_line), start_side: 'RIGHT' } : {};
   return request(
@@ -294,7 +382,7 @@ async function createCheckRun({ owner, repo, installation_id, head_sha, conclusi
         && String(check.app?.id) === String(process.env.GITHUB_APP_ID));
       if (existing || checks.length < 100) break;
     }
-    const response = await githubRequest(
+    const response = await githubAnalysisWrite(
       existing ? 'patch' : 'post',
       `https://api.github.com/repos/${owner}/${repo}/check-runs${existing ? `/${existing.id}` : ''}`,
       token,
@@ -311,14 +399,6 @@ async function createCheckRun({ owner, repo, installation_id, head_sha, conclusi
     if (error instanceof OperationError) throw error;
     throw externalError('Failed to create check run', error);
   }
-}
-
-// Remediation writes are deliberately kept separate from githubRequest. That helper
-// retries transient REST failures, which is appropriate for reads but unsafe for a
-// mutation whose response may have been lost after GitHub accepted it.
-function isAmbiguousWriteError(error) {
-  const status = error.response?.status;
-  return !status || [429, 500, 502, 503, 504].includes(status);
 }
 
 async function githubGraphqlMutation(token, query, variables) {
@@ -941,13 +1021,9 @@ async function mergeRemediationAction(payload) {
       throw new OperationError('Pull request is not currently mergeable', 409);
     }
     await assertMergeCapability(envelope, pull, token, verificationCheckName);
-    const response = await axios({
-      method: 'put',
-      url: `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}/merge`,
-      data: { sha: expectedHead, merge_method: mergeMethod },
-      timeout: 25000,
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
-    });
+    const response = await githubRestMutation('put',
+      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/pulls/${envelope.pr_number}/merge`,
+      token, { sha: expectedHead, merge_method: mergeMethod });
     if (!response.data?.merged || !response.data?.sha) throw new OperationError('GitHub did not merge the expected pull request head', 409, response.data);
     return { state: 'merged', operation_id: envelope.action_id, commit_sha: response.data.sha };
   } catch (error) {
@@ -981,20 +1057,13 @@ function assertPullNumberMatches(payload, envelope) {
   }
 }
 
-// A remediation REST write is issued exactly once. githubRequest retries transient
-// failures, which is unsafe when GitHub may already have accepted the mutation.
+// The remediation REST writes. The writer sends once; an ambiguous outcome is rethrown
+// as the transport error so each operation's catch maps it to `reconciling` for the
+// control plane, which owns the durable action identity that reconciliation needs.
 async function githubRestMutation(method, url, token, data) {
-  return axios({
-    method,
-    url,
-    data,
-    timeout: 25000,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-  });
+  const result = await githubWriter.request(method, url, token, data);
+  if (result.outcome === 'ambiguous') throw result.error;
+  return result.response;
 }
 
 async function createRemediationCheckRun(payload) {
@@ -1721,6 +1790,9 @@ async function authorizeRemediationActor(payload) {
 }
 
 module.exports = {
+  AmbiguousWriteError,
+  GitHubReader,
+  GitHubWriter,
   OperationError,
   authorizeRemediationActor,
   cancelScheduledMerge,
@@ -1731,7 +1803,10 @@ module.exports = {
   fetchFileContents,
   fetchPullRequestFiles,
   fetchRemediationSnapshot,
+  githubReader,
   githubRequest,
+  githubRestMutation,
+  githubWriter,
   commitRemediationAction,
   mergeRemediationAction,
   postInlineComment,

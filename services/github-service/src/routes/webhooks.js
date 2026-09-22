@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const { Pool } = require('pg');
+const { ensureInternalAuth } = require('../middleware/internalAuth');
 
 const router = express.Router();
 
@@ -271,8 +272,10 @@ router.post('/github', express.raw({ type: 'application/json' }), async (req, re
   }
 });
 
-// Delete/unregister webhook for a repository
-router.post('/unregister', async (req, res) => {
+// Delete/unregister webhook for a repository. Only the control plane may call it: an
+// unauthenticated caller holding a leaked user token could otherwise silence a
+// repository's analysis by deleting its webhook.
+router.post('/unregister', ensureInternalAuth, async (req, res) => {
   const { repository_full_name, webhook_id, github_token } = req.body;
 
   if (!repository_full_name || !webhook_id || !github_token) {
