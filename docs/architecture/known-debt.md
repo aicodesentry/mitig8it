@@ -88,3 +88,14 @@ Each entry states what the issue is, where it is, and why it was left. None of t
 ## Provenance
 
 There is no issue tracker entry or written review document behind this list. It was reconstructed from the code, from PR 421, and from the residual-risk notes in `HARDENING-TRACKER.md` and `HARDENING-HANDOFF.md`. Every location above was confirmed in the source at the time of writing.
+
+## From the database audit of 2026-09-22
+
+- Budget reservations are a flat 0.05 USD for the snapshotting stage only; settled jobs have cost up to 0.28 USD, so the budget gate cannot refuse an over-budget job. Reserve per stage from the policy estimate (`services/api-service/src/db/remediation.js`, `reserveUsage`; `remediationPolicy.js`, `stageEstimate`).
+- Two old jobs carry numeric gRPC status codes in `failure_reason.code` (3 and 9) from before the error mapper normalised codes; consumers that compare strings miss them. Normalise at the boundary and backfill the two rows.
+- One candidate row from 2026-09-20 has the legacy bare-array `file_manifest` shape; its job is still `ready`. Make the reader tolerant or supersede the job.
+- Sandbox check output tails are persisted in `remediation_job_evidence` without redaction; on a customer repository a harness assertion could echo repository values. Redact or hash values in tails before persisting (`services/api-service/src/services/remediationWorkflow.js`, `buildEvidenceRecords`).
+- Inline fix publication and feedback are not audited in `audit_logs`; apply and merge are. Emit audit rows on both.
+- `evidence_details` is empty on findings persisted before migration 0007; expected, but reports that read it should treat empty as unknown.
+- Autovacuum has not run on the small remediation tables; harmless at the current size, revisit when `remediation_jobs` grows.
+- The application connects as a role with `BYPASSRLS`, so the forced row-level security policies are defined but never enforced in production. Provision a non-bypass runtime role before any second tenant is onboarded.
