@@ -554,7 +554,7 @@ async function completeStage(job, { state, stage, outcome, candidates = [], veri
     const changed = await client.query(
       `UPDATE remediation_jobs SET state=$1, stage=$2, state_version=$3, lease_owner=NULL, lease_expires_at=NULL,
        attempt_count=attempt_count + ($7::int), failure_reason=$4, updated_at=NOW(),
-       next_attempt_at=CASE WHEN $1='queued' THEN NOW() + (LEAST(attempt_count + 1, 6) * INTERVAL '10 seconds') ELSE NOW() END
+       next_attempt_at=CASE WHEN $1='queued' THEN NOW() + (LEAST(attempt_count + 1, 6) * INTERVAL '30 seconds') ELSE NOW() END
        WHERE id=$5 AND fencing_token=$6`,
       [state, stage, nextVersion, reason ? JSON.stringify(reason) : null, row.id, job.fencing_token, consumesAttempt ? 1 : 0]
     );
