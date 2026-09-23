@@ -1,170 +1,125 @@
-import { Link } from 'react-router'
-import { GitPullRequest, ShieldCheck, Workflow } from 'lucide-react'
+import { GitPullRequest, Lock, ShieldCheck, Workflow } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
 import Header from '../components/Header'
 import Footer from '../components/Footer'
+import CtaPair from '../components/CtaPair'
 import ProductSurface from '../components/ProductSurface'
-
-const roadmapSurface = [
-  {
-    title: 'PR review comments',
-    status: 'live',
-    description: 'Mitig8it already operates where engineers review code: inside the pull request.',
-  },
-  {
-    title: 'Dashboard and reports',
-    status: 'live',
-    description: 'Run history and review visibility already exist as part of the current product surface.',
-  },
-  {
-    title: 'Verified fixes',
-    status: 'live',
-    description: 'Each fix is proven by a generated regression test before it is posted.',
-  },
-  {
-    title: 'One-click apply',
-    status: 'live',
-    description: 'Fixes arrive as GitHub suggestions. Applying and merging stay human actions.',
-  },
-]
+import StatusBadge from '../components/StatusBadge'
 
 const principles = [
   {
     icon: GitPullRequest,
     title: 'Start in the pull request',
-    description: 'Mitig8it is built around the idea that security review should happen where engineers already review code, not in a separate console after the fact.',
+    description: 'Findings land where code is already being reviewed.',
   },
   {
     icon: ShieldCheck,
-    title: 'Stay high-signal',
-    description: 'The product is designed to focus on exploitable issues and reduce noise before findings ever reach the reviewer.',
+    title: 'Fix, do not just flag',
+    description: 'Every finding ships with a proven, one-click fix.',
   },
   {
     icon: Workflow,
     title: 'Keep developers in control',
-    description: 'Mitig8it should help teams move faster and merge safer code without taking control away from the engineer.',
+    description: 'Nothing is applied or merged without a human.',
   },
 ]
 
+const liveSurface = [
+  {
+    title: 'Inline findings',
+    status: 'live',
+    description: 'Severity, confidence, CWE on the changed line.',
+  },
+  {
+    title: 'Verified fixes',
+    status: 'live',
+    description: 'Each fix proven by a generated regression test.',
+  },
+  {
+    title: 'One-click apply',
+    status: 'live',
+    description: 'GitHub suggestion or per-finding Apply in the workspace.',
+  },
+  {
+    title: 'Re-analysis after apply',
+    status: 'live',
+    description: 'Residual report posted when the fix lands.',
+  },
+]
+
+const staged = ['More languages and rule families', 'Merge-when-ready (parked, human approval required)']
+
+const sectionHeading = 'text-2xl font-semibold tracking-tight text-white sm:text-3xl'
+
 export default function AboutPage() {
+  const { loginWithGitHub, user } = useAuth()
+
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
       <Header />
 
       <main>
-        <section className="border-b border-neutral-800/60">
-          <div className="mx-auto max-w-5xl px-4 py-16 sm:px-6 lg:px-8 lg:py-20">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-neutral-500">
-              About
-            </p>
-            <h1 className="mt-4 max-w-4xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-              Mitig8it is building a security collaborator for code review.
-            </h1>
-            <p className="mt-6 max-w-3xl text-base leading-8 text-neutral-300">
-              The thesis is simple: real security review should happen inside the pull request, while context is still fresh and engineers can act before merge.
-            </p>
+        {/* Hero */}
+        <section className="relative overflow-hidden">
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-[360px] bg-[radial-gradient(ellipse_60%_100%_at_50%_0%,rgba(16,185,129,0.10),transparent_70%)]" />
+
+          <div className="relative mx-auto max-w-6xl px-4 pt-20 sm:px-6 sm:pt-28 lg:px-8">
+            <div className="mx-auto max-w-3xl text-center">
+              <h1 className="text-balance text-4xl font-bold leading-[1.05] tracking-tight text-white sm:text-5xl">
+                Why Mitig8it exists
+              </h1>
+              <p className="mx-auto mt-6 max-w-xl text-base leading-7 text-neutral-400">
+                Security review belongs in the pull request, with the fix attached.
+              </p>
+            </div>
           </div>
         </section>
 
-        <section className="border-b border-neutral-800/60 bg-neutral-900/35 py-16">
-          <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
-            <div className="max-w-3xl">
-              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-neutral-500">
-                Why it exists
-              </p>
-              <h2 className="mt-3 text-3xl font-semibold tracking-tight text-white">
-                Security tools are often too late or too noisy
-              </h2>
-              <div className="mt-6 space-y-4 text-sm leading-8 text-neutral-300">
-                <p>
-                  Many security tools surface results after merge, in separate dashboards, or in forms that force developers to context-switch. That makes the feedback slower, harder to trust, and easier to ignore.
-                </p>
-                <p>
-                  Mitig8it is being built to close that gap by reviewing pull requests directly in GitHub and returning output that is specific enough to act on during normal code review.
-                </p>
+        {/* Principles */}
+        <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+          <div className="grid gap-8 sm:grid-cols-3 sm:gap-6">
+            {principles.map(({ icon: Icon, title, description }) => (
+              <div key={title}>
+                <span className="flex h-10 w-10 items-center justify-center rounded-full border border-emerald-400/25 bg-emerald-400/10">
+                  <Icon className="h-4 w-4 text-emerald-400" aria-hidden="true" />
+                </span>
+                <h2 className="mt-4 text-base font-semibold text-white">{title}</h2>
+                <p className="mt-1 text-sm leading-6 text-neutral-400">{description}</p>
               </div>
-            </div>
+            ))}
           </div>
         </section>
 
-        <section className="border-b border-neutral-800/60 py-16">
-          <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
-            <div className="max-w-3xl">
-              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-neutral-500">
-                What makes it different
-              </p>
-              <h2 className="mt-3 text-3xl font-semibold tracking-tight text-white">
-                Product principles behind the workflow
-              </h2>
-            </div>
-
-            <div className="mt-8 grid gap-4 md:grid-cols-3">
-              {principles.map((item) => {
-                const Icon = item.icon
-                return (
-                  <div key={item.title} className="rounded-3xl border border-neutral-800 bg-neutral-900/95 p-6 shadow-[0_16px_40px_rgba(0,0,0,0.2)]">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-neutral-950 text-neutral-200">
-                      <Icon className="h-5 w-5" />
-                    </div>
-                    <h3 className="mt-5 text-lg font-semibold text-white">{item.title}</h3>
-                    <p className="mt-3 text-sm leading-7 text-neutral-400">{item.description}</p>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        </section>
-
-        <section className="border-b border-neutral-800/60 bg-neutral-900/35 py-16">
-          <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
-            <div className="max-w-3xl">
-              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-neutral-500">
-                Today and next
-              </p>
-              <h2 className="mt-3 text-3xl font-semibold tracking-tight text-white">
-                Live now in pull requests, expanding over time
-              </h2>
-              <div className="mt-6 space-y-4 text-sm leading-8 text-neutral-300">
-                <p>
-                  Today, Mitig8it is focused on GitHub-native pull request review: inline findings, review summaries, and workflow visibility in the dashboard.
-                </p>
-                <p>
-                  Over time, that foundation expands into richer remediation guidance, stronger repository context, and a more capable security collaborator that still keeps developers in control.
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
-
+        {/* Live today */}
         <ProductSurface
-          eyebrow="What exists now"
-          title="The company story should map cleanly to the product surface"
-          intro="Mitig8it is not trying to sound finished where it is still evolving. The public product story is stronger when current capabilities and upcoming ones are separated clearly."
-          items={roadmapSurface}
+          title="Live today"
+          items={liveSurface}
+          footnote={{ icon: Lock, text: 'Nothing is applied or merged automatically.' }}
         />
 
-        <section className="py-16">
-          <div className="mx-auto max-w-3xl px-4 text-center sm:px-6 lg:px-8">
-            <div className="rounded-3xl border border-neutral-800 bg-neutral-900/95 px-8 py-10 shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
-              <h2 className="text-2xl font-semibold tracking-tight text-white">
-                See the product story in the workflow itself
-              </h2>
-              <p className="mx-auto mt-3 max-w-lg text-sm leading-7 text-neutral-400">
-                The examples and homepage show how Mitig8it turns that thesis into actual pull request review output.
-              </p>
-              <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
-                <Link
-                  to="/examples"
-                  className="inline-flex items-center justify-center rounded-lg bg-white px-6 py-2.5 text-sm font-semibold text-neutral-950 shadow-sm transition hover:bg-neutral-200"
-                >
-                  Open examples
-                </Link>
-                <Link
-                  to="/"
-                  className="inline-flex items-center justify-center rounded-lg border border-neutral-700 px-6 py-2.5 text-sm font-medium text-neutral-300 transition hover:border-neutral-500 hover:text-white"
-                >
-                  View homepage
-                </Link>
-              </div>
+        {/* Staged */}
+        <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+          <h2 className={sectionHeading}>Staged</h2>
+
+          <ul className="mt-8 grid gap-px overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-800 sm:grid-cols-2">
+            {staged.map((item) => (
+              <li
+                key={item}
+                className="flex items-center justify-between gap-3 bg-neutral-950 px-5 py-4"
+              >
+                <span className="text-sm text-neutral-300">{item}</span>
+                <StatusBadge status="progress" className="shrink-0" />
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        {/* Close */}
+        <section className="mx-auto max-w-6xl px-4 pb-20 sm:px-6 sm:pb-24 lg:px-8">
+          <div className="rounded-2xl border border-neutral-800 bg-neutral-900 px-6 py-14 text-center sm:px-16">
+            <h2 className={sectionHeading}>Try it on one repository</h2>
+            <div className="mt-8">
+              <CtaPair user={user} onLogin={loginWithGitHub} />
             </div>
           </div>
         </section>

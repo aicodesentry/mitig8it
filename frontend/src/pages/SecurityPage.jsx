@@ -1,115 +1,77 @@
-import { Link } from 'react-router'
-import { Database, GitBranch, Lock, ScanSearch, ShieldCheck } from 'lucide-react'
+import { Lock } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
 import Header from '../components/Header'
 import Footer from '../components/Footer'
-import { useAuth } from '../contexts/AuthContext'
-import ProductSurface from '../components/ProductSurface'
-import StatusBadge from '../components/StatusBadge'
+import CtaPair from '../components/CtaPair'
+import FixPipeline from '../components/FixPipeline'
 
-const timeline = [
-  {
-    step: '01',
-    title: 'Code enters the review pipeline',
-    icon: GitBranch,
-    summary: 'Mitig8it analyzes pull request changes through a staged security workflow instead of a single opaque pass.',
-    bullets: [
-      'Tier 1 runs deterministic pattern checks for fast first-pass coverage.',
-      'Tier 2 adds structural analysis to inspect riskier code paths and stronger signals.',
-      'Tier 3 triages, clusters, and suppresses weaker duplicates before output reaches the pull request.',
-    ],
-    accent: 'emerald',
-  },
-  {
-    step: '02',
-    title: 'Findings are shaped into review output',
-    icon: ScanSearch,
-    summary: 'The pipeline is designed to increase signal before a developer ever sees a comment.',
-    bullets: [
-      'Findings keep severity, confidence, and supporting evidence attached.',
-      'Clustering reduces repeated comments on the same underlying issue.',
-      'AI is additive to triage and explanation, not a replacement for deterministic analysis or human approval.',
-    ],
-    accent: 'sky',
-  },
-  {
-    step: '03',
-    title: 'User data stays inside clear boundaries',
-    icon: Database,
-    summary: 'Mitig8it only needs review-related repository and pull request data to generate GitHub-native output and preserve run history.',
-    bullets: [
-      'Review evidence persists so findings, reports, and audit trails stay explainable.',
-      'Stored data is limited to what the product needs to present findings and run history.',
-      'Developers remain in control of merges, fixes, and any future remediation flows.',
-    ],
-    accent: 'amber',
-  },
-  {
-    step: '04',
-    title: 'Access and platform controls secure the workflow',
-    icon: Lock,
-    summary: 'Security depends on scoped permissions, authenticated service boundaries, and explicit review controls.',
-    bullets: [
-      'GitHub App installations and repository permissions limit which repos Mitig8it can access.',
-      'Authentication, session handling, and request validation protect dashboard and review flows.',
-      'Internal services communicate through authenticated boundaries rather than open, unauthenticated hops.',
-    ],
-    accent: 'rose',
-  },
+/*
+ * Every line on this page is sourced from the repository:
+ *  - reads: services/github-service/src/services/githubInternalOperations.js
+ *           (fetchPullRequestFiles, fetchRemediationSnapshot,
+ *           assertInstallationRepositoryAndActor) and
+ *           services/api-service/src/services/repoProfiler.js
+ *  - writes: githubInternalOperations.js (createCheckRun,
+ *            submitPullRequestReview, buildFixSection, publishRemediationComment)
+ *  - verification level: README.md "Status" and
+ *    services/remediation-service/src/verification/verifier.py
+ *  - model calls: services/remediation-service/src/engine.py,
+ *    services/analysis-service/src/llm_client.py, docs/getting-started/environment.md
+ *  - data: services/api-service/migrations/*.sql
+ *  - access: docs/getting-started/github-app.md,
+ *    services/github-service/src/middleware/internalAuth.js, README.md
+ */
+
+const reads = [
+  'The pull request diff, capped at 200 changed files.',
+  'The changed files and the files they depend on, capped.',
+  'Manifests and config files, capped at fifteen, for framework detection.',
+  'Nothing outside the installed repositories.',
 ]
 
-const accentClasses = {
-  emerald: {
-    chip: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200',
-    dot: 'bg-emerald-300',
-    card: 'border-emerald-400/20',
-    line: 'bg-emerald-400/30',
-    icon: 'text-emerald-200',
-  },
-  sky: {
-    chip: 'border-sky-400/30 bg-sky-400/10 text-sky-200',
-    dot: 'bg-sky-300',
-    card: 'border-sky-400/20',
-    line: 'bg-sky-400/30',
-    icon: 'text-sky-200',
-  },
-  amber: {
-    chip: 'border-amber-400/30 bg-amber-400/10 text-amber-200',
-    dot: 'bg-amber-300',
-    card: 'border-amber-400/20',
-    line: 'bg-amber-400/30',
-    icon: 'text-amber-200',
-  },
-  rose: {
-    chip: 'border-rose-400/30 bg-rose-400/10 text-rose-200',
-    dot: 'bg-rose-300',
-    card: 'border-rose-400/20',
-    line: 'bg-rose-400/30',
-    icon: 'text-rose-200',
-  },
-}
-
-const trustSurface = [
-  {
-    title: '3-tier PR review pipeline',
-    status: 'live',
-    description: 'Deterministic checks, structural analysis, and final triage already shape the findings that reach GitHub.',
-  },
-  {
-    title: 'GitHub-native review output',
-    status: 'live',
-    description: 'Severity, confidence, and supporting evidence are attached to each review comment today.',
-  },
-  {
-    title: 'Suggested remediation',
-    status: 'progress',
-    description: 'Explanation quality is being extended so findings guide the next engineering action more clearly.',
-  },
-  {
-    title: 'One-click fix flows',
-    status: 'upcoming',
-    description: 'Future fix actions will stay approval-driven rather than silently changing code on behalf of the user.',
-  },
+const writes = [
+  'A check run on the commit.',
+  'Review comments on the changed lines.',
+  'Suggestion blocks under each finding.',
+  'A residual report after a human applies a fix.',
 ]
+
+const modelCalls = [
+  'Template fixes make no model call and charge zero tokens.',
+  'Triage runs on gemini-2.5-flash-lite or gpt-4o-mini; repair on gpt-4o.',
+  'Secret paths are excluded; API keys are stripped from logs.',
+  'Repair models see only the snapshot of changed files and their dependents.',
+]
+
+const dataKept = [
+  'Findings with severity, confidence and evidence.',
+  'Remediation jobs, attempts and actions.',
+  'Verification runs and evidence digests.',
+  'Run history and audit logs.',
+]
+
+const access = [
+  'Contents, pull requests and checks read/write. Metadata read-only.',
+  'Write actions require an actor with repository write access.',
+  'Services authenticate to each other with a shared constant-time secret.',
+  'Merge is off by default behind REMEDIATION_MERGE_ENABLED.',
+]
+
+const sectionHeading = 'text-2xl font-semibold tracking-tight text-white sm:text-3xl'
+
+const FactList = ({ items }) => (
+  <ul className="mt-8 grid gap-px overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-800 sm:grid-cols-2">
+    {items.map((item) => (
+      <li key={item} className="flex items-start gap-3 bg-neutral-950 px-5 py-4">
+        <span
+          className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400"
+          aria-hidden="true"
+        />
+        <span className="text-sm leading-6 text-neutral-400">{item}</span>
+      </li>
+    ))}
+  </ul>
+)
 
 export default function SecurityPage() {
   const { loginWithGitHub, user } = useAuth()
@@ -119,133 +81,100 @@ export default function SecurityPage() {
       <Header />
 
       <main>
-        <section className="border-b border-neutral-800/60">
-          <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 lg:px-8 lg:py-16">
-            <div className="max-w-3xl">
-              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-neutral-500">
-                Security
-              </p>
-              <h1 className="mt-3 text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-                How Mitig8it generates findings and protects review data
+        {/* Hero */}
+        <section className="relative overflow-hidden">
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-[360px] bg-[radial-gradient(ellipse_60%_100%_at_50%_0%,rgba(16,185,129,0.10),transparent_70%)]" />
+
+          <div className="relative mx-auto max-w-6xl px-4 pt-20 sm:px-6 sm:pt-28 lg:px-8">
+            <div className="mx-auto max-w-3xl text-center">
+              <h1 className="text-balance text-4xl font-bold leading-[1.05] tracking-tight text-white sm:text-5xl">
+                What Mitig8it reads, writes, and keeps
               </h1>
-              <p className="mt-5 max-w-2xl text-base leading-8 text-neutral-300">
-                Trust comes from understanding the review pipeline, the data boundaries around it, and the controls that secure the workflow.
+              <p className="mx-auto mt-6 max-w-xl text-base leading-7 text-neutral-400">
+                The exact boundaries of the app, stated plainly.
               </p>
-            </div>
-
-            <div className="mt-8 flex flex-wrap gap-3">
-              <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-4 py-2 text-sm text-emerald-200">
-                <ShieldCheck className="h-4 w-4" />
-                3-tier review pipeline
-              </div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-neutral-700 bg-neutral-900 px-4 py-2 text-sm text-neutral-300">
-                Review data boundaries
-              </div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-neutral-700 bg-neutral-900 px-4 py-2 text-sm text-neutral-300">
-                Scoped access controls
-              </div>
             </div>
           </div>
         </section>
 
-        <section className="py-16">
-          <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
-            <div className="grid gap-8 lg:grid-cols-[0.78fr_1.22fr]">
-              <div className="lg:sticky lg:top-24 lg:self-start">
-                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-neutral-500">
-                  Security timeline
-                </p>
-                <h2 className="mt-3 text-3xl font-semibold tracking-tight text-white">
-                  One flow from code change to protected review output
-                </h2>
-                <p className="mt-4 max-w-md text-sm leading-7 text-neutral-400">
-                  Instead of long security prose, this page explains the review system as a sequence: how findings are produced, what data is handled, and where the controls apply.
-                </p>
-              </div>
+        {/* Reads */}
+        <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+          <h2 className={sectionHeading}>What it reads</h2>
+          <FactList items={reads} />
+        </section>
 
-              <div className="relative">
-                <div className="absolute left-[19px] top-6 bottom-6 hidden w-px bg-neutral-800 md:block" />
-                <div className="space-y-6">
-                  {timeline.map((item) => {
-                    const Icon = item.icon
-                    const accent = accentClasses[item.accent]
+        {/* Writes */}
+        <section className="border-t border-neutral-800">
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+            <h2 className={sectionHeading}>What it writes</h2>
+            <FactList items={writes} />
 
-                    return (
-                      <div key={item.step} className="relative md:pl-14">
-                        <div className={`absolute left-0 top-5 hidden h-10 w-10 items-center justify-center rounded-full border border-neutral-950 md:flex ${accent.dot}`}>
-                          <span className="text-sm font-bold text-neutral-950">{item.step}</span>
-                        </div>
-
-                        <div className={`rounded-3xl border bg-neutral-900/92 p-6 shadow-[0_18px_60px_rgba(0,0,0,0.28)] ${accent.card}`}>
-                          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                            <div className="space-y-3">
-                              <div className="flex flex-wrap items-center gap-3">
-                                <div className={`flex h-11 w-11 items-center justify-center rounded-2xl border border-white/5 bg-neutral-950 ${accent.icon}`}>
-                                  <Icon className="h-5 w-5" />
-                                </div>
-                                <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${accent.chip}`}>
-                                  Step {item.step}
-                                </span>
-                                <StatusBadge status={item.step === '03' ? 'live' : 'live'} />
-                              </div>
-                              <div>
-                                <h3 className="text-2xl font-semibold text-white">{item.title}</h3>
-                                <p className="mt-3 max-w-2xl text-sm leading-7 text-neutral-300">{item.summary}</p>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="mt-6 grid gap-3 sm:grid-cols-1">
-                            {item.bullets.map((bullet) => (
-                              <div key={bullet} className="rounded-2xl border border-neutral-800 bg-neutral-950/95 px-4 py-4 text-sm leading-7 text-neutral-300">
-                                {bullet}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
+            <div className="mt-px flex items-center gap-3 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-5 py-4">
+              <Lock className="h-4 w-4 shrink-0 text-emerald-400" aria-hidden="true" />
+              <p className="text-sm font-medium text-emerald-100">
+                It never commits or merges on its own.
+              </p>
             </div>
           </div>
         </section>
 
-        <ProductSurface
-          eyebrow="Security posture"
-          title="What the trust story should make explicit"
-          intro="Security pages should not sound like policy filler. They should explain what is already running, what is being extended, and how user data stays within clear product boundaries."
-          items={trustSurface}
-        />
+        {/* Verification */}
+        <section className="border-t border-neutral-800">
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+            <h2 className={sectionHeading}>How a fix is verified</h2>
 
-        <section className="border-t border-neutral-800/60 py-16">
-          <div className="mx-auto max-w-3xl px-4 text-center sm:px-6 lg:px-8">
-            <div className="rounded-3xl border border-neutral-800 bg-neutral-900/95 px-8 py-10 shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
-              <h2 className="text-2xl font-semibold tracking-tight text-white">
-                See the review workflow in action
-              </h2>
-              <p className="mt-3 text-sm leading-7 text-neutral-400">
-                The examples page shows how findings move from pull request analysis into GitHub-native review output.
-              </p>
-              <div className="mt-6 flex justify-center">
-                {user ? (
-                  <Link
-                    to="/dashboard"
-                    className="rounded-lg bg-white px-6 py-2.5 text-sm font-semibold text-neutral-950 shadow-sm transition hover:bg-neutral-200"
-                  >
-                    Open workspace
-                  </Link>
-                ) : (
-                  <button
-                    onClick={loginWithGitHub}
-                    className="rounded-lg bg-white px-6 py-2.5 text-sm font-semibold text-neutral-950 shadow-sm transition hover:bg-neutral-200"
-                  >
-                    Get started
-                  </button>
-                )}
-              </div>
+            <FixPipeline className="mt-10" />
+
+            <p className="mt-10 max-w-2xl text-sm leading-6 text-neutral-400">
+              Verification runs in a development-grade local sandbox, without kernel isolation. Each
+              fix says so in its Details.
+            </p>
+          </div>
+        </section>
+
+        {/* Model calls */}
+        <section className="border-t border-neutral-800">
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+            <h2 className={sectionHeading}>Model calls</h2>
+            <FactList items={modelCalls} />
+          </div>
+        </section>
+
+        {/* Data kept */}
+        <section className="border-t border-neutral-800">
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+            <h2 className={sectionHeading}>Data kept</h2>
+            <FactList items={dataKept} />
+            <p className="mt-6 text-sm leading-6 text-neutral-500">
+              Each row is scoped to its GitHub installation.
+            </p>
+          </div>
+        </section>
+
+        {/* Access */}
+        <section className="border-t border-neutral-800">
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+            <h2 className={sectionHeading}>Access</h2>
+            <FactList items={access} />
+          </div>
+        </section>
+
+        {/* Close */}
+        <section className="mx-auto max-w-6xl px-4 py-20 sm:px-6 sm:py-24 lg:px-8">
+          <div className="rounded-2xl border border-neutral-800 bg-neutral-900 px-6 py-14 text-center sm:px-16">
+            <h2 className={sectionHeading}>Try it on one repository</h2>
+            <div className="mt-8">
+              <CtaPair user={user} onLogin={loginWithGitHub} />
             </div>
+            <p className="mt-8 text-sm text-neutral-500">
+              Report a security issue to{' '}
+              <a
+                href="mailto:support@mitig8it.com"
+                className="font-medium text-emerald-400 transition hover:text-emerald-300"
+              >
+                support@mitig8it.com
+              </a>
+            </p>
           </div>
         </section>
       </main>
