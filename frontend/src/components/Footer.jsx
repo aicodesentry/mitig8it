@@ -24,7 +24,7 @@ const Footer = ({ variant = 'landing' }) => {
           <div>
             <Logo variant="dark" />
             <p className="mt-3 max-w-sm text-sm leading-7 text-neutral-500">
-              GitHub-native security review for pull requests, with clear product-state boundaries around what is live now and what is still shipping.
+              Security findings with verified fixes, posted inside the pull request. Nothing merges without you.
             </p>
           </div>
           <div>
