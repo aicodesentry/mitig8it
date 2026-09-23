@@ -2,7 +2,23 @@
 
 This is an offline seed harness for repository-level repairs. It is deliberately not a quality claim: it contains eleven authored fixtures, while the release manifest requires 120 externally reviewed cases before a release gate can pass.
 
-Four JavaScript fixtures validate SQL parameterization, command argument construction, path containment, and a multi-file batch; three Python fixtures validate sqlite3 parameterization, moving a hardcoded credential into the environment, and replacing `eval` with `ast.literal_eval`. Their checked-in original and reference-repaired sources are run by fixed, audited Node or Python assertions (`trusted_fixture_test.runtime` is `node` or `python3`). Negative and adversarial fixtures must abstain: `python-ambiguous-sql` mirrors a query handed to an unknown `execute_query` helper, which the engine skips as `ambiguous_query_api` before any agent runs.
+The eleven fixtures are:
+
+| Fixture | Language | What it covers |
+| --- | --- | --- |
+| `sql-parameterized` | JavaScript | SQL parameterization |
+| `command-arguments` | JavaScript | Command argument construction |
+| `path-containment` | JavaScript | Path containment |
+| `multi-file-batch` | JavaScript | Two findings in two files of one SQL injection chain |
+| `python-sql-sqlite` | Python | sqlite3 parameterization |
+| `python-hardcoded-secret` | Python | Moving a hardcoded credential into the environment |
+| `python-eval` | Python | Replacing `eval` with `ast.literal_eval` |
+| `ambiguous-sql-driver` | JavaScript | Must abstain |
+| `shell-pipeline` | JavaScript | Must abstain |
+| `python-ambiguous-sql` | Python | Must abstain, as `ambiguous_query_api` |
+| `adversarial-readme` | n/a | Must abstain |
+
+Their checked-in original and reference-repaired sources are run by fixed, audited Node or Python assertions (`trusted_fixture_test.runtime` is `node` or `python3`). Negative and adversarial fixtures must abstain: `python-ambiguous-sql` mirrors a query handed to an unknown `execute_query` helper, which the engine skips as `ambiguous_query_api` before any agent runs, and `shell-pipeline` is skipped as `shell_pipeline_unsupported`. An abstention is a pass for those fixtures; a repair would be a failure.
 
 `multi-file-batch` carries two findings in two files of one SQL injection chain. The engine groups them into two connected components, runs one bounded agent loop per group, and combines the two candidates into one batch that is verified again on the union. Either repair alone closes the chain, so each candidate tree and their union all satisfy the fixture's exploit check. A fixture declares extra affected files with `additional_units`, each carrying its own `source`, `reference_repair`, and `finding`.
 
@@ -55,6 +71,17 @@ REMEDIATION_SERVICE_INTERNAL_SECRET=... python benchmarks/remediation/evaluate.p
 Add `--engine-allow-development-verification` when pointing at the compose stack, whose sandbox driver is local, and `--engine-sandbox-image-digest` when pointing at a deployment that verifies with a digest-pinned runner image.
 
 The report's `results_kind` follows the verification level the service reported. `development_unverified` is labelled `pipeline_integrity`. The production level is labelled `repair_quality` only when the operator also passes `--remote-provider live-provider`, because this harness cannot observe which provider a remote service used; without that declaration the production level is labelled `unverified_contract_smoke`. A declaration is not evidence, and no `engine` result can pass the release gate on its own.
+
+## What the numbers mean, and what they do not
+
+A report carries `provider_kind`, `verification_levels`, `results_kind`, sample counts, and the adapter that produced it, because none of those numbers mean the same thing across adapters.
+
+- A pass rate from `reference` measures the authored answer, not the agent. It can only fall below 100% if a fixture, an assertion, or the grader is inconsistent.
+- A pass rate from `engine-local` measures whether the pipeline carries a finding from intake to a verified candidate, given a scripted provider replaying that fixture's reviewed repair. It is `results_kind=pipeline_integrity`. It is not repair quality, and it cannot be compared with a real-model number.
+- An abstention on a negative or adversarial fixture is the expected outcome, so coverage below 100% is correct by construction. Read precision and abstention together, never precision alone.
+- Every in-process adapter verifies in the local subprocess sandbox, so every candidate is `development_unverified` and no result satisfies an isolation gate.
+- The corpus is 11 fixtures against a release manifest that requires 120 externally reviewed cases. Eleven authored cases cannot establish a rate; treat any percentage from this suite as a statement about those eleven files.
+- Nothing here measures the deployed system. No quality metric is collected from live runs, so live precision and abstention rates are unknown.
 
 Known gaps: this seed has no independent external-review signatures, no production sandbox/broker run, and no cryptographic signature verifier. The local driver used by `engine-local` and `engine-live` has no network, kernel, or filesystem isolation, so no result here satisfies an isolation gate. The seed must remain non-promotable until those controls and the configured minimum corpus are supplied.
 

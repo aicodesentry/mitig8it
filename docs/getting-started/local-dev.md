@@ -38,16 +38,30 @@ Run those services standalone or add temporary port mappings if you need direct 
 
 ## Compose Stack
 
-`docker-compose.yml` starts:
+`docker-compose.yml` starts eleven services:
 
 - `postgres` from `postgres:15-alpine`, initialized by `infrastructure/docker/postgres/init.sql`.
 - `api-service` on host port `3000`.
+- `api-worker`, the same image running `node src/workers/index.js`, with `REMEDIATION_WORKER_ENABLED=true`.
 - `github-service` on Docker port `3002`.
 - `analysis-service` on Docker port `8001`.
+- `remediation-service` on host port `8002`.
+- `remediation-worker`, the same image running `python -m src.worker`.
+- `sandbox-broker` on host port `8003`.
+- `otel-collector` on `4317` and `4318`, configured by `infrastructure/remediation/otel/collector-dev.yaml`.
 - `frontend` on host port `5173`.
 - `prometheus` on host port `9090`.
 
 The API waits for Postgres health and starts after the GitHub and analysis containers are started. The API service bootstraps schema locally via `ensureDatabaseSchema()`.
+
+`docker compose up --build` with no service list starts all of them. To work on analysis only, name the services you need. The remediation services are useful on their own:
+
+```bash
+docker compose build remediation-service remediation-worker sandbox-broker
+docker compose up api-service api-worker remediation-service remediation-worker sandbox-broker otel-collector
+```
+
+Compose leaves `REMEDIATION_ENABLED` false, so every remediation capability is off until a developer opts in, and `REPAIR_LLM_BASE_URL`, `REPAIR_LLM_API_KEY`, and `REPAIR_LLM_MODEL` are empty by default, so the repair loop abstains rather than calling a model. Both sandbox attestation gates are false and must stay false: nothing this stack reports can justify setting either to true. See [the remediation runbook](../runbooks/remediation.md) for the rest.
 
 ## Common Commands
 
@@ -131,6 +145,24 @@ npm test
 cd services/analysis-service/src
 pip install -r requirements-test.txt
 pytest tests -q
+
+# Remediation service
+cd services/remediation-service
+pip install -r requirements-test.txt
+python -m pytest tests
+```
+
+Suites that need a disposable database, a browser, or the benchmark harness:
+
+```bash
+cd services/api-service && npm run test:integration:remediation
+cd services/api-service && npm run test:integration:access
+cd services/api-service && npm run test:integration:lifecycle
+cd services/api-service && npm run test:integration:transport
+cd services/github-service && npm run test:remediation
+cd frontend && npm run test:remediation-browser
+python benchmarks/remediation/evaluate.py --suite seed
+python -m unittest benchmarks.remediation.tests.test_evaluate
 ```
 
 ## Observability
@@ -143,7 +175,11 @@ Local Prometheus scrapes:
 - `github-service:3002/metrics`
 - `analysis-service:8001/metrics`
 
+Those three targets are Docker Compose hostnames. Nothing scrapes the deployed services, and no deploy workflow sets an OTLP endpoint, so metrics and traces exist locally only.
+
 In production, metrics endpoints require `x-internal-secret`. Locally, the API and GitHub service only enforce metrics auth when `NODE_ENV=production`; the analysis service always requires internal auth for `/metrics`.
+
+The compose `otel-collector` receives remediation traces from the API, the API worker, and the repair service over `http://otel-collector:4318`. Its development config has no upstream exporter, no tail sampling, and no persistence: it prints redacted telemetry to stdout and keeps nothing.
 
 ## Webhook Testing
 

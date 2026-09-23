@@ -99,13 +99,20 @@ cd services/analysis-service
 uvicorn src.main:app --reload --port 8001
 ```
 
+## Remediation Variables
+
+Remediation has its own variable set, which is not needed for analysis. The API service reads the feature flags, the repair service URL, audience, internal secret, sandbox image digest, token prices, and policy JSON; the repair service reads its execution backend, sandbox driver, worker mode, and the three `REPAIR_LLM_*` provider settings; the broker reads its token and attestation settings. Compose supplies development defaults for all of them and leaves `REMEDIATION_ENABLED` false.
+
+The authoritative list, with the values used by the single-instance development deployment, is in [the remediation runbook](../runbooks/remediation.md). The capability rules, including why `auto_generate` requires generation and publication together, are in the [README](../../README.md).
+
 ## Production
 
 Production values are injected by GitHub Actions and Cloud Run:
 
 - GitHub Actions repository variables provide project IDs, region, frontend/API URLs, and service account metadata.
 - GitHub Actions secrets provide deploy-time tokens such as `FIREBASE_TOKEN`, `CODESENTRY_INTERNAL_SECRET`, and `CODESENTRY_WEBHOOK_SECRET`.
-- GCP Secret Manager provides runtime secrets such as `codesentry-database-url`, `codesentry-jwt-secret`, GitHub App credentials, and `codesentry-gemini-api-key`.
+- GCP Secret Manager provides runtime secrets such as `codesentry-database-url`, `codesentry-jwt-secret`, GitHub App credentials, `codesentry-gemini-api-key`, and the four repair secrets `codesentry-remediation-internal-secret`, `codesentry-repair-llm-base-url`, `codesentry-repair-llm-api-key`, and `codesentry-repair-llm-model`.
+- The remediation feature flags themselves are set on the API service out of band, not by any workflow.
 
 See [cloud-run-firebase.md](../deployment/cloud-run-firebase.md).
 
