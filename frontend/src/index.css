@@ -12,6 +12,8 @@
 @theme {
   --font-sans: 'Manrope', 'Segoe UI', system-ui, sans-serif;
   --font-display: 'Space Grotesk', 'Manrope', 'Segoe UI', system-ui, sans-serif;
+  /* Code surfaces: the PR review preview and any inline diff. */
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 
   /* Link/brand accent. Used by the legal pages. */
   --color-primary-50: #f0f9ff;
