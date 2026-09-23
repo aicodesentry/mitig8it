@@ -112,7 +112,7 @@ Every fix published on 133 and 134 came from the template path at zero model cos
 
 PR 133 in detail: six findings received a verified fix, three in `services/orders.js` (SQL at line 13, command execution at line 26, path containment at line 35, the last of which covers two co-located findings) and two in `text.py` (lines 10 and 15). Three further inline comments carry additional regions of those candidates (`services/orders.js:34` twice, `text.py:2`), which is the second-region publication path. One comment is a coverage revision: the medium null-pointer finding at `services/orders.js:27` is marked as fixed together with the command-execution finding on the same lines rather than claimed separately. The single abstention is `text.py:6`, where the Python static gate declined because the query reaches no known driver `execute()` and a parameterized rewrite cannot be chosen safely. That is a deliberate gate, not a failure, so every finding the service considers repairable on that head received a verified fix.
 
-PR 134 is the post-fix smoke run after PR 421 merged: five findings in one file, four verified fixes, no abstentions.
+PR 134 is the post-fix smoke run after PR 421 merged: five findings in one file, four verified fixes, no abstentions. The fifth is a coverage revision of the same shape as PR 133's, a medium null-pointer finding on the same lines as the command-execution fix, marked as resolved by that fix rather than claimed separately. Three further comments carry additional regions of those candidates, which is why the pull request shows seven review comments for five findings.
 
 ### Python results
 
