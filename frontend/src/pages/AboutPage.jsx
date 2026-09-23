@@ -16,14 +16,14 @@ const roadmapSurface = [
     description: 'Run history and review visibility already exist as part of the current product surface.',
   },
   {
-    title: 'Suggested remediation',
-    status: 'progress',
-    description: 'Guidance is being expanded so the review says what to change next, not only what failed.',
+    title: 'Verified fixes',
+    status: 'live',
+    description: 'Each fix is proven by a generated regression test before it is posted.',
   },
   {
-    title: 'One-click fixes',
-    status: 'upcoming',
-    description: 'The goal is faster approved action, but only after the remediation layer earns trust.',
+    title: 'One-click apply',
+    status: 'live',
+    description: 'Fixes arrive as GitHub suggestions. Applying and merging stay human actions.',
   },
 ]
 

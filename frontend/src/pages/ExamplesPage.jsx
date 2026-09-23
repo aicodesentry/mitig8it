@@ -25,9 +25,9 @@ const mobileCallouts = [
   {
     id: 'fix',
     number: '3',
-    title: 'Recommended fix',
-    status: 'progress',
-    body: 'Coming soon: suggested remediation and one-click fix flows that help engineers act faster.',
+    title: 'Verified fix',
+    status: 'live',
+    body: 'The fix is proven by a generated regression test, then posted as a one-click suggestion.',
   },
 ]
 
@@ -43,14 +43,14 @@ const exampleSurface = [
     description: 'Mitig8it keeps taxonomy and confidence attached so reviewers can judge signal quickly.',
   },
   {
-    title: 'Suggested remediation',
-    status: 'progress',
-    description: 'Guided remediation copy is being added to help engineers move from finding to next action faster.',
+    title: 'Verified fixes',
+    status: 'live',
+    description: 'Each fix is proven by a generated regression test before it is posted.',
   },
   {
-    title: 'One-click fixes',
-    status: 'upcoming',
-    description: 'Approval-driven fix flows are planned after the remediation layer is production-ready.',
+    title: 'One-click apply',
+    status: 'live',
+    description: 'Fixes arrive as GitHub suggestions. Applying and merging stay human actions.',
   },
 ]
 

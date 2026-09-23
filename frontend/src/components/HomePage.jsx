@@ -1,12 +1,20 @@
 import { Link } from 'react-router'
-import { ArrowRight, Check } from 'lucide-react'
-import { useState } from 'react'
+import {
+  ArrowRight,
+  Braces,
+  Check,
+  Download,
+  FileDiff,
+  GitPullRequest,
+  KeyRound,
+  Lock,
+  MousePointerClick,
+} from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import Header from './Header'
 import Footer from './Footer'
 import ProductSurface from './ProductSurface'
-
-const REVIEW_SCREENSHOT_PATH = '/proof/github-pr-xss-review.png?v=2'
+import PullRequestReviewPreview from './PullRequestReviewPreview'
 
 const GitHubIcon = () => (
   <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -18,61 +26,98 @@ const GitHubIcon = () => (
   </svg>
 )
 
-const workflow = [
-  {
-    step: '01',
-    title: 'Install the GitHub App',
-    desc: 'Connect one repository or one organization. No CI config and no YAML setup.',
-  },
-  {
-    step: '02',
-    title: 'Open a pull request',
-    desc: 'Mitig8it reviews the changed lines in the diff and posts the most relevant findings inline.',
-  },
-  {
-    step: '03',
-    title: 'Review and fix in GitHub',
-    desc: 'Developers get severity, confidence, and remediation guidance without leaving the pull request.',
-  },
-]
-
-const proofBullets = [
-  'Inline comments on risky lines',
-  'Severity and confidence on every finding',
-  'Review summaries posted in GitHub',
-]
-
-const productSurface = [
-  {
-    title: 'Inline PR comments',
-    status: 'live',
-    description: 'Mitig8it posts findings on the changed lines that introduced risk, directly inside GitHub.',
-  },
-  {
-    title: 'Severity + confidence',
-    status: 'live',
-    description: 'Each review comment carries enough signal for engineers to judge urgency without another dashboard.',
-  },
-  {
-    title: 'Suggested remediation',
-    status: 'progress',
-    description: 'Remediation guidance is being added so findings explain what to change next, not just what is wrong.',
-  },
-  {
-    title: 'One-click fixes',
-    status: 'upcoming',
-    description: 'Fast approval flows for applying trusted fixes are planned after the core review workflow is stable.',
-  },
-]
-
 const primaryAction =
   'inline-flex items-center justify-center gap-2 rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-neutral-950 transition hover:bg-neutral-200'
 const secondaryAction =
   'inline-flex items-center justify-center gap-2 rounded-lg border border-neutral-800 px-5 py-2.5 text-sm font-medium text-neutral-300 transition hover:border-neutral-600 hover:text-white'
 
+const CtaPair = ({ user, onLogin }) => (
+  <div className="flex flex-col justify-center gap-3 sm:flex-row">
+    {user ? (
+      <Link to="/dashboard" className={primaryAction}>
+        Open workspace
+        <ArrowRight className="h-4 w-4" />
+      </Link>
+    ) : (
+      <button onClick={onLogin} className={primaryAction}>
+        <GitHubIcon />
+        Start with GitHub
+      </button>
+    )}
+    <Link to="/examples" className={secondaryAction}>
+      See sample review
+    </Link>
+  </div>
+)
+
+const heroBullets = [
+  'Inline on the risky line',
+  'Fix proven by a regression test',
+  'Nothing merges without you',
+]
+
+const steps = [
+  {
+    number: '01',
+    icon: Download,
+    title: 'Install the GitHub App',
+    line: 'Connect one repo. No CI config, no YAML.',
+  },
+  {
+    number: '02',
+    icon: GitPullRequest,
+    title: 'Open a pull request',
+    line: 'Findings land inline on the lines that introduced them.',
+  },
+  {
+    number: '03',
+    icon: MousePointerClick,
+    title: 'Apply the verified fix',
+    line: 'One click on the suggestion. You stay in control of merge.',
+  },
+]
+
+const pipeline = [
+  { node: 'Detect', label: 'Rules, AST scan, model triage' },
+  { node: 'Generate', label: 'Template first, model when needed' },
+  { node: 'Prove', label: 'Regression test in a sandbox' },
+  { node: 'Publish', label: 'Suggestion block under the finding' },
+  { node: 'You apply', label: 'Commit it, merge stays yours' },
+]
+
+const liveSurface = [
+  {
+    title: 'Inline findings',
+    status: 'live',
+    description: 'Severity, confidence, CWE on the changed line.',
+  },
+  {
+    title: 'Verified fixes',
+    status: 'live',
+    description: 'Each fix proven by a generated regression test.',
+  },
+  {
+    title: 'One-click apply',
+    status: 'live',
+    description: 'GitHub suggestion or per-finding Apply in the workspace.',
+  },
+  {
+    title: 'Re-analysis after apply',
+    status: 'live',
+    description: 'Residual report posted when the fix lands.',
+  },
+]
+
+const trustItems = [
+  { icon: FileDiff, text: 'Reads only the diff and the files it depends on' },
+  { icon: KeyRound, text: 'Secrets redacted before any model call' },
+  { icon: Braces, text: 'JavaScript and Python today; more families staged' },
+]
+
+const sectionHeading = 'text-2xl font-semibold tracking-tight text-white sm:text-3xl'
+
 const HomePage = () => {
   const { loginWithGitHub, user } = useAuth()
-  const [proofImageUnavailable, setProofImageUnavailable] = useState(false)
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
@@ -83,41 +128,29 @@ const HomePage = () => {
         <section className="relative overflow-hidden">
           <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-[radial-gradient(ellipse_60%_100%_at_50%_0%,rgba(16,185,129,0.10),transparent_70%)]" />
 
-          <div className="relative mx-auto max-w-6xl px-4 pt-24 sm:px-6 sm:pt-32 lg:px-8">
-            <div className="mx-auto max-w-3xl text-center">
+          <div className="relative mx-auto max-w-6xl px-4 pt-20 sm:px-6 sm:pt-28 lg:px-8">
+            <div className="mx-auto max-w-4xl text-center">
               <span className="inline-flex items-center gap-2 rounded-full border border-neutral-800 px-3 py-1 text-xs font-medium text-neutral-400">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                GitHub-native security review
+                GitHub App · Security review with verified fixes
               </span>
 
-              <h1 className="mt-6 text-4xl font-bold leading-[1.05] tracking-tight text-white sm:text-6xl">
-                Catch exploitable code
-                <span className="block text-neutral-500">before merge.</span>
+              <h1 className="mt-6 text-balance text-4xl font-bold leading-[1.05] tracking-tight text-white sm:text-5xl lg:text-[3.5rem]">
+                Findings that come with fixes.
+                <span className="block text-neutral-500">Applied by you, in the PR.</span>
               </h1>
 
-              <p className="mx-auto mt-6 max-w-xl text-lg leading-8 text-neutral-400">
-                Mitig8it posts high-signal security findings directly inside pull requests, where developers already review code.
+              <p className="mx-auto mt-6 max-w-xl text-base leading-7 text-neutral-400 sm:text-lg sm:leading-8">
+                Mitig8it finds exploitable code in every pull request, proves a fix, and posts it as
+                a one-click suggestion.
               </p>
 
-              <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
-                {user ? (
-                  <Link to="/dashboard" className={primaryAction}>
-                    Open workspace
-                    <ArrowRight className="h-4 w-4" />
-                  </Link>
-                ) : (
-                  <button onClick={loginWithGitHub} className={primaryAction}>
-                    <GitHubIcon />
-                    Start with GitHub
-                  </button>
-                )}
-                <Link to="/examples" className={secondaryAction}>
-                  See sample review
-                </Link>
+              <div className="mt-8">
+                <CtaPair user={user} onLogin={loginWithGitHub} />
               </div>
 
               <ul className="mt-8 flex flex-wrap justify-center gap-x-6 gap-y-3 text-sm text-neutral-500">
-                {proofBullets.map((item) => (
+                {heroBullets.map((item) => (
                   <li key={item} className="inline-flex items-center gap-2">
                     <Check className="h-4 w-4 text-emerald-400" aria-hidden="true" />
                     {item}
@@ -125,103 +158,113 @@ const HomePage = () => {
                 ))}
               </ul>
             </div>
-
-            {/* Proof: the product itself, at full width and without card chrome */}
-            <figure className="mt-16 sm:mt-20">
-              {!proofImageUnavailable ? (
-                <div className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900">
-                  <img
-                    src={REVIEW_SCREENSHOT_PATH}
-                    alt="Mitig8it GitHub pull request review showing a high-severity XSS finding with severity, confidence, and remediation guidance"
-                    className="block w-full"
-                    loading="eager"
-                    onError={() => setProofImageUnavailable(true)}
-                  />
-                </div>
-              ) : (
-                <div className="grid gap-px overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-800 sm:grid-cols-2">
-                  {[
-                    ['High', 'Reflected XSS via unescaped user input in template', 'CWE-79'],
-                    ['Medium', 'Missing Content-Security-Policy header', 'CWE-693'],
-                  ].map(([severity, title, tag]) => (
-                    <div key={title} className="bg-neutral-900 px-5 py-6">
-                      <div className="flex items-center gap-2 text-xs font-medium text-neutral-500">
-                        <span className="text-emerald-400">{severity} severity</span>
-                        <span>·</span>
-                        <span>{tag}</span>
-                      </div>
-                      <p className="mt-2 text-sm font-medium text-white">{title}</p>
-                      <p className="mt-1 text-sm leading-6 text-neutral-500">
-                        Posted as an inline comment with remediation context.
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <figcaption className="mt-4 text-center text-sm text-neutral-500">
-                A real finding, posted inline on the pull request that introduced it.
-              </figcaption>
-            </figure>
           </div>
         </section>
 
-        {/* How it works */}
-        <section className="mx-auto max-w-6xl px-4 py-24 sm:px-6 lg:px-8">
-          <div className="max-w-2xl">
-            <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-              From install to first review in three steps
-            </h2>
-            <p className="mt-4 text-base leading-7 text-neutral-400">
-              Keep the first run small. Connect one repository, open one pull request, and see the review land inside GitHub.
-            </p>
-          </div>
+        {/* The product itself */}
+        <section className="mx-auto max-w-6xl px-4 pt-14 sm:px-6 sm:pt-16 lg:px-8">
+          <figure className="m-0">
+            <PullRequestReviewPreview />
+            <figcaption className="mt-4 text-center text-sm text-neutral-500">
+              Mirrors a real review on a test pull request. Nothing here is mocked up beyond the
+              layout.
+            </figcaption>
+          </figure>
+        </section>
 
-          <div className="mt-12 border-t border-neutral-800">
-            {workflow.map((item) => (
-              <div
-                key={item.step}
-                className="grid gap-2 border-b border-neutral-800 py-8 sm:grid-cols-[4rem_1fr] sm:gap-8"
-              >
-                <span className="text-sm font-medium tabular-nums text-neutral-600">{item.step}</span>
-                <div className="max-w-2xl">
-                  <h3 className="text-lg font-semibold text-white">{item.title}</h3>
-                  <p className="mt-2 text-base leading-7 text-neutral-400">{item.desc}</p>
-                </div>
+        {/* Three steps */}
+        <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+          <h2 className={sectionHeading}>Three steps</h2>
+
+          <div className="mt-8 grid gap-8 sm:grid-cols-3 sm:gap-6">
+            {steps.map(({ number, icon: Icon, title, line }) => (
+              <div key={number}>
+                <span className="flex h-10 w-10 items-center justify-center rounded-full border border-emerald-400/25 bg-emerald-400/10">
+                  <Icon className="h-4 w-4 text-emerald-400" aria-hidden="true" />
+                </span>
+                <p className="mt-4 font-mono text-xs text-neutral-600">{number}</p>
+                <h3 className="mt-1 text-base font-semibold text-white">{title}</h3>
+                <p className="mt-1 text-sm leading-6 text-neutral-400">{line}</p>
               </div>
             ))}
           </div>
         </section>
 
+        {/* Pipeline */}
+        <section className="border-t border-neutral-800">
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+            <h2 className={sectionHeading}>How a fix earns its place</h2>
+
+            <ol className="relative mt-10 grid gap-8 sm:grid-cols-5 sm:gap-4">
+              <span
+                className="pointer-events-none absolute left-[11px] top-3 bottom-3 w-px bg-neutral-800 sm:hidden"
+                aria-hidden="true"
+              />
+              <span
+                className="pointer-events-none absolute left-[10%] right-[10%] top-3 hidden h-px bg-neutral-800 sm:block"
+                aria-hidden="true"
+              />
+
+              {pipeline.map((item, index) => (
+                <li
+                  key={item.node}
+                  className="relative flex gap-4 sm:flex-col sm:items-center sm:gap-0 sm:text-center"
+                >
+                  <span
+                    className={`relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border bg-neutral-950 ${
+                      index === pipeline.length - 1
+                        ? 'border-emerald-400 bg-emerald-400/15'
+                        : 'border-emerald-400/40'
+                    }`}
+                    aria-hidden="true"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  </span>
+                  <div className="min-w-0 sm:mt-4">
+                    <p className="text-sm font-semibold text-white">{item.node}</p>
+                    <p className="mt-1 text-sm leading-6 text-neutral-500">{item.label}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
+        </section>
+
+        {/* Live today */}
         <ProductSurface
-          title="What is live today, and what is still shipping"
-          intro="Mitig8it already covers the core pull request review loop. The rest of the roadmap is listed as staged capabilities rather than implied promises."
-          items={productSurface}
+          title="Live today"
+          items={liveSurface}
+          footnote={{ icon: Lock, text: 'Nothing is applied or merged automatically.' }}
         />
 
+        {/* Trust */}
+        <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
+          <h2 className={sectionHeading}>Built to be trusted</h2>
+
+          <div className="mt-8 grid gap-6 sm:grid-cols-3">
+            {trustItems.map(({ icon: Icon, text }) => (
+              <div key={text} className="flex items-start gap-3">
+                <Icon className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" aria-hidden="true" />
+                <p className="text-sm leading-6 text-neutral-400">{text}</p>
+              </div>
+            ))}
+          </div>
+
+          <Link
+            to="/security"
+            className="mt-8 inline-flex items-center gap-2 text-sm font-medium text-emerald-400 transition hover:text-emerald-300"
+          >
+            Read the security page
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </section>
+
         {/* Close */}
-        <section className="mx-auto max-w-6xl px-4 py-24 sm:px-6 lg:px-8">
-          <div className="rounded-2xl border border-neutral-800 bg-neutral-900 px-6 py-16 text-center sm:px-16">
-            <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-              Try it on one repository first
-            </h2>
-            <p className="mx-auto mt-4 max-w-xl text-base leading-7 text-neutral-400">
-              Install the GitHub App, open a pull request, and see the first review land inside GitHub before rolling it out wider.
-            </p>
-            <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
-              {user ? (
-                <Link to="/dashboard" className={primaryAction}>
-                  Open workspace
-                  <ArrowRight className="h-4 w-4" />
-                </Link>
-              ) : (
-                <button onClick={loginWithGitHub} className={primaryAction}>
-                  <GitHubIcon />
-                  Start with GitHub
-                </button>
-              )}
-              <Link to="/examples" className={secondaryAction}>
-                Review sample output
-              </Link>
+        <section className="mx-auto max-w-6xl px-4 pb-20 sm:px-6 sm:pb-24 lg:px-8">
+          <div className="rounded-2xl border border-neutral-800 bg-neutral-900 px-6 py-14 text-center sm:px-16">
+            <h2 className={sectionHeading}>Try it on one repository</h2>
+            <div className="mt-8">
+              <CtaPair user={user} onLogin={loginWithGitHub} />
             </div>
           </div>
         </section>
