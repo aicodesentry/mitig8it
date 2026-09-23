@@ -13,6 +13,12 @@ All project Markdown documentation, except the root [README](../README.md), live
 - [Architecture Overview](architecture/overview.md)
 - [Security Guardrails](architecture/security-guardrails.md)
 - [Known Limitations](architecture/limitations.md)
+- [Known Engineering Debt](architecture/known-debt.md)
+- [Agentic Remediation Ledger](architecture/agentic-remediation-progress.md)
+
+## Runbooks
+
+- [Remediation Operations](runbooks/remediation.md)
 
 ## Deployment
 

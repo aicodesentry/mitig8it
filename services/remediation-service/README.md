@@ -4,13 +4,20 @@ This service turns an authorized exact-commit JavaScript/TypeScript or Python sn
 
 ## Components
 
+- `src/engine.py`: orchestrates one job: grouping, the template pass, the model pass, the focused retry, per-finding splitting, combination, and the evidence report.
 - `src/retrieval`: validates bounded flat snapshots, rejects path traversal/control characters/duplicates, verifies file hashes, and returns provenance-bound scoped reads/searches.
 - `src/agent`: a real configurable OpenAI-compatible provider adapter and a schema-constrained loop capped by tool and candidate-attempt budgets.
 - `src/grouping.py`: connected components of findings over shared file paths, so one bounded agent loop runs per group.
+- `src/families.py`: the five repair families, the two languages, the extension map, and which family is repaired for which language.
+- `src/gates.py`: the static per-finding gates that abstain before any agent runs (`pg_dependency_not_proven`, `shell_pipeline_unsupported`, `ambiguous_query_api`).
+- `src/sites.py`: derives the enclosing site over the exact snapshot, the Express route handler for JavaScript or the Python function or Flask view, with its untrusted inputs. It raises `SiteError` rather than guessing.
+- `src/proofs.py`: generates one deterministic harness regression test per supported finding from that site, before any model call.
+- `src/templates.py`: generates a deterministic hunk per family from the recognized textual shape at the finding, and combines the group's template hunks into one bundle. It declines a shape it does not recognize.
+- `src/splitting.py`: attributes a verified group proposal's hunks to individual findings, so one candidate is rebuilt per proven finding and no hunk owned by an unproven finding ships.
 - `src/telemetry.py`: OpenTelemetry spans for the repair stages, with an attribute allowlist and a redaction guard.
 - `src/patches.py` and `src/git_tree.py`: exact whole-file replacement validation, protected-path enforcement, immutable SHA-256 artifacts, and real Git tree OID calculation with original modes preserved.
 - `src/verification`: constructs baseline/candidate verification work and accepts only authenticated, complete broker evidence.
-- `src/sandbox`: HTTPS broker client, executable Kubernetes/gVisor broker driver, a development-only local subprocess driver, and the trusted materializer shared by both.
+- `src/sandbox`: HTTPS broker client, executable Kubernetes/gVisor broker driver, a development-only local subprocess driver, the trusted materializer shared by both, and the two test harnesses (`harness.js` for Node, under 16 KB; `harness_py.py` for Python, under 40 KB, which is also the Python test runner).
 - `src/executions.py`: the durable PostgreSQL/GCS backend and a development-only SQLite/file backend with the same lease, fencing, retry, and dead-letter semantics.
 - `src/fixtures.py`: converts a `benchmarks/remediation` fixture directory into a complete RepairRequest for development and evaluation runs. It fabricates revision identifiers and must never describe a real repository.
 
@@ -25,6 +32,30 @@ A group proposal is one set of hunks plus one regression test per finding, and e
 Candidates are then combined into one tree and that union is verified again, because per-candidate evidence never covers candidate interaction; a prerequisite hunk two candidates share is applied once, deduplicated by content and location. A later group whose patch changes a line range an already accepted candidate changes is reported `unsupported` with reason `overlapping_candidates` and is left out of the batch; the earlier candidates still ship. Every candidate's `finding_ids` names exactly the finding its evidence covers, and `evidence.groups` records each group's finding IDs, state, reason, and `candidate_ids`, so partial coverage is visible rather than silent.
 
 Before a proposal is accepted, every changed file passes a syntax check, a runtime load check, and a static undefined-name check. The static check parses a Python file with `ast` and rejects a name the change introduces that nothing in the file binds (a builtin, parameter, import, definition, or assignment anywhere in the file) as `undefined_name:<name>`, since such a name raises `NameError` only when its function runs. A star import or a dynamic-scope call makes the check abstain. JavaScript and TypeScript get a lexical equivalent for identifiers the change introduces in call or member position, such as `execFile(...)` added without its `require`.
+
+## Evidence shape
+
+A successful response carries `evidence` with these keys:
+
+| Key | Contents |
+| --- | --- |
+| `context_manifest_digest` | The bound snapshot's manifest digest |
+| `candidate_snapshot_digest` | The candidate tree digest from the combined verification run |
+| `head_tree_oid`, `verified_tree_oid` | The tree the request was bound to, and the tree the batch applies |
+| `verification_level` | `independent_sandbox`, `development_unverified`, or `none` |
+| `verification_run` | The combined run's check results and evidence digest |
+| `batch_manifest` | The immutable manifest, including `file_manifest` with full `contents_base64` and `blob_oid` per changed file |
+| `agent_trace` | One entry per tool call, with argument digests only. A template pass is one `template_patch` step at sequence 0 |
+| `usage` | `input_tokens`, `output_tokens`, `provider_request_ids`. All zero for a group the templates proved |
+| `limitations` | Every required check that did not run, and why |
+| `generated_tests` | The regression tests, tracked separately from the application files |
+| `groups` | One entry per group |
+
+Each `groups[]` entry carries `group_index`, `finding_ids`, `state`, `reason`, `candidate_id`, `candidate_ids`, and, where they apply, `language`, `repaired_finding_ids`, `unproven_findings`, `coverage`, and `reason_evidence`. `reason_evidence` is where the template-first path is visible: `proofs` (`service`, or `model:<reason>` when the site could not be derived), `templates` (`proven`, `not_proven`, `rejected:<code>`, `not_attempted:<reason>`), `candidate_sources` (`template`, `model`, or `retry` per proven finding), and `retries`.
+
+A refusal or a run with no candidate carries `verification_level: "none"` and still carries `context_manifest_digest`, `agent_trace`, `usage`, and `groups`, so a job that repaired nothing is still diagnosable. The response-level `skipped: [{finding_id, code, message}]` names every finding the request carried that no candidate claims.
+
+The control plane persists this evidence per attempt in `remediation_job_evidence` and serves it from `GET /api/remediations/:id/evidence`; this service's own execution records are short-lived. A payload above 256 KB is dropped at persistence time rather than truncated.
 
 ## Telemetry
 
