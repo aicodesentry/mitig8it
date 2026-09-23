@@ -255,6 +255,18 @@ function buildPayload(job, snapshot, findings) {
     limits: { max_files: job.policy_manifest.max_files, max_changed_lines: job.policy_manifest.max_changed_lines, max_attempts: job.policy_manifest.max_attempts, max_tool_calls: job.policy_manifest.max_tool_calls, max_context_tokens: job.policy_manifest.max_context_tokens, max_spend_usd: job.policy_manifest.max_spend_usd } };
 }
 
+// A transient failure is one the next attempt can reasonably survive: the repair
+// service or the GitHub adapter answering 5xx, Cloud Run aborting a request while an
+// instance is still starting (429 "no available instance" or 503), or a dropped
+// connection. A definite rejection (400, 401, 403, 404, 409, 422) is never retried.
+const TRANSIENT_STATUSES = new Set([429, 502, 503, 504]);
+const TRANSIENT_CODES = new Set(['ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN']);
+function isTransientRepairFailure(error) {
+  const status = Number(error?.response?.status || error?.status || 0);
+  if (status >= 500 || TRANSIENT_STATUSES.has(status)) return true;
+  return TRANSIENT_CODES.has(String(error?.code || ''));
+}
+
 async function executeClaimedJob(job) {
   const started = process.hrtime.bigint();
   const stage = job.stage;
@@ -333,7 +345,7 @@ async function executeClaimedJob(job) {
     metrics.stageAttempts.labels(stage, result.state).inc();
     metrics.stageDuration.labels(stage, result.state).observe(Number(process.hrtime.bigint() - started) / 1e9);
   } catch (error) {
-    const retryable = error.response?.status >= 500 || error.code === 'ECONNABORTED' || error.code === 'ECONNREFUSED';
+    const retryable = isTransientRepairFailure(error);
     // attempt_count is consumed by this completion, so compare the resulting count.
     const state = retryable && Number(job.attempt_count) + 1 < Number(job.policy_manifest.max_attempts || 3) ? 'queued' : 'inconclusive';
     await remediationDb.completeStage(job, { state, stage: state === 'queued' ? stage : 'inconclusive', outcome: error.code || 'repair_failure', reason: { code: error.code || 'repair_failure', message: 'Repair stage could not be completed safely' } });
@@ -342,5 +354,5 @@ async function executeClaimedJob(job) {
   }
 }
 
-module.exports = { executeClaimedJob, buildPayload, loadSnapshot, repairPolicy, planStageTransition, canonicalStage, stagePathToEnd,
+module.exports = { executeClaimedJob, isTransientRepairFailure, buildPayload, loadSnapshot, repairPolicy, planStageTransition, canonicalStage, stagePathToEnd,
   buildEvidenceRecords, MAX_TRACE_ENTRIES, MAX_OUTPUT_TAIL_BYTES };
