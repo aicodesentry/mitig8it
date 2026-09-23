@@ -11,7 +11,7 @@ The repository is still named `codesentry` and some environment variables, packa
 | Frontend | `frontend/` | 5173 | React 18 and Vite dashboard: onboarding, repositories, pull request reports, findings, suppressions, remediation panel. |
 | API service | `services/api-service/` | 3000 | Control plane. Auth, GitHub OAuth, webhook ingest, PostgreSQL persistence, analysis orchestration, remediation policy and job control, dashboard REST APIs, migrations. |
 | API worker | `services/api-service/`, `node src/workers/index.js` | none | Control-plane polling worker: remediation job stages, outbox dispatch, reconciliation. Refuses to start without `REMEDIATION_WORKER_ENABLED=true`. |
-| GitHub service | `services/github-service/` | 3002 | GitHub App adapter. Fetches changed files and repair snapshots, publishes comments, reviews, check runs, and remediation commits. Reads and writes are split (see below). |
+| GitHub service | `services/github-service/` | 3002 | GitHub App adapter. Fetches changed files and repair snapshots, publishes comments, reviews, check runs, and remediation commits. Reads and writes are split: reads retry with jittered backoff, writes are sent once and an ambiguous outcome is settled by reading history. |
 | Analysis service | `services/analysis-service/` | 8001 | FastAPI detection engine: regex and dependency rules, OpenGrep, optional LLM triage. |
 | Remediation service | `services/remediation-service/` | 8002 | FastAPI repair service. Turns an exact-commit snapshot and confirmed findings into verified candidates. It proposes patches only and never writes to GitHub. |
 | Remediation worker | `services/remediation-service/`, `python -m src.worker` | none | Durable repair job execution, leases, fencing, spend accounting. |
