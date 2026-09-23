@@ -125,6 +125,7 @@ jobs:
           gcloud run deploy codesentry-remediation \
             --image "$IMAGE" \
             --region '${{ vars.GCP_REGION }}' \
+            --no-cpu-throttling \
             --project '${{ vars.GCP_PROJECT_ID }}' \
             --platform managed \
             --max-instances 1 \

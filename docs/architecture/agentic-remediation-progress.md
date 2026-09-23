@@ -140,6 +140,11 @@ Suite counts reported on that pull request, each run locally: analysis-service 3
 
 A follow-up, PR 422 (`b9d2e796`), quieted the lease reclaim alert after a day of deliberate failure testing: the rule now needs more than three reclaims in thirty minutes, and the rules file header states that the rules must be imported with no data handled as NoData or OK, because the pending group queries metrics no service emits.
 
+
+Deployment note: codesentry-api and codesentry-remediation run with CPU always allocated (Cloud Run `--no-cpu-throttling`). Their background workers (analysis queue, remediation dispatch, reconciler, in-process repair worker) starve when CPU is only allocated during requests; that starvation caused the stalled runs of 2026-09-19. The setting was first applied by hand and is now declared in the deploy workflows. Instances still scale to zero when idle.
+
+Resolved observation: the second residual report on test-only PR 127 said "Remaining open findings: 0" while listing four unrepaired findings. Cause: the app's verification analysis run was re-pointed by the duplicate webhook run for the same commit, so the count came from the wrong run. Fixed in PR 402 by scoping the count to the immutable analysis snapshot; reports published after that PR are correct.
+
 ## Not done, as of 2026-09-22
 
 | Item | Where it stands |

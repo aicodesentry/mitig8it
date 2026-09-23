@@ -123,6 +123,7 @@ jobs:
           gcloud run deploy codesentry-api \
             --image "$IMAGE" \
             --region '${{ vars.GCP_REGION }}' \
+            --no-cpu-throttling \
             --project '${{ vars.GCP_PROJECT_ID }}' \
             --platform managed \
             --update-env-vars "\
