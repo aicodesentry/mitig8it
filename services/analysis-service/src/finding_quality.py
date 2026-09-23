@@ -354,6 +354,17 @@ def cluster_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         supporting_detectors = _merge_unique([detector_kind(finding) for finding in cluster if detector_kind(finding) != detector_kind(primary)])
 
         merged = dict(primary)
+        # The union of the rule ids that detected this flaw, the survivor's first. Downstream
+        # mapping by rule id (the remediation service's repair families) then still resolves
+        # the finding whichever tier's rule id survived the merge. It also travels in the
+        # evidence extras, the one map on the finding that crosses the gRPC contract intact.
+        merged_rule_ids = _merge_unique([primary.get("rule_id"), *supporting_rules])
+        merged["merged_rule_ids"] = merged_rule_ids
+        details = dict(merged.get("evidence_details") or {})
+        extra = dict(details.get("extra") or {})
+        extra["merged_rule_ids"] = merged_rule_ids
+        details["extra"] = extra
+        merged["evidence_details"] = details
         anchor = _choose_review_anchor(cluster, primary)
         merged["confidence"] = min(
             0.99,

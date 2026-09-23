@@ -554,7 +554,10 @@ def _build_finding(
         category=metadata.get("category", "security"),
         cwe_id=metadata.get("cwe", None),
         owasp_category=metadata.get("owasp", None),
-        internal_type=metadata.get("internal_type", check_id),
+        # No internal type unless the rule states one. Passing the check id here made the
+        # taxonomy return `cwe-89.sql-template-literal` instead of `sql_injection`, so a
+        # tier 2 finding never clustered with the tier 1 finding for the same flaw.
+        internal_type=metadata.get("internal_type"),
         title=match.get("extra", {}).get("message", check_id),
         description=match.get("extra", {}).get("message", ""),
         file_path=file_path,
