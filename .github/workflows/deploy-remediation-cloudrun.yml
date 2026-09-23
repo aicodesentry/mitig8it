@@ -130,7 +130,7 @@ jobs:
             --platform managed \
             --max-instances 1 \
             --min-instances 0 \
-            --concurrency 1 \
+            --concurrency 4 \
             --memory 1Gi \
             --cpu 1 \
             --timeout 900 \
