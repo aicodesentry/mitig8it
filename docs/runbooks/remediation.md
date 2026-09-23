@@ -2,7 +2,9 @@
 
 ## Preconditions before enabling any remediation flag
 
-Keep `REMEDIATION_ENABLED` false and do not set `SANDBOX_NETWORK_POLICY_ATTESTED=true` or `SANDBOX_NODE_LIMITS_ATTESTED=true` until all of the following have recorded staging evidence:
+These preconditions govern a production configuration, meaning one that claims `independent_sandbox` verification. The single-instance development deployment described near the end of this runbook is the one documented exception: it runs with the flags on, the local execution backend, the local sandbox driver, both attestation gates false, and `REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION=true`, on repositories the operator owns. It produces `development_unverified` results only and is not release evidence.
+
+For anything else, keep `REMEDIATION_ENABLED` false and do not set `SANDBOX_NETWORK_POLICY_ATTESTED=true` or `SANDBOX_NODE_LIMITS_ATTESTED=true` until all of the following have recorded staging evidence:
 
 1. The Terraform variables point to an approved existing project/region, existing KMS key, and globally unique artifact bucket. Confirm the resulting API/worker Workload Identity emails are rendered into their Kubernetes ServiceAccounts.
 2. Immutable images and narrow private CIDRs are supplied through `infrastructure/remediation/render_kubernetes.py`; the runner image digest is allowlisted by the broker.
@@ -15,7 +17,9 @@ The repair API/worker persist durable request/result artifacts in CMEK-protected
 
 ## Environment checklist
 
-The repair service requires `REMEDIATION_SERVICE_INTERNAL_SECRET`, `REPAIR_LLM_BASE_URL`, `REPAIR_LLM_API_KEY`, `REPAIR_LLM_MODEL`, `SANDBOX_BROKER_URL`, `SANDBOX_BROKER_TOKEN`, `SANDBOX_BROKER_ATTESTATION_SECRET`, `SANDBOX_BROKER_ATTESTATION_KEY_ID`, `REMEDIATION_DATABASE_URL`, `REMEDIATION_ARTIFACT_BUCKET`, and `REMEDIATION_ARTIFACT_KMS_KEY`.
+In the production shape, the repair service requires `REMEDIATION_SERVICE_INTERNAL_SECRET`, `REPAIR_LLM_BASE_URL`, `REPAIR_LLM_API_KEY`, `REPAIR_LLM_MODEL`, `SANDBOX_BROKER_URL`, `SANDBOX_BROKER_TOKEN`, `SANDBOX_BROKER_ATTESTATION_SECRET`, `SANDBOX_BROKER_ATTESTATION_KEY_ID`, `REMEDIATION_DATABASE_URL`, `REMEDIATION_ARTIFACT_BUCKET`, and `REMEDIATION_ARTIFACT_KMS_KEY`.
+
+That shape is not what is deployed today. `deploy-remediation-cloudrun.yml` supplies exactly four values from Secret Manager, `codesentry-remediation-internal-secret`, `codesentry-repair-llm-base-url`, `codesentry-repair-llm-api-key`, and `codesentry-repair-llm-model`, and sets the rest as plain environment: `REMEDIATION_EXECUTION_BACKEND=local`, `REMEDIATION_LOCAL_STATE_DIR=/tmp/remediation`, `REMEDIATION_WORKER_INPROCESS=true`, `SANDBOX_BROKER_MODE=inprocess`, `SANDBOX_DRIVER=local`, and both attestation gates false. The four `SANDBOX_BROKER_*` settings are not read in that mode, and the service has no database, no artifact bucket, and no KMS key. The API service receives the same `codesentry-remediation-internal-secret`; the three `REPAIR_LLM_*` secrets are never placed on the API.
 
 The broker requires `SANDBOX_BROKER_TOKEN`, `SANDBOX_BROKER_ATTESTATION_SECRET`, `SANDBOX_BROKER_ATTESTATION_KEY_ID`, `SANDBOX_BROKER_ID`, `SANDBOX_K8S_NAMESPACE`, `SANDBOX_K8S_SERVICE_ACCOUNT=sandbox-no-access`, `SANDBOX_K8S_RUNTIME_CLASS=gvisor`, `SANDBOX_ALLOWED_IMAGE_DIGESTS`, and initially `SANDBOX_NETWORK_POLICY_ATTESTED=false` plus `SANDBOX_NODE_LIMITS_ATTESTED=false`.
 
@@ -35,6 +39,33 @@ With `REMEDIATION_GENERATE_ENABLED` and `REMEDIATION_PUBLISH_ENABLED` both on (t
 1. To stop automatic generation only, set `REMEDIATION_PUBLISH_ENABLED=false`; manual generation from the panel keeps working. To stop both, set `REMEDIATION_GENERATE_ENABLED=false`.
 2. A `remediation.ready` event that fails on the GitHub adapter backs off and dead-letters after `REMEDIATION_OUTBOX_MAX_ATTEMPTS`; a refusal (`publish_disabled`, `head_moved`, `job_not_ready`) is recorded as delivered with nothing written. `remediation_jobs.inline_fixes_head_sha` records the head the sections were written for.
 3. The adapter reads the pull request head before writing and writes nothing when it moved; it edits only comments authored by the app. Applying a suggestion on GitHub is a normal human push that supersedes the job and starts a fresh analysis, exactly like any other push.
+4. A re-analysis of the same head re-renders the finding comments while queuing no new job, so the API republishes the existing ready jobs' fix sections afterwards. Publication is keyed by candidate marker and therefore idempotent; a duplicated fix section means the marker changed, not that republication ran twice.
+5. Generation is automatic whenever the `auto_generate` capability is on. The panel's "Generate fixes" button is the manual path and remains available while `generate` is on, whether or not `publish` is.
+
+## Diagnosing a job
+
+`GET /api/remediations/:id/evidence` is the first thing to read. It is authorized like the preview, it is read-only, and unlike the preview it answers in any job state, including a job that repaired nothing, which is exactly the case an operator needs to see. Nothing it returns can be applied.
+
+It carries `job_id`, `job_state`, `stage`, `head_sha`, `base_sha`, `attempts`, `reason`, a `records[]` index of `{attempt, kind, recorded_at}`, and the persisted payloads by kind:
+
+| Kind | What to look for |
+| --- | --- |
+| `groups` | Per group: the finding IDs, state, reason, and `reason_evidence`, which records whether each finding's proof came from the service or the model, whether its template was `proven`, `not_proven`, `rejected:<code>`, or `not_attempted:<reason>`, and whether each candidate's source was `template`, `model`, or `retry`. This is where a "why did nothing ship" question is answered |
+| `verification` | The baseline and candidate check results, the verification level, and the evidence digest |
+| `agent_trace` | The step sequence with argument digests only. A template pass appears as one `template_patch` step |
+| `usage` | Input and output tokens and provider request IDs. A group the templates proved records zeros |
+| `budget_reservation` | Reserved against settled spend, which is what to check after a provider outage |
+| `candidates` | Per-candidate evidence, including `candidate_source` |
+
+Payloads above 256 KB are dropped at persistence time rather than truncated, so a missing record of a kind that should exist means the payload was oversized, not that the stage did not run.
+
+## Residual report
+
+After an apply completes, meaning after the fresh analysis of the applied commit has finished, the API publishes one report comment per apply action and updates it in place on retry. The same text is used verbatim as the verification check summary. It states who requested the apply and in which commit, lists the applied fixes, then the remaining open findings grouped by file and ordered by severity, then the findings that were not repaired automatically with the reason for each, and ends with "Merging stays a human action on GitHub."
+
+Informational findings in test code are listed separately and do not count toward the blocking total, and the check is green only when no blocking finding remains in the pull request's changed files.
+
+If the report is missing, check that the action reached `completed`; `publishResidualComment` refuses with `action_not_completed` in every earlier state. The reconciler also sweeps for pending residual comments, so a transient GitHub failure resolves without intervention. If the report's remaining count disagrees with the inline finding comments on the same head, trust the inline comments and the database over the count, and record the discrepancy: one such case is on record in the ledger for test-only PR 127.
 
 ## Sandbox or verification failure
 
@@ -48,7 +79,13 @@ With `REMEDIATION_GENERATE_ENABLED` and `REMEDIATION_PUBLISH_ENABLED` both on (t
 1. Stop duplicate workers first; an expired worker must not publish results or issue a GitHub mutation.
 2. Inspect the job state version/fencing token, outbox status, and attempt record. Resume only through the control-plane compare-and-swap claim path.
 3. Reconcile any in-flight external action before reclaiming it. A task delivery or HTTP timeout does not prove the external operation failed.
-4. `mitig8it_remediation_lease_reclaims_total` is incremented by the reconciler's lease sweep. Cross-check it against the job's fencing token history in the audit log before trusting a count.
+4. `mitig8it_remediation_lease_reclaims_total` is incremented by the reconciler's lease sweep. Cross-check it against the job's fencing token history in the audit log before trusting a count. A single reclaim is normal recovery, which is why `Mitig8itRemediationLeaseReclaim` now needs more than three reclaims inside thirty minutes before it fires.
+
+## Alert rules
+
+The rules in `infrastructure/remediation/grafana/alerts/remediation-rules.yaml` are files. Nothing in this repository provisions them, and no deploy workflow points a collector or a scrape target at a deployed service, so importing them is a manual step and the metrics they query are not being collected today.
+
+Import them with "No data" handled as NoData or OK, never as Alerting. The `mitig8it-remediation-pending` group deliberately queries metric names that no service emits yet; the names are fixed in advance so instrumentation does not rename them later. A rule with no series must read as no data. A silent pending rule is not evidence of a healthy system, and while the counters do not exist, use the job and action tables and the audit log instead.
 
 ## Queue, scheduler, and telemetry incidents
 
@@ -178,7 +215,7 @@ What a developer sees on a pull request in this mode:
 | Step | What appears |
 | --- | --- |
 | Finding view | An amber warning on each candidate: "Verification level: development unverified. This fix was not verified in an isolated sandbox.", with the driver's limitations listed beside it. |
-| Generate | A "Generate fixes" button starts one bounded agent loop per finding group; the panel shows the diff and the verification outcome when it finishes. |
+| Generate | Generation is automatic: a job is queued as soon as the head's analysis is published, and the verified fixes appear under the findings on GitHub. The panel's "Generate fixes" button is the manual path for a head whose automatic job did not run or failed. |
 | Apply | Fixes are grouped by file and, within a file, by finding. Each finding shows its recommended fix with an "Apply this fix" button; "Apply all fixes in this file" and "Apply all N verified fixes" remain. One fix is committed on its own verification; several fixes are committed together only as the batch the repair service verified (any other combination is refused with `subset_not_verified`). Every apply is one commit against the exact reviewed head with an expected-head check, made only by explicit request. Buttons are disabled when apply is off, when the head moved, or when the consent digest no longer matches. |
 | After apply | The remaining fixes of that generation are marked stale (the head moved) and shown greyed; "Regenerate remaining fixes" starts a new generation on the new head once its analysis completes. A fresh analysis runs on the applied commit, the app's verification check is published, and one residual report comment per apply (updated in place) lists what was applied and what remains open by file and severity, including findings that were not repaired and why. The check is green only when no open finding of any severity remains in the pull request's changed files; informational test-code findings are listed but do not fail it. Merging stays a human action on GitHub. |
 

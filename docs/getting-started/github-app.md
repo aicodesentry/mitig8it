@@ -4,7 +4,7 @@ Create the GitHub App under account/org `aicodesentry`.
 
 ## Required Permissions
 Repository permissions:
-- Contents: Read-only
+- Contents: Read & write. Read-only is enough for analysis alone. Applying a fix creates a commit on the pull request branch, so the write scope is required whenever `REMEDIATION_APPLY_ENABLED` is on.
 - Pull requests: Read & write
 - Checks: Read & write
 - Metadata: Read-only
