@@ -1,10 +1,15 @@
-"""Where a finding lives: the enclosing Express route handler or Python function.
+"""Where a finding lives: the enclosing route handler, function, or method.
 
 The proof generator and the template patcher both need the same facts about a finding's
 surroundings: which route or function encloses it, how untrusted input enters it, and which
-names the handler binds. This module derives them lexically (JavaScript) or from the `ast`
+names that scope binds. This module derives them lexically (JavaScript) or from the `ast`
 (Python) over the exact snapshot. It never guesses: when the enclosing site cannot be derived,
 it says why, and the caller falls back to the model-written test.
+
+A site is a route when one encloses the finding and a function otherwise, on both sides. The
+route is preferred because it is the reachable entry point, but a repair does not depend on one
+existing: most of a real codebase's vulnerable code sits in the helpers a handler calls, not in
+the handler, and those are proven by calling the function directly.
 """
 from __future__ import annotations
 
@@ -56,16 +61,33 @@ class JsRoute:
     def names(self) -> set[str]:
         return {self.req, self.res}
 
+    @property
+    def parameters(self) -> tuple[str, ...]:
+        return (self.req, self.res)
+
 
 @dataclass(frozen=True)
 class JsFunction:
-    """A named JavaScript function that is not an Express handler, called directly by a proof."""
+    """A named JavaScript function that is not an Express handler, called directly by a proof.
+
+    `kind` says how the name is bound, because that is what decides whether a generated test can
+    reach it: a `function` (a declaration, a const binding, or an `exports.name =` assignment) is
+    reachable as `m.name` once the module exports it, while a `method` hangs off a class or an
+    object literal and needs a receiver the scan cannot construct.
+    """
 
     name: str
     start_line: int
     end_line: int
     parameters: tuple[str, ...]
     returns_directly: bool = False
+    kind: str = "function"  # function | method
+    is_async: bool = False
+    inputs: tuple[UntrustedInput, ...] = ()
+
+    @property
+    def names(self) -> set[str]:
+        return set(self.parameters)
 
 
 @dataclass(frozen=True)
@@ -208,6 +230,29 @@ _JS_FUNCTION_RE = re.compile(
     r"|(?:const|let|var)\s+(?P<name2>[\w$]+)\s*=\s*(?:async\s+)?(?:function\s*[\w$]*\s*)?\((?P<params2>[^()]*)\)\s*(?:=>\s*)?"
     r")"
 )
+# `module.exports.load = function (name) {` and `exports.load = (name) => {`: a declaration whose
+# name is the exported one, so a proof reaches it the same way it reaches a const binding.
+_JS_EXPORT_FUNCTION_RE = re.compile(
+    r"^\s*(?:module\.)?exports\.(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\s*[\w$]*\s*)?"
+    r"\((?P<params>[^()]*)\)\s*(?:=>\s*)?(?=\{)"
+)
+# A method in a class body or an object literal: `read(name) {`, `async read(name) {`,
+# `static read(name) {`. The same line shape opens a control-flow block, so the keywords that
+# take a parenthesized head are refused by name rather than by a longer pattern.
+_JS_METHOD_RE = re.compile(
+    r"^\s*(?:static\s+)?(?:async\s+)?(?P<name>[A-Za-z_$][\w$]*)\s*\((?P<params>[^()]*)\)\s*(?=\{)"
+)
+# `read: function (name) {` and `read: (name) => {` inside an object literal.
+_JS_METHOD_PROPERTY_RE = re.compile(
+    r"^\s*(?P<name>[A-Za-z_$][\w$]*)\s*:\s*(?:async\s+)?(?:function\s*[\w$]*\s*)?"
+    r"\((?P<params>[^()]*)\)\s*(?:=>\s*)?(?=\{)"
+)
+# Words that open a parenthesized block and are not method names.
+_JS_BLOCK_KEYWORDS = frozenset(
+    {"if", "for", "while", "switch", "catch", "with", "do", "else", "try", "return", "function",
+     "const", "let", "var", "class", "export", "import", "new", "typeof", "void", "delete",
+     "await", "yield", "case", "in", "of", "instanceof"}
+)
 _JS_MEMBER_ASSIGNMENT_RE = re.compile(
     r"^\s*(?:const|let|var)\s+(?P<name>[\w$]+)\s*=\s*(?P<root>[\w$]+)(?P<member>(?:\.[\w$]+)*)\s*;?\s*$"
 )
@@ -233,35 +278,71 @@ def _js_brace_end(stripped_lines: list[str], start_index: int, column: int = 0) 
     return None
 
 
+def _js_declaration(text: str) -> tuple[str, str, str, int] | None:
+    """`(name, parameter text, kind, end offset)` for a function a line opens, or None.
+
+    The four shapes are the ones the corpus and the live files carry: a declaration or a const
+    binding (`function parse(raw) {`, `const parse = (raw) => {`), an export assignment
+    (`exports.parse = (raw) => {`), a class or object-literal method (`parse(raw) {`), and an
+    object-literal property (`parse: (raw) => {`).
+    """
+    match = _JS_FUNCTION_RE.match(text)
+    if match:
+        declared = match.group("params") if match.group("name") else match.group("params2")
+        return match.group("name") or match.group("name2"), declared, "function", match.end()
+    match = _JS_EXPORT_FUNCTION_RE.match(text)
+    if match:
+        return match.group("name"), match.group("params"), "function", match.end()
+    for pattern in (_JS_METHOD_PROPERTY_RE, _JS_METHOD_RE):
+        match = pattern.match(text)
+        if match and match.group("name") not in _JS_BLOCK_KEYWORDS:
+            return match.group("name"), match.group("params"), "method", match.end()
+    return None
+
+
 def js_function_for_line(source: str, line: int) -> JsFunction:
     """The named function enclosing `line`, or a SiteError naming what is missing.
 
-    The JavaScript families that live inside a request handler are found with
-    `js_route_for_line`. This is for the ones that do not: a repair of a module's own function is
-    proven by calling that function, so the proof needs its name and its parameters. Two shapes
-    are recognized, the two the corpus and the live files carry: a declaration
-    (`function parse(raw) {`) and a const-bound function or arrow (`const parse = (raw) => {`).
-    A parameter list with a default, a rest element, or destructuring is not one of them, and
-    says so rather than being called with arguments that do not line up.
+    The JavaScript families whose finding sits inside a request handler are found with
+    `js_route_for_line`. This is for every other enclosing scope: a repair of a module's own
+    function is proven by calling that function, so the proof needs its name and its parameters.
+    A parameter list with a default, a rest element, or destructuring cannot be lined up with
+    arguments, and says so rather than being called with a list that does not match.
     """
     lines = source.splitlines()
     stripped = js_strip_strings(source).splitlines()
     if line > len(lines):
         raise SiteError("finding_line_outside_file")
     for index in range(min(line, len(lines)) - 1, -1, -1):
-        match = _JS_FUNCTION_RE.match(lines[index])
-        if not match or "{" not in stripped[index][match.end() :]:
+        found = _js_declaration(lines[index])
+        if not found or "{" not in stripped[index][found[3] :]:
             continue
-        end = _js_brace_end(stripped, index, match.end())
+        name, declared, kind, offset = found
+        end = _js_brace_end(stripped, index, offset)
         if end is None or end < line - 1:
             continue
-        declared = match.group("params") if match.group("name") else match.group("params2")
         written = [item.strip() for item in declared.split(",") if item.strip()]
         if any(not re.fullmatch(r"[\w$]+", item) for item in written):
             raise SiteError("function_parameters_not_plain_names")
         returns = bool(re.match(r"^\s*return\s", lines[line - 1]))
-        return JsFunction(match.group("name") or match.group("name2"), index + 1, end + 1, tuple(written), returns)
+        is_async = bool(re.search(r"(?<![\w$])async(?![\w$])", lines[index][: offset]))
+        return JsFunction(name, index + 1, end + 1, tuple(written), returns, kind, is_async)
     raise SiteError("enclosing_function_not_found")
+
+
+def js_site_for_line(source: str, line: int) -> JsRoute | JsFunction:
+    """The Express route that encloses `line`, else the function that does.
+
+    The route comes first because it is the reachable entry point: when a finding sits in a
+    helper a handler calls, the handler is what a proof can drive and what a repair has to keep
+    working. Only a line no route encloses falls through to its own function.
+    """
+    try:
+        return js_route_for_line(source, line)
+    except SiteError as exc:
+        if exc.code != "enclosing_route_not_found":
+            raise
+    return js_function_for_line(source, line)
 
 
 def js_value_origin(lines: list[str], function: JsFunction, line: int, name: str) -> tuple[str, tuple[str, ...]] | None:
@@ -391,6 +472,9 @@ def js_module_exports_name(source: str, name: str) -> bool:
         rf"module\.exports\.{escaped}\s*=",
         rf"exports\.{escaped}\s*=",
         rf"^\s*export\s+(?:const|let|var)\s+{escaped}(?![\w$])",
+        # `export function parse(...)`, with or without `async`: an ESM module's own declaration
+        # is its export, and reading it as unexported refused every ESM helper.
+        rf"^\s*export\s+(?:default\s+)?(?:async\s+)?function\s*\*?\s+{escaped}(?![\w$])",
         rf"^\s*export\s*\{{[^}}]*(?<![\w$]){escaped}(?![\w$])",
     )
     return any(re.search(pattern, stripped, re.M) for pattern in patterns)
@@ -554,9 +638,9 @@ def python_module_value(source: str, name: str) -> str | None:
     return match.group("value") if match else None
 
 
-def enclosing_site(snapshot: Snapshot, finding: FindingSnapshot, language: str) -> JsRoute | PyFunction:
+def enclosing_site(snapshot: Snapshot, finding: FindingSnapshot, language: str) -> JsRoute | JsFunction | PyFunction:
     source = snapshot.full_content(finding.affected_path)
     line = _finding_line(finding)
     if language == "python":
         return python_function_for_line(source, line)
-    return js_route_for_line(source, line)
+    return js_site_for_line(source, line)

@@ -28,6 +28,7 @@ from .models import FindingSnapshot
 from .retrieval import Snapshot
 from .sites import (
     JS_EVAL_ARGUMENT_RE,
+    JsFunction,
     JsRoute,
     PyFunction,
     SiteError,
@@ -38,7 +39,7 @@ from .sites import (
     js_literal_assignment_in_span,
     js_names_in,
     js_require_line,
-    js_route_for_line,
+    js_site_for_line,
     python_function_for_line,
     python_import_anchor,
     python_module_assignment,
@@ -521,17 +522,23 @@ _JS_OPTIONS_RE = re.compile(r",\s*\{(?P<body>[^{}]*)\}")
 _JS_JOIN_RE = re.compile(r"path\.join\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)")
 
 
-def _js_sql(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> TemplatePatch:
+def _js_sql(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction) -> TemplatePatch:
+    """Interpolated SQL becomes a parameterized query, wherever the query is built.
+
+    The enclosing scope is only ever read as bounds: how far back to look for the assignment
+    that feeds the call, and which names in it are the untrusted ones. A route handler and a
+    plain function answer both questions, so the rewrite is the same in either.
+    """
     path = finding.affected_path
     lines = snapshot.full_content(path).splitlines()
-    sink_line, assign_line, sink_prefix, expression, rest = _sink_and_source(lines, _finding_line(finding), route.start_line, route.end_line, _JS_QUERY_RE)
+    sink_line, assign_line, sink_prefix, expression, rest = _sink_and_source(lines, _finding_line(finding), site.start_line, site.end_line, _JS_QUERY_RE)
     if not rest.startswith(")"):
         raise TemplateError("query_call_has_extra_arguments")
     segments = js_segments(expression)
     if not any(kind == "expr" for kind, _ in segments):
         raise TemplateError("no_interpolated_input")
     text, values = bind_placeholders(segments, lambda n: f"${n}")
-    _reject_fragments(values, lines, route.start_line, sink_line, (), js_segments)
+    _reject_fragments(values, lines, site.start_line, sink_line, site.parameters, js_segments)
     literal = js_string_literal(text)
     array = "[" + ", ".join(js_value(value) for value in values) + "]"
     if assign_line is None:
@@ -617,8 +624,11 @@ def _js_without_shell_option(rest: str) -> str:
     return rest[: match.start()] + replacement + rest[match.end() :]
 
 
-def _js_command(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> TemplatePatch:
+def _js_command(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
     """`exec` of a command string becomes `execFile` with an argument array.
+
+    The rewrite reads and replaces the one call, so it needs no enclosing scope at all: a
+    command built in a helper, a CLI entry point or a route handler is the same edit.
 
     `spawn(command, { shell: true })` takes the same rewrite with the shell option dropped and
     the callee left alone, because `spawn` already takes a file and an argument array: the shell
@@ -684,44 +694,62 @@ def _js_command(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) ->
     return TemplatePatch(finding.stable_id, COMMAND_ARGUMENTS, changes, summary)
 
 
-def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> TemplatePatch:
+def _js_rejection(site: JsRoute | JsFunction) -> str:
+    """The statement that refuses a path escaping the base directory, or a refusal to guess one.
+
+    A route handler owns the response, so answering 400 is the contract it already has. A plain
+    function has no response and no declared failure value: returning `null` breaks a caller
+    that dereferences the result, and throwing breaks one that does not catch. Either is a
+    behaviour change the finding does not authorize, so the template declines and the model
+    reads the callers.
+    """
+    if isinstance(site, JsRoute):
+        return f"return {site.res}.status(400).end();"
+    raise TemplateError("containment_rejection_not_derivable")
+
+
+def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction) -> TemplatePatch:
+    """A `path.join` of untrusted input becomes a resolve plus a containment check.
+
+    This one family does need a route, and not for the reason the other two were thought to:
+    the rewrite has to *reject* an escaping path, and only a handler carries a contract for
+    doing so. A plain function returns a path; whether its caller reads a `null`, catches a
+    throw, or ignores either is not in the code being repaired, and a template that guesses
+    turns a file disclosure into a crash somewhere else. See `_js_rejection`.
+    """
     path = finding.affected_path
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
     if js_require_line(source, "path") is None:
         raise TemplateError("path_module_not_required")
+    rejection = _js_rejection(site)
     join_line = None
-    for number in range(min(line, route.end_line), route.start_line, -1):
+    for number in range(min(line, site.end_line), site.start_line, -1):
         found = _JS_JOIN_RE.search(lines[number - 1])
         if found:
             join_line = number
             break
     if join_line is None:
-        raise TemplateError("path_join_not_found_in_route")
+        raise TemplateError("path_join_not_found_in_scope")
     text = lines[join_line - 1]
     found = _JS_JOIN_RE.search(text)
     base, user_input = found.group("base"), found.group("input")
     indent = text[: len(text) - len(text.lstrip())]
-    taken = js_names_in(lines[route.start_line - 1 : route.end_line])
+    taken = js_names_in(lines[site.start_line - 1 : site.end_line])
     base_name = next(name for name in ("baseDir", "containedBase", "resolvedBase") if name not in taken)
     assignment = _assignment(text)
     if assignment and assignment[2].strip() == found.group(0):
         target = assignment[1]
-        head = [
-            f"{indent}const {base_name} = path.resolve({base});",
-            f"{indent}const {target} = path.resolve({base_name}, String({user_input}));",
-            f"{indent}if ({target} !== {base_name} && !{target}.startsWith({base_name} + path.sep)) return {route.res}.status(400).end();",
-        ]
         tail: list[str] = []
     else:
         target = next(name for name in ("target", "safeTarget", "resolvedTarget") if name not in taken)
-        head = [
-            f"{indent}const {base_name} = path.resolve({base});",
-            f"{indent}const {target} = path.resolve({base_name}, String({user_input}));",
-            f"{indent}if ({target} !== {base_name} && !{target}.startsWith({base_name} + path.sep)) return {route.res}.status(400).end();",
-        ]
         tail = [text.replace(found.group(0), target, 1)]
+    head = [
+        f"{indent}const {base_name} = path.resolve({base});",
+        f"{indent}const {target} = path.resolve({base_name}, String({user_input}));",
+        f"{indent}if ({target} !== {base_name} && !{target}.startsWith({base_name} + path.sep)) {rejection}",
+    ]
     last = max(join_line, line)
     original = lines[join_line - 1 : last]
     replacement = head + tail + lines[join_line:last]
@@ -925,12 +953,17 @@ def _py_command(snapshot: Snapshot, finding: FindingSnapshot, function: PyFuncti
 
 
 def _py_traversal(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunction) -> TemplatePatch:
+    """The same containment rewrite as `_js_traversal`, and the same limit.
+
+    `abort(400)` is a Flask view's contract. A plain function has none, so this declines for
+    the reason `_js_rejection` gives rather than inventing a return value or an exception.
+    """
     path = finding.affected_path
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
     if not function.route:
-        raise TemplateError("traversal_outside_flask_view")
+        raise TemplateError("containment_rejection_not_derivable")
     if "os" not in python_imports(source):
         raise TemplateError("os_not_imported")
     flask_import = re.search(r"^from flask import (?P<names>[^\n#]+)$", source, re.M)
@@ -942,7 +975,7 @@ def _py_traversal(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunc
             join_line = number
             break
     if join_line is None:
-        raise TemplateError("path_join_not_found_in_view")
+        raise TemplateError("path_join_not_found_in_scope")
     text = lines[join_line - 1]
     found = _PY_JOIN_RE.search(text)
     base, user_input = found.group("base"), found.group("input")
@@ -978,19 +1011,20 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
     path = finding.affected_path
     try:
         if language == JAVASCRIPT:
-            # A secret literal is not inside a request handler, and neither is a parser a route
-            # calls, so both are recognized before the route lookup the other families need.
+            # A secret literal is not inside any function, and neither is a parser a route
+            # calls, so both are recognized before the enclosing-scope lookup.
             if family == HARDCODED_CREDENTIAL:
                 return _js_credential(snapshot, finding)
             if family == CODE_INJECTION_EVAL:
                 return _js_eval(snapshot, finding)
-            route = js_route_for_line(snapshot.full_content(path), _finding_line(finding))
-            if family == SQL_PARAMETERIZATION:
-                return _js_sql(snapshot, finding, route)
             if family == COMMAND_ARGUMENTS:
-                return _js_command(snapshot, finding, route)
+                # The rewrite replaces one call in place, so it needs no enclosing scope.
+                return _js_command(snapshot, finding)
+            site = js_site_for_line(snapshot.full_content(path), _finding_line(finding))
+            if family == SQL_PARAMETERIZATION:
+                return _js_sql(snapshot, finding, site)
             if family == PATH_CONTAINMENT:
-                return _js_traversal(snapshot, finding, route)
+                return _js_traversal(snapshot, finding, site)
         elif language == PYTHON:
             if family == HARDCODED_CREDENTIAL:
                 return _py_credential(snapshot, finding)

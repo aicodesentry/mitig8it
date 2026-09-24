@@ -122,6 +122,10 @@ class Client {
 }
 class Pool extends Client {}
 const pg = { Pool, Client, query };
+// db(): a recording pg client, for a proof that calls an exported function taking a connection
+// instead of driving a route. Nothing is installed in the sandbox and the patch policy refuses a
+// test that requires a package, so a generated test cannot reach `new Pool()` any other way.
+const db = () => new Pool();
 
 const outcome = (command) => { const c = obj(config.child_process); const p = isFn(c.result) ? obj(c.result(command)) : c; return { stdout: p.stdout ?? '', stderr: p.stderr || '', error: p.error || null, code: p.code || 0 }; };
 // `shell` is the command line a shell would interpret: the whole string for exec/execSync, or
@@ -295,4 +299,4 @@ const run = (body) => Promise.resolve().then(body).then(
   (error) => { process.stderr.write(`harness: ${(error && error.stack) || error}\n`); process.exit(1); },
 );
 
-module.exports = { version: 1, root: ROOT, load, invoke, call, run, assert, reset, express: state.express, pg: state.pg, child_process: state.child_process, fs: state.fs, code: state.code, app };
+module.exports = { version: 1, root: ROOT, load, invoke, call, run, assert, reset, db, express: state.express, pg: state.pg, child_process: state.child_process, fs: state.fs, code: state.code, app };
