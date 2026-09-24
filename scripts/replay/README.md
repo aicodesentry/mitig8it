@@ -15,6 +15,9 @@ $PY scripts/replay/replay.py --repo expressjs/express --prs 15 --out results/exp
 # aggregate several
 $PY scripts/replay/summarize.py results/*.json --detail --out /tmp/replay.md
 
+# compare a run after a service fix against an earlier run over the same cache
+$PY scripts/replay/summarize.py results-after/*.json --baseline results-before/*.json
+
 # prove the harness itself reaches the engine
 $PY scripts/replay/selftest.py
 ```
