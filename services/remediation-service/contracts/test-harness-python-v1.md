@@ -44,13 +44,14 @@ h.run(body)
 
 ## API
 
-`h.load(target, stubs=None, real=(), env=None, rows=None, stdout="", stderr="", code=0, content="", exists=True, auto_stub=True)`
+`h.load(target, stubs=None, real=(), env=None, argv=None, rows=None, stdout="", stderr="", code=0, content="", exists=True, auto_stub=True)`
 executes the repository module at `target` (a repository path such as `services/orders.py`,
 resolved from the repository root, or an absolute path) with the fakes below installed, and
 returns the module object. Each call resets every recorder and re-executes the module. The
 module's directory and the repository root are put on `sys.path`, so sibling imports resolve.
 
 - `env`: values set in `os.environ` before the module runs; reads are recorded in `h.env.reads`. A literal name the module reads with `os.environ["NAME"]` that the test did not set gets the placeholder `mitig8it-unset-NAME`, so a patch that moved one secret to the environment does not crash every other test of the same patch at import; `os.environ.get` keeps its real semantics.
+- `argv`: `sys.argv` for this load only, restored to the test process's own on the next load that does not supply one. It is for a module that reads its input from the command line at import, where there is no function to pass an argument to.
 - `rows`: what every query's `fetchone`/`fetchall` returns (a list, or a callable of the recorded query).
 - `stdout`, `stderr`, `code`: what every faked process reports.
 - `content`, `exists`: what `open()` returns (a string, bytes, or a callable of the path) and whether the path exists (a boolean or a callable); a missing file raises `FileNotFoundError`.

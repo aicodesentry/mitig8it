@@ -30,6 +30,7 @@ from .sites import (
     JS_EVAL_ARGUMENT_RE,
     JsFunction,
     JsRoute,
+    ModuleScope,
     PyFunction,
     SiteError,
     js_bound_names,
@@ -41,7 +42,7 @@ from .sites import (
     js_require_line,
     js_site_for_line,
     scope_lines_near,
-    python_function_for_line,
+    python_site_for_line,
     python_import_anchor,
     python_module_assignment,
 )
@@ -535,7 +536,7 @@ _JS_OPTIONS_RE = re.compile(r",\s*\{(?P<body>[^{}]*)\}")
 _JS_JOIN_RE = re.compile(r"path\.join\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)")
 
 
-def _js_sql(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction) -> TemplatePatch:
+def _js_sql(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction | ModuleScope) -> TemplatePatch:
     """Interpolated SQL becomes a parameterized query, wherever the query is built.
 
     The enclosing scope is only ever read as bounds: how far back to look for the assignment
@@ -714,7 +715,7 @@ def _js_command(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
 PATH_ESCAPE_MESSAGE = "path escapes base directory"
 
 
-def _js_rejection(site: JsRoute | JsFunction) -> str:
+def _js_rejection(site: JsRoute | JsFunction | ModuleScope) -> str:
     """The statement that refuses a path escaping the base directory.
 
     A route handler owns the response, so it answers 400, which is the contract it already has.
@@ -726,12 +727,12 @@ def _js_rejection(site: JsRoute | JsFunction) -> str:
     return f"throw new Error({js_string_literal(PATH_ESCAPE_MESSAGE)});"
 
 
-def _js_containment_summary(site: JsRoute | JsFunction) -> str:
+def _js_containment_summary(site: JsRoute | JsFunction | ModuleScope) -> str:
     tail = "answers 400" if isinstance(site, JsRoute) else "throws"
     return f"path.resolve with a containment check that {tail} before any read"
 
 
-def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction) -> TemplatePatch:
+def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction | ModuleScope) -> TemplatePatch:
     """A `path.join` of untrusted input becomes a resolve plus a containment check.
 
     The check is the same wherever the join is; only how it refuses differs, which is what
@@ -1050,7 +1051,7 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
         elif language == PYTHON:
             if family == HARDCODED_CREDENTIAL:
                 return _py_credential(snapshot, finding)
-            function = python_function_for_line(snapshot.full_content(path), _finding_line(finding))
+            function = python_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _py_sql(snapshot, finding, function)
             if family == CODE_INJECTION_EVAL:

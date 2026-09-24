@@ -70,6 +70,7 @@ file. Each call resets the recorders. `options`:
 - `stubs: { '<specifier>': value }`: any other module to inject by its exact require specifier (`'axios'`, `'./db'`).
 - `real: ['fs']`: names from `express`, `pg`, `child_process`, `fs` to leave real.
 - `env: { NAME: 'value' }`: values laid over the real environment for this load only, cleared by the next one. Every `process.env` name the module reads is recorded in `h.env.reads`, whether or not the test supplied it.
+- `argv: ['node', 'module', 'value']`: `process.argv` for this load only, restored to the test process's own on the next load that does not supply one. It is for a module that reads its input from the command line at import, where there is no function to pass an argument to.
 
 `h.invoke(app, method, path, { params, query, body, headers, timeout })`: finds the handler recorded
 for `method` and `path` (an exact route pattern such as `/orders/:id` with `params`, or a concrete

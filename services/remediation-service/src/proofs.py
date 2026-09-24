@@ -33,6 +33,7 @@ from .retrieval import Snapshot
 from .sites import (
     JsFunction,
     JsRoute,
+    ModuleScope,
     PyFunction,
     SiteError,
     js_environment_name,
@@ -44,7 +45,7 @@ from .sites import (
     js_site_for_line,
     module_directory,
     python_flask_app_name,
-    python_function_for_line,
+    python_site_for_line,
     python_module_assignment,
     python_module_value,
     scope_lines_near,
@@ -86,7 +87,7 @@ class GeneratedProof:
     content: str
     # What the test exercises, for the evidence and the model's task message.
     description: str
-    site: JsRoute | JsFunction | PyFunction | None = None
+    site: JsRoute | JsFunction | PyFunction | ModuleScope | None = None
 
     def spec(self) -> dict[str, str]:
         return {"finding_id": self.finding_id, "path": self.path, "content": self.content}
@@ -555,6 +556,129 @@ def _js_eval_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedPro
     )
 
 
+# --- module scope ----------------------------------------------------------------------------
+# A finding with no enclosing callable. The sink runs once, when the module is imported, so the
+# proof's only lever is what it can set before `h.load` runs it, and the family assertion is made
+# on the load itself. `sites.ModuleScope.driver` says which lever there is; None means there is
+# none, and the finding is refused rather than given a test that cannot fail on the original.
+MODULE_SCOPE_REFUSAL = "module_scope_source_not_controllable"
+# The argv a proof hands a module that reads `process.argv[i]` / `sys.argv[i]`: the interpreter
+# and the script in their real places, the payload at the index the module reads, and a benign
+# value in every position between.
+ARGV_PROGRAM = ("node", "module")
+PY_ARGV_PROGRAM = ("module",)
+
+
+def _argv_elements(index: int, program: tuple[str, ...]) -> list[str | None]:
+    """`None` marks the slot the payload expression goes into; every other slot is a string."""
+    slots: list[str | None] = [*program]
+    while len(slots) <= index:
+        slots.append(BENIGN_VALUE)
+    slots[index] = None
+    return slots
+
+
+def _js_module_load(path: str, scope: ModuleScope, payload: str) -> str:
+    """The `h.load(...)` call that drives a module-scope sink with `payload` in place."""
+    if scope.driver == "env":
+        return f"h.load({_js(path)}, {{ env: {{ {_js(scope.key)}: {payload} }} }})"
+    if scope.driver == "argv":
+        items = ", ".join(payload if item is None else _js(item) for item in _argv_elements(int(scope.key), ARGV_PROGRAM))
+        return f"h.load({_js(path)}, {{ argv: [{items}] }})"
+    if scope.driver == "config":
+        value = "{ " + _js(scope.member) + ": " + payload + " }" if scope.member else payload
+        return f"h.load({_js(path)}, {{ stubs: {{ {_js(scope.key)}: {value} }} }})"
+    raise SiteError(MODULE_SCOPE_REFUSAL)
+
+
+def _js_module_source(scope: ModuleScope) -> str:
+    if scope.driver == "env":
+        return f"process.env.{scope.key}"
+    if scope.driver == "argv":
+        return f"process.argv[{scope.key}]"
+    return f"{scope.key}" + (f".{scope.member}" if scope.member else "")
+
+
+def _js_module_proof(
+    snapshot: Snapshot, finding: FindingSnapshot, scope: ModuleScope, family: str, payload: str, assertions: list[str]
+) -> GeneratedProof:
+    """A module-scope proof for a family whose assertion is made once, on the load."""
+    path = finding.affected_path
+    body = [
+        "const h = require('../harness');",
+        "h.run(async () => {",
+        f"  const payload = {_js(payload)};",
+        f"  {_js_module_load(path, scope, 'payload')};",
+        *assertions,
+        "});",
+        "",
+    ]
+    return GeneratedProof(
+        finding.stable_id, family, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
+        f"the module runs its sink on import with {_js_module_source(scope)} = {payload!r}", scope,
+    )
+
+
+def _js_module_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, scope: ModuleScope, base: str | None) -> GeneratedProof:
+    """The traversal family at module scope: the import itself has to refuse the payload.
+
+    A module-scope repair has no caller to answer, so `templates._js_rejection` throws, and the
+    throw happens during the import. `h.call` reports it rather than raising, so one test can
+    require every traversal payload to be refused and a legitimate name to still be read.
+    """
+    path = finding.affected_path
+    body = [
+        "const h = require('../harness');",
+        "const path = require('node:path');",
+        "h.run(async () => {",
+        f"  const base = {base or 'h.root'};",
+        f"  for (const payload of {_js(list(DIRECT_TRAVERSAL_PAYLOADS))}) {{",
+        "    h.fs.reads.length = 0;",
+        f"    const refused = h.call(() => {_js_module_load(path, scope, 'payload')});",
+        "    h.assert(!refused.ok, `expected ${JSON.stringify(payload)} to be refused on import`);",
+        "    h.assert.inside(h.fs.reads, base, { payload });",
+        "  }",
+        "  h.fs.reads.length = 0;",
+        f"  const payload = {_js(LEGITIMATE_NAME)};",
+        f"  const allowed = h.call(() => {_js_module_load(path, scope, 'payload')});",
+        "  h.assert(allowed.ok, 'expected a legitimate name to still resolve on import');",
+    ]
+    if base:
+        body.append("  h.assert.inside(h.fs.reads, base);")
+    body += ["});", ""]
+    return GeneratedProof(
+        finding.stable_id, PATH_CONTAINMENT, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
+        f"importing the module with {_js_module_source(scope)} set to a traversal payload throws and reads nothing; "
+        "a legitimate name still resolves",
+        scope,
+    )
+
+
+def _js_module_scope_proof(snapshot: Snapshot, finding: FindingSnapshot, scope: ModuleScope, family: str) -> GeneratedProof:
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    lines = source.splitlines()
+    if scope.driver is None:
+        raise SiteError(MODULE_SCOPE_REFUSAL)
+    if family == SQL_PARAMETERIZATION:
+        _js_sink_in_scope(lines, scope, _JS_INLINE_SQL_RE, "sql_sink_not_in_scope")
+        return _js_module_proof(snapshot, finding, scope, family, SQL_PAYLOAD, _JS_QUERY_ASSERTIONS[:-2])
+    if family == COMMAND_ARGUMENTS:
+        _js_sink_in_scope(lines, scope, _JS_COMMAND_SINK_RE, "command_sink_not_in_scope")
+        return _js_module_proof(snapshot, finding, scope, family, COMMAND_PAYLOAD, _JS_ARGV_ASSERTIONS[:-2])
+    if family == PATH_CONTAINMENT:
+        join = None
+        for number in scope_lines_near(scope.start_line, scope.end_line, _finding_line(finding)):
+            found = re.search(r"path\.(?:join|resolve)\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)", lines[number - 1])
+            if found:
+                join = found
+                break
+        if join is None:
+            raise SiteError("path_join_not_found_in_scope")
+        return _js_module_traversal_proof(snapshot, finding, scope, _js_base_expression(source, path, join.group("base")))
+    raise SiteError("family_not_generated_at_module_scope")
+
+
 # --- Python ---------------------------------------------------------------------------------
 
 def _py_header(path: str, env: dict[str, str] | None = None) -> list[str]:
@@ -844,6 +968,96 @@ def _py_eval_proof(snapshot: Snapshot, finding: FindingSnapshot, function: PyFun
     )
 
 
+def _py_module_load(path: str, scope: ModuleScope, payload: str) -> str:
+    if scope.driver == "env":
+        return f"h.load({_py(path)}, env={{{_py(scope.key)}: {payload}}})"
+    if scope.driver == "argv":
+        items = ", ".join(payload if item is None else _py(item) for item in _argv_elements(int(scope.key), PY_ARGV_PROGRAM))
+        return f"h.load({_py(path)}, argv=[{items}])"
+    if scope.driver == "config":
+        value = "{" + _py(scope.member) + ": " + payload + "}" if scope.member else payload
+        return f"h.load({_py(path)}, stubs={{{_py(scope.key)}: {value}}})"
+    raise SiteError(MODULE_SCOPE_REFUSAL)
+
+
+def _py_module_source(scope: ModuleScope) -> str:
+    if scope.driver == "env":
+        return f"os.environ[{scope.key!r}]"
+    if scope.driver == "argv":
+        return f"sys.argv[{scope.key}]"
+    return f"{scope.key}" + (f".{scope.member}" if scope.member else "")
+
+
+def _py_module_scope_proof(snapshot: Snapshot, finding: FindingSnapshot, scope: ModuleScope, family: str) -> GeneratedProof:
+    """The Python half of `_js_module_scope_proof`, through the Python harness."""
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    lines = source.splitlines()
+    if scope.driver is None:
+        raise SiteError(MODULE_SCOPE_REFUSAL)
+    if family in (SQL_PARAMETERIZATION, COMMAND_ARGUMENTS):
+        payload = SQL_PAYLOAD if family == SQL_PARAMETERIZATION else COMMAND_PAYLOAD
+        recorder, assertion = (
+            ("h.db.queries", "h.assert_param(h.db.queries[0], payload)")
+            if family == SQL_PARAMETERIZATION
+            else ("h.subprocess.calls", "h.assert_argv(h.subprocess.calls[0], payload)")
+        )
+        what = "one query to be executed" if family == SQL_PARAMETERIZATION else "one process to be started"
+        body = [
+            "import harness as h",
+            "",
+            "",
+            "def body():",
+            f"    payload = {_py(payload)}",
+            f"    {_py_module_load(path, scope, 'payload')}",
+            f"    h.assert_true({recorder}, 'expected {what}')",
+            f"    {assertion}",
+        ] + _py_footer()
+        return GeneratedProof(
+            finding.stable_id, family, PYTHON, test_path(finding.stable_id, PYTHON), "\n".join(body),
+            f"the module runs its sink on import with {_py_module_source(scope)} = {payload!r}", scope,
+        )
+    if family == PATH_CONTAINMENT:
+        join = None
+        for number in scope_lines_near(scope.start_line, scope.end_line, _finding_line(finding)):
+            found = re.search(r"os\.path\.join\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)", lines[number - 1])
+            if found:
+                join = found
+                break
+        if join is None:
+            raise SiteError("path_join_not_found_in_scope")
+        base = _py_base_expression(source, join.group("base"))
+        # A module value is only readable once a load has succeeded, and these loads are meant to
+        # fail, so only a literal base is usable here.
+        if base and base.startswith("m."):
+            base = None
+        body = [
+            "import harness as h",
+            "",
+            "",
+            "def body():",
+            f"    for payload in {_py(list(DIRECT_TRAVERSAL_PAYLOADS))}:",
+            "        h.fs.reads.clear()",
+            f"        refused = h.call(lambda: {_py_module_load(path, scope, 'payload')})",
+            "        h.assert_true(refused.raised(ValueError), 'expected %r to be refused on import' % (payload,))",
+            "        h.assert_inside(h.fs.reads, %s, payload=payload)" % (base or "h.ROOT"),
+            "    h.fs.reads.clear()",
+            f"    payload = {_py(LEGITIMATE_NAME)}",
+            f"    allowed = h.call(lambda: {_py_module_load(path, scope, 'payload')})",
+            "    h.assert_true(allowed.error is None, 'expected a legitimate name to still resolve on import')",
+        ]
+        if base:
+            body.append(f"    h.assert_inside(h.fs.reads, {base})")
+        body += _py_footer()
+        return GeneratedProof(
+            finding.stable_id, PATH_CONTAINMENT, PYTHON, test_path(finding.stable_id, PYTHON), "\n".join(body),
+            f"importing the module with {_py_module_source(scope)} set to a traversal payload raises ValueError and "
+            "opens nothing; a legitimate name still resolves",
+            scope,
+        )
+    raise SiteError("family_not_generated_at_module_scope")
+
+
 # --- entry point ----------------------------------------------------------------------------
 
 def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, language: str) -> GeneratedProof | ProofFallback:
@@ -860,6 +1074,8 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
             if family == CODE_INJECTION_EVAL:
                 return _js_eval_proof(snapshot, finding)
             site = js_site_for_line(snapshot.full_content(path), _finding_line(finding))
+            if isinstance(site, ModuleScope):
+                return _js_module_scope_proof(snapshot, finding, site, family)
             if family == SQL_PARAMETERIZATION:
                 return _js_sql_proof(snapshot, finding, site)
             if family == COMMAND_ARGUMENTS:
@@ -870,7 +1086,9 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
         if language == PYTHON:
             if family == HARDCODED_CREDENTIAL:
                 return _py_credential_proof(snapshot, finding)
-            function = python_function_for_line(snapshot.full_content(path), _finding_line(finding))
+            function = python_site_for_line(snapshot.full_content(path), _finding_line(finding))
+            if isinstance(function, ModuleScope):
+                return _py_module_scope_proof(snapshot, finding, function, family)
             if family == SQL_PARAMETERIZATION:
                 return _py_sql_proof(snapshot, finding, function)
             if family == COMMAND_ARGUMENTS:

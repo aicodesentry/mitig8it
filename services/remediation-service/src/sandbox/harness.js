@@ -272,9 +272,15 @@ Object.defineProperty(process, 'env', { configurable: true, writable: true, valu
     : Reflect.getOwnPropertyDescriptor(t, k)),
 }) });
 
+// `process.argv` as the test process was started, so a load that did not supply one restores it.
+const realArgv = process.argv.slice();
+
 function load(target, options = {}) {
   config = obj(options);
   reset();
+  // A module at module scope may read its input from the command line, which is the only way a
+  // test can set it: the sink runs on import, before anything else can be called.
+  process.argv = list(config.argv).length ? list(config.argv).map(String) : realArgv.slice();
   for (const name of Object.keys(supplied)) delete supplied[name];
   for (const [name, value] of Object.entries(obj(config.env))) supplied[name] = String(value);
   fakes = { ...builtinFakes, ...obj(config.stubs) };

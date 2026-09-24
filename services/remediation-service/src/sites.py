@@ -105,6 +105,43 @@ class PyFunction:
 
 
 @dataclass(frozen=True)
+class ModuleScope:
+    """A finding with no enclosing callable: the sink runs once, when the module is imported.
+
+    There is no function for a generated test to call, so the template rewrites the sink in
+    place exactly as it would inside one and the proof drives the module by loading it. What
+    decides whether a proof is possible at all is `driver`: how the tainted value enters the
+    module, and therefore what a test can set before the import that runs the sink.
+
+    `driver` is `env` (the module reads `process.env.NAME` / `os.environ[NAME]`), `argv` (it
+    reads `process.argv[i]` / `sys.argv[i]`), `config` (it reads a member of a module it
+    requires or imports at the top level), or None when the value comes from a call the test
+    cannot reach, which is `module_scope_source_not_controllable`.
+
+    It carries the same bounds and parameter fields a function site does, because the template
+    reads only those: the scope is the whole file and it binds no parameters.
+    """
+
+    end_line: int
+    driver: str | None = None
+    # The environment name, the argv index, or the module specifier, by driver.
+    key: str = ""
+    # For `config`, the member read off the required module (`config.dsn` gives `dsn`).
+    member: str | None = None
+    start_line: int = 1
+    parameters: tuple[str, ...] = ()
+    route: str | None = None
+    methods: tuple[str, ...] = ()
+    indent: str = ""
+    inputs: tuple[UntrustedInput, ...] = ()
+    returns_directly: bool = False
+
+    @property
+    def names(self) -> set[str]:
+        return set()
+
+
+@dataclass(frozen=True)
 class SiteError(Exception):
     code: str
 
@@ -342,19 +379,114 @@ def scope_lines_near(start_line: int, end_line: int, line: int) -> list[int]:
     return list(range(anchor, start_line - 1, -1)) + list(range(anchor + 1, end_line + 1))
 
 
-def js_site_for_line(source: str, line: int) -> JsRoute | JsFunction:
-    """The Express route that encloses `line`, else the function that does.
+_JS_ENV_RE = re.compile(r"process\.env(?:\.(?P<name>[\w$]+)|\[\s*['\"](?P<bracket>[^'\"]+)['\"]\s*\])")
+_JS_ARGV_RE = re.compile(r"process\.argv\s*\[\s*(?P<index>\d+)\s*\]")
+_JS_REQUIRE_CALL_RE = re.compile(r"require\(\s*['\"](?P<module>[^'\"]+)['\"]\s*\)")
+_JS_TOP_BINDING_RE = re.compile(
+    r"^(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=\s*(?P<value>.+?);?\s*$"
+)
+# `import x from 'm'`, `import { a, b } from 'm'`, `import * as x from 'm'`.
+_JS_TOP_IMPORT_RE = re.compile(
+    r"^import\s+(?:(?P<default>[A-Za-z_$][\w$]*)|\*\s*as\s+(?P<star>[A-Za-z_$][\w$]*)|\{(?P<named>[^}]*)\})"
+    r"(?:\s*,\s*\{[^}]*\})?\s+from\s+['\"](?P<module>[^'\"]+)['\"]"
+)
+# How far back a module-scope taint walk follows assignments. A value the sink reads is bound
+# within a few statements of it in every shape the corpus carries, and an unbounded walk over a
+# whole file resolves names that only share a spelling.
+_MODULE_TAINT_HOPS = 6
+
+
+def _js_top_bindings(lines: list[str]) -> dict[str, str]:
+    """Module-level `const/let/var NAME = value` and `import` bindings, by bound name.
+
+    Column zero is the test for module scope: everything a function binds is indented, and a
+    declaration that is not is the module's own. It is lexical, like the rest of this file.
+    """
+    bindings: dict[str, str] = {}
+    for text in lines:
+        if not text[:1] or text[:1].isspace():
+            continue
+        found = _JS_TOP_BINDING_RE.match(text)
+        if found:
+            bindings.setdefault(found.group("name"), found.group("value"))
+            continue
+        imported = _JS_TOP_IMPORT_RE.match(text)
+        if imported:
+            specifier = f"require('{imported.group('module')}')"
+            for name in [imported.group("default"), imported.group("star")]:
+                if name:
+                    bindings.setdefault(name, specifier)
+            for item in (imported.group("named") or "").split(","):
+                bound = item.split(" as ")[-1].strip()
+                if re.fullmatch(r"[A-Za-z_$][\w$]*", bound):
+                    bindings.setdefault(bound, specifier)
+    return bindings
+
+
+def js_module_scope(source: str, line: int) -> ModuleScope:
+    """The module-scope site for `line`, with how a test can drive the value that reaches it.
+
+    The walk starts at the sink and follows module-level bindings back a bounded number of
+    hops, because that is the whole question: a `process.env` read, a `process.argv` element,
+    or a member of a required module can be set before the import that runs the sink, and
+    anything else cannot be reached from outside at all.
+    """
+    lines = source.splitlines()
+    if line > len(lines):
+        raise SiteError("finding_line_outside_file")
+    bindings = _js_top_bindings(lines)
+    texts = [lines[line - 1]]
+    seen: set[str] = set()
+    for _ in range(_MODULE_TAINT_HOPS):
+        if not texts:
+            break
+        text = texts.pop(0)
+        env = _JS_ENV_RE.search(text)
+        if env:
+            return ModuleScope(len(lines), "env", env.group("name") or env.group("bracket"))
+        argv = _JS_ARGV_RE.search(text)
+        if argv:
+            return ModuleScope(len(lines), "argv", argv.group("index"))
+        for name in _JS_IDENT_RE.findall(text):
+            if name in seen or name not in bindings:
+                continue
+            seen.add(name)
+            value = bindings[name]
+            required = _JS_REQUIRE_CALL_RE.search(value)
+            # Only a module of this repository is a config a test may stand in for, and only a
+            # member it reads as a value: `os.userInfo()` is a call whose result no stub decides,
+            # and replacing the function with a payload would break the module instead of driving
+            # it. Everything else keeps walking and ends at the refusal.
+            if required and required.group("module").startswith("."):
+                member = re.search(rf"(?<![\w$.]){re.escape(name)}\.(?P<member>[\w$]+)(?!\s*\()", text)
+                if member or f"{name}." not in text:
+                    return ModuleScope(len(lines), "config", required.group("module"), member.group("member") if member else None)
+                continue
+            if required:
+                continue
+            texts.append(value)
+    return ModuleScope(len(lines), None)
+
+
+def js_site_for_line(source: str, line: int) -> JsRoute | JsFunction | ModuleScope:
+    """The Express route that encloses `line`, else the function that does, else the module.
 
     The route comes first because it is the reachable entry point: when a finding sits in a
     helper a handler calls, the handler is what a proof can drive and what a repair has to keep
-    working. Only a line no route encloses falls through to its own function.
+    working. Only a line no route encloses falls through to its own function, and a line no
+    function encloses is module-scope code, which runs at import and is driven by loading it.
     """
     try:
         return js_route_for_line(source, line)
     except SiteError as exc:
         if exc.code != "enclosing_route_not_found":
             raise
-    return js_function_for_line(source, line)
+    try:
+        return js_function_for_line(source, line)
+    except SiteError as exc:
+        if exc.code != "enclosing_function_not_found":
+            raise
+    return js_module_scope(source, line)
 
 
 def js_value_origin(lines: list[str], function: JsFunction, line: int, name: str) -> tuple[str, tuple[str, ...]] | None:
@@ -650,9 +782,88 @@ def python_module_value(source: str, name: str) -> str | None:
     return match.group("value") if match else None
 
 
-def enclosing_site(snapshot: Snapshot, finding: FindingSnapshot, language: str) -> JsRoute | JsFunction | PyFunction:
+def _py_environment_read(node: ast.AST) -> str | None:
+    """The environment name an expression reads, or None: `os.environ[X]`, `.get(X)`, `getenv(X)`."""
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == "environ":
+        key = node.slice
+        return key.value if isinstance(key, ast.Constant) and isinstance(key.value, str) else None
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.args:
+        first = node.args[0]
+        name = first.value if isinstance(first, ast.Constant) and isinstance(first.value, str) else None
+        if node.func.attr == "getenv" or (
+            node.func.attr == "get" and isinstance(node.func.value, ast.Attribute) and node.func.value.attr == "environ"
+        ):
+            return name
+    return None
+
+
+def _py_argv_index(node: ast.AST) -> str | None:
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "argv"
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, int)
+    ):
+        return str(node.slice.value)
+    return None
+
+
+def python_module_scope(source: str, line: int) -> ModuleScope:
+    """The module-scope site for `line`, with how a test can drive the value that reaches it.
+
+    The Python half of `js_module_scope`, over the `ast` rather than the text. Module-level
+    assignments are the whole binding table. Two of the three drivers apply here, `os.environ`
+    and `sys.argv`: there is no `config` driver, because a Python import names a module by a
+    dotted path with no marker of whether it is this repository's or the standard library's,
+    and standing in for the wrong one would drive nothing.
+    """
+    tree = python_tree(source)
+    lines = source.splitlines()
+    end = len(lines)
+    bindings: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            bindings.setdefault(node.targets[0].id, node.value)
+    statement = next(
+        (node for node in tree.body if node.lineno <= line <= (node.end_lineno or node.lineno)),
+        None,
+    )
+    if statement is None:
+        return ModuleScope(end, None)
+    queue: list[ast.AST] = [statement]
+    seen: set[str] = set()
+    for _ in range(_MODULE_TAINT_HOPS):
+        if not queue:
+            break
+        current = queue.pop(0)
+        for node in ast.walk(current):
+            name = _py_environment_read(node)
+            if name:
+                return ModuleScope(end, "env", name)
+            index = _py_argv_index(node)
+            if index is not None:
+                return ModuleScope(end, "argv", index)
+        for node in ast.walk(current):
+            if isinstance(node, ast.Name) and node.id in bindings and node.id not in seen:
+                seen.add(node.id)
+                queue.append(bindings[node.id])
+    return ModuleScope(end, None)
+
+
+def python_site_for_line(source: str, line: int) -> PyFunction | ModuleScope:
+    """The function or Flask view that encloses `line`, else the module it sits at the top of."""
+    try:
+        return python_function_for_line(source, line)
+    except SiteError as exc:
+        if exc.code != "enclosing_function_not_found":
+            raise
+    return python_module_scope(source, line)
+
+
+def enclosing_site(snapshot: Snapshot, finding: FindingSnapshot, language: str) -> JsRoute | JsFunction | PyFunction | ModuleScope:
     source = snapshot.full_content(finding.affected_path)
     line = _finding_line(finding)
     if language == "python":
-        return python_function_for_line(source, line)
+        return python_site_for_line(source, line)
     return js_site_for_line(source, line)
