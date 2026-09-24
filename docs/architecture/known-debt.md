@@ -85,6 +85,26 @@ Each entry states what the issue is, where it is, and why it was left. None of t
 
 **Why deferred.** Every input is bounded by policy: `max_files` is 5, `max_changed_lines` is 200, and a job carries a handful of findings, so the largest of these runs over single-digit collections. `cluster_findings` is the one that scales with something a user controls, the number of findings in a pull request, and it is the one to fix first if analysis latency becomes a complaint. PR 421 moved the combine loop onto a worker thread so it stops starving the lease heartbeat; the quadratic work itself was left in place deliberately, because the heartbeat was the defect and the cost was not.
 
+## Quarantined tier 1 rules
+
+**What.** Five tier 1 rules were measured on real code and found wrong often enough that their output cannot be posted. They are quarantined rather than deleted: they still run and are still counted, so they can be re-measured, but nothing they produce reaches a reviewer. The mechanism is `precision` and `posting` on `SecurityRule`, filtered in one place by `partition_by_posting_policy` in `services/analysis-service/src/main.py`.
+
+**Where.** `services/analysis-service/src/security_rules.py`. Each rule carries its own `precision_evidence` string.
+
+**Evidence.** The September 2026 real-repository replay, `docs/validation/real-repo-replay-2026-09.md` on `feat/real-repo-replay`: 165 merged pull requests from 11 public repositories, 134 tier 1 findings, 30 read by hand, 29 of them false.
+
+| Rule | Replay volume | Why it was quarantined |
+| --- | ---: | --- |
+| `null.pointer.deref` | 85 of 134 | It is a method-chain detector, not a null check. It fired on `connection.removeAllListeners('error').on('error', ...)`, on the Jest idiom `await expect(next.start()).rejects.toThrow()` (27 findings by itself), and on Rust `chunking_context.unused_references().await?`, where its advice to use optional chaining names a construct the language does not have. All 19 sampled were wrong. Fixing the exclusion shape was mechanical; the semantics are not |
+| `authz.missing_function_level` | 19, 13 at `high` | Reduced to "the line contains `.destroy(` or `.remove(`". Every sampled finding was stream, socket or connection-pool teardown. Moving the dead lookahead into an `exclusion` pass changes nothing, because none of those lines carries an auth token either |
+| `integer.overflow` | 14 | `int(` had no word boundary, so it matched `models.UniqueConstraint(` and `function fingerprint(snapshot: Snapshot)`. The boundary and the relocated exclusion clear both sampled lines, but what is left is still "the line contains `parseInt`", with no measurement on the other 12 findings and no true positive anywhere in the corpus |
+| `concurrency.shared_state` | 6 | `global\s+\w+` matches English. It fired on the comment `// If agent.http2 is unset, use the global agent for connection pooling.` and on the changelog line `Fix a global leak when multiple subnets are trusted`. Comment stripping removes the first shape; the prose-file shape needs the rule to know what a declaration is |
+| `rate_limit.missing` | 2 | Reduced to "the line contains `/login`, `/auth`, ...". Its entire output over 165 pull requests was a redirect target in a test fixture, a JSDoc usage example, and the package name `@octokit/auth-token` in a vendored licence file |
+
+**Why deferred.** Each of these needs a rule design, not a regex repair: a null check needs to know what can be null, an authorization rule needs to know what a route handler is, and a shared-state rule needs to know what a declaration is. The quarantine stops the harm now and keeps the measurement running. Re-enabling one is a change of its own, with its cases added to `benchmarks/tier1-precision/cases.json` and the gate green.
+
+**Related gap, not fixed here.** Tier 1 still reads prose files (changelogs, READMEs, licence text) as code. `auth.bypass.missing_check` is not quarantined and still fires on the express changelog line `app.get('/user/:id').remove();`. The fix is prose-path scoping, which exists on `feat/real-repo-replay` and has not merged. The case is recorded in the precision benchmark with a `known_gap` marker that the gate asserts is still open.
+
 ## Provenance
 
 There is no issue tracker entry or written review document behind this list. It was reconstructed from the code, from PR 421, and from the residual-risk notes in `HARDENING-TRACKER.md` and `HARDENING-HANDOFF.md`. Every location above was confirmed in the source at the time of writing.

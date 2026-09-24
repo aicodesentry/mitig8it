@@ -15,6 +15,36 @@ FastAPI service that analyzes changed pull request files.
 
 The blocking analysis routes are synchronous handlers, so FastAPI runs them in its threadpool and `/health` does not wait behind a scan. `POST /analyze/pr` runs tier 1 and tier 2 concurrently on a two-worker pool and merges by tier rather than by completion order, so fingerprints and clustering stay stable.
 
+## Rule posting policy
+
+A finding the product cannot stand behind must not be posted. Every tier 1 rule in `src/security_rules.py` therefore declares two things:
+
+- `precision`, either `measured` or `unmeasured`. `measured` means someone read this rule's output on a real corpus and wrote down what they found, in `precision_evidence`. `unmeasured` means nobody has, which is the honest default.
+- `posting`, either `post` or `quarantine`.
+
+A **quarantined** rule still runs. Its matches are counted in `codesentry_analysis_quarantined_findings_total` and returned as `quarantined_findings` (a count per rule) on the tier 1 and combined responses, so the replay harness and the metrics can keep measuring it. What it does not do is arrive: `partition_by_posting_policy` in `src/main.py` is the single place a quarantined finding is removed, and it removes it before the response is built. Nothing downstream needs to know the policy exists. Nothing is posted to GitHub, nothing reaches the check summary, and nothing is handed to remediation, because the finding is not there.
+
+The quarantine is not a deletion. A rule is re-enabled individually, with evidence, by:
+
+1. fixing it, and showing the fix on the lines that were wrong. The false positives the September 2026 replay read by hand live in `benchmarks/tier1-precision/cases.json`;
+2. adding its cases to that set, including the true positives it must keep finding;
+3. running the gate, `src/tests/test_tier1_precision_benchmark.py`;
+4. flipping `posting` to `post` and writing what was measured into `precision_evidence`.
+
+Two structural rules back this up, both enforced by `src/tests/test_rule_posting_policy.py`:
+
+- **A negative condition goes in `exclusion`, not in a lookahead.** `find_ineffective_lookaheads()` in `security_rules.py` is a static check over every regex tier 1 runs. It flags a negative lookahead that an unbounded greedy quantifier precedes with no required token in between, because the engine can always satisfy such a lookahead by letting the quantifier consume to the end of the line. A rule with that shape silently degrades to its leading alternation. `exclusion` is a second pass over the matched line, where backtracking cannot defeat it.
+- **Tier 1 does not read comments.** `src/comment_stripper.py` blanks line comments, block comments, JSDoc, Ruby `=begin` blocks and Python docstrings for JavaScript, TypeScript, Go, Java, C#, PHP, Ruby and Python before any regex runs, keeping line numbers and column offsets so a finding still quotes the author's text. It never strips inside a string literal, and an unmodelled extension is not touched at all. A rule can also opt out of seeing string literal bodies with `reads_string_literals=False`; the credential rule keeps them, because a secret lives in a string.
+
+## Tier 1 budget
+
+Tier 1 runs every rule over every changed line, and on the largest payload the caps still allow (200 files of 75 kB) that measured 50 s against the orchestrator's 30 s budget. It is now bounded twice:
+
+- `TIER1_BUDGET_SECONDS` (default 20) is the whole pass;
+- `TIER1_FILE_BUDGET_SECONDS` (default 2) is one file.
+
+Exceeding either stops that much of the work, keeps the findings already made, and appends a `{kind: "budget", path, message}` entry to `analysis_limitations` on the response. A partial tier 1 that says how partial it was is worth more than a blown deadline.
+
 ## Local Development
 
 ```bash
@@ -62,5 +92,7 @@ Analysis requests and metrics require `x-internal-secret`. The expected value is
 - `FRONTEND_URL`
 - `ANALYSIS_CACHE_TTL_DAYS`
 - `OPENGREP_BATCH_MAX_FILES` / `OPENGREP_BATCH_MAX_BYTES` batch bounds for tier 2
+- `TIER1_BUDGET_SECONDS` total tier 1 wall clock, default 20
+- `TIER1_FILE_BUDGET_SECONDS` per-file tier 1 wall clock, default 2
 
 For the full env contract, see [environment.md](../getting-started/environment.md).
