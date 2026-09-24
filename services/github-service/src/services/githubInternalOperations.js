@@ -143,6 +143,11 @@ async function githubAnalysisWrite(method, url, token, data) {
   return result.response;
 }
 
+// The analysable files of one pull request that a single run may review. Over the cap
+// the run reviews the first FILE_CAP in path order and reports a `file_cap` limitation;
+// it never refuses the pull request.
+const FILE_CAP = 200;
+
 async function fetchPullRequestFiles({ repository_full_name, pull_request_number, installation_id, commit_sha }) {
   if (!repository_full_name || !pull_request_number || !installation_id) {
     throw badRequest('repository_full_name, pull_request_number and installation_id are required');
@@ -176,9 +181,19 @@ async function fetchPullRequestFiles({ repository_full_name, pull_request_number
     const scoped = files
         .filter((f) => ['added', 'modified', 'renamed'].includes(f.status))
         .filter((f) => !f.filename.startsWith('dist/') && !f.filename.includes('node_modules'));
-    if (scoped.length > 200) throw new OperationError('PR exceeds the 200-file analysis limit; split the change before retrying', 422);
+    // A pull request over the cap is reviewed as far as the cap allows rather than
+    // refused: a partial review of a large change is worth more than no review at all,
+    // and refusing was the one case where a developer got nothing. The selection is
+    // sorted by path first so the same pull request always yields the same 200 files,
+    // whatever order GitHub's pagination returned them in, and the limitation says
+    // plainly how many of how many were reviewed.
+    const ordered = [...scoped].sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0));
+    const selected = ordered.slice(0, FILE_CAP);
+    const limitation = ordered.length > FILE_CAP
+      ? { kind: 'file_cap', message: `Reviewed ${FILE_CAP} of ${ordered.length} changed files` }
+      : null;
     return {
-      files: scoped.map((f) => ({
+      files: selected.map((f) => ({
           path: f.filename,
           patch: f.patch || '',
           additions: f.additions,
@@ -186,6 +201,7 @@ async function fetchPullRequestFiles({ repository_full_name, pull_request_number
           status: f.status,
           raw_url: f.raw_url,
         })),
+      ...(limitation ? { limitation } : {}),
     };
   } catch (error) {
     if (error instanceof OperationError) throw error;

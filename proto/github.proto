@@ -24,8 +24,17 @@ message FetchPullRequestFilesRequest {
   string commit_sha = 4;
 }
 
+// A limitation the analysis run must state rather than hide. `kind` is the machine
+// name (today only `file_cap`) and `message` is what the check summary shows. Absent
+// when the whole pull request was reviewed.
+message AnalysisLimitation {
+  string kind = 1;
+  string message = 2;
+}
+
 message FetchPullRequestFilesResponse {
   repeated mitig8it.common.v1.ChangedFile files = 1;
+  AnalysisLimitation limitation = 2;
 }
 
 message FetchFileContentsRequest {

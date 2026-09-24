@@ -1011,6 +1011,60 @@ describe('PR Analysis Orchestrator — pipeline', () => {
     expect(order).toBeGreaterThan(completion);
   });
 
+  // A pull request over the adapter's 200-file cap is reviewed as far as the cap allows
+  // rather than refused. The check run must say so: reporting a clean result on a pull
+  // request the run only partly read would be the dishonest outcome.
+  test('a file_cap limitation from the adapter is stated on the check run summary', async () => {
+    setupAxiosMocks([
+      { pattern: '/pulls/files', data: {
+        files: [{ path: 'app.py', patch: '+x=1', additions: 1 }],
+        limitation: { kind: 'file_cap', message: 'Reviewed 200 of 812 changed files' },
+      } },
+      { pattern: '/files/content', data: { files: [{ path: 'app.py', content: 'x=1\n' }] } },
+      { pattern: '/tier1', data: { findings: [], tier: 1 } },
+      { pattern: '/tier2', data: { findings: [], tier: 2 } },
+      { pattern: '/tier3', data: { findings: [], filtered_count: 0, tier: 3 } },
+      { pattern: '/reviews/submit', data: { review_id: 1 } },
+      { pattern: '/check-runs', data: { check_run_id: 2 } },
+    ]);
+    pool.query.mockResolvedValue({ rowCount: 1, rows: [{ count: 1 }] });
+
+    jest.isolateModules(() => {
+      const mod = require('../src/services/prAnalysisOrchestrator');
+      mod.triggerAnalysisJob(BASE_PAYLOAD);
+    });
+    await flushAsync();
+
+    const checkRun = axios.post.mock.calls.find(([url]) => String(url).includes('/check-runs'));
+    expect(checkRun).toBeDefined();
+    expect(checkRun[1].summary).toContain('Reviewed 200 of 812 changed files');
+    // The cap is a coverage limit, not a failure: the run still completes and publishes.
+    expect(checkRun[1].conclusion).toBe('success');
+  });
+
+  test('a run that read the whole pull request states no limitation', async () => {
+    setupAxiosMocks([
+      { pattern: '/pulls/files', data: { files: [{ path: 'app.py', patch: '+x=1', additions: 1 }] } },
+      { pattern: '/files/content', data: { files: [{ path: 'app.py', content: 'x=1\n' }] } },
+      { pattern: '/tier1', data: { findings: [], tier: 1 } },
+      { pattern: '/tier2', data: { findings: [], tier: 2 } },
+      { pattern: '/tier3', data: { findings: [], filtered_count: 0, tier: 3 } },
+      { pattern: '/reviews/submit', data: { review_id: 1 } },
+      { pattern: '/check-runs', data: { check_run_id: 2 } },
+    ]);
+    pool.query.mockResolvedValue({ rowCount: 1, rows: [{ count: 1 }] });
+
+    jest.isolateModules(() => {
+      const mod = require('../src/services/prAnalysisOrchestrator');
+      mod.triggerAnalysisJob(BASE_PAYLOAD);
+    });
+    await flushAsync();
+
+    const checkRun = axios.post.mock.calls.find(([url]) => String(url).includes('/check-runs'));
+    expect(checkRun).toBeDefined();
+    expect(checkRun[1].summary).not.toMatch(/Reviewed \d+ of \d+ changed files/);
+  });
+
   test('posts review after tier1 returns findings', async () => {
     setupAxiosMocks([
       { pattern: '/pulls/files', data: { files: [{ path: 'test_vuln.js', patch: '@@ -0,0 +1,2 @@\n+const existing = true;\n+eval(req.body.code);', additions: 2 }] } },

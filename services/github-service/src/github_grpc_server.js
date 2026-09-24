@@ -342,6 +342,14 @@ const githubService = {
     (result) => {
       const response = new githubPb.FetchPullRequestFilesResponse();
       response.setFilesList((result.files || []).map(toChangedFile));
+      // Absent when the whole pull request was reviewed. A limitation the run must
+      // state is never dropped at the transport boundary.
+      if (result.limitation) {
+        const limitation = new githubPb.AnalysisLimitation();
+        limitation.setKind(result.limitation.kind || '');
+        limitation.setMessage(result.limitation.message || '');
+        response.setLimitation(limitation);
+      }
       return response;
     }
   ),

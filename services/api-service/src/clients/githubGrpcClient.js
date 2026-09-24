@@ -113,7 +113,14 @@ class GitHubGrpcClient {
     request.setCommitSha(payload.commit_sha || '');
     request.setInstallationId(Number(payload.installation_id || 0));
     const response = await unary(this.client, 'fetchPullRequestFiles', request);
-    return { files: response.getFilesList().map(changedFileToPlain) };
+    const limitation = response.getLimitation();
+    return {
+      files: response.getFilesList().map(changedFileToPlain),
+      // An unset message reads as an empty kind, which is not a limitation.
+      ...(limitation && limitation.getKind()
+        ? { limitation: { kind: limitation.getKind(), message: limitation.getMessage() } }
+        : {}),
+    };
   }
 
   async fetchFileContents(payload) {
