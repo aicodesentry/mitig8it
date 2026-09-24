@@ -24,7 +24,7 @@ from security_rules import (
     SECURITY_RULES,
     likely_llm_repo,
 )
-from opengrep_runner import run_opengrep, run_opengrep_with_limitations
+from opengrep_runner import quarantined_rule_ids, run_opengrep, run_opengrep_with_limitations
 from llm_client import redact
 from llm_triage import triage_findings
 from remediation_patches import build_remediation_patch
@@ -113,8 +113,14 @@ def tier1_file_budget_seconds() -> float:
 
 # Rules whose measured precision does not support posting. They still run; see
 # `partition_by_posting_policy` and docs/services/analysis-service.md.
+#
+# Both tiers answer here. Tier 1 declares it on the rule (`posting=POSTING_QUARANTINE`);
+# tier 2 declares it per rule in its YAML metadata (`posting: quarantine`), read once at
+# import. The two tiers share this one frozenset and the one filter below, so there is a
+# single answer to "does this rule post".
 QUARANTINED_RULE_IDS = frozenset(
-    rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE
+    {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
+    | set(quarantined_rule_ids())
 )
 
 request_context.configure_logging(os.getenv("LOG_LEVEL", "INFO"))
@@ -431,11 +437,12 @@ def partition_by_posting_policy(
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split findings into the ones the product will stand behind and the quarantined rest.
 
-    This is the only place a quarantined finding is removed. A quarantined rule still ran,
-    so its output is counted here and in `codesentry_analysis_quarantined_findings_total`,
-    but it does not reach the response. The api-service therefore needs no knowledge of the
-    policy: the findings simply do not arrive, so nothing is posted to GitHub, nothing is
-    counted in the check summary, and nothing is handed to remediation.
+    This is the only place a quarantined finding is removed, for both tiers. A quarantined
+    rule still runs, so its output is counted here and in
+    `codesentry_analysis_quarantined_findings_total`, but it does not reach the response.
+    The api-service therefore needs no knowledge of the policy: the findings simply do not
+    arrive, so nothing is posted to GitHub, nothing is counted in the check summary, and
+    nothing is handed to remediation.
     """
     postable: List[Dict[str, Any]] = []
     quarantined: List[Dict[str, Any]] = []
@@ -579,6 +586,8 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
     except Exception as e:
         raise RuntimeError(f"Required OpenGrep analysis failed: {redact(e)}") from e
 
+    findings, quarantined = partition_by_posting_policy(findings)
+
     normalized = cluster_findings(classify_findings(findings))
     return {
         "repository_full_name": payload.repository_full_name,
@@ -589,6 +598,7 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         "tier": 2,
         "findings": normalized,
         "analysis_limitations": limitations,
+        "quarantined_findings": quarantined_counts_by_rule(quarantined),
     }
 
 

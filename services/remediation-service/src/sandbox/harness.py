@@ -22,7 +22,10 @@ PYTHON_HARNESS_PATH = ".mitig8it/harness.py"
 PYTHON_HARNESS_SOURCE_FILE = Path(__file__).with_name("harness_py.py")
 HARNESS_PATHS = frozenset({HARNESS_PATH, PYTHON_HARNESS_PATH})
 # Each harness travels inside every verification payload, so it stays small by construction.
-MAX_HARNESS_BYTES = 16 * 1024
+# The Node budget was 16 KiB until the environment recorder and its two assertions were added
+# for the JavaScript `hardcoded_credential` family; 20 KiB is the next size that leaves room to
+# extend an assertion without another budget change in the same commit.
+MAX_HARNESS_BYTES = 20 * 1024
 MAX_PYTHON_HARNESS_BYTES = 40 * 1024
 HARNESS_OCCUPIED_LIMITATION = (
     f"the repository already carries {HARNESS_PATH}, so the service test harness was not materialized"

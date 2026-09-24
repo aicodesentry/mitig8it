@@ -74,14 +74,12 @@ on:
       - '.github/workflows/deploy-remediation-cloudrun.yml'
   workflow_dispatch:
     inputs:
-<<<<<<< HEAD
       sandbox_driver:
         description: 'Which sandbox runs repository checks. cloud_run_job requires docs/runbooks/sandbox-cloud-run-job.md to have been completed, smoke test included.'
         type: choice
         options: [local, cloud_run_job]
         default: local
         required: false
-=======
       environment:
         description: 'Which environment to deploy'
         type: choice
@@ -92,7 +90,6 @@ on:
       environment:
         type: string
         default: production
->>>>>>> origin/feat/operations-baseline
 
 permissions:
   contents: read
@@ -241,6 +238,7 @@ jobs:
           VARS="${VARS},SANDBOX_NETWORK_POLICY_ATTESTED=false"
           VARS="${VARS},SANDBOX_NODE_LIMITS_ATTESTED=false"
           VARS="${VARS},OTEL_SERVICE_NAME=remediation-service"
+          VARS="${VARS},DEPLOY_ENVIRONMENT=${ENVIRONMENT}"
           if [ "${SANDBOX_DRIVER}" = "cloud_run_job" ]; then
             VARS="${VARS},SANDBOX_JOB_NAME=${{ vars.SANDBOX_JOB_NAME }}"
             VARS="${VARS},SANDBOX_JOB_REGION=${{ vars.GCP_REGION }}"
@@ -270,22 +268,7 @@ jobs:
             --memory 1Gi \
             --cpu 1 \
             --timeout 900 \
-<<<<<<< HEAD
             --update-env-vars "$SERVICE_ENV_VARS" \
-=======
-            --update-env-vars "\
-              REMEDIATION_EXECUTION_BACKEND=local,\
-              REMEDIATION_LOCAL_STATE_DIR=/tmp/remediation,\
-              REMEDIATION_WORKER_INPROCESS=true,\
-              REMEDIATION_WORKER_POLL_SECONDS=2,\
-              SANDBOX_BROKER_MODE=inprocess,\
-              SANDBOX_DRIVER=local,\
-              SANDBOX_LOCAL_WORKSPACE_ROOT=/tmp/sandbox,\
-              SANDBOX_NETWORK_POLICY_ATTESTED=false,\
-              SANDBOX_NODE_LIMITS_ATTESTED=false,\
-              DEPLOY_ENVIRONMENT=${ENVIRONMENT},\
-              OTEL_SERVICE_NAME=remediation-service" \
->>>>>>> origin/feat/operations-baseline
             --set-secrets "\
               REMEDIATION_SERVICE_INTERNAL_SECRET=codesentry-remediation-internal-secret${SECRET_SUFFIX}:latest,\
               REPAIR_LLM_BASE_URL=codesentry-repair-llm-base-url${SECRET_SUFFIX}:latest,\

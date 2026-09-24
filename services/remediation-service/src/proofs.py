@@ -34,7 +34,10 @@ from .sites import (
     JsRoute,
     PyFunction,
     SiteError,
+    js_environment_name,
+    js_literal_assignment,
     js_module_constant,
+    js_module_exports_name,
     js_route_for_line,
     module_directory,
     python_flask_app_name,
@@ -234,6 +237,42 @@ def _js_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, route: JsR
         f"{route.method.upper()} {route.route} with {untrusted} set to a traversal payload: no file is read and the status is 4xx; a legitimate name is still read"
         + (" inside the served directory" if base else ""),
         route,
+    )
+
+
+def _js_credential_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedProof:
+    """The test a JavaScript hardcoded-credential repair has to satisfy.
+
+    It fails on the literal for two independent reasons and passes only on the env read: a
+    module that holds the literal never touches `process.env`, so `assert.envRead` fails,
+    and the literal is still in the file, so `assert.notInSource` fails. When the module
+    exports the name, the value read back is asserted too, which is what stops a repair
+    that deletes the constant instead of moving it.
+    """
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    assignment = js_literal_assignment(source, _finding_line(finding))
+    if assignment is None:
+        raise SiteError("string_literal_assignment_not_found")
+    name, literal, _quote, kind = assignment
+    variable = js_environment_name(name)
+    if not variable:
+        raise SiteError("environment_name_not_derived")
+    exported = kind == "constant" and js_module_exports_name(source, name)
+    body = [
+        "const h = require('../harness');",
+        "h.run(async () => {",
+        f"  const m = h.load({_js(path)}, {{ env: {{ {json.dumps(variable)}: {_js(ENV_VALUE)} }} }});",
+        f"  h.assert.envRead({_js(variable)});",
+        f"  h.assert.notInSource(m, {_js(literal)});",
+    ]
+    if exported:
+        body.append(f"  h.assert.equal(m.{name}, {_js(ENV_VALUE)});")
+    body += ["});", ""]
+    return GeneratedProof(
+        finding.stable_id, HARDCODED_CREDENTIAL, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
+        f"{name} must come from process.env.{variable} and the literal must be gone from the module",
+        None,
     )
 
 
@@ -495,6 +534,9 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
     path = finding.affected_path
     try:
         if language == JAVASCRIPT:
+            # A secret literal is not inside a request handler, so it is proven without one.
+            if family == HARDCODED_CREDENTIAL:
+                return _js_credential_proof(snapshot, finding)
             route = js_route_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _js_sql_proof(snapshot, finding, route)

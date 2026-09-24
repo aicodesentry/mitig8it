@@ -1,0 +1,1034 @@
+# Tier 2 coverage rules for JavaScript and TypeScript.
+#
+# Original work of this repository. No rule here is copied or adapted from
+# opengrep-rules or semgrep-rules: both are licensed in a way that forbids use inside a
+# paid service. See docs/legal/third-party-rules.md.
+#
+# Every rule carries `internal_type` (a canonical type from taxonomy.py, never the check
+# id), `cwe`, `confidence`, `family` when one of the five remediation families applies,
+# and `posting`. `posting: quarantine` means the rule still runs and is still counted but
+# nothing it produces reaches a reviewer; the measurement behind each one is in
+# docs/validation/tier2-coverage-2026-09.md.
+rules:
+  # ── SQL injection ──────────────────────────────────────────────────────
+
+  - id: cwe-89.js-knex-raw-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: $DB.raw(`...${$INPUT}...`)
+        - pattern: $DB.raw(`...${$INPUT}...`, ...)
+        - pattern: knex.raw(`...${$INPUT}...`)
+      - pattern-not: $DB.raw(`...${$INPUT}...`, [...])
+    message: "Knex raw SQL built by template interpolation. Pass bindings as the second argument"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03:2021"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-89.js-query-string-concat
+    patterns:
+      - pattern-either:
+        - pattern: $DB.query("..." + $INPUT, ...)
+        - pattern: $DB.query("..." + $INPUT)
+        - pattern: $DB.execute("..." + $INPUT, ...)
+        - pattern: $DB.execute("..." + $INPUT)
+      - pattern-not: $DB.query("..." + "...", ...)
+    message: "SQL query assembled by string concatenation. Use a parameterized query"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03:2021"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-89.js-sequelize-literal-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: Sequelize.literal(`...${$INPUT}...`)
+        - pattern: sequelize.literal(`...${$INPUT}...`)
+        - pattern: $S.literal(`...${$INPUT}...`)
+        - pattern: Sequelize.where($X, Sequelize.literal(`...${$INPUT}...`))
+    message: "Sequelize literal() with interpolated input is raw SQL. Use a replacement or bind parameter"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03:2021"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.82"
+      posting: post
+
+  - id: cwe-89.js-typeorm-where-concat
+    patterns:
+      - pattern-either:
+        - pattern: $Q.where("..." + $INPUT)
+        - pattern: $Q.andWhere("..." + $INPUT)
+        - pattern: $Q.orWhere("..." + $INPUT)
+        - pattern: $Q.where(`...${$INPUT}...`)
+        - pattern: $Q.andWhere(`...${$INPUT}...`)
+    message: "TypeORM where clause built from an interpolated string. Use a named parameter"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03:2021"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.80"
+      posting: post
+
+  # ── NoSQL injection ────────────────────────────────────────────────────
+
+  - id: cwe-943.js-mongo-where-operator
+    patterns:
+      - pattern-either:
+        - pattern: '$C.find({ ..., $where: $INPUT, ... })'
+        - pattern: '$C.findOne({ ..., $where: $INPUT, ... })'
+        - pattern: '$C.find({ ..., "$where": $INPUT, ... })'
+    message: "MongoDB $where runs JavaScript on the server. Express the filter with query operators"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-943"
+      owasp: "A03:2021"
+      category: "NoSQL injection"
+      internal_type: "nosql_injection"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-943.js-mongo-request-filter
+    patterns:
+      - pattern-either:
+        - pattern: $C.find(req.body)
+        - pattern: $C.find(req.query)
+        - pattern: $C.findOne(req.body)
+        - pattern: $C.findOne(req.query)
+        - pattern: $C.deleteOne(req.body)
+        - pattern: $C.deleteMany(req.body)
+        - pattern: $C.updateOne(req.body, ...)
+    message: "Request object used directly as a MongoDB filter. An operator object such as {$ne: null} matches everything"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-943"
+      owasp: "A03:2021"
+      category: "NoSQL injection"
+      internal_type: "nosql_injection"
+      confidence: "0.88"
+      posting: post
+
+  # ── Command injection ──────────────────────────────────────────────────
+
+  # `$X.exec(...)` is not a shell. In JavaScript the overwhelmingly common `.exec` is
+  # `RegExp.prototype.exec`, and the September 2026 replay proved it: every one of this
+  # rule's six findings was `/^(?<socketPath>[^:]+):(?<path>.+)$/v.exec(`${url.pathname}...`)`
+  # in got. The receiver is therefore named, and the unqualified forms are kept only where
+  # no regex method shares the name: a bare `exec(...)` or `execSync(...)` call is a
+  # destructured `child_process` import, because a regex `exec` is always a method call.
+  - id: cwe-78.js-exec-interpolated
+    patterns:
+      - pattern-either:
+        - patterns:
+          - pattern-either:
+            - pattern: $CP.exec(`...${$INPUT}...`, ...)
+            - pattern: $CP.exec(`...${$INPUT}...`)
+            - pattern: $CP.exec("..." + $INPUT, ...)
+            - pattern: $CP.exec("..." + $INPUT)
+            - pattern: $CP.execSync(`...${$INPUT}...`, ...)
+            - pattern: $CP.execSync(`...${$INPUT}...`)
+            - pattern: $CP.execSync("..." + $INPUT, ...)
+            - pattern: $CP.execSync("..." + $INPUT)
+          - metavariable-regex:
+              metavariable: $CP
+              regex: ^(?:child_process|childProcess|node_child_process|cp)$
+        - pattern: require("child_process").exec(`...${$INPUT}...`, ...)
+        - pattern: require("child_process").execSync(`...${$INPUT}...`, ...)
+        - pattern: require("node:child_process").exec(`...${$INPUT}...`, ...)
+        - pattern: require("node:child_process").execSync(`...${$INPUT}...`, ...)
+        - pattern: exec(`...${$INPUT}...`, ...)
+        - pattern: exec(`...${$INPUT}...`)
+        - pattern: exec("..." + $INPUT, ...)
+        - pattern: exec("..." + $INPUT)
+        - pattern: execSync(`...${$INPUT}...`, ...)
+        - pattern: execSync(`...${$INPUT}...`)
+        - pattern: execSync("..." + $INPUT, ...)
+        - pattern: execSync("..." + $INPUT)
+    message: "Shell command assembled by interpolation. Use execFile or spawn with an argument list"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021"
+      category: "command injection"
+      internal_type: "command_injection"
+      family: "command_arguments"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-78.js-spawn-shell-true
+    patterns:
+      - pattern-either:
+        - pattern: '$CP.spawn($CMD, $ARGS, { ..., shell: true, ... })'
+        - pattern: '$CP.spawnSync($CMD, $ARGS, { ..., shell: true, ... })'
+        - pattern: '$CP.execFile($CMD, $ARGS, { ..., shell: true, ... })'
+        - pattern: '$CP.execFileSync($CMD, $ARGS, { ..., shell: true, ... })'
+    message: "shell: true reintroduces shell metacharacter parsing. Drop it and pass an argument list"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021"
+      category: "command injection"
+      internal_type: "command_injection"
+      family: "command_arguments"
+      confidence: "0.75"
+      posting: post
+
+  - id: cwe-78.js-shelljs-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: shelljs.exec(`...${$INPUT}...`, ...)
+        - pattern: shelljs.exec(`...${$INPUT}...`)
+        - pattern: shell.exec(`...${$INPUT}...`, ...)
+        - pattern: shell.exec(`...${$INPUT}...`)
+    message: "shelljs.exec runs a shell string. Build the command from an argument list instead"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021"
+      category: "command injection"
+      internal_type: "command_injection"
+      family: "command_arguments"
+      confidence: "0.85"
+      posting: post
+
+  # ── Code injection ─────────────────────────────────────────────────────
+
+  - id: cwe-95.js-new-function-dynamic
+    patterns:
+      - pattern-either:
+        - pattern: new Function(`...${$INPUT}...`)
+        - pattern: new Function("..." + $INPUT)
+        - pattern: new Function($A, "..." + $INPUT)
+        - pattern: Function(`...${$INPUT}...`)
+    message: "Function constructor compiles a built string. The input becomes executable code"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A03:2021"
+      category: "code injection"
+      internal_type: "dynamic_code_execution"
+      family: "code_injection_eval"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-95.js-eval-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: eval(`...${$INPUT}...`)
+        - pattern: eval("..." + $INPUT)
+        - pattern: window.eval(`...${$INPUT}...`)
+        - pattern: globalThis.eval(`...${$INPUT}...`)
+    message: "eval of a built string. Parse the value instead of executing it"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A03:2021"
+      category: "code injection"
+      internal_type: "dynamic_code_execution"
+      family: "code_injection_eval"
+      confidence: "0.90"
+      posting: post
+
+  - id: cwe-95.js-vm-run-dynamic
+    patterns:
+      - pattern-either:
+        - pattern: vm.runInThisContext($INPUT, ...)
+        - pattern: vm.runInThisContext($INPUT)
+        - pattern: vm.runInNewContext($INPUT, ...)
+        - pattern: vm.runInNewContext($INPUT)
+        - pattern: vm.runInContext($INPUT, ...)
+        - pattern: new vm.Script($INPUT, ...)
+      - metavariable-regex:
+          metavariable: $INPUT
+          regex: .*(req\.|request\.|body|query|params|userInput|payload|untrusted).*
+    message: "node:vm is not a security boundary. Code run here reaches the host process"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A03:2021"
+      category: "code injection"
+      internal_type: "dynamic_code_execution"
+      family: "code_injection_eval"
+      confidence: "0.82"
+      posting: post
+
+  - id: cwe-95.js-settimeout-string
+    patterns:
+      - pattern-either:
+        - pattern: setTimeout("...", ...)
+        - pattern: setInterval("...", ...)
+        - pattern: setTimeout(`...${$INPUT}...`, ...)
+        - pattern: setInterval(`...${$INPUT}...`, ...)
+    message: "A string timer body is evaluated as code. Pass a function"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A03:2021"
+      category: "code injection"
+      internal_type: "dynamic_code_execution"
+      family: "code_injection_eval"
+      confidence: "0.80"
+      posting: post
+
+  # ── Insecure deserialization ───────────────────────────────────────────
+
+  - id: cwe-502.js-node-serialize-unserialize
+    patterns:
+      - pattern-either:
+        - pattern: serialize.unserialize(...)
+        - pattern: nodeSerialize.unserialize(...)
+        - pattern: require("node-serialize").unserialize(...)
+    message: "node-serialize unserialize executes an embedded function body. Use JSON.parse"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021"
+      category: "insecure deserialization"
+      internal_type: "unsafe_deserialization"
+      confidence: "0.92"
+      posting: post
+
+  - id: cwe-502.js-yaml-load-unsafe
+    patterns:
+      - pattern-either:
+        - pattern: 'jsyaml.load($INPUT, { ..., schema: $S, ... })'
+        - pattern: 'yaml.load($INPUT, { ..., schema: jsyaml.DEFAULT_FULL_SCHEMA, ... })'
+        - pattern: 'yaml.load($INPUT, { ..., schema: DEFAULT_FULL_SCHEMA, ... })'
+      - metavariable-regex:
+          metavariable: $S
+          regex: .*(FULL|UNSAFE).*
+    message: "js-yaml loaded with the full schema constructs arbitrary types. Use the default safe schema"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021"
+      category: "insecure deserialization"
+      internal_type: "unsafe_deserialization"
+      confidence: "0.85"
+      posting: post
+
+  # ── Path traversal and unsafe file access ──────────────────────────────
+
+  - id: cwe-22.js-sendfile-request-path
+    patterns:
+      - pattern-either:
+        - pattern: res.sendFile(path.join($BASE, req.params.$P))
+        - pattern: res.sendFile(path.join($BASE, req.query.$P))
+        - pattern: res.sendFile(path.resolve($BASE, req.params.$P))
+        - pattern: res.download(path.join($BASE, req.params.$P))
+        - pattern: res.sendFile(`...${req.params.$P}...`)
+        - pattern: res.sendFile(`...${req.query.$P}...`)
+    message: "Response file chosen by request input. Resolve against the base and reject anything outside it"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-22.js-fs-read-request-path
+    patterns:
+      - pattern-either:
+        - pattern: fs.readFileSync(path.join($BASE, req.params.$P), ...)
+        - pattern: fs.readFileSync(path.join($BASE, req.query.$P), ...)
+        - pattern: fs.readFile(path.join($BASE, req.params.$P), ...)
+        - pattern: fs.readFile(path.join($BASE, req.query.$P), ...)
+        - pattern: fs.readFileSync(`...${req.params.$P}...`, ...)
+        - pattern: fs.promises.readFile(path.join($BASE, req.params.$P), ...)
+    message: "File read at a request-controlled path. Resolve against the base and reject anything outside it"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-22.js-archive-entry-write
+    patterns:
+      - pattern-either:
+        - pattern: fs.writeFileSync(path.join($DEST, $ENTRY.path), ...)
+        - pattern: fs.writeFileSync(path.join($DEST, $ENTRY.name), ...)
+        - pattern: fs.createWriteStream(path.join($DEST, $ENTRY.path))
+        - pattern: fs.createWriteStream(path.join($DEST, $ENTRY.name))
+    message: "Archive entry name used as a write path. A `../` entry escapes the destination directory"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.78"
+      posting: post
+
+  # ── SSRF ───────────────────────────────────────────────────────────────
+
+  - id: cwe-918.js-fetch-request-url
+    patterns:
+      - pattern-either:
+        - pattern: fetch(req.query.$U, ...)
+        - pattern: fetch(req.body.$U, ...)
+        - pattern: fetch(req.params.$U, ...)
+        - pattern: fetch(req.query.$U)
+        - pattern: fetch(req.body.$U)
+        - pattern: got(req.query.$U, ...)
+        - pattern: got(req.body.$U, ...)
+    message: "Outbound request to a URL taken straight from the request. Check it against an allowlist"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-918"
+      owasp: "A10:2021"
+      category: "SSRF"
+      internal_type: "server_side_request_forgery"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-918.js-http-request-request-url
+    patterns:
+      - pattern-either:
+        - pattern: http.get(req.query.$U, ...)
+        - pattern: https.get(req.query.$U, ...)
+        - pattern: http.request(req.query.$U, ...)
+        - pattern: https.request(req.query.$U, ...)
+        - pattern: https.get(req.body.$U, ...)
+        - pattern: https.request(req.body.$U, ...)
+    message: "node:http request to a request-controlled URL. Check it against an allowlist"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-918"
+      owasp: "A10:2021"
+      category: "SSRF"
+      internal_type: "server_side_request_forgery"
+      confidence: "0.85"
+      posting: post
+
+  # ── XSS ────────────────────────────────────────────────────────────────
+
+  - id: cwe-79.js-response-html-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: res.send(`...${req.query.$P}...`)
+        - pattern: res.send(`...${req.body.$P}...`)
+        - pattern: res.send(`...${req.params.$P}...`)
+        - pattern: res.write(`...${req.query.$P}...`)
+        - pattern: res.end(`...${req.query.$P}...`)
+    message: "Response body interpolates request input. Escape it or send it as data"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.82"
+      posting: post
+
+  - id: cwe-79.js-jquery-html-sink
+    patterns:
+      - pattern-either:
+        - pattern: $($X).html($INPUT)
+        - pattern: $($X).append($INPUT)
+        - pattern: $($X).prepend($INPUT)
+        - pattern: jQuery($X).html($INPUT)
+      - metavariable-regex:
+          metavariable: $INPUT
+          regex: .*(location\.|document\.URL|document\.referrer|searchParams|hash|req\.|userInput|untrusted).*
+    message: "jQuery HTML sink fed from a URL-derived value. Use .text() or sanitize"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-79.js-dangerously-set-dynamic
+    patterns:
+      - pattern-either:
+        - pattern: '<$EL dangerouslySetInnerHTML={{ __html: $INPUT }} />'
+        - pattern: '<$EL dangerouslySetInnerHTML={{ __html: $INPUT }}>...</$EL>'
+      - pattern-not: '<$EL dangerouslySetInnerHTML={{ __html: "..." }} />'
+      - pattern-not: '<$EL dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(...) }} />'
+      - pattern-not: '<$EL dangerouslySetInnerHTML={{ __html: sanitize(...) }} />'
+      - pattern-not: '<$EL dangerouslySetInnerHTML={{ __html: sanitizeHtml(...) }} />'
+    message: "dangerouslySetInnerHTML with a dynamic value. Sanitize the HTML before rendering it"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.70"
+      posting: quarantine
+      posting_evidence: >-
+        Zero findings on the September 2026 corpus, so there is no measurement, and the
+        pattern does not qualify for the sink-only exemption: whether the value is
+        attacker-controlled is a data-flow question, and most real uses render Markdown or
+        CMS HTML that was sanitized where it entered. Re-enable it with a taint source, or
+        with a labelled sample from a corpus that contains React views.
+
+  - id: cwe-79.js-dom-html-property-sink
+    patterns:
+      - pattern-either:
+        - pattern: $EL.outerHTML = $INPUT
+        - pattern: $EL.innerHTML = $INPUT
+        - pattern: $EL.insertAdjacentHTML($POS, $INPUT)
+        - pattern: document.write($INPUT)
+      - metavariable-regex:
+          metavariable: $INPUT
+          regex: .*(location\.(search|hash|href)|document\.URL|document\.referrer|searchParams|window\.name).*
+    message: "HTML sink fed from a URL-derived value. Assign textContent or sanitize the HTML"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.88"
+      posting: post
+
+  # ── Weak or misused crypto ─────────────────────────────────────────────
+
+  - id: cwe-916.js-password-weak-hash
+    patterns:
+      - pattern-either:
+        - pattern: crypto.createHash("md5").update($SECRET)
+        - pattern: crypto.createHash("sha1").update($SECRET)
+        - pattern: crypto.createHash("md5").update($SECRET, ...)
+        - pattern: crypto.createHash("sha1").update($SECRET, ...)
+      - metavariable-regex:
+          metavariable: $SECRET
+          regex: (?i).*(password|passwd|pwd|passphrase|credential).*
+    message: "Password digested with MD5 or SHA-1. Use bcrypt, scrypt or argon2"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-916"
+      owasp: "A02:2021"
+      category: "weak password hashing"
+      internal_type: "weak_password_hash"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-327.js-ecb-cipher-mode
+    patterns:
+      - pattern-either:
+        - pattern: crypto.createCipheriv("$ALGO", ...)
+        - pattern: crypto.createDecipheriv("$ALGO", ...)
+        - pattern: crypto.createCipher("$ALGO", ...)
+      - metavariable-regex:
+          metavariable: $ALGO
+          regex: (?i).*(-ecb|^des$|^des-|^rc4|^rc2|^bf-|^blowfish).*
+    message: "ECB mode and the legacy DES, RC2, RC4 and Blowfish ciphers leak plaintext structure. Use AES-GCM"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-327"
+      owasp: "A02:2021"
+      category: "weak cryptography"
+      internal_type: "weak_cipher_algorithm"
+      confidence: "0.90"
+      posting: post
+
+  - id: cwe-329.js-static-initialization-vector
+    patterns:
+      - pattern-either:
+        - pattern: crypto.createCipheriv($ALGO, $KEY, Buffer.from("..."))
+        - pattern: crypto.createCipheriv($ALGO, $KEY, Buffer.alloc($N))
+        - pattern: crypto.createCipheriv($ALGO, $KEY, "...")
+        - pattern: crypto.createCipheriv($ALGO, $KEY, Buffer.from("...", $ENC))
+    message: "Cipher constructed with a fixed initialization vector. Derive a fresh IV per message with randomBytes"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-329"
+      owasp: "A02:2021"
+      category: "weak cryptography"
+      internal_type: "static_initialization_vector"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-338.js-math-random-secret
+    patterns:
+      - pattern-either:
+        - pattern: const $NAME = Math.random()
+        - pattern: let $NAME = Math.random()
+        - pattern: var $NAME = Math.random()
+        - pattern: const $NAME = Math.random().toString($R)
+        - pattern: let $NAME = Math.random().toString($R)
+        - pattern: const $NAME = Math.random().toString($R).substring(...)
+        - pattern: const $NAME = Math.random().toString($R).slice(...)
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)^(?!.*(jitter|delay|backoff|sample|sleep|seed)).*(token|secret|nonce|otp|password|apikey|api_?key|session_?id|csrf|salt|reset_?code|verification_?code).*$
+    message: "Security value derived from Math.random, which is not a cryptographic generator. Use crypto.randomBytes"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-338"
+      owasp: "A02:2021"
+      category: "insecure randomness"
+      internal_type: "insecure_randomness"
+      confidence: "0.85"
+      posting: post
+
+  # ── Hardcoded credentials ──────────────────────────────────────────────
+  #
+  # `js-credential-constant` is the shape the September 2026 replay actually found, and
+  # the one the remediation engine repairs: a literal assigned to a named constant, which
+  # becomes a `process.env.<NAME>` read. The name regex refuses the words that make an
+  # identifier a description of a secret rather than a secret (`*Name`, `*Path`, `*Header`)
+  # and the value regex refuses a placeholder and anything too short to be a real secret.
+
+  - id: cwe-798.js-credential-constant
+    patterns:
+      - pattern-either:
+        - pattern: const $NAME = "$VALUE"
+        - pattern: let $NAME = "$VALUE"
+        - pattern: var $NAME = "$VALUE"
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)^(?!.*(name|path|url|uri|host|header|prefix|suffix|label|field|column|type|kind|env|param|regex|pattern|message|error|placeholder|example|mock|dummy|fake|test)).*(password|passwd|secret|api_?key|apikey|access_?token|auth_?token|refresh_?token|private_?key|client_?secret|encryption_?key|signing_?key).*$
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^(?!(?:changeme|change_me|your[-_].*|xxx+|placeholder|redacted|example|undefined|null|true|false|\$\{.*)$)[A-Za-z0-9+/=_.\-]{12,}$
+    message: "Credential held as a literal. Read it from process.env instead"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021"
+      category: "hardcoded secrets"
+      internal_type: "hardcoded_secret"
+      family: "hardcoded_credential"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-798.js-credential-config-key
+    patterns:
+      - pattern: "{ ..., $NAME: \"$VALUE\", ... }"
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)^(?!.*(name|path|url|uri|host|header|prefix|suffix|label|field|column|type|kind|env|param|regex|pattern|message|error|placeholder|example)).*(password|passwd|secret|api_?key|apikey|access_?token|auth_?token|private_?key|client_?secret)$
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^(?!(?:changeme|change_me|your[-_].*|xxx+|placeholder|redacted|example)$)[A-Za-z0-9+/=_.\-]{12,}$
+    message: "Credential held as a literal config value. Read it from process.env instead"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021"
+      category: "hardcoded secrets"
+      internal_type: "hardcoded_secret"
+      family: "hardcoded_credential"
+      confidence: "0.80"
+      posting: post
+
+  - id: cwe-798.js-basic-auth-literal
+    patterns:
+      - pattern-either:
+        - pattern: '{ ..., Authorization: "$VALUE", ... }'
+        - pattern: '{ ..., authorization: "$VALUE", ... }'
+        - pattern: $H.set("Authorization", "$VALUE")
+        - pattern: $H.set("authorization", "$VALUE")
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^(?:Basic|Bearer|Token)\s+[A-Za-z0-9+/=_.\-]{12,}$
+    message: "Authorization header carries a literal credential. Read it from process.env instead"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021"
+      category: "hardcoded secrets"
+      internal_type: "hardcoded_secret"
+      family: "hardcoded_credential"
+      confidence: "0.78"
+      posting: post
+
+  # ── JWT misuse ─────────────────────────────────────────────────────────
+
+  - id: cwe-347.js-jwt-none-algorithm
+    patterns:
+      - pattern-either:
+        - pattern: 'jwt.sign($P, $K, { ..., algorithm: "none", ... })'
+        - pattern: 'jwt.verify($T, $K, { ..., algorithms: ["none"], ... })'
+        - pattern: 'jwt.verify($T, $K, { ..., algorithms: [..., "none", ...], ... })'
+        - pattern: '$J.sign($P, $K, { ..., algorithm: "none", ... })'
+    message: "The `none` JWT algorithm means the token is unsigned. Name the algorithm you accept"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-347"
+      owasp: "A02:2021"
+      category: "JWT misuse"
+      internal_type: "jwt_algorithm_none"
+      confidence: "0.92"
+      posting: post
+
+  - id: cwe-347.js-jwt-decode-without-verify
+    patterns:
+      - pattern-either:
+        - pattern: |
+            const $C = jwt.decode($TOKEN)
+            ...
+            $C.$FIELD
+        - pattern: |
+            const $C = jwt.decode($TOKEN, ...)
+            ...
+            $C.$FIELD
+      - metavariable-regex:
+          metavariable: $FIELD
+          regex: (?i)^(sub|userId|user_id|uid|role|roles|scope|scopes|permissions|admin|isAdmin|email|tenant|tenantId|org|orgId)$
+    message: "jwt.decode does not check the signature. The claim read here is attacker-controlled; use jwt.verify"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-347"
+      owasp: "A02:2021"
+      category: "JWT misuse"
+      internal_type: "jwt_signature_not_verified"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-613.js-jwt-ignore-expiration
+    patterns:
+      - pattern-either:
+        - pattern: 'jwt.verify($T, $K, { ..., ignoreExpiration: true, ... })'
+        - pattern: 'jwt.verify($T, $K, { ..., ignoreNotBefore: true, ... })'
+        - pattern: '$J.verify($T, $K, { ..., ignoreExpiration: true, ... })'
+    message: "Expired tokens accepted. A leaked token never stops working"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-613"
+      owasp: "A07:2021"
+      category: "JWT misuse"
+      internal_type: "jwt_expiration_ignored"
+      confidence: "0.90"
+      posting: post
+
+  # ── Open redirect ──────────────────────────────────────────────────────
+
+  - id: cwe-601.js-redirect-request-value
+    patterns:
+      - pattern-either:
+        - pattern: res.redirect(req.query.$U)
+        - pattern: res.redirect(req.body.$U)
+        - pattern: res.redirect(req.params.$U)
+        - pattern: res.redirect($CODE, req.query.$U)
+        - pattern: res.location(req.query.$U)
+    message: "Redirect target taken straight from the request. Allow only relative paths or a known host list"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-601"
+      owasp: "A01:2021"
+      category: "open redirect"
+      internal_type: "open_redirect"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-601.js-dom-location-assign
+    patterns:
+      - pattern-either:
+        - pattern: window.location = $INPUT
+        - pattern: window.location.href = $INPUT
+        - pattern: location.href = $INPUT
+        - pattern: window.location.replace($INPUT)
+        - pattern: location.assign($INPUT)
+      - metavariable-regex:
+          metavariable: $INPUT
+          regex: .*(location\.(search|hash)|searchParams|document\.referrer|getParameter|queryParam).*
+    message: "Navigation target derived from the current URL. Reject anything that is not a same-origin path"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-601"
+      owasp: "A01:2021"
+      category: "open redirect"
+      internal_type: "open_redirect"
+      confidence: "0.78"
+      posting: post
+
+  # ── Prototype pollution ────────────────────────────────────────────────
+
+  - id: cwe-1321.js-merge-request-body
+    patterns:
+      - pattern-either:
+        - pattern: $_.merge($TARGET, req.body)
+        - pattern: $_.merge($TARGET, req.query)
+        - pattern: $_.mergeWith($TARGET, req.body, ...)
+        - pattern: $_.defaultsDeep($TARGET, req.body)
+        - pattern: merge($TARGET, req.body)
+        - pattern: deepmerge($TARGET, req.body)
+    message: "Request body deep-merged into an object. A `__proto__` key reaches Object.prototype"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-1321"
+      owasp: "A08:2021"
+      category: "prototype pollution"
+      internal_type: "prototype_pollution"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-1321.js-dynamic-key-write
+    patterns:
+      - pattern-either:
+        - pattern: $OBJ[$KEY] = $VALUE
+        - pattern: $OBJ[$KEY][$KEY2] = $VALUE
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: ^(req\.(query|body|params)\.\w+|userKey|untrustedKey)$
+    message: "Object property written at a request-controlled key. Reject `__proto__`, `constructor` and `prototype`"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-1321"
+      owasp: "A08:2021"
+      category: "prototype pollution"
+      internal_type: "prototype_pollution"
+      confidence: "0.75"
+      posting: post
+
+  - id: cwe-1321.js-setprototypeof-dynamic
+    patterns:
+      - pattern-either:
+        - pattern: Object.setPrototypeOf($O, req.body.$P)
+        - pattern: Object.setPrototypeOf($O, req.query.$P)
+        - pattern: Reflect.setPrototypeOf($O, req.body.$P)
+    message: "Prototype replaced with a request-controlled value"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-1321"
+      owasp: "A08:2021"
+      category: "prototype pollution"
+      internal_type: "prototype_pollution"
+      confidence: "0.88"
+      posting: post
+
+  # ── Insecure TLS ───────────────────────────────────────────────────────
+
+  - id: cwe-295.js-agent-reject-unauthorized-false
+    patterns:
+      - pattern-either:
+        - pattern: 'new https.Agent({ ..., rejectUnauthorized: false, ... })'
+        - pattern: 'new $H.Agent({ ..., rejectUnauthorized: false, ... })'
+        - pattern: 'tls.connect({ ..., rejectUnauthorized: false, ... })'
+        - pattern: 'new tls.TLSSocket($S, { ..., rejectUnauthorized: false, ... })'
+    message: "TLS agent accepts any certificate. The connection is not authenticated"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-295"
+      owasp: "A05:2021"
+      category: "security misconfiguration"
+      internal_type: "tls_validation_disabled"
+      confidence: "0.92"
+      posting: post
+
+  - id: cwe-326.js-tls-min-version-legacy
+    patterns:
+      - pattern-either:
+        - pattern: "{ ..., minVersion: \"TLSv1\", ... }"
+        - pattern: "{ ..., minVersion: \"TLSv1.1\", ... }"
+        - pattern: "{ ..., secureProtocol: \"TLSv1_method\", ... }"
+        - pattern: "{ ..., secureProtocol: \"SSLv3_method\", ... }"
+        - pattern: "{ ..., secureProtocol: \"TLSv1_1_method\", ... }"
+    message: "A TLS version below 1.2 is negotiable here. Raise the minimum to TLSv1.2"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-326"
+      owasp: "A02:2021"
+      category: "weak cryptography"
+      internal_type: "weak_tls_protocol"
+      confidence: "0.90"
+      posting: post
+
+  - id: cwe-295.js-checkserveridentity-disabled
+    patterns:
+      - pattern-either:
+        - pattern: "{ ..., checkServerIdentity: () => {}, ... }"
+        - pattern: "{ ..., checkServerIdentity: () => undefined, ... }"
+        - pattern: "{ ..., checkServerIdentity: function () {}, ... }"
+        - pattern: "{ ..., checkServerIdentity: (...) => { return; }, ... }"
+    message: "Hostname verification replaced by a callback that accepts everything"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-295"
+      owasp: "A05:2021"
+      category: "security misconfiguration"
+      internal_type: "tls_validation_disabled"
+      confidence: "0.90"
+      posting: post
+
+  # ── Express middleware misconfiguration ────────────────────────────────
+
+  - id: cwe-614.js-session-cookie-insecure
+    patterns:
+      - pattern-either:
+        - pattern: 'session({ ..., cookie: { ..., secure: false, ... }, ... })'
+        - pattern: 'session({ ..., cookie: { ..., httpOnly: false, ... }, ... })'
+        - pattern: 'cookieSession({ ..., secure: false, ... })'
+    message: "Session cookie sent without the secure or httpOnly flag"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-614"
+      owasp: "A05:2021"
+      category: "session management"
+      internal_type: "insecure_cookie_flags"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-1275.js-cookie-samesite-none
+    patterns:
+      - pattern-either:
+        - pattern: "{ ..., sameSite: \"none\", ... }"
+        - pattern: "{ ..., sameSite: \"None\", ... }"
+        - pattern: "{ ..., sameSite: false, ... }"
+    message: "SameSite=None sends the cookie on cross-site requests. Use Lax or Strict unless the cookie is needed cross-site"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-1275"
+      owasp: "A05:2021"
+      category: "session management"
+      internal_type: "insecure_cookie_flags"
+      confidence: "0.75"
+      posting: quarantine
+      posting_evidence: >-
+        Zero findings on the September 2026 corpus, and it does not qualify for the
+        sink-only exemption: the pattern is an object literal anywhere in the file with a
+        `sameSite` key, with no evidence that the object is a cookie, and a cross-site
+        cookie set deliberately is not a finding. Re-enable it once the pattern is anchored
+        to `res.cookie` or a session middleware call.
+
+  - id: cwe-798.js-session-secret-literal
+    patterns:
+      - pattern-either:
+        - pattern: 'session({ ..., secret: "$VALUE", ... })'
+        - pattern: 'cookieSession({ ..., secret: "$VALUE", ... })'
+        - pattern: cookieParser("$VALUE")
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^(?!(?:changeme|change_me|your[-_].*|placeholder)$).{6,}$
+    message: "Session signing secret is a literal. Read it from process.env instead"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021"
+      category: "hardcoded secrets"
+      internal_type: "hardcoded_secret"
+      family: "hardcoded_credential"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-942.js-cors-credentials-reflected
+    patterns:
+      - pattern-either:
+        - pattern: 'cors({ ..., origin: true, ..., credentials: true, ... })'
+        - pattern: 'cors({ ..., credentials: true, ..., origin: true, ... })'
+        - pattern: 'cors({ ..., origin: "*", ..., credentials: true, ... })'
+        - pattern: |
+            res.setHeader("Access-Control-Allow-Origin", req.headers.origin)
+            ...
+            res.setHeader("Access-Control-Allow-Credentials", "true")
+    message: "Credentialed CORS with a reflected or wildcard origin. Any site can read the response"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-942"
+      owasp: "A01:2021"
+      category: "security misconfiguration"
+      internal_type: "permissive_cors_policy"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-693.js-helmet-protection-disabled
+    patterns:
+      - pattern-either:
+        - pattern: 'helmet({ ..., contentSecurityPolicy: false, ... })'
+        - pattern: 'helmet({ ..., frameguard: false, ... })'
+        - pattern: 'helmet({ ..., hsts: false, ... })'
+        - pattern: 'helmet({ ..., noSniff: false, ... })'
+    message: "A helmet protection is switched off. The header it sets is absent from every response"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-693"
+      owasp: "A05:2021"
+      category: "security misconfiguration"
+      internal_type: "security_header_disabled"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-489.js-express-error-stack-exposed
+    patterns:
+      - pattern-either:
+        - pattern: res.status($C).send($ERR.stack)
+        - pattern: 'res.status($C).json({ ..., stack: $ERR.stack, ... })'
+        - pattern: res.send($ERR.stack)
+        - pattern: 'res.json({ ..., stack: $ERR.stack, ... })'
+    message: "Stack trace returned to the client. It names internal paths and library versions"
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-209"
+      owasp: "A05:2021"
+      category: "information disclosure"
+      internal_type: "error_detail_exposure"
+      confidence: "0.88"
+      posting: post

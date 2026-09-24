@@ -77,7 +77,10 @@ class TestUnparseableFileDoesNotSinkTheBatch:
             ]
         )
 
-        assert [finding["file_path"] for finding in findings] == ["svc/runner.py"]
+        # The claim is which files were covered, not how many rules matched inside one: the
+        # tier 2 coverage set gives a shell-injection line more than one matching rule.
+        assert findings, "the parseable file produced no finding"
+        assert {finding["file_path"] for finding in findings} == {"svc/runner.py"}
         assert [limitation["path"] for limitation in limitations] == ["svc/broken.py"]
         assert limitations[0]["kind"] == opengrep_runner.LIMITATION_PARTIAL_PARSE
 
@@ -89,4 +92,8 @@ class TestUnparseableFileDoesNotSinkTheBatch:
                 {"path": "svc/runner.py", "patch": "", "content": VULNERABLE_PYTHON},
             ]
         )
-        assert [finding["file_path"] for finding in findings] == ["svc/runner.py"]
+
+        # The claim is which files were covered, not how many rules matched inside one: the
+        # tier 2 coverage set gives a shell-injection line more than one matching rule.
+        assert findings, "the parseable file produced no finding"
+        assert {finding["file_path"] for finding in findings} == {"svc/runner.py"}

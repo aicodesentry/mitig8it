@@ -13,6 +13,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import yaml
+
 from finding_quality import is_transcript_artifact_line
 from remediation_patches import build_remediation_patch
 from taxonomy import build_taxonomy_metadata
@@ -23,6 +26,82 @@ from test_code_scope import (
 )
 
 RULES_DIR = Path(__file__).parent / "opengrep_rules"
+
+# Posting policy, the tier 2 half. A rule declares `posting: quarantine` in its own
+# metadata, next to the pattern whose precision was measured, so the evidence and the
+# decision live in one file. The decision is enforced once, in
+# `main.partition_by_posting_policy`; nothing here drops a finding.
+POSTING_POST = "post"
+POSTING_QUARANTINE = "quarantine"
+
+
+def _rule_documents() -> List[Dict[str, Any]]:
+    documents: List[Dict[str, Any]] = []
+    for path in sorted(RULES_DIR.glob("*.yml")) + sorted(RULES_DIR.glob("*.yaml")):
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            # A rule file the scanner cannot read is the scanner's problem to report;
+            # reading the policy must never be the thing that fails the service at import.
+            continue
+        if isinstance(document, dict) and isinstance(document.get("rules"), list):
+            documents.append(document)
+    return documents
+
+
+def load_rule_metadata() -> Dict[str, Dict[str, Any]]:
+    """Every tier 2 rule's metadata, keyed by the finding's `rule_id` (`opengrep.<id>`)."""
+    metadata: Dict[str, Dict[str, Any]] = {}
+    for document in _rule_documents():
+        for rule in document["rules"]:
+            if not isinstance(rule, dict) or not rule.get("id"):
+                continue
+            entry = dict(rule.get("metadata") or {})
+            entry["severity"] = rule.get("severity", "WARNING")
+            entry["languages"] = list(rule.get("languages") or [])
+            metadata[f"opengrep.{rule['id']}"] = entry
+    return metadata
+
+
+def quarantined_rule_ids() -> frozenset:
+    """Tier 2 rule ids whose measured precision does not support posting."""
+    return frozenset(
+        rule_id
+        for rule_id, entry in load_rule_metadata().items()
+        if str(entry.get("posting", POSTING_POST)).strip().lower() == POSTING_QUARANTINE
+    )
+
+
+def canonical_check_id(check_id: str) -> str:
+    """The rule's own id, with the path prefix the scanner prepends removed.
+
+    Pointed at a directory, the scanner names a rule after the path it loaded it from
+    relative to the working directory, so the same rule is `opengrep_rules.cwe-78.js-exec`
+    when the service runs from `src/` and
+    `services.analysis-service.src.opengrep_rules.cwe-78.js-exec` when the replay runs from
+    the repository root. A rule id that depends on the caller's working directory cannot
+    key a policy, a suppression or a fingerprint, so it is resolved back to the id the rule
+    file declares. An id that matches no known rule is returned unchanged.
+    """
+    known = _known_rule_ids()
+    if check_id in known:
+        return check_id
+    for rule_id in known:
+        if check_id.endswith("." + rule_id):
+            return rule_id
+    return check_id
+
+
+_KNOWN_RULE_IDS: Optional[tuple] = None
+
+
+def _known_rule_ids() -> tuple:
+    global _KNOWN_RULE_IDS
+    if _KNOWN_RULE_IDS is None:
+        ids = {rule_id[len("opengrep.") :] for rule_id in load_rule_metadata()}
+        # Longest first, so `cwe-89.sql-injection` never shadows `x.cwe-89.sql-injection`.
+        _KNOWN_RULE_IDS = tuple(sorted(ids, key=len, reverse=True))
+    return _KNOWN_RULE_IDS
 
 # A large pull request must never be handed to one scanner process in a single
 # call. Files are scanned in bounded batches and the results are merged.
@@ -748,7 +827,7 @@ def _build_finding(
     extracted_content_by_path: Dict[str, str],
 ) -> Dict[str, Any]:
     raw_metadata = match.get("extra", {}).get("metadata", {})
-    check_id = match.get("check_id", "")
+    check_id = canonical_check_id(match.get("check_id", ""))
     file_path = match.get("path", "").replace(tmpdir + "/", "")
     line_start = match.get("start", {}).get("line", 1)
     line_end = match.get("end", {}).get("line", line_start)

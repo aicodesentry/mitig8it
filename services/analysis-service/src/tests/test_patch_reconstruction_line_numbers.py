@@ -95,5 +95,8 @@ class TestScannerReportsTheFilesLineNumbers:
         )
 
         assert limitations == [], limitations
-        assert [finding["line_start"] for finding in findings] == [501]
-        assert findings[0]["code_snippet"] == "subprocess.run('ls ' + name, shell=True)"
+        # The claim is the line the scanner reports, not how many rules matched it: the tier 2
+        # coverage set gives this `shell=True` line more than one matching rule.
+        assert findings, "the reconstructed file produced no finding"
+        assert {finding["line_start"] for finding in findings} == {501}
+        assert {finding["code_snippet"] for finding in findings} == {"subprocess.run('ls ' + name, shell=True)"}

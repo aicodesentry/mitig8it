@@ -8,7 +8,7 @@ const { Readable } = require('node:stream');
 const realFs = require('node:fs');
 
 const ROOT = path.resolve(__dirname, '..');
-const state = { express: { routes: [] }, pg: { queries: [] }, child_process: { calls: [] }, fs: { reads: [] } };
+const state = { express: { routes: [] }, pg: { queries: [] }, child_process: { calls: [] }, fs: { reads: [] }, env: { reads: [] } };
 let config = {};
 let fakes = {};
 const later = (fn) => setImmediate(fn);
@@ -173,14 +173,34 @@ Module._load = function load(request, parent, isMain) {
   return Object.prototype.hasOwnProperty.call(fakes, name) ? fakes[name] : originalLoad.call(this, request, parent, isMain);
 };
 
+// process.env is replaced once, by a proxy that records every name the module under test reads:
+// a hardcoded-credential repair is proven by the read happening at all, so the read has to be
+// observable. Values from load(..., { env }) sit over the real environment and are cleared by the
+// next load, so one test cannot leak a secret into the next. `loadedFile` is the file the last
+// load() ran, so assert.notInSource can read it back.
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const supplied = {};
+let loadedFile = null;
+Object.defineProperty(process, 'env', { configurable: true, writable: true, value: new Proxy(process.env, {
+  get: (t, k) => (typeof k === 'string' && state.env.reads.push(k) && has(supplied, k) ? supplied[k] : t[k]),
+  has: (t, k) => (typeof k === 'string' && state.env.reads.push(k), has(supplied, k) || k in t),
+  ownKeys: (t) => [...new Set([...Reflect.ownKeys(t), ...Object.keys(supplied)])],
+  getOwnPropertyDescriptor: (t, k) => (has(supplied, k)
+    ? { value: supplied[k], writable: true, enumerable: true, configurable: true }
+    : Reflect.getOwnPropertyDescriptor(t, k)),
+}) });
+
 function load(target, options = {}) {
   config = obj(options);
   reset();
+  for (const name of Object.keys(supplied)) delete supplied[name];
+  for (const [name, value] of Object.entries(obj(config.env))) supplied[name] = String(value);
   fakes = { ...builtinFakes, ...obj(config.stubs) };
   for (const name of list(config.real)) delete fakes[name];
   const from = target.startsWith('.') ? path.dirname(require.main ? require.main.filename : __filename) : ROOT;
   const resolved = require.resolve(path.resolve(from, target));
   delete require.cache[resolved];
+  loadedFile = resolved;
   return require(resolved);
 }
 
@@ -209,6 +229,20 @@ assert.inside = (target, base, options) => {
   for (const read of reads) {
     const rel = path.relative(root, isRead(read) ? read.resolved : path.resolve(String(read)));
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) fail(o.message || `expected ${String(read)} to stay under ${String(base)}`);
+  }
+};
+// envRead(name): the module read process.env.<name> at least once. A module that still carries the
+// literal never reads it, which is what makes this fail before a repair and pass after one.
+assert.envRead = (name, message) => { if (!state.env.reads.includes(String(name))) fail(message || `expected the module to read process.env.${String(name)}`, state.env.reads); };
+// notInSource(target, literal): the loaded module's file no longer carries the literal, and no
+// string it exports does. `target` is the module load() returned, or a path.
+assert.notInSource = (target, literal, message) => {
+  const file = typeof target === 'string' ? path.resolve(target) : loadedFile;
+  if (!file) fail(message || 'no module has been loaded, so there is no source to check');
+  const want = String(literal);
+  if (realFs.readFileSync(file, 'utf8').includes(want)) fail(message || `the source still contains ${JSON.stringify(want)}`);
+  for (const [key, value] of Object.entries(obj(typeof target === 'string' ? {} : target))) {
+    if (typeof value === 'string' && value.includes(want)) fail(message || `exported value ${key} still carries ${JSON.stringify(want)}`);
   }
 };
 // argv(call, payload): the child ran with an argv array (no shell string) and the injected payload is its own element (the command name itself is argv[0]).
