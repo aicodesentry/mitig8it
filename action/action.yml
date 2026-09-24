@@ -152,6 +152,7 @@ runs:
           --env GITHUB_WORKSPACE=/github/workspace \
           --env GITHUB_REPOSITORY \
           --env GITHUB_API_URL \
+          --env GITHUB_GRAPHQL_URL \
           --env GITHUB_SERVER_URL \
           --env GITHUB_ACTOR \
           --env GITHUB_SHA \

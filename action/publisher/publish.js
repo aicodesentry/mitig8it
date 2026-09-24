@@ -96,9 +96,140 @@ function checkRunSummary(request) {
   };
 }
 
+// --- stale review threads --------------------------------------------------------------
+//
+// Re-running has to converge on the current finding set, not accumulate. github-service's
+// `postInlineComment` already handles the finding that is still there: it finds its own comment
+// by the `mitig8it-finding:<fingerprint>` marker and edits it in place. Nothing handled the
+// finding that went away. Its thread stayed open forever, so a second run over a changed finding
+// set left the first run's threads beside the second run's, and a pull request accumulated a
+// thread per finding per run. The self-review reached 74 open threads this way, none resolved.
+//
+// Resolving a review thread is GraphQL-only; there is no REST endpoint for it, and nothing else
+// in this repository speaks GraphQL, so the client is here. `minimizeComment` is the fallback,
+// because a token that may resolve is not guaranteed to be a token that may minimize or the
+// other way round, and a thread that can be neither is reported rather than silently left.
+
+// GitHub Actions sets GITHUB_GRAPHQL_URL, and it differs on Enterprise Server, so it is read
+// rather than hardcoded the way the REST base is.
+const GRAPHQL_URL = process.env.GITHUB_GRAPHQL_URL || 'https://api.github.com/graphql';
+const FINDING_MARKER = /<!--\s*mitig8it-finding:([^\s>]+)\s*-->/;
+
+const THREADS_QUERY = `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      reviewThreads(first:100,after:$cursor){
+        pageInfo{hasNextPage endCursor}
+        nodes{id isResolved comments(first:1){nodes{id body author{login}}}}
+      }
+    }
+  }
+}`;
+
+const RESOLVE_MUTATION = `mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}`;
+const MINIMIZE_MUTATION = `mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}`;
+
+function createGraphQLClient({ token, url = GRAPHQL_URL, fetchImpl }) {
+  const call = fetchImpl || globalThis.fetch;
+  if (typeof call !== 'function') throw new Error('this runtime has no fetch to reach the GraphQL API with');
+  return async function graphql(query, variables) {
+    const response = await call(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'mitig8it-action',
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) throw new Error(`GraphQL HTTP ${response.status}`);
+    if (payload?.errors?.length) throw new Error(payload.errors.map((e) => e.message).join('; '));
+    if (!payload?.data) throw new Error('GraphQL returned no data');
+    return payload.data;
+  };
+}
+
+// The fingerprint a thread was opened for, or null when the thread is not one of ours. The
+// author check is what keeps this from ever touching a human's thread: only the first comment
+// counts, because a reply from a reviewer must not make their thread look like ours.
+function threadFingerprint(thread, botLogin) {
+  const first = thread?.comments?.nodes?.[0];
+  if (!first || first.author?.login !== botLogin) return null;
+  const match = FINDING_MARKER.exec(String(first.body || ''));
+  return match ? match[1] : null;
+}
+
+async function ourReviewThreads({ graphql, owner, repo, prNumber, botLogin }) {
+  const threads = [];
+  let cursor = null;
+  for (let page = 0; page < 20; page += 1) {
+    const data = await graphql(THREADS_QUERY, { owner, repo, number: prNumber, cursor });
+    const connection = data?.repository?.pullRequest?.reviewThreads;
+    if (!connection) break;
+    for (const node of connection.nodes || []) {
+      const fingerprint = threadFingerprint(node, botLogin);
+      if (!fingerprint) continue;
+      threads.push({
+        id: node.id,
+        commentId: node.comments?.nodes?.[0]?.id || null,
+        isResolved: Boolean(node.isResolved),
+        fingerprint,
+      });
+    }
+    if (!connection.pageInfo?.hasNextPage) break;
+    cursor = connection.pageInfo.endCursor;
+  }
+  return threads;
+}
+
+// Threads this action opened for findings the current run did not report. A run that found
+// nothing resolves everything it had open, which is the whole point: the pull request should
+// end up showing what is true now.
+function selectStaleThreads(threads, activeFingerprints) {
+  const active = new Set(activeFingerprints || []);
+  return threads.filter((thread) => !thread.isResolved && !active.has(thread.fingerprint));
+}
+
+async function reconcileReviewThreads(request, { graphql }) {
+  const [owner, repo] = request.repository_full_name.split('/');
+  const outcome = { resolved: 0, minimized: 0, errors: [] };
+  const threads = await ourReviewThreads({
+    graphql,
+    owner,
+    repo,
+    prNumber: request.pr_number,
+    botLogin: request.bot_login,
+  });
+  for (const thread of selectStaleThreads(threads, request.active_fingerprints)) {
+    try {
+      await graphql(RESOLVE_MUTATION, { id: thread.id });
+      outcome.resolved += 1;
+    } catch (error) {
+      if (!thread.commentId) {
+        outcome.errors.push(`thread ${thread.fingerprint}: ${error.message}`);
+        continue;
+      }
+      try {
+        await graphql(MINIMIZE_MUTATION, { id: thread.commentId });
+        outcome.minimized += 1;
+      } catch (fallbackError) {
+        outcome.errors.push(`thread ${thread.fingerprint}: ${error.message}; ${fallbackError.message}`);
+      }
+    }
+  }
+  return outcome;
+}
+
 // --- publishing ------------------------------------------------------------------------
 
-async function publish(request) {
+async function publish(request, { fetchImpl, graphql } = {}) {
   const { githubIdentity, operations } = service();
   githubIdentity.useProvider(createWorkflowTokenProvider({
     token: request.token,
@@ -114,7 +245,7 @@ async function publish(request) {
     installation_id: request.installation_id,
     commit_sha: request.head_sha,
   };
-  const results = { review: null, inline: [], fixes: null, check: null, errors: [] };
+  const results = { review: null, inline: [], fixes: null, check: null, threads: null, errors: [] };
 
   // 1. The summary review. REQUEST_CHANGES would demand a dismissal from a human before merge,
   // which an action installed by five lines of YAML has not earned, so the action always
@@ -144,6 +275,19 @@ async function publish(request) {
     } catch (error) {
       results.errors.push(`inline ${comment.path}:${comment.line}: ${error.message}`);
     }
+  }
+
+  // 2b. Threads this action opened for findings that are no longer reported. Without this the
+  // pull request only ever grows: the finding that went away keeps its open thread, and the
+  // fingerprint carries the line number, so any push that shifts a line retires every marker at
+  // once and the whole previous run is orphaned. Failing here is reported and never fatal: a
+  // review that published is worth more than a tidy thread list.
+  try {
+    const client = graphql || createGraphQLClient({ token: request.token, fetchImpl });
+    results.threads = await reconcileReviewThreads(request, { graphql: client });
+    for (const error of results.threads.errors) results.errors.push(`thread: ${error}`);
+  } catch (error) {
+    results.errors.push(`threads: ${error.message}`);
   }
 
   // 3. Suggestion blocks under the finding comments, rendered by the service's own builder so
@@ -208,4 +352,13 @@ if (require.main === module) {
   });
 }
 
-module.exports = { publish, buildReviewBody, checkRunSummary, CHECK_RUN_NAME };
+module.exports = {
+  publish,
+  buildReviewBody,
+  checkRunSummary,
+  createGraphQLClient,
+  reconcileReviewThreads,
+  selectStaleThreads,
+  threadFingerprint,
+  CHECK_RUN_NAME,
+};

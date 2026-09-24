@@ -123,7 +123,7 @@ def build_inline_comments(
                 "path": path,
                 "line": line,
                 "body": render_finding_comment(finding),
-                "fingerprint": str(finding.get("fingerprint") or ""),
+                "fingerprint": comment_fingerprint(finding),
                 "severity": str(finding.get("severity") or "").lower(),
             }
         )
@@ -140,13 +140,32 @@ def build_inline_comments(
     return comments[: pr_scope.INLINE_COMMENT_CAP]
 
 
+def comment_fingerprint(finding: Dict[str, Any]) -> str:
+    """The fingerprint the marker carries, which is never empty.
+
+    github-service matches its own comment with `/<!-- mitig8it-finding:[^>]+ -->/`. A finding
+    with no fingerprint rendered `<!-- mitig8it-finding: -->`, which that pattern does not match,
+    so the marker branch was skipped and a second comment was created on every single run. A
+    derived identity is worse than the scanner's, because it moves when the rule or the line
+    moves, but it is stable across two runs over the same tree, which is what idempotency needs.
+    """
+    supplied = str(finding.get("fingerprint") or "").strip()
+    if supplied:
+        return supplied
+    seed = "|".join(
+        str(finding.get(key) or "")
+        for key in ("rule_id", "file_path", "line_start", "title")
+    )
+    return f"derived-{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:32]}"
+
+
 def render_finding_comment(finding: Dict[str, Any]) -> str:
     """The body of one inline finding comment, marker first.
 
     The marker is what makes a re-run idempotent: the publishing code finds its own previous
     comment by this string and edits it rather than posting a second one.
     """
-    fingerprint = str(finding.get("fingerprint") or "")
+    fingerprint = comment_fingerprint(finding)
     severity = str(finding.get("severity") or "unknown").lower()
     title = str(finding.get("title") or finding.get("rule_id") or "Security finding")
     lines = [
@@ -247,6 +266,8 @@ def build_publish_request(
     model_configured: bool,
     conclusion: str,
     excluded_files: int = 0,
+    active_fingerprints: Sequence[str] = (),
+    bot_login: str = "github-actions[bot]",
     action_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Everything the Node publisher needs, in one place the tests can build without a network."""
@@ -260,7 +281,7 @@ def build_publish_request(
         "base_sha": base_sha,
         "installation_id": installation_id,
         "actor_login": actor_login,
-        "bot_login": "github-actions[bot]",
+        "bot_login": bot_login,
         "action_id": action_id,
         "idempotency_key": f"{repository}:{pr_number}:{head_sha}",
         "manifest_digest": manifest_digest(action_id, head_sha, base_sha, fix_sections),
@@ -270,6 +291,10 @@ def build_publish_request(
         "modelConfigured": model_configured,
         "failConclusion": conclusion,
         "excludedFiles": int(excluded_files),
+        # Every finding this run reported, not only the ones that could be anchored to a changed
+        # line. A finding that exists but has nowhere to comment must not have its thread
+        # resolved as though it had gone away.
+        "active_fingerprints": sorted(set(active_fingerprints)),
         "inline_comments": list(inline_comments),
         "fix_sections": list(fix_sections),
     }
@@ -438,6 +463,12 @@ def _run() -> int:
         model_configured=model_configured,
         conclusion=conclusion,
         excluded_files=excluded_files,
+        active_fingerprints=[comment_fingerprint(finding) for finding in findings],
+        # Asked of the token rather than assumed. `github-actions[bot]` is right only for the
+        # default workflow token; a repository that passes an App installation token or a PAT
+        # posts under a different login, and github-service recognises its own comment by that
+        # login. Assuming it meant every re-run created a second comment instead of editing.
+        bot_login=reader.viewer_login(),
     )
 
     log("Publishing.")

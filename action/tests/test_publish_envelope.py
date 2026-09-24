@@ -26,10 +26,10 @@ from pathlib import Path
 import pytest
 
 from orchestrator import run
+from tests import fake_graphql, publisher_harness
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GITHUB_OPERATIONS = REPO_ROOT / "services/github-service/src/services/githubInternalOperations.js"
-PUBLISHER = Path(__file__).resolve().parents[1] / "publisher/publish.js"
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -164,77 +164,33 @@ def test_the_digest_is_the_hash_the_app_computes():
 
 # --- what the publisher does with it ---------------------------------------------------------
 
-STUB_OPERATIONS = """
-'use strict';
-const fs = require('fs');
-const calls = process.env.MITIG8IT_STUB_CALLS;
-function record(name, payload) {
-  fs.appendFileSync(calls, JSON.stringify({ name, payload }) + '\\n');
-}
-// The envelope rule this stub enforces is the service's own, copied by the test from
-// githubInternalOperations.js so a publish that would be rejected there is rejected here.
-function validateEnvelope(payload) {
-  const digest = payload.manifest_digest;
-  if (typeof digest !== 'string' || !digest || digest.length > 64) throw new Error('manifest_digest is required');
-  if (!/^[0-9a-f]{64}$/i.test(digest)) throw new Error('manifest_digest must be a SHA-256 digest');
-}
-module.exports = {
-  submitPullRequestReview: async (p) => { record('review', p); return { review_id: 1 }; },
-  postInlineComment: async (p) => { record('inline', p); return { comment_id: 2 }; },
-  publishFindingFixSections: async (p) => { validateEnvelope(p); record('fixes', p); return { published: p.sections.length }; },
-  createCheckRun: async (p) => { record('check', p); return { check_run_id: 3 }; },
-};
-"""
-
-STUB_IDENTITY = "'use strict';\nmodule.exports = { useProvider: () => {} };\n"
-
-
-def stub_service_root(tmp_path):
-    services = tmp_path / "github-service/src/services"
-    services.mkdir(parents=True)
-    (services / "githubInternalOperations.js").write_text(STUB_OPERATIONS, encoding="utf-8")
-    (services / "githubIdentity.js").write_text(STUB_IDENTITY, encoding="utf-8")
-    return tmp_path / "github-service"
-
-
 def run_publisher(tmp_path, request):
-    """Runs the real publisher against a stub service root and returns (exit code, calls)."""
-    calls = tmp_path / "calls.jsonl"
-    calls.write_text("", encoding="utf-8")
-    request_path = tmp_path / "request.json"
-    request_path.write_text(json.dumps(request), encoding="utf-8")
-    completed = subprocess.run(
-        ["node", str(PUBLISHER), str(request_path)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        env={
-            "PATH": __import__("os").environ.get("PATH", ""),
-            "MITIG8IT_GITHUB_SERVICE_ROOT": str(stub_service_root(tmp_path)),
-            "MITIG8IT_STUB_CALLS": str(calls),
-        },
-    )
-    recorded = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines() if line]
-    return completed, recorded
+    """The real publisher against the shared fake GitHub and a fake GraphQL endpoint."""
+    server = fake_graphql.FakeGraphQL().start()
+    try:
+        publisher = publisher_harness.Publisher(tmp_path, graphql_url=server.url())
+        completed = publisher.run(request)
+        return completed, publisher.calls()
+    finally:
+        server.stop()
 
 
 def test_a_publish_with_fixes_is_accepted_end_to_end(tmp_path):
     """The whole path: the orchestrator's request through the real publisher into the validator."""
-    if not shutil.which("node"):
+    if not publisher_harness.node_available():
         pytest.skip("node is not on PATH")
     completed, recorded = run_publisher(tmp_path, a_request(SECTIONS))
 
     assert completed.returncode == 0, completed.stderr
     assert "manifest_digest" not in completed.stderr
-    names = [call["name"] for call in recorded]
-    assert names == ["review", "fixes", "check"]
+    assert [call["name"] for call in recorded] == ["review", "fixes", "check"]
     fixes = next(call for call in recorded if call["name"] == "fixes")
-    assert len(fixes["payload"]["sections"]) == 2
+    assert fixes["sections"] == 2
 
 
 def test_the_review_and_the_check_still_publish_when_there_are_no_fixes(tmp_path):
     """Zero fixes skips the fix step entirely; nothing else about the publish changes."""
-    if not shutil.which("node"):
+    if not publisher_harness.node_available():
         pytest.skip("node is not on PATH")
     request = a_request([])
     request["counts"] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
@@ -243,8 +199,7 @@ def test_the_review_and_the_check_still_publish_when_there_are_no_fixes(tmp_path
     completed, recorded = run_publisher(tmp_path, request)
 
     assert completed.returncode == 0, completed.stderr
-    names = [call["name"] for call in recorded]
-    assert names == ["review", "check"]
+    assert [call["name"] for call in recorded] == ["review", "check"]
     check = next(call for call in recorded if call["name"] == "check")
-    assert check["payload"]["title"] == "No blocking security findings"
-    assert check["payload"]["conclusion"] == "success"
+    assert check["title"] == "No blocking security findings"
+    assert check["conclusion"] == "success"

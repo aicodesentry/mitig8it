@@ -4,9 +4,13 @@ on:
   pull_request:
     paths:
       - 'action/**'
+      - 'contracts/**'
       - 'services/analysis-service/**'
       - 'services/remediation-service/**'
       - 'services/github-service/**'
+      # The action's parity tests read prAnalysisOrchestrator.js and suggestedFixValidator.js,
+      # so a change to the App alone is exactly the change that can break them.
+      - 'services/api-service/**'
       - '.github/workflows/action-build.yml'
   push:
     branches: [main]
