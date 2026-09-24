@@ -8,6 +8,7 @@ All project Markdown documentation, except the root [README](../README.md), live
 - [Environment Variables](getting-started/environment.md)
 - [GitHub App Setup](getting-started/github-app.md)
 - [GitHub Action](getting-started/github-action.md)
+- [Repository Configuration](getting-started/configuration.md)
 
 ## Architecture
 

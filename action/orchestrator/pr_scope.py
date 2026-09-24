@@ -94,19 +94,52 @@ def is_vendor_path(path: str) -> bool:
     return any(fragment in name for fragment in VENDOR_PATH_SUBSTRINGS)
 
 
-def scope_changed_files(files: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Reduce a GitHub pull request file listing to the entries a review reads.
+def entry_path(entry: Dict[str, Any]) -> str:
+    return str(entry.get("filename") or entry.get("path") or "")
+
+
+def reviewable_entries(
+    files: Iterable[Dict[str, Any]],
+    exclusions: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """The entries a review reads, before the cap: one filter, used by everything below it.
 
     Deleted files carry no reviewable content and removed code cannot be exploited, so only
     added, modified and renamed entries survive. Build output and vendored dependencies are
-    dropped because a finding there is not the author's to fix.
+    dropped because a finding there is not the author's to fix. Paths the repository excluded in
+    `.mitig8it.yml` are dropped here too, before anything reads their content, so nothing
+    downstream can produce a finding, a comment or a fix for one.
     """
-    scoped = [
+    return [
         entry
         for entry in files
         if str(entry.get("status") or "") in REVIEWABLE_FILE_STATUSES
-        and not is_vendor_path(str(entry.get("filename") or entry.get("path") or ""))
+        and not is_vendor_path(entry_path(entry))
+        and not (exclusions is not None and exclusions.matches(entry_path(entry)))
     ]
+
+
+def excluded_file_count(
+    files: Iterable[Dict[str, Any]],
+    exclusions: Optional[Any] = None,
+) -> int:
+    """How many reviewable files `.mitig8it.yml` removed, for the sentence in the summary.
+
+    Counted over the files that would otherwise have been reviewed, so a vendored path the
+    exclusion also happens to name is not reported twice.
+    """
+    if exclusions is None:
+        return 0
+    entries = list(files)
+    return len(reviewable_entries(entries)) - len(reviewable_entries(entries, exclusions))
+
+
+def scope_changed_files(
+    files: Iterable[Dict[str, Any]],
+    exclusions: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Reduce a GitHub pull request file listing to the entries a review reads."""
+    scoped = reviewable_entries(files, exclusions)
     # Sorted by path first so the same pull request always yields the same selection,
     # whatever order the API returned the pages in, then truncated to the cap. The caller
     # reads `changed_file_limitation` to say how many of how many were reviewed.
@@ -126,18 +159,17 @@ def scope_changed_files(files: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]
     ]
 
 
-def changed_file_limitation(files: List[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+def changed_file_limitation(
+    files: List[Dict[str, Any]],
+    exclusions: Optional[Any] = None,
+) -> Optional[Dict[str, str]]:
     """The `file_cap` limitation for a pull request over the cap, or None.
 
     Mirrors the limitation `fetchPullRequestFiles` returns, so the action states the same
-    partial-review fact the hosted product states.
+    partial-review fact the hosted product states. The cap measures the review, so an excluded
+    path is not counted towards it.
     """
-    scoped = [
-        entry
-        for entry in files
-        if str(entry.get("status") or "") in REVIEWABLE_FILE_STATUSES
-        and not is_vendor_path(str(entry.get("filename") or entry.get("path") or ""))
-    ]
+    scoped = reviewable_entries(files, exclusions)
     if len(scoped) <= MAX_CHANGED_FILES:
         return None
     return {

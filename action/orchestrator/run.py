@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from . import analysis, github_api, pr_scope
+from . import analysis, github_api, pr_scope, repo_config
 
 CHECK_RUN_NAME = "Mitig8it Security Review"
 FAIL_ON_CHOICES = ("none", "high", "critical")
@@ -246,6 +246,7 @@ def build_publish_request(
     inline_comments: Sequence[Dict[str, Any]],
     model_configured: bool,
     conclusion: str,
+    excluded_files: int = 0,
     action_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Everything the Node publisher needs, in one place the tests can build without a network."""
@@ -268,6 +269,7 @@ def build_publish_request(
         "fixes": len(fix_sections),
         "modelConfigured": model_configured,
         "failConclusion": conclusion,
+        "excludedFiles": int(excluded_files),
         "inline_comments": list(inline_comments),
         "fix_sections": list(fix_sections),
     }
@@ -360,10 +362,19 @@ def _run() -> int:
     log("Checking that the workflow granted no more permission than the review needs.")
     assert_least_privilege(reader)
 
+    # Read before anything is fetched or scanned: an excluded path never becomes a finding
+    # because it never becomes an analysis input.
+    exclusions, config_problem = repo_config.load(Path(os.environ.get("GITHUB_WORKSPACE") or "."))
+    if config_problem:
+        annotate("warning", config_problem)
+
     log(f"Reading the changed files on #{pr_number} at {head_sha[:8]}.")
     raw_files = reader.list_pull_request_files(pr_number, head_sha)
-    scoped = pr_scope.scope_changed_files(raw_files)
-    cap_limitation = pr_scope.changed_file_limitation(raw_files)
+    scoped = pr_scope.scope_changed_files(raw_files, exclusions)
+    excluded_files = pr_scope.excluded_file_count(raw_files, exclusions)
+    if excluded_files:
+        log(repo_config.exclusion_summary(excluded_files) + ".")
+    cap_limitation = pr_scope.changed_file_limitation(raw_files, exclusions)
     if cap_limitation:
         log(cap_limitation["message"] + "; the rest of the change was not reviewed.")
     if len(scoped) > max_files:
@@ -426,6 +437,7 @@ def _run() -> int:
         inline_comments=inline_comments,
         model_configured=model_configured,
         conclusion=conclusion,
+        excluded_files=excluded_files,
     )
 
     log("Publishing.")
@@ -441,12 +453,15 @@ def _run() -> int:
             "high": counts["high"],
             "fixes": len(fix_sections),
             "conclusion": conclusion,
+            "excluded": excluded_files,
         }
     )
+    exclusion_line = repo_config.exclusion_summary(excluded_files)
     write_summary(
         f"### {CHECK_RUN_NAME}\n\n"
         f"{len(findings)} finding(s), {counts['critical']} critical, {counts['high']} high, "
         f"{len(fix_sections)} fix suggestion(s).\n\n"
+        + (f"{exclusion_line}.\n\n" if exclusion_line else "")
         + (
             "Fixes were generated with model assistance.\n"
             if model_configured

@@ -1,0 +1,14 @@
+# What Mitig8it does not review in this repository.
+#
+# Every path here is code that is supposed to be insecure. The fixtures and the corpus are the
+# inputs the scanner and the repair engine are measured against: a finding on one of them is the
+# product working, not a defect, and reporting it on a pull request buries the findings that
+# matter. The action posted 34 such comments on its own repository before this file existed.
+#
+# Both the App and the Action read this file and apply it identically; the dialect is stated in
+# contracts/repository-configuration-v1.json and documented in
+# docs/getting-started/configuration.md.
+exclude:
+  - benchmarks/remediation/fixtures/**
+  - benchmarks/vulnerable-corpus/**
+  - action/tests/fixtures/**

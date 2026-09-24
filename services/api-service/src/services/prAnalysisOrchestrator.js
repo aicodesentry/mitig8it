@@ -395,6 +395,51 @@ function buildReviewComment(finding, options = {}) {
 const extractReviewableLines = validatorPrivate.extractReviewableLines;
 const extractReviewableLineSpans = validatorPrivate.extractReviewableLineSpans;
 
+// `.mitig8it.yml` in the repository under review. Reading it here, before the files reach any
+// scanner, is what makes an exclusion mean "never analysed" rather than "analysed and hidden".
+const repositoryConfig = require('./repositoryConfig');
+
+// The file lives at the repository root of the head commit. It is fetched through the same
+// content path the tier 2 enrichment uses, and an absent file is the common case rather than an
+// error: `fetchFileContents` simply returns nothing for it.
+async function loadRepositoryExclusions({ repositoryFullName, installationId, commitSha }) {
+  let text = null;
+  try {
+    const response = await githubServiceRequest('/internal/github/files/content', {
+      repository_full_name: repositoryFullName,
+      installation_id: installationId,
+      ref: commitSha,
+      paths: [repositoryConfig.CONFIG_FILENAME],
+    });
+    for (const file of response?.files || []) {
+      if (file?.path === repositoryConfig.CONFIG_FILENAME && typeof file.content === 'string') text = file.content;
+    }
+  } catch (_error) {
+    // A repository that has no such file, or a content read that failed, reviews everything. It
+    // is the safe direction: the alternative is a run that silently reviewed nothing.
+    return { exclusions: new repositoryConfig.Exclusions(), problem: null };
+  }
+  if (text === null) return { exclusions: new repositoryConfig.Exclusions(), problem: null };
+  try {
+    return { exclusions: repositoryConfig.parse(text), problem: null };
+  } catch (error) {
+    return { exclusions: new repositoryConfig.Exclusions(), problem: `${error.message}; nothing was excluded` };
+  }
+}
+
+// { kept, excluded } over the changed-file entries the adapter returned.
+function applyExclusions(files, exclusions) {
+  const source = Array.isArray(files) ? files : [];
+  if (!exclusions || exclusions.empty) return { kept: source, excluded: [] };
+  const kept = [];
+  const excluded = [];
+  for (const file of source) {
+    if (exclusions.matches(String(file?.path || ''))) excluded.push(file);
+    else kept.push(file);
+  }
+  return { kept, excluded };
+}
+
 function fileExtension(path) {
   const match = String(path || '').toLowerCase().match(/(\.[^./]+)$/);
   return match ? match[1] : '';
@@ -1105,9 +1150,12 @@ async function runAnalysisJob(payload) {
 
   let allFindings = [];
   let files = [];
-  // Limitations the run must state rather than hide. Today the only one is `file_cap`:
-  // a pull request over the adapter's cap is reviewed as far as the cap allows, and the
-  // check summary says how many of how many files that was.
+  let excludedFileCount = 0;
+  // Limitations the run must state rather than hide. `file_cap`: a pull request over the
+  // adapter's cap is reviewed as far as the cap allows, and the check summary says how many of
+  // how many files that was. `path_exclusion`: the repository's own `.mitig8it.yml` kept files
+  // out of the analysis, and the summary says how many, so silence about a directory is never
+  // mistaken for a clean bill of health.
   let analysisLimitations = [];
   let tier2Files = [];
   let lastCounts = {};
@@ -1135,6 +1183,22 @@ async function runAnalysisJob(payload) {
       analysisLimitations = [filesResp.limitation];
       logger.warn('Analysis run is limited', {
         runId, kind: filesResp.limitation.kind, message: filesResp.limitation.message,
+      });
+    }
+
+    // Excluded before enrichment, so the content of an excluded file is never even fetched.
+    const { exclusions, problem: configProblem } = await loadRepositoryExclusions({
+      repositoryFullName, installationId, commitSha,
+    });
+    if (configProblem) logger.warn('Repository configuration was not used', { runId, message: configProblem });
+    const exclusionResult = applyExclusions(files, exclusions);
+    excludedFileCount = exclusionResult.excluded.length;
+    files = exclusionResult.kept;
+    const exclusionLimitation = repositoryConfig.exclusionLimitation(excludedFileCount);
+    if (exclusionLimitation) {
+      analysisLimitations = [...analysisLimitations, exclusionLimitation];
+      logger.info('Paths were excluded by repository configuration', {
+        runId, excluded: excludedFileCount,
       });
     }
     tier2Files = await enrichFilesForTier2({
@@ -1455,6 +1519,8 @@ module.exports = {
   processQueuedAnalysisRun,
   startAnalysisQueueWorker,
   __private: {
+    applyExclusions,
+    loadRepositoryExclusions,
     buildLimitationSummaryLine,
     failureReason,
     observeFindingsPosted,

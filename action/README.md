@@ -71,6 +71,23 @@ which half of the product produced a given result.
 `fail-on` defaults to `none` deliberately. Adding a security review should not break a merge on
 the day you add it. Turn it up once you have seen what it reports on your code.
 
+## Excluding paths
+
+A `.mitig8it.yml` at the repository root keeps paths out of the review:
+
+```yaml
+exclude:
+  - benchmarks/fixtures/**
+  - vendor/**
+```
+
+An excluded path is never analysed: it is dropped before any content is fetched, so no finding,
+comment or fix suggestion can come from it, and it is not counted towards `max-files`. The check
+summary says how many files were excluded. The App reads the same file and applies it the same
+way, so the two agree on what a pull request's review covers.
+
+Full syntax and limits: [Repository Configuration](../docs/getting-started/configuration.md).
+
 ### Outputs
 
 `findings`, `critical`, `high`, `fixes`, `conclusion`.

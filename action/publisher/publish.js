@@ -81,6 +81,10 @@ function checkRunSummary(request) {
     + `(${counts.critical || 0} critical, ${counts.high || 0} high, ${counts.medium || 0} medium, ${counts.low || 0} low).`,
   ];
   if (counts.info > 0) parts.push(`${counts.info} informational findings in test code.`);
+  // What the repository asked not to be reviewed is part of what the check reports: a reader
+  // who sees no finding on a directory is entitled to know whether it was clean or skipped.
+  const excluded = Number(request.excludedFiles || 0);
+  if (excluded > 0) parts.push(`${excluded} file${excluded === 1 ? '' : 's'} excluded by .mitig8it.yml.`);
   return {
     // `fail-on: none` keeps a neutral conclusion so a security review never blocks a merge that
     // the repository did not ask it to block.
