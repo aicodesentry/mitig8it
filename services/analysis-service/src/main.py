@@ -327,7 +327,18 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         raise ValueError("Too many files in PR payload")
 
     scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
-    opengrep_files = [{"path": f.path, "patch": f.patch} for f in scannable_files]
+    # The same payload the tier 2 endpoint builds. Dropping `content` here made this
+    # endpoint scan a reconstruction of the diff while `/analyze/pr/tier2` scanned the
+    # real file, so the two disagreed on the same pull request.
+    opengrep_files = [
+        {
+            "path": f.path,
+            "patch": f.patch,
+            "content": f.content,
+            "reviewable_line_spans": f.reviewable_line_spans,
+        }
+        for f in scannable_files
+    ]
     findings = run_tiers_concurrently(
         lambda: pattern_findings(scannable_files),
         lambda: run_opengrep(opengrep_files),
