@@ -107,6 +107,9 @@ rules:
       category: "NoSQL injection"
       internal_type: "nosql_injection"
       confidence: "0.88"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 7 findings in juice-shop, 2 adjudicated by label, both
+        true, precision 1.00.
       posting: post
 
   - id: cwe-943.js-mongo-request-filter
@@ -176,6 +179,10 @@ rules:
       internal_type: "command_injection"
       family: "command_arguments"
       confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 15 findings over 3 repositories, 2 adjudicated by
+        label, both true (logkitty's `adb` calls, CVE-2020-8149), precision 1.00. The narrowing in
+        PR 445 did not remove the rule: this is the first corpus that contains its shape.
       posting: post
 
   - id: cwe-78.js-spawn-shell-true
@@ -235,6 +242,9 @@ rules:
       internal_type: "dynamic_code_execution"
       family: "code_injection_eval"
       confidence: "0.88"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 4 findings over 2 repositories, 1 adjudicated by label
+        and true (serialize-to-js deserialisation, CVE-2017-5954), precision 1.00.
       posting: post
 
   - id: cwe-95.js-eval-interpolated
@@ -316,6 +326,9 @@ rules:
       category: "insecure deserialization"
       internal_type: "unsafe_deserialization"
       confidence: "0.92"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, adjudicated by label and true (dvna's
+        node-serialize sink), precision 1.00.
       posting: post
 
   - id: cwe-502.js-yaml-load-unsafe
@@ -669,6 +682,10 @@ rules:
       internal_type: "hardcoded_secret"
       family: "hardcoded_credential"
       confidence: "0.80"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 7 findings over 3 repositories, 3 adjudicated by
+        label, all true (NodeGoat's cookieSecret and cryptoKey, dvna's session secret), precision
+        1.00.
       posting: post
 
   - id: cwe-798.js-basic-auth-literal
@@ -774,6 +791,9 @@ rules:
       category: "open redirect"
       internal_type: "open_redirect"
       confidence: "0.88"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 2 findings over 2 repositories, both adjudicated by
+        label and true, precision 1.00.
       posting: post
 
   - id: cwe-601.js-dom-location-assign
@@ -930,6 +950,9 @@ rules:
       category: "session management"
       internal_type: "insecure_cookie_flags"
       confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, adjudicated by label and true (dvna's
+        `secure: false` session cookie), precision 1.00.
       posting: post
 
   - id: cwe-1275.js-cookie-samesite-none
@@ -974,6 +997,9 @@ rules:
       internal_type: "hardcoded_secret"
       family: "hardcoded_credential"
       confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 2 findings over 2 repositories, both adjudicated by
+        label and true, precision 1.00.
       posting: post
 
   - id: cwe-942.js-cors-credentials-reflected

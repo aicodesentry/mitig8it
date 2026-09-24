@@ -648,6 +648,222 @@
       "path": "negative/got_regexp_exec.ts",
       "code": "// sindresorhus/got, source/core/options.ts, six findings across PRs 2454 and\n// 2462-2466 in the September 2026 replay. This is RegExp.prototype.exec.\nlet unixSocketGroups: {socketPath: string; path: string} | undefined;\nfunction parse(url: URL) {\n  unixSocketGroups = /^(?<socketPath>[^:]+):(?<path>.+)$/v.exec(`${url.pathname}${url.search}`)?.groups as typeof unixSocketGroups;\n  return unixSocketGroups;\n}\n",
       "note": "The rule matched any `$X.exec(template)`. It now names the child_process receiver, and accepts an unqualified `exec`/`execSync` only, where no regex method shares the name."
+    },
+    {
+      "id": "corpus.cwe-327.weak-hash-password",
+      "expect": "finding",
+      "rule": "cwe-327.weak-hash-password",
+      "path": "corpus/cwe-327_weak-hash-password.py",
+      "code": "from hashlib import md5\nfrom typing import NamedTuple, Optional\nfrom aiopg import Connection\nreturn self.pwd_hash == md5(password.encode('utf-8')).hexdigest()\n",
+      "note": "anxolerd/dvpwa sqli/dao/user.py:41, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-338.py-random-module-secret",
+      "expect": "finding",
+      "rule": "cwe-338.py-random-module-secret",
+      "path": "corpus/cwe-338_py-random-module-secret.py",
+      "code": "import base64\nimport datetime\nimport hashlib\nimport json\nimport logging\nimport os\nimport pickle\nimport random\nimport re\nimport string\nimport subprocess\nimport uuid\nfrom dataclasses import dataclass\nfrom hashlib import md5\nfrom io import BytesIO\nfrom random import randint\nfrom xml.dom.pulldom import START_ELEMENT, parseString\nfrom xml.sax import make_parser\nfrom xml.sax.handler import feature_external_ges\nimport jwt\nimport requests\nimport yaml\nfrom argon2 import PasswordHasher\nfrom django.contrib import messages\nfrom django.contrib.auth import authenticate, login\nfrom django.contrib.auth.forms import UserCreationForm\nfrom django.core import serializers\nfrom django.http import HttpResponse, HttpResponseBadRequest, JsonResponse\nfrom django.shortcuts import redirect, render\nfrom django.template import loader\nfrom django.template.loader import render_to_string\nfrom django.views.decorators.csrf import csrf_exempt\nfrom PIL import Image, ImageMath\nfrom requests.structures import CaseInsensitiveDict\nfrom .forms import NewUserForm\nfrom .utility import customHash, filter_blog\notpN=randint(100,999)\n",
+      "note": "adeyosemanputra/pygoat introduction/views.py:496, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-489.py-debug-constant-true",
+      "expect": "finding",
+      "rule": "cwe-489.py-debug-constant-true",
+      "path": "corpus/cwe-489_py-debug-constant-true.py",
+      "code": "DEBUG = True\n",
+      "note": "adeyosemanputra/pygoat pygoat/settings.py:30, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-502.js-node-serialize-unserialize",
+      "expect": "finding",
+      "rule": "cwe-502.js-node-serialize-unserialize",
+      "path": "corpus/cwe-502_js-node-serialize-unserialize.js",
+      "code": "var products = serialize.unserialize(req.files.products.data.toString('utf8'))\n",
+      "note": "appsecco/dvna core/appHandler.js:218, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-502.pickle-loads",
+      "expect": "finding",
+      "rule": "cwe-502.pickle-loads",
+      "path": "corpus/cwe-502_pickle-loads.py",
+      "code": "content = str(pickle.loads(urllib.parse.unquote_to_bytes(re.search(r\"(?:\\A|[?&])object=([^&]+)\", query).group(1))))\n",
+      "note": "stamparm/DSVW dsvw.py:27, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-502.py-pickle-load-file",
+      "expect": "finding",
+      "rule": "cwe-502.py-pickle-load-file",
+      "path": "corpus/cwe-502_py-pickle-load-file.py",
+      "code": "session['config'] = (pickle.load(open(config_pkl, 'rb'))\n                     if os.path.exists(config_pkl)\n                     else session['config'])\n",
+      "note": "benbusby/whoogle-search app/routes.py:430, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-502.yaml-unsafe-load",
+      "expect": "finding",
+      "rule": "cwe-502.yaml-unsafe-load",
+      "path": "corpus/cwe-502_yaml-unsafe-load.py",
+      "code": "return yaml.load(the_file)\n",
+      "note": "illagrenan/django-make-app django_make_app/io_utils.py:15, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-601.js-redirect-request-value",
+      "expect": "finding",
+      "rule": "cwe-601.js-redirect-request-value",
+      "path": "corpus/cwe-601_js-redirect-request-value.js",
+      "code": "res.redirect(req.query.url)\n",
+      "note": "appsecco/dvna core/appHandler.js:188, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-601.open-redirect",
+      "expect": "finding",
+      "rule": "cwe-601.open-redirect",
+      "path": "corpus/cwe-601_open-redirect.js",
+      "code": "res.redirect(req.query.url)\n",
+      "note": "appsecco/dvna core/appHandler.js:188, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-611.py-lxml-resolve-entities",
+      "expect": "finding",
+      "rule": "cwe-611.py-lxml-resolve-entities",
+      "path": "corpus/cwe-611_py-lxml-resolve-entities.py",
+      "code": "parser = lxml.etree.XMLParser(load_dtd=True, resolve_entities=True, no_network=False); parser.resolvers.add(RESOLVER()); content = lxml.etree.tostring(lxml.etree.parse(io.BytesIO(urllib.parse.unquote_to_bytes(re.search(r\"(?:\\A|[?&])xml=([^&]+)\", query).group(1))), parser), pretty_print=True).decode()\n",
+      "note": "stamparm/DSVW dsvw.py:33, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-614.insecure-cookie",
+      "expect": "finding",
+      "rule": "cwe-614.insecure-cookie",
+      "path": "corpus/cwe-614_insecure-cookie.js",
+      "code": "cookie: { secure: false }\n",
+      "note": "appsecco/dvna server.js:27, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-614.js-session-cookie-insecure",
+      "expect": "finding",
+      "rule": "cwe-614.js-session-cookie-insecure",
+      "path": "corpus/cwe-614_js-session-cookie-insecure.js",
+      "code": "app.use(session({\n  secret: 'keyboard cat',\n  resave: true,\n  saveUninitialized: true,\n  cookie: { secure: false }\n}))\n",
+      "note": "appsecco/dvna server.js:23, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-78.child-process-exec",
+      "expect": "finding",
+      "rule": "cwe-78.child-process-exec",
+      "path": "corpus/cwe-78_child-process-exec.js",
+      "code": "exec('ping -c 2 ' + req.body.address, function (err, stdout, stderr) {\n\toutput = stdout + stderr\n\tres.render('app/ping', {\n\t\toutput: output\n\t})\n})\n",
+      "note": "appsecco/dvna core/appHandler.js:39, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-78.js-exec-interpolated",
+      "expect": "finding",
+      "rule": "cwe-78.js-exec-interpolated",
+      "path": "corpus/cwe-78_js-exec-interpolated.ts",
+      "code": "execSync(`${adbPath} logcat -c`);\n",
+      "note": "zamotany/logkitty src/android/adb.ts:28, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-78.py-subprocess-shell-interpolated",
+      "expect": "finding",
+      "rule": "cwe-78.py-subprocess-shell-interpolated",
+      "path": "corpus/cwe-78_py-subprocess-shell-interpolated.py",
+      "code": "content = subprocess.run(\"nslookup \" + params[\"domain\"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.PIPE, text=True, errors=\"replace\").stdout\n",
+      "note": "stamparm/DSVW dsvw.py:31, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-798.hardcoded-secret-js",
+      "expect": "finding",
+      "rule": "cwe-798.hardcoded-secret-js",
+      "path": "corpus/cwe-798_hardcoded-secret-js.ts",
+      "code": "const privateKey = '-----BEGIN RSA PRIVATE KEY-----\\r\\nMIICXAIBAAKBgQDNwqLEe9wgTXCbC7+RPdDbBbeqjdbs4kOPOIGzqLpXvJXlxxW8iMz0EaM4BKUqYsIa+ndv3NAn2RxCd5ubVdJJcX43zO6Ko0TFEZx/65gY3BE0O6syCEmUP4qbSd6exou/F+WTISzbQ5FBVPVmhnYhG/kpwt/cIxK5iUn5hm+4tQIDAQABAoGBAI+8xiPoOrA+KMnG/T4jJsG6TsHQcDHvJi7o1IKC/hnIXha0atTX5AUkRRce95qSfvKFweXdJXSQ0JMGJyfuXgU6dI0TcseFRfewXAa/ssxAC+iUVR6KUMh1PE2wXLitfeI6JLvVtrBYswm2I7CtY0q8n5AGimHWVXJPLfGV7m0BAkEA+fqFt2LXbLtyg6wZyxMA/cnmt5Nt3U2dAu77MzFJvibANUNHE4HPLZxjGNXN+a6m0K6TD4kDdh5HfUYLWWRBYQJBANK3carmulBwqzcDBjsJ0YrIONBpCAsXxk8idXb8jL9aNIg15Wumm2enqqObahDHB5jnGOLmbasizvSVqypfM9UCQCQl8xIqy+YgURXzXCN+kwUgHinrutZms87Jyi+D8Br8NY0+Nlf+zHvXAomD2W5CsEK7C+8SLBr3k/TsnRWHJuECQHFE9RA2OP8WoaLPuGCyFXaxzICThSRZYluVnWkZtxsBhW2W8z1b8PvWUE7kMy7TnkzeJS2LSnaNHoyxi7IaPQUCQCwWU4U+v4lD7uYBw00Ga/xt+7+UqFPlPVdz1yyr4q24Zxaw0LgmuEvgU5dycq8N7JxjTubX0MIRR+G9fmDBBl8=\\r\\n-----END RSA PRIVATE KEY-----'\n",
+      "note": "juice-shop/juice-shop lib/insecurity.ts:21, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-798.js-credential-config-key",
+      "expect": "finding",
+      "rule": "cwe-798.js-credential-config-key",
+      "path": "corpus/cwe-798_js-credential-config-key.js",
+      "code": "module.exports = {\n    port,\n    db,\n    cookieSecret: \"session_cookie_secret_key_here\",\n    cryptoKey: \"a_secure_key_for_crypto_here\",\n    cryptoAlgo: \"aes256\",\n    hostName: \"localhost\",\n    environmentalScripts: []\n};\n",
+      "note": "OWASP/NodeGoat config/env/all.js:5, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-798.js-session-secret-literal",
+      "expect": "finding",
+      "rule": "cwe-798.js-session-secret-literal",
+      "path": "corpus/cwe-798_js-session-secret-literal.js",
+      "code": "app.use(session({\n  secret: 'keyboard cat',\n  resave: true,\n  saveUninitialized: true,\n  cookie: { secure: false }\n}))\n",
+      "note": "appsecco/dvna server.js:23, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-798.py-credential-keyword-argument",
+      "expect": "finding",
+      "rule": "cwe-798.py-credential-keyword-argument",
+      "path": "corpus/cwe-798_py-credential-keyword-argument.py",
+      "code": "sql_instance = sql_lab_table(id=\"admin\", password=\"65079b006e85a7e798abecb99e47c154\")\n",
+      "note": "adeyosemanputra/pygoat introduction/views.py:866, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-798.py-framework-secret-key-literal",
+      "expect": "finding",
+      "rule": "cwe-798.py-framework-secret-key-literal",
+      "path": "corpus/cwe-798_py-framework-secret-key-literal.py",
+      "code": "SECRET_KEY = 'lr66%-a!$km5ed@n5ug!tya5bv!0(yqwa1tn!q%0%3m2nh%oml'\n\nSENSITIVE_DATA = 'FLAGTHATNEEDSTOBEFOUND'\n\n# SECURITY WARNING: don't run with debug turned on in production!\nDEBUG = True\n\nALLOWED_HOSTS = ['pygoat.herokuapp.com', '0.0.0.0.']\n\n\n# Application definition\n\nINSTALLED_APPS = [\n    'django.contrib.admin',\n    'django.contrib.auth',\n    'django.contrib.contenttypes',\n    'django.contrib.sessions',\n    'django.contrib.messages',\n    'django.contrib.staticfiles',\n    'django.contrib.sites',\n    'introduction.apps.IntroductionConfig',\n",
+      "note": "adeyosemanputra/pygoat pygoat/settings.py:25, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-89.py-execute-concat-direct",
+      "expect": "finding",
+      "rule": "cwe-89.py-execute-concat-direct",
+      "path": "corpus/cwe-89_py-execute-concat-direct.py",
+      "code": "curs.execute(\"DELETE FROM keycache WHERE issuer = '{}' AND key_id = '{}'\".format(issuer, key_id))\n",
+      "note": "scitokens/scitokens src/scitokens/utils/keycache.py:83, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-89.sql-template-literal",
+      "expect": "finding",
+      "rule": "cwe-89.sql-template-literal",
+      "path": "corpus/cwe-89_sql-template-literal.ts",
+      "code": "models.sequelize.query(`SELECT * FROM Products WHERE ((name LIKE '%${criteria}%' OR description LIKE '%${criteria}%') AND deletedAt IS NULL) ORDER BY name`) // vuln-code-snippet vuln-line unionSqlInjectionChallenge dbSchemaChallenge\n",
+      "note": "juice-shop/juice-shop routes/search.ts:23, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-916.py-password-weak-hash-usedforsecurity",
+      "expect": "finding",
+      "rule": "cwe-916.py-password-weak-hash-usedforsecurity",
+      "path": "corpus/cwe-916_py-password-weak-hash-usedforsecurity.py",
+      "code": "from hashlib import md5\nfrom typing import NamedTuple, Optional\nfrom aiopg import Connection\nreturn self.pwd_hash == md5(password.encode('utf-8')).hexdigest()\n",
+      "note": "anxolerd/dvpwa sqli/dao/user.py:41, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-918.py-urlopen-request-url",
+      "expect": "finding",
+      "rule": "cwe-918.py-urlopen-request-url",
+      "path": "corpus/cwe-918_py-urlopen-request-url.py",
+      "code": "LISTEN_ADDRESS, LISTEN_PORT, FETCH, LATIN1 = \"127.0.0.1\", 65412, lambda url: urllib.request.urlopen(urllib.request.Request(url, headers={\"User-Agent\": \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\"})), lambda value: value.encode(\"latin-1\", \"replace\").decode(\"latin-1\")  # browser's User-Agent (rejected otherwise by many hosts) and latin-1 sanitization (required for HTTP header values)\n",
+      "note": "stamparm/DSVW dsvw.py:7, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-943.js-mongo-where-operator",
+      "expect": "finding",
+      "rule": "cwe-943.js-mongo-where-operator",
+      "path": "corpus/cwe-943_js-mongo-where-operator.ts",
+      "code": "db.reviewsCollection.find({ $where: 'this.product == ' + id }).then((reviews: Review[]) => {\n  const t1 = new Date().getTime()\n  challengeUtils.solveIf(challenges.noSqlCommandChallenge, () => { return (t1 - t0) > 2000 })\n  const user = security.authenticatedUsers.from(req)\n  for (let i = 0; i < reviews.length; i++) {\n    if (user === undefined || reviews[i].likedBy.includes(user.data.email)) {\n      reviews[i].liked = true\n    }\n  }\n  res.json(utils.queryResultToJson(reviews))\n}, () => {\n  res.status(400).json({ error: 'Wrong Params' })\n})\n",
+      "note": "juice-shop/juice-shop routes/showProductReviews.ts:36, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-95.eval-injection",
+      "expect": "finding",
+      "rule": "cwe-95.eval-injection",
+      "path": "corpus/cwe-95_eval-injection.js",
+      "code": "const preTax = eval(req.body.preTax);\n",
+      "note": "OWASP/NodeGoat app/routes/contributions.js:32, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-95.js-new-function-dynamic",
+      "expect": "finding",
+      "rule": "cwe-95.js-new-function-dynamic",
+      "path": "corpus/cwe-95_js-new-function-dynamic.js",
+      "code": "return (new Function('return ' + str))()\n",
+      "note": "commenthol/serialize-to-js lib/deserialize.js:28, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
     }
   ]
 }
