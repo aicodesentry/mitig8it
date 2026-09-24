@@ -156,9 +156,34 @@ def test_tier1_accepts_resolve_and_contain(source):
     "source",
     [BASENAME_ONLY, UNGUARDED, RESOLVE_WITHOUT_CHECK, GUARD_ON_ANOTHER_VALUE],
 )
-def test_tier1_still_reports_anything_short_of_containment(source):
-    findings = _traversal(analyze_tier1_payload(_payload(source)))
-    assert [f["rule_id"] for f in findings] == ["path.traversal.user_path"]
+def test_tier1_still_matches_anything_short_of_containment(source):
+    """The tier 1 rule still fires on every uncontained shape; it is withheld, not removed.
+
+    `path.traversal.user_path` is quarantined on a measured precision of 0.43
+    (docs/validation/vulnerable-corpus-2026-09.md), so its findings no longer reach a
+    reviewer. That is a posting decision and not a change to what the rule recognizes: it
+    still has to match all four of these, or the measurement that justifies the quarantine
+    has silently stopped describing the rule and nothing could ever re-enable it.
+    """
+    result = analyze_tier1_payload(_payload(source))
+    assert _traversal(result) == []
+    assert result["quarantined_findings"] == {"path.traversal.user_path": 1}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [BASENAME_ONLY, UNGUARDED, RESOLVE_WITHOUT_CHECK, GUARD_ON_ANOTHER_VALUE],
+)
+@skip_no_opengrep
+def test_a_reviewer_still_gets_the_finding_from_tier2(source):
+    """Quarantining the tier 1 rule must not take the contract's output away.
+
+    Tier 1's rule was the broad one and tier 2's is the narrow one. If the narrow one ever
+    stops covering these four shapes, the quarantine turns into a silent removal of path
+    traversal reporting, which is the failure this file exists to prevent.
+    """
+    findings = _traversal(analyze_tier2_payload(_payload(source)))
+    assert [f["rule_id"] for f in findings] == ["opengrep.cwe-22.path-traversal-fs"]
 
 
 @skip_no_opengrep

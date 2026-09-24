@@ -2,6 +2,15 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+# Posting policy values, the tier 1 half. A rule whose precision nobody has measured still
+# posts: the quarantine is for rules measured and found wrong, not for rules nobody has
+# looked at. Tier 2 declares the same two states in its YAML metadata, and both feed the
+# one filter in `main.partition_by_posting_policy`.
+PRECISION_MEASURED = "measured"
+PRECISION_UNMEASURED = "unmeasured"
+POSTING_POST = "post"
+POSTING_QUARANTINE = "quarantine"
+
 
 @dataclass
 class SecurityRule:
@@ -20,6 +29,17 @@ class SecurityRule:
     # changelog or a README: that text never runs. A rule that looks for committed data
     # rather than code, such as a credential literal, sets this and keeps scanning prose.
     scans_prose: bool = False
+
+    # ── Posting policy ───────────────────────────────────────────────────
+    # `precision` records whether this rule's false-positive rate has been measured on a
+    # real corpus. `posting` decides whether a match reaches a reviewer: a quarantined rule
+    # still runs and is still counted, so a replay and the metrics can keep measuring it,
+    # but nothing it produces is posted to GitHub, counted in the check summary, or handed
+    # to remediation. `precision_evidence` names the measurement, because the measurement is
+    # what lets someone re-enable the rule.
+    precision: str = PRECISION_UNMEASURED
+    posting: str = POSTING_POST
+    precision_evidence: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +89,20 @@ SECURITY_RULES: List[SecurityRule] = [
         ),
         description="File path access appears to use unsanitized user input.",
         remediation="Normalize and allowlist paths; reject traversal sequences and absolute paths.",
+        precision=PRECISION_MEASURED,
+        posting=POSTING_QUARANTINE,
+        precision_evidence=(
+            "benchmarks/vulnerable-corpus, September 2026: 86 findings over 23 repositories, "
+            "7 adjudicated, 3 true and 4 false, precision 0.43. Every false positive came in "
+            "through the `\\{` alternative, which was meant to catch an f-string or a template "
+            "interpolation and instead matches the brace of an options object: "
+            "`fs.readFile('views/userProfile.pug', { encoding: 'utf-8' })` is a constant path, "
+            "and `this.snackBar.open(`...`, 'Force page reload', {` is not a file at all. "
+            "Removing the alternative also removes the rule's own true positive on "
+            "`open(params['include'])`, whose only signal is the same brace, so the pattern "
+            "cannot be narrowed without a data-flow answer about where the path came from. "
+            "See docs/validation/vulnerable-corpus-2026-09.md."
+        ),
     ),
     SecurityRule(
         rule_id="authz.missing_function_level",
