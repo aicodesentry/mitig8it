@@ -8,5 +8,5 @@
   "required_signature_algorithm": "ed25519",
   "release_precision_floor": 0.95,
   "release_coverage_floor": 0.5,
-  "note": "This seed contains eleven authored fixtures (seven JavaScript, four Python) and no external review signatures, so it is below every minimum above and can never claim release-gate passage."
+  "note": "This seed contains twelve authored fixtures (eight JavaScript, four Python) and no external review signatures, so it is below every minimum above and can never claim release-gate passage."
 }

@@ -32,7 +32,7 @@ from .sites import (
     SiteError,
     js_bound_names,
     js_environment_name,
-    js_literal_assignment,
+    js_literal_assignment_in_span,
     js_names_in,
     js_require_line,
     js_route_for_line,
@@ -760,11 +760,10 @@ def _js_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatc
     """
     path = finding.affected_path
     source = snapshot.full_content(path)
-    line = _finding_line(finding)
-    assignment = js_literal_assignment(source, line)
-    if assignment is None:
+    found = js_literal_assignment_in_span(source, finding.line_start, finding.line_end)
+    if found is None:
         raise TemplateError("string_literal_assignment_not_found")
-    name, literal, quote, _kind = assignment
+    line, (name, literal, quote, _kind) = found
     variable = js_environment_name(name)
     if not variable:
         raise TemplateError("environment_name_not_derived")
