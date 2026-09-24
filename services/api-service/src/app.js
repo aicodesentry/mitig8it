@@ -4,8 +4,8 @@ const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
-const client = require('prom-client');
 const { randomUUID } = require('crypto');
+const { httpDuration, renderMetrics, contentType: metricsContentType } = require('./utils/metricsRegistry');
 
 const authRoutes = require('./routes/auth');
 const installationRoutes = require('./routes/installations');
@@ -20,23 +20,13 @@ const healthRoutes = require('./routes/health');
 const internalRoutes = require('./routes/internal');
 const remediationRoutes = require('./routes/remediation');
 const logger = require('./utils/logger');
+const requestContext = require('./utils/requestContext');
 
 function createApp() {
   const app = express();
   app.use(requestTracing);
   const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
   app.set('trust proxy', 1);
-
-  const metricsRegister = new client.Registry();
-  client.collectDefaultMetrics({ register: metricsRegister });
-
-  const httpDuration = new client.Histogram({
-    name: 'codesentry_http_request_duration_seconds',
-    help: 'HTTP request duration in seconds',
-    labelNames: ['method', 'route', 'status'],
-    buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
-    registers: [metricsRegister],
-  });
 
   const CORS_ORIGINS = [
     FRONTEND_URL,
@@ -90,6 +80,10 @@ function createApp() {
     res.setHeader('X-Correlation-ID', correlationId);
     next();
   });
+
+  // Everything downstream of this point logs the delivery and run identifiers the
+  // caller sent without being handed them.
+  app.use(requestContext.requestContextMiddleware);
 
   app.use((req, res, next) => {
     const start = process.hrtime.bigint();
@@ -166,8 +160,8 @@ function createApp() {
       }
     }
 
-    res.set('Content-Type', metricsRegister.contentType);
-    res.end(await client.Registry.merge([metricsRegister, client.register]).metrics());
+    res.set('Content-Type', metricsContentType);
+    res.end(await renderMetrics());
   });
 
   app.get('/', (_req, res) => {

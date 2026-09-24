@@ -1,0 +1,60 @@
+# Somewhere to try a change before the only environment there is.
+#
+# Push to `staging` and all four services plus the frontend deploy to their -staging
+# counterparts. Nothing here creates cloud resources: the secrets, the Neon branch, the
+# staging GitHub App and the Firebase site are one-time owner steps, written down in
+# docs/deployment/staging.md. A deploy against a missing secret fails loudly rather
+# than falling back to production.
+#
+# The order matters. The github and analysis services must exist before the API is
+# deployed, because the API's deploy writes their URLs into its own environment. The
+# frontend goes last so it is never pointing at an API that has not been updated.
+name: Deploy staging
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  github-service:
+    uses: ./.github/workflows/deploy-github-cloudrun.yml
+    with:
+      environment: staging
+    secrets: inherit
+
+  analysis-service:
+    uses: ./.github/workflows/deploy-analysis-cloudrun.yml
+    with:
+      environment: staging
+    secrets: inherit
+
+  remediation-service:
+    uses: ./.github/workflows/deploy-remediation-cloudrun.yml
+    with:
+      environment: staging
+    secrets: inherit
+
+  api-service:
+    needs: [github-service, analysis-service]
+    uses: ./.github/workflows/deploy-api-cloudrun.yml
+    with:
+      environment: staging
+      # Staging exists to catch mistakes, not to serve traffic. Nothing is kept warm,
+      # so an idle staging environment costs nothing.
+      api_min_instances: '0'
+    secrets: inherit
+
+  frontend:
+    needs: [api-service]
+    uses: ./.github/workflows/deploy-frontend-firebase.yml
+    with:
+      environment: staging
+    secrets: inherit

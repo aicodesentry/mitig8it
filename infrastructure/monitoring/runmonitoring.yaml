@@ -1,0 +1,28 @@
+# Scrape configuration for the Google Managed Service for Prometheus sidecar that runs
+# beside codesentry-api. The sidecar reads this file at /etc/rungmp/config.yaml, which
+# the deploy workflow mounts from the Secret Manager secret `codesentry-gmp-config`.
+#
+# It is held in a secret only because that is the mount Cloud Run offers for a file; it
+# contains nothing sensitive, which is why one copy serves both production and staging.
+#
+# To install or update it:
+#   gcloud secrets create codesentry-gmp-config --replication-policy=automatic
+#   gcloud secrets versions add codesentry-gmp-config \
+#     --data-file=infrastructure/monitoring/runmonitoring.yaml
+#
+# The Cloud Run runtime service account needs roles/monitoring.metricWriter for the
+# sidecar to write what it scrapes.
+apiVersion: monitoring.googleapis.com/v1beta
+kind: RunMonitoring
+metadata:
+  name: codesentry-api
+spec:
+  endpoints:
+    # The loopback listener the API starts when METRICS_LOOPBACK_ENABLED=true. It is
+    # bound to 127.0.0.1 and carries no secret; the public /metrics route on the
+    # ingress port stays gated by the internal secret header.
+    - port: 9091
+      path: /metrics
+      # 30 seconds: fast enough that a fifteen-minute alert window holds thirty
+      # samples, slow enough not to dominate the instance's own CPU.
+      interval: 30s

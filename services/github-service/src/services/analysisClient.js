@@ -1,4 +1,6 @@
 const axios = require('axios');
+const logger = require('../utils/logger');
+const requestContext = require('../utils/requestContext');
 
 const ANALYSIS_SERVICE_URL = process.env.ANALYSIS_SERVICE_URL || 'http://analysis-service:8001';
 
@@ -6,11 +8,13 @@ function analysisHeaders() {
   const internalSecret =
     process.env.ANALYSIS_SERVICE_INTERNAL_SECRET || process.env.GITHUB_SERVICE_INTERNAL_SECRET;
 
+  // The correlation headers go out either way: an unauthenticated call is still work
+  // an operator will want to find next to the delivery that caused it.
   if (!internalSecret) {
-    return {};
+    return { ...requestContext.toHeaders() };
   }
 
-  return { 'x-internal-secret': internalSecret };
+  return { 'x-internal-secret': internalSecret, ...requestContext.toHeaders() };
 }
 
 class AnalysisClient {
@@ -34,24 +38,24 @@ class AnalysisClient {
     };
 
     try {
-      console.log(`[ANALYZE] Analyzing Python file: ${filePath}`);
+      logger.info(`[ANALYZE] Analyzing Python file: ${filePath}`);
       const response = await axios.post(`${ANALYSIS_SERVICE_URL}/analyze/pr`, payload, {
         headers: analysisHeaders(),
         timeout: 600000,
       });
       const data = response.data;
-      console.log(`[SUCCESS] Analysis complete: ${(data.findings || []).length} findings found`);
+      logger.info(`[SUCCESS] Analysis complete: ${(data.findings || []).length} findings found`);
       return data;
     } catch (error) {
-      console.error(`[ERROR] Analysis failed for ${filePath}:`, error.message);
+      logger.error(`[ERROR] Analysis failed for ${filePath}:`, error.message);
 
       if (retries > 0 && error.response && [502, 503, 504].includes(error.response.status)) {
-        console.log(`[RETRY] Retrying analysis for ${filePath} (${retries} retries left)...`);
+        logger.info(`[RETRY] Retrying analysis for ${filePath} (${retries} retries left)...`);
         await new Promise((resolve) => setTimeout(resolve, 5000));
         return this.analyzeCode(code, filePath, prNumber, repository, retries - 1);
       }
 
-      console.error(`[SKIP] Skipping ${filePath} due to analysis failure`);
+      logger.error(`[SKIP] Skipping ${filePath} due to analysis failure`);
       return {
         repository_full_name: repository,
         pull_request_number: Number(prNumber),
@@ -70,7 +74,7 @@ class AnalysisClient {
       });
       return response.data;
     } catch (error) {
-      console.error('[ERROR] Analysis service health check failed:', error.message);
+      logger.error('[ERROR] Analysis service health check failed:', error.message);
       return null;
     }
   }

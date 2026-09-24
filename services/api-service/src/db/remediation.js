@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { pool } = require('../config/database');
 const findingsDb = require('./findings');
 const findingOutcomes = require('./findingOutcomes');
+const metrics = require('../services/remediationMetrics');
 
 const ACTIVE_STATES = new Set(['queued', 'snapshotting', 'retrieving', 'planning', 'generating', 'verifying']);
 const TERMINAL_STATES = new Set(['ready', 'cancelled', 'superseded', 'unsupported', 'inconclusive', 'failed', 'dead_letter']);
@@ -525,7 +526,17 @@ async function persistEvidence(client, row, attempt, records) {
   }
 }
 
-async function completeStage(job, { state, stage, outcome, candidates = [], verification, reason, outputDigest, stagePath = [], evidence = [] }) {
+// Counted after the transaction commits and only when the compare-and-swap actually
+// moved the row, so a rolled back or fenced-out completion never shows up as an ending.
+async function completeStage(job, options) {
+  const applied = await completeStageTransaction(job, options);
+  if (applied && TERMINAL_STATES.has(options.state)) {
+    metrics.jobTerminalStates.labels(options.state).inc();
+  }
+  return applied;
+}
+
+async function completeStageTransaction(job, { state, stage, outcome, candidates = [], verification, reason, outputDigest, stagePath = [], evidence = [] }) {
   return scopedTransaction({ tenantId: job.installation_id, worker: true }, async (client) => {
     const current = await client.query(`SELECT * FROM remediation_jobs WHERE id=$1 FOR UPDATE`, [job.id]);
     const row = current.rows[0];

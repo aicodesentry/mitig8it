@@ -1,4 +1,6 @@
 const grpc = require('@grpc/grpc-js');
+const logger = require('./utils/logger');
+const requestContext = require('./utils/requestContext');
 const githubPb = require('./grpc/generated/github_pb');
 const githubGrpc = require('./grpc/generated/github_grpc_pb');
 const commonPb = require('./grpc/generated/common_pb');
@@ -179,14 +181,19 @@ function toCreateCheckRunPayload(request) {
   };
 }
 
+// Every gRPC handler adopts the caller's identifiers from the call metadata before it
+// runs, which is the one place that has to know about them: the handlers themselves,
+// and everything they call, log under the delivery without being passed it.
 function unary(handler, buildResponse) {
   return async (call, callback) => {
-    try {
-      const result = await handler(call.request);
-      callback(null, buildResponse(result));
-    } catch (error) {
-      callback(operationErrorToGrpc(error));
-    }
+    await requestContext.runWith(requestContext.fromGrpcMetadata(call.metadata), async () => {
+      try {
+        const result = await handler(call.request);
+        callback(null, buildResponse(result));
+      } catch (error) {
+        callback(operationErrorToGrpc(error));
+      }
+    });
   };
 }
 
@@ -423,7 +430,7 @@ function startServer() {
     if (error) {
       throw error;
     }
-    console.log(`GitHub gRPC service listening on ${port}`);
+    logger.info('GitHub gRPC service listening', { port });
   });
   return server;
 }

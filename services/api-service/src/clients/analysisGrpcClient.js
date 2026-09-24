@@ -1,8 +1,10 @@
+const grpc = require('@grpc/grpc-js');
 const structPb = require('google-protobuf/google/protobuf/struct_pb');
 const analysisPb = require('../grpc/generated/analysis_pb');
 const analysisGrpc = require('../grpc/generated/analysis_grpc_pb');
 const commonPb = require('../grpc/generated/common_pb');
 const { createGrpcClientConfig } = require('./grpcConnection');
+const requestContext = require('../utils/requestContext');
 const {
   changedFileToMessage,
   findingToMessage,
@@ -12,7 +14,10 @@ const {
 function unary(client, method, request, timeoutMs) {
   return new Promise((resolve, reject) => {
     const deadline = new Date(Date.now() + timeoutMs);
-    client[method](request, { deadline }, (error, response) => {
+    // The analysis service logs under the same delivery and run identifiers because
+    // they travel with the call, not because a caller remembered to pass them.
+    const metadata = requestContext.toGrpcMetadata(grpc.Metadata);
+    client[method](request, metadata, { deadline }, (error, response) => {
       if (error) {
         reject(error);
         return;

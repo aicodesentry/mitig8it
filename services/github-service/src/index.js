@@ -8,6 +8,8 @@ const internalRoutes = require('./routes/internal');
 const githubAppAuth = require('./services/githubAppAuth');
 const { startServer: startGrpcServer } = require('./github_grpc_server');
 const path = require('path');
+const logger = require('./utils/logger');
+const requestContext = require('./utils/requestContext');
 require('dotenv').config();
 require('dotenv').config({ path: path.resolve(__dirname, '../../../.env'), override: false });
 // Alias: root .env uses GITHUB_WEBHOOK_SECRET; this service expects WEBHOOK_SECRET
@@ -26,16 +28,18 @@ const requiredEnvVars = [
 const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
 
 if (missingEnvVars.length > 0) {
-  console.error('❌ Missing required environment variables:');
-  missingEnvVars.forEach(varName => console.error(`  - ${varName}`));
+  logger.error('Missing required environment variables', { missing: missingEnvVars });
   process.exit(1);
 }
 
-console.log('✓ All required environment variables are set');
+logger.info('All required environment variables are set');
 
 const app = express();
 startTelemetry('mitig8it-github');
 app.use(requestTracing);
+// Adopts the delivery and run identifiers the caller sent, so every line this request
+// writes joins the API's lines for the same review.
+app.use(requestContext.requestContextMiddleware);
 const PORT = process.env.PORT || 3002;
 const metricsRegister = new client.Registry();
 
@@ -119,7 +123,7 @@ app.get('/health/github-app', async (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`GitHub Service running on port ${PORT}`);
+  logger.info('GitHub service started', { port: PORT });
 });
 
 if (process.env.ENABLE_GRPC_SERVER === 'true') {

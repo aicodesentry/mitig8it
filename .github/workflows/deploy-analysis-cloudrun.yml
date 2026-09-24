@@ -6,17 +6,29 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Which environment to deploy'
+        type: choice
+        options: [production, staging]
+        default: production
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        default: production
 
 permissions:
   contents: read
 
 concurrency:
-  group: cloudrun-deploy-${{ github.workflow }}
+  # Staging and production are separate services and must not queue behind each other.
+  group: cloudrun-deploy-${{ github.workflow }}-${{ inputs.environment || 'production' }}
   cancel-in-progress: false
 
 jobs:
   filter:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
       deploy: ${{ steps.decide.outputs.deploy }}
@@ -30,7 +42,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # Only a CI-triggered deploy is filtered by path. A manual run and a staging
+          # run are explicit requests and always deploy.
+          if [ "${{ github.event_name }}" != "workflow_run" ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -56,6 +70,38 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      # Everything downstream reads $SERVICE and $SECRET_SUFFIX, so the difference
+      # between production and staging lives in exactly one step.
+      - name: Resolve environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENVIRONMENT="${{ inputs.environment || 'production' }}"
+          case "$ENVIRONMENT" in
+            production)
+              SUFFIX=""
+              FRONTEND_URL='${{ vars.CODESENTRY_FRONTEND_URL }}'
+              ;;
+            staging)
+              SUFFIX="-staging"
+              FRONTEND_URL='${{ vars.CODESENTRY_FRONTEND_URL_STAGING }}'
+              ;;
+            *)
+              echo "Unknown environment: $ENVIRONMENT" >&2
+              exit 1
+              ;;
+          esac
+          if [ -z "$FRONTEND_URL" ]; then
+            echo "Missing frontend URL variable for the $ENVIRONMENT environment" >&2
+            exit 1
+          fi
+          {
+            echo "ENVIRONMENT=$ENVIRONMENT"
+            echo "SECRET_SUFFIX=$SUFFIX"
+            echo "SERVICE=codesentry-analysis${SUFFIX}"
+            echo "FRONTEND_URL=$FRONTEND_URL"
+          } >> "$GITHUB_ENV"
 
       - name: Authenticate to Google Cloud (Workload Identity)
         if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
@@ -101,7 +147,7 @@ jobs:
 
       - name: Deploy Analysis
         run: |
-          gcloud run deploy codesentry-analysis \
+          gcloud run deploy "$SERVICE" \
             --image "$IMAGE" \
             --region '${{ vars.GCP_REGION }}' \
             --project '${{ vars.GCP_PROJECT_ID }}' \
@@ -112,10 +158,11 @@ jobs:
             --liveness-probe=grpc.port=8080,initialDelaySeconds=10,timeoutSeconds=5,periodSeconds=30,failureThreshold=3 \
             --update-env-vars "\
               SERVICE_MODE=grpc,\
-              FRONTEND_URL=${{ vars.CODESENTRY_FRONTEND_URL }},\
+              DEPLOY_ENVIRONMENT=${ENVIRONMENT},\
+              FRONTEND_URL=${FRONTEND_URL},\
               ANALYSIS_SERVICE_INTERNAL_SECRET=${{ secrets.CODESENTRY_INTERNAL_SECRET }}" \
             --set-secrets "\
-              GEMINI_API_KEY=codesentry-gemini-api-key:latest" \
+              GEMINI_API_KEY=codesentry-gemini-api-key${SECRET_SUFFIX}:latest" \
             --ingress all \
             --no-allow-unauthenticated
 
@@ -128,7 +175,7 @@ jobs:
             PROJECT_NUMBER=$(gcloud projects describe '${{ vars.GCP_PROJECT_ID }}' --format='value(projectNumber)')
             API_INVOKER="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
           fi
-          gcloud run services add-iam-policy-binding codesentry-analysis \
+          gcloud run services add-iam-policy-binding "$SERVICE" \
             --region '${{ vars.GCP_REGION }}' \
             --project '${{ vars.GCP_PROJECT_ID }}' \
             --member="serviceAccount:${API_INVOKER}" \
@@ -139,7 +186,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gcloud run services describe codesentry-analysis \
+          gcloud run services describe "$SERVICE" \
             --region '${{ vars.GCP_REGION }}' \
             --project '${{ vars.GCP_PROJECT_ID }}' \
             --format='value(status.url)'

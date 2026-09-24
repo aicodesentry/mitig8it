@@ -1,99 +1,104 @@
-# Grafana-managed alerting: import these with "No data" handled as NoData or OK, never
-# as Alerting. The pending group below queries metrics that are not emitted yet, and a
-# rule with no series must read as "no data", not as an incident. A single lease
-# reclaim is normal recovery; the reclaim rule needs several inside half an hour.
-# Alert rules for the remediation workflow.
+# Alert rules for Mitig8it.
 #
-# Rules in the mitig8it-remediation group query metrics that the control plane
-# emits today. Rules in mitig8it-remediation-pending query metric names that are
-# specified but not yet emitted by any service; they are kept here so the names
-# are fixed before instrumentation, and they cannot fire until the counters and
-# gauges exist. Treat a silent pending rule as no data, never as a healthy
-# system, and use database and audit evidence in the meantime.
+# There used to be eleven rules here. Six of them queried metric names that nothing
+# emitted, so they could only ever read as no data, and the rest fired on remediation
+# internals that nobody is paged for. A rule that cannot fire teaches an operator to
+# ignore the ones that can.
+#
+# What is left is the two questions that are worth waking somebody for, plus one
+# warning that predicts an outage rather than reporting one.
+#
+# No-data behaviour is stated on every rule because it is the difference between "the
+# service is fine" and "the service stopped reporting", and the two are not the same
+# incident. Import these with each rule's declared noDataState; do not let Grafana
+# apply its "Alerting" default to a rule that asks for OK.
+#
+# The Cloud Monitoring equivalents live in infrastructure/monitoring/*.tf, so the owner
+# can be paged without standing up Grafana at all. Keep the two in step.
 groups:
-  - name: mitig8it-remediation
+  - name: mitig8it-reviews
+    interval: 1m
     rules:
-      - alert: Mitig8itRemediationAmbiguousWrite
-        expr: increase(mitig8it_remediation_action_transitions_total{state="reconciling"}[5m]) > 0
+      # Reviews are running and most of them are failing. A transient re-queue is
+      # excluded: that run has not failed for the pull request author yet, and counting
+      # it here would page for work that is still on its way to succeeding.
+      #
+      # The `>= 3` floor is what keeps a quiet hour off the pager: one failure out of
+      # one run is 100 percent and means almost nothing.
+      #
+      # No data means no analysis run started in the window at all. That is not this
+      # alert's job to report, so it reads as OK here and as an incident in
+      # Mitig8itReviewsStalled below.
+      - alert: Mitig8itReviewsFailing
+        expr: |
+          (
+            sum(increase(mitig8it_analysis_runs_failed_total{reason!="transient_retried"}[15m]))
+            /
+            sum(increase(mitig8it_analysis_runs_started_total[15m]))
+          ) > 0.3
+          and
+          sum(increase(mitig8it_analysis_runs_started_total[15m])) >= 3
         for: 5m
-        labels: {severity: page}
+        labels:
+          severity: page
         annotations:
-          summary: "A remediation GitHub write needs reconciliation"
-          runbook_url: "docs/runbooks/remediation.md#ambiguous-github-write"
+          summary: "More than 30 percent of security reviews are failing"
+          description: >-
+            Over the last 15 minutes more than three analysis runs started and more than
+            30 percent of them ended without publishing a review. Break the failures down
+            by the `reason` label: `analysis_incomplete` is ours, `github_files_invalid`
+            and `publication_incomplete` point at GitHub, `infrastructure` points at the
+            network or a cold downstream.
+          runbook_url: "docs/runbooks/observability.md#reviews-are-failing"
+        # OK, not Alerting: a window with no runs is covered by the stall rule.
+        isPaused: false
+        noDataState: OK
+        execErrState: Alerting
+
+      # Work is waiting and nothing is picking it up. The condition joins a queue age to
+      # the absence of starts, and the service derives it into one gauge rather than
+      # leaving the join to be reconstructed here, where nobody could check it.
+      #
+      # No data here means the API is not being scraped at all, which is itself the
+      # outage: a dead service reports neither a backlog nor a start.
+      - alert: Mitig8itReviewsStalled
+        expr: max(mitig8it_analysis_runs_stalled) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Analysis runs are queued but none has started"
+          description: >-
+            Pending analysis runs are older than ten minutes and no run has moved into
+            the running state for ten minutes. Check that at least one API instance is
+            serving, that the queue worker started, and that the database is reachable:
+            the claim query is the first thing a database outage stops.
+          runbook_url: "docs/runbooks/observability.md#reviews-are-stalled"
+        isPaused: false
+        noDataState: Alerting
+        execErrState: Alerting
+
+  - name: mitig8it-remediation
+    interval: 1m
+    rules:
+      # A warning, deliberately. One reclaim is normal recovery after an instance
+      # restart; several in half an hour mean workers are dying mid-job, which usually
+      # precedes an outage rather than being one.
+      #
+      # No data reads as OK: a deployment that runs no remediation worker emits no
+      # reclaims, and that is a configuration, not an incident.
       - alert: Mitig8itRemediationLeaseReclaim
         expr: increase(mitig8it_remediation_lease_reclaims_total[30m]) > 3
         for: 10m
-        labels: {severity: warning}
+        labels:
+          severity: warning
         annotations:
-          summary: "A remediation worker lease was reclaimed"
+          summary: "Remediation worker leases are being reclaimed repeatedly"
+          description: >-
+            More than three remediation job leases expired and were reclaimed in half an
+            hour. Workers are most likely being killed mid-job. Check instance restarts
+            and memory limits before the next deploy.
           runbook_url: "docs/runbooks/remediation.md#expired-worker-lease"
-      - alert: Mitig8itRemediationInconclusiveVerification
-        expr: sum(increase(mitig8it_remediation_stage_attempts_total{outcome="inconclusive"}[15m])) > 5
-        for: 10m
-        labels: {severity: warning}
-        annotations:
-          summary: "Remediation verification is repeatedly inconclusive"
-          runbook_url: "docs/runbooks/remediation.md#sandbox-or-verification-failure"
-      - alert: Mitig8itRemediationProviderStageFailures
-        expr: sum(increase(mitig8it_remediation_stage_attempts_total{stage="generating", outcome=~"error|failed|inconclusive"}[15m])) > 10
-        for: 10m
-        labels: {severity: warning}
-        annotations:
-          summary: "Generation stage errors suggest a provider outage or a spend anomaly"
-          runbook_url: "docs/runbooks/remediation.md#provider-outage"
-
-  - name: mitig8it-remediation-pending
-    rules:
-      # metric not yet emitted: mitig8it_remediation_queue_age_seconds. The
-      # stage duration histogram has no queued stage, so queue wait cannot be
-      # derived from the metrics that exist today.
-      - alert: Mitig8itRemediationQueueBacklog
-        expr: max(mitig8it_remediation_queue_age_seconds) > 60
-        for: 15m
-        labels: {severity: warning, metric_status: not_yet_emitted}
-        annotations:
-          summary: "Remediation queue age is above the 60 second objective"
-          runbook_url: "docs/runbooks/remediation.md#queue-backlog"
-      # metric not yet emitted: mitig8it_remediation_spend_reserved_usd_total,
-      # mitig8it_remediation_spend_settled_usd_total.
-      - alert: Mitig8itRemediationSpendReservationDrift
-        expr: (sum(increase(mitig8it_remediation_spend_reserved_usd_total[1h])) - sum(increase(mitig8it_remediation_spend_settled_usd_total[1h]))) > 5
-        for: 30m
-        labels: {severity: warning, metric_status: not_yet_emitted}
-        annotations:
-          summary: "Reserved remediation spend is not being settled; orphan reservations are accumulating"
-          runbook_url: "docs/runbooks/remediation.md#provider-outage"
-      # metric not yet emitted: mitig8it_remediation_budget_stops_total.
-      - alert: Mitig8itRemediationBudgetStop
-        expr: sum(increase(mitig8it_remediation_budget_stops_total[15m])) > 0
-        for: 5m
-        labels: {severity: warning, metric_status: not_yet_emitted}
-        annotations:
-          summary: "The remediation budget ceiling stopped work; confirm the ceiling and not a runaway loop"
-          runbook_url: "docs/runbooks/remediation.md#provider-outage"
-      # metric not yet emitted:
-      # mitig8it_remediation_github_stale_head_rejections_total.
-      - alert: Mitig8itRemediationStaleHeadRejections
-        expr: sum(increase(mitig8it_remediation_github_stale_head_rejections_total[15m])) > 20
-        for: 15m
-        labels: {severity: warning, metric_status: not_yet_emitted}
-        annotations:
-          summary: "Remediation applications are repeatedly rejected for a stale head"
-          runbook_url: "docs/runbooks/remediation.md#ambiguous-github-write"
-      # metric not yet emitted: mitig8it_remediation_reconciliation_age_seconds.
-      - alert: Mitig8itRemediationReconciliationAge
-        expr: max(mitig8it_remediation_reconciliation_age_seconds) > 300
-        for: 5m
-        labels: {severity: page, metric_status: not_yet_emitted}
-        annotations:
-          summary: "A remediation GitHub mutation has been unreconciled for more than 5 minutes"
-          runbook_url: "docs/runbooks/remediation.md#restore-reconciliation-after-a-database-restore"
-      # metric not yet emitted:
-      # mitig8it_remediation_evaluation_suite_pass_ratio.
-      - alert: Mitig8itRemediationEvaluationRegression
-        expr: min by (suite) (mitig8it_remediation_evaluation_suite_pass_ratio{suite="release"}) < 0.95
-        for: 30m
-        labels: {severity: warning, metric_status: not_yet_emitted}
-        annotations:
-          summary: "The remediation release suite pass rate dropped below the promotion gate"
-          runbook_url: "docs/runbooks/remediation.md#model-or-prompt-regression"
+        isPaused: false
+        noDataState: OK
+        execErrState: OK

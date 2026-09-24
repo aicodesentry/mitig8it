@@ -945,7 +945,35 @@ describe('PR Analysis Orchestrator — pipeline', () => {
       expect.stringContaining('/internal/github/pulls/files'),
       expect.any(Object),
       expect.objectContaining({
-        headers: { 'x-internal-secret': 'test-secret' },
+        headers: expect.objectContaining({ 'x-internal-secret': 'test-secret' }),
+      })
+    );
+  });
+
+  test('propagates the delivery and run identifiers to the github service over HTTP', async () => {
+    setupAxiosMocks([
+      { pattern: '/pulls/files', data: { files: [] } },
+      { pattern: '/tier1', data: { findings: [] } },
+      { pattern: '/tier2', data: { findings: [] } },
+      { pattern: '/tier3', data: { findings: [] } },
+      { pattern: '/reviews/submit', data: { review_id: 1 } },
+      { pattern: '/check-runs', data: { check_run_id: 2 } },
+    ]);
+
+    jest.isolateModules(() => {
+      const mod = require('../src/services/prAnalysisOrchestrator');
+      mod.triggerAnalysisJob({ ...BASE_PAYLOAD, delivery_id: 'delivery-abc' });
+    });
+    await flushAsync();
+
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.stringContaining('/internal/github/pulls/files'),
+      expect.any(Object),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'x-github-delivery': 'delivery-abc',
+          'x-analysis-run-id': BASE_PAYLOAD.analysis_run_id,
+        }),
       })
     );
   });

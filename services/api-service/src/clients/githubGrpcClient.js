@@ -4,6 +4,7 @@ const githubGrpc = require('../grpc/generated/github_grpc_pb');
 const commonPb = require('../grpc/generated/common_pb');
 const { createGrpcClientConfig } = require('./grpcConnection');
 const { changedFileToPlain } = require('./grpcConverters');
+const requestContext = require('../utils/requestContext');
 
 // The GitHub service reports the originating internal HTTP status in this trailing
 // metadata entry, because gRPC collapses the 409 and 422 that callers branch on into
@@ -47,7 +48,10 @@ function toRemediationTransportError(error) {
 function unary(client, method, request, timeoutMs = 45000) {
   return new Promise((resolve, reject) => {
     const deadline = new Date(Date.now() + timeoutMs);
-    client[method](request, { deadline }, (error, response) => {
+    // The delivery and run identifiers ride along on every call, so the github
+    // service's log lines for this work join the API's without a manual argument.
+    const metadata = requestContext.toGrpcMetadata(grpc.Metadata);
+    client[method](request, metadata, { deadline }, (error, response) => {
       if (error) {
         reject(error);
         return;

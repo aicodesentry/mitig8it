@@ -7,6 +7,9 @@ const leaseReclaims = new client.Counter({ name: 'mitig8it_remediation_lease_rec
 const actionTransitions = new client.Counter({ name: 'mitig8it_remediation_action_transitions_total', help: 'Remediation action state transitions', labelNames: ['state'] });
 const usageReleases = new client.Counter({ name: 'mitig8it_remediation_usage_releases_total', help: 'Remediation spend reservations released back to the installation budget', labelNames: ['reason'] });
 const stageDuration = new client.Histogram({ name: 'mitig8it_remediation_stage_duration_seconds', help: 'Bounded remediation stage duration', labelNames: ['stage', 'outcome'], buckets: [0.1, 1, 5, 15, 30, 60, 120] });
+// Stage attempts say what the worker tried. This says how jobs actually ended, which is
+// the number a dashboard needs to answer "how many remediations failed today".
+const jobTerminalStates = new client.Counter({ name: 'mitig8it_remediation_jobs_terminal_total', help: 'Remediation jobs that reached a terminal state, by state', labelNames: ['state'] });
 
 // The three quality rates, set by the reconciler's quality_metrics step from the daily
 // roll-up. They are gauges, not counters: each pass replaces the value rather than adding
@@ -17,6 +20,6 @@ const qualityDismissRate = new client.Gauge({ name: 'mitig8it_quality_dismiss_ra
 const qualityResidualRate = new client.Gauge({ name: 'mitig8it_quality_residual_rate', help: 'Share of applied fixes that left a blocking finding behind', labelNames: ['installation_id', 'window'] });
 
 module.exports = {
-  stageAttempts, leaseReclaims, actionTransitions, stageDuration, usageReleases,
+  stageAttempts, leaseReclaims, actionTransitions, stageDuration, usageReleases, jobTerminalStates,
   qualityApplyRate, qualityDismissRate, qualityResidualRate,
 };
