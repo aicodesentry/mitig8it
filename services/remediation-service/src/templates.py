@@ -27,6 +27,7 @@ from .gates import PYTHON_SQL_DRIVERS, python_imports
 from .models import FindingSnapshot
 from .retrieval import Snapshot
 from .sites import (
+    JS_CALLBACK_PARAMETERS,
     JS_EVAL_ARGUMENT_RE,
     JsFunction,
     JsRoute,
@@ -724,11 +725,27 @@ def _js_rejection(site: JsRoute | JsFunction | ModuleScope) -> str:
     """
     if isinstance(site, JsRoute):
         return f"return {site.res}.status(400).end();"
+    # A route handler the module never registered owns a response just the same, and its second
+    # parameter is it: answering 400 is the contract its caller already has.
+    if isinstance(site, JsFunction) and site.kind == "handler" and len(site.parameters) >= 2:
+        return f"return {site.parameters[1]}.status(400).end();"
+    # A function that takes a continuation reports the refusal through it, for the same reason:
+    # that is how it already reports every other failure, and throwing at a caller that is
+    # waiting on a callback is a behaviour change on top of the repair.
+    if isinstance(site, JsFunction):
+        callback = next((name for name in site.parameters if name in JS_CALLBACK_PARAMETERS), None)
+        if callback:
+            return f"return {callback}(new Error({js_string_literal(PATH_ESCAPE_MESSAGE)}));"
     return f"throw new Error({js_string_literal(PATH_ESCAPE_MESSAGE)});"
 
 
 def _js_containment_summary(site: JsRoute | JsFunction | ModuleScope) -> str:
-    tail = "answers 400" if isinstance(site, JsRoute) else "throws"
+    if isinstance(site, JsRoute) or (isinstance(site, JsFunction) and site.kind == "handler" and len(site.parameters) >= 2):
+        tail = "answers 400"
+    elif isinstance(site, JsFunction) and any(name in JS_CALLBACK_PARAMETERS for name in site.parameters):
+        tail = "calls back with an error"
+    else:
+        tail = "throws"
     return f"path.resolve with a containment check that {tail} before any read"
 
 

@@ -78,6 +78,28 @@ function matchRoute(method, target) {
   throw new Error(`harness.invoke: no ${method} handler recorded for ${target}`);
 }
 
+// A recording Express response. `res.out` is { status, body, headers, redirect } as the handler
+// left it, and `ended` runs once the handler ends the response. `h.res()` hands one to a proof
+// that calls a route handler the module never registered, where there is no route to invoke.
+function response(ended = () => {}) {
+  const out = { status: 200, body: undefined, headers: {}, redirect: null };
+  const end = (body) => { if (body !== undefined) out.body = body; ended(); return res; };
+  const base = Object.assign(new EventEmitter(), {
+    locals: {}, out, statusCode: 200, send: end, end, write(chunk) { out.body = (out.body || '') + chunk; return true; },
+    status(code) { out.status = base.statusCode = Number(code); return res; },
+    sendStatus(code) { out.status = Number(code); return end(String(code)); },
+    json(body) { out.headers['content-type'] = 'application/json'; return end(body); },
+    type(v) { out.headers['content-type'] = String(v); return res; },
+    set(n, v) { for (const [k, x] of Object.entries(typeof n === 'object' ? n : { [n]: v })) out.headers[k.toLowerCase()] = x; return res; },
+    redirect(a, b) { out.redirect = out.headers.location = b === undefined ? a : b; out.status = b === undefined ? 302 : Number(a); return end(''); },
+  });
+  base.header = base.setHeader = base.set;
+  base.contentType = base.type;
+  // Other response methods (cookie, vary, sendFile, ...) are chainable no-ops.
+  const res = new Proxy(base, { get: (t, k) => (k in t ? t[k] : k === 'then' || typeof k === 'symbol' ? undefined : () => res) });
+  return res;
+}
+
 function invoke(target, method, route, options = {}) {
   const found = matchRoute(String(method).toLowerCase(), route);
   const headers = {};
@@ -87,25 +109,12 @@ function invoke(target, method, route, options = {}) {
     params: { ...found.params, ...(options.params || {}) }, query: decodeQuery(options.query), body: options.body === undefined ? {} : options.body,
   };
   req.header = req.get;
-  const out = { status: 200, body: undefined, headers: {}, redirect: null };
   return new Promise((resolve, reject) => {
     let done = false;
+    const res = response(() => later(() => settle()));
+    const out = res.out;
     const settle = (error) => { if (done) return; done = true; clearTimeout(timer); if (error) reject(error instanceof Error ? error : new Error(String(error))); else resolve(out); };
     const timer = setTimeout(() => settle(new Error(`harness.invoke: the ${req.method} ${route} handler never ended the response`)), options.timeout || 2000);
-    const end = (body) => { if (body !== undefined) out.body = body; later(() => settle()); return res; };
-    const base = Object.assign(new EventEmitter(), {
-      locals: {}, statusCode: 200, send: end, end, write(chunk) { out.body = (out.body || '') + chunk; return true; },
-      status(code) { out.status = base.statusCode = Number(code); return res; },
-      sendStatus(code) { out.status = Number(code); return end(String(code)); },
-      json(body) { out.headers['content-type'] = 'application/json'; return end(body); },
-      type(v) { out.headers['content-type'] = String(v); return res; },
-      set(n, v) { for (const [k, x] of Object.entries(typeof n === 'object' ? n : { [n]: v })) out.headers[k.toLowerCase()] = x; return res; },
-      redirect(a, b) { out.redirect = out.headers.location = b === undefined ? a : b; out.status = b === undefined ? 302 : Number(a); return end(''); },
-    });
-    base.header = base.setHeader = base.set;
-    base.contentType = base.type;
-    // Other response methods (cookie, vary, sendFile, ...) are chainable no-ops.
-    const res = new Proxy(base, { get: (t, k) => (k in t ? t[k] : k === 'then' || typeof k === 'symbol' ? undefined : () => res) });
     const chain = found.route.handlers.filter((h) => h !== app);
     let index = 0;
     const next = (error) => {
@@ -364,4 +373,4 @@ const run = (body) => Promise.resolve().then(body).then(
   (error) => { process.stderr.write(`harness: ${(error && error.stack) || error}\n`); process.exit(1); },
 );
 
-module.exports = { version: 1, root: ROOT, load, invoke, call, run, assert, reset, db, express: state.express, pg: state.pg, child_process: state.child_process, fs: state.fs, code: state.code, app };
+module.exports = { version: 1, root: ROOT, load, invoke, res: response, call, run, assert, reset, db, express: state.express, pg: state.pg, child_process: state.child_process, fs: state.fs, code: state.code, app };

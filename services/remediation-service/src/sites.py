@@ -23,6 +23,11 @@ from .models import FindingSnapshot
 from .retrieval import Snapshot
 
 ROUTE_METHODS = ("get", "post", "put", "delete", "patch", "all")
+# Parameter names that are a continuation the function reports through. A repair of a
+# callback-style helper refuses by calling back with an Error, which is how it already
+# reports every other failure; throwing at a caller that is waiting on a callback would be
+# a behaviour change on top of the repair.
+JS_CALLBACK_PARAMETERS = frozenset({"callback", "cb", "done", "next"})
 _JS_ROUTE_RE = re.compile(
     r"^\s*(?P<owner>[\w$]+(?:\.[\w$]+)*)\.(?P<method>get|post|put|delete|patch|all)\s*\(\s*(?P<quote>['\"`])(?P<route>[^'\"`\n]+)(?P=quote)\s*,"
 )
@@ -363,8 +368,29 @@ def js_function_for_line(source: str, line: int) -> JsFunction:
             raise SiteError("function_parameters_not_plain_names")
         returns = bool(re.match(r"^\s*return\s", lines[line - 1]))
         is_async = bool(re.search(r"(?<![\w$])async(?![\w$])", lines[index][: offset]))
-        return JsFunction(name, index + 1, end + 1, tuple(written), returns, kind, is_async)
+        inputs = _js_function_inputs(lines, index + 1, end + 1, tuple(written))
+        # A function whose first parameter is read as `req.params`/`.query`/`.body` is a route
+        # handler the module never registered with Express: the repository wires it up somewhere
+        # this snapshot may not contain. Calling it with a string would pass a payload where a
+        # request object goes, so a proof drives it with a request and a recording response
+        # instead, which is what `kind` tells the generator.
+        handler = bool(inputs) and len(written) >= 2 and all(item.expression.startswith(written[0] + ".") for item in inputs)
+        return JsFunction(name, index + 1, end + 1, tuple(written), returns, "handler" if handler else kind, is_async, inputs)
     raise SiteError("enclosing_function_not_found")
+
+
+def _js_function_inputs(lines: list[str], start: int, end: int, parameters: tuple[str, ...]) -> tuple[UntrustedInput, ...]:
+    """The `<parameter>.params|query|body` reads in a function's body, in the order it makes them."""
+    inputs: list[UntrustedInput] = []
+    seen: set[str] = set()
+    for number in range(start, end + 1):
+        for found in _JS_INPUT_RE.finditer(lines[number - 1]):
+            name = found.group("name") or found.group("bracket")
+            if not name or found.group("req") not in parameters or found.group(0) in seen:
+                continue
+            seen.add(found.group(0))
+            inputs.append(UntrustedInput(found.group("source"), name, found.group(0), number))
+    return tuple(inputs)
 
 
 def scope_lines_near(start_line: int, end_line: int, line: int) -> list[int]:

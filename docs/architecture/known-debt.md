@@ -121,25 +121,16 @@ the file but not on the line are this. It keeps a file with fifty weak hashes fr
 fifty comments, which is why it is there, and it caps recall on any file with more than one
 instance of the same defect.
 
-**Repair templates need a function they can call.** The route requirement this entry used to
-describe is gone: `sites.js_site_for_line` falls back from the enclosing route to the enclosing
-function, method or `exports.name` binding, and the 123 `enclosing_route_not_found` refusals on
-the corpus are now 0. The reach barely moved with it, from 25 templated findings to 30, because
-the refusals moved down to the next obstacle rather than away. The largest is now
-`enclosing_function_not_found`: 67 findings in code at module scope, where there is no function
-for a generated test to drive at all. Next is `module_not_loadable_by_node`, 52 findings in
-TypeScript, which plain `node` cannot `require` and for which the sandbox has no toolchain.
+**Repair templates still need a sink they can name.** The route requirement and the enclosing
+function requirement this entry used to describe are both gone: `sites.js_site_for_line` falls
+back from the enclosing route to the enclosing function, method or `exports.name` binding, and
+then to module scope, where the proof drives the sink by setting what the module reads and
+importing it. `enclosing_route_not_found` and `enclosing_function_not_found` are both 0 on the
+corpus. TypeScript loads too, through Node's type stripper. What is left is narrower and
+per-shape: `path_module_not_required`, `function_parameters_not_plain_names`,
+`path_join_not_found_in_scope`, `command_name_not_literal`, and the two new honest refusals,
+`module_scope_source_not_controllable` and `typescript_syntax_not_strippable`.
 `docs/validation/vulnerable-corpus-2026-09.md` has the full before and after.
-
-**The engine-local benchmark adapter runs out of script when a template fires.** Its scripted
-provider supplies a fixed sequence of actions, and a finding the template pass reaches still
-consults the model for whatever the group did not prove, so the script is exhausted and the case
-is reported `inconclusive`. Four seed fixtures land there
-(`js-path-readfile-join`, `js-path-sendfile`, `js-session-secret-object`,
-`python-path-helper-raises`); every one of them has `fixture_tests.passed` true, so the repairs
-themselves are sound. `js-session-secret-object` did this before the site model existed, which is
-what identifies the adapter rather than the engine as the cause. The `reference` adapter runs the
-same 51 cases with no unexpected failures.
 
 **Three rules the corpus could not decide.** `xss.unsafe_html_render` (16 findings, 2
 adjudicated, 0.50), `auth.bypass.missing_check` (8 findings, 1 adjudicated, 0.00) and

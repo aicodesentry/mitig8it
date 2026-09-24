@@ -28,11 +28,18 @@ function loadLocal() {
   return load(path.resolve(__dirname, '..', 'app.js'));
 }
 
+// A refusal reaches the caller either way a repair can signal one: through the callback, or by
+// throwing. The fixture cares that the name was refused and nothing was read, not which. Without
+// the catch a throwing repair would crash this script and be scored as the vulnerability.
 function fetch(module, name) {
   READS.length = 0;
   let error = null;
   let body = null;
-  module.readDocument(name, (failure, content) => { error = failure; body = content; });
+  try {
+    module.readDocument(name, (failure, content) => { error = failure; body = content; });
+  } catch (thrown) {
+    error = thrown;
+  }
   return { error, body };
 }
 

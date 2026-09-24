@@ -31,6 +31,7 @@ from .models import FindingSnapshot
 from .patches import GENERATED_TEST_DIRECTORY
 from .retrieval import Snapshot
 from .sites import (
+    JS_CALLBACK_PARAMETERS,
     JsFunction,
     JsRoute,
     ModuleScope,
@@ -207,6 +208,43 @@ def _js_call_arguments_for(function: JsFunction, untrusted: str, needs_connectio
     return ", ".join(arguments), list(dict.fromkeys(setup))
 
 
+def _js_handler_untrusted(function: JsFunction, sink_line: int) -> str | None:
+    """The request input a handler-shaped function reads nearest its sink."""
+    for number in range(min(sink_line, function.end_line), function.start_line - 1, -1):
+        used = [item for item in function.inputs if item.line == number]
+        if used:
+            return used[0].expression
+    return function.inputs[0].expression if function.inputs else None
+
+
+def _js_handler_request(function: JsFunction, untrusted: str, payload: str) -> str:
+    """The `req` a proof builds for a route handler the module never registered with Express."""
+    groups: dict[str, dict[str, str]] = {}
+    for item in function.inputs:
+        groups.setdefault(item.source, {})[item.name] = payload if item.expression == untrusted else _js(BENIGN_VALUE)
+    parts = [
+        f"{source}: {{ " + ", ".join(f"{_js(name)}: {value}" for name, value in fields.items()) + " }"
+        for source, fields in groups.items()
+    ]
+    return "{ " + ", ".join(parts) + " }"
+
+
+def _js_handler_drive(function: JsFunction, untrusted: str, payload: str) -> list[str]:
+    """Calls a handler-shaped function with a request and a recording response.
+
+    It is an Express handler the snapshot never shows registered, so there is no route to
+    invoke: the proof builds the request itself and reads the status off `res.out`, which is
+    the same thing `h.invoke` would have resolved.
+    """
+    request = _js_handler_request(function, untrusted, payload)
+    extra = "".join(", {}" for _ in function.parameters[2:])
+    return [
+        "  const res = h.res();",
+        f"  const called = h.call(m.{function.name}, {request}, res{extra});",
+        "  await Promise.resolve(called.value).catch(() => {});",
+    ]
+
+
 def _js_function_call(function: JsFunction, arguments: str) -> list[str]:
     """The call and the await that lets an async function finish before anything is asserted.
 
@@ -317,6 +355,15 @@ def _js_sql_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | 
         drive = [f"  await h.invoke(app, {_js(site.method)}, {_js(site.route)}, {_js_invoke_options(site, untrusted, SQL_PAYLOAD)});"]
         head = _js_header(path) + [f"  const payload = {_js(SQL_PAYLOAD)};"]
         what = f"{site.method.upper()} {site.route} with {untrusted}"
+    elif site.kind == "handler":
+        _js_callable(source, site)
+        _js_sink_in_scope(lines, site, _JS_INLINE_SQL_RE, "sql_sink_not_in_scope")
+        untrusted = _js_handler_untrusted(site, line)
+        if untrusted is None:
+            raise SiteError("no_request_input_in_route")
+        head = _js_module_header(path) + [f"  const payload = {_js(SQL_PAYLOAD)};"]
+        drive = _js_handler_drive(site, untrusted, "payload")
+        what = f"{site.name}(req) with {untrusted}"
     else:
         _js_callable(source, site)
         _js_sink_in_scope(lines, site, _JS_INLINE_SQL_RE, "sql_sink_not_in_scope")
@@ -356,6 +403,15 @@ def _js_command_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRout
         head = _js_header(path) + [f"  const payload = {_js(COMMAND_PAYLOAD)};"]
         drive = [f"  await h.invoke(app, {_js(site.method)}, {_js(site.route)}, {_js_invoke_options(site, untrusted, COMMAND_PAYLOAD)});"]
         what = f"{site.method.upper()} {site.route} with {untrusted}"
+    elif site.kind == "handler":
+        _js_callable(source, site)
+        _js_sink_in_scope(lines, site, _JS_COMMAND_SINK_RE, "command_sink_not_in_scope")
+        untrusted = _js_handler_untrusted(site, line)
+        if untrusted is None:
+            raise SiteError("no_request_input_in_route")
+        head = _js_module_header(path) + [f"  const payload = {_js(COMMAND_PAYLOAD)};"]
+        drive = _js_handler_drive(site, untrusted, "payload")
+        what = f"{site.name}(req) with {untrusted}"
     else:
         _js_callable(source, site)
         _js_sink_in_scope(lines, site, _JS_COMMAND_SINK_RE, "command_sink_not_in_scope")
@@ -377,11 +433,14 @@ def _js_command_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRout
 def _js_traversal_function_proof(
     snapshot: Snapshot, finding: FindingSnapshot, function: JsFunction, join: tuple[int, str, str], base: str | None
 ) -> GeneratedProof:
-    """The plain-function half of `_js_traversal_proof`: the call must throw on a traversal.
+    """The plain-function half of `_js_traversal_proof`: the call must refuse a traversal.
 
-    `h.call` reports a throw rather than raising, so one test can require the payload to be
-    refused and a legitimate name to still come back. The benign call is what stops a repair
-    that simply throws for every input.
+    How it refuses depends on the signature. A function that takes a callback reports the
+    refusal through it, which is the contract its caller already has; one that does not has
+    nothing to report through and throws, where a returned sentinel would be indistinguishable
+    from a path. The proof accepts either, because both are refusals and neither is the thing
+    being proven: what is proven is that nothing was read. The benign call is what stops a
+    repair that simply refuses every input.
     """
     path = finding.affected_path
     source = snapshot.full_content(path)
@@ -391,18 +450,26 @@ def _js_traversal_function_proof(
     if untrusted is None:
         raise SiteError("no_untrusted_parameter")
     attack, _ = _js_call_arguments_for(function, untrusted, needs_connection=False)
-    body = _js_module_header(path) + [
+    callback = next((name for name in function.parameters if name in JS_CALLBACK_PARAMETERS), None)
+    attack = attack.replace("() => {}", "(error) => { reported = error; }", 1) if callback else attack
+    refused_ok = "!refused.ok || reported instanceof Error" if callback else "!refused.ok"
+    allowed_ok = "allowed.ok && !(reported instanceof Error)" if callback else "allowed.ok"
+    body = _js_module_header(path) + ([
+        "  let reported = null;",
+    ] if callback else []) + [
         f"  const base = {base or 'h.root'};",
         f"  for (const payload of {_js(list(DIRECT_TRAVERSAL_PAYLOADS))}) {{",
         "    h.fs.reads.length = 0;",
+        *(["    reported = null;"] if callback else []),
         f"    const refused = h.call(m.{function.name}, {attack});",
-        "    h.assert(!refused.ok, `expected ${JSON.stringify(payload)} to be refused, got ${JSON.stringify(refused.value)}`);",
+        f"    h.assert({refused_ok}, `expected ${{JSON.stringify(payload)}} to be refused, got ${{JSON.stringify(refused.value)}}`);",
         "    h.assert.inside(h.fs.reads, base, { payload });",
         "  }",
         "  h.fs.reads.length = 0;",
+        *(["  reported = null;"] if callback else []),
         f"  const payload = {_js(LEGITIMATE_NAME)};",
         f"  const allowed = h.call(m.{function.name}, {attack});",
-        "  h.assert(allowed.ok, 'expected a legitimate name to still resolve');",
+        f"  h.assert({allowed_ok}, 'expected a legitimate name to still resolve');",
     ]
     if base:
         # What the call returns depends on the helper: a resolver hands back the path, a reader
@@ -411,8 +478,54 @@ def _js_traversal_function_proof(
     body += ["});", ""]
     return GeneratedProof(
         finding.stable_id, PATH_CONTAINMENT, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
-        f"{function.name}({untrusted}) with a traversal payload: the call throws and reads nothing; a legitimate name still resolves"
+        f"{function.name}({untrusted}) with a traversal payload: the call refuses it and reads nothing; a legitimate name still resolves"
         + (" inside the base directory" if base else ""),
+        function,
+    )
+
+
+def _js_traversal_handler_proof(
+    snapshot: Snapshot, finding: FindingSnapshot, function: JsFunction, join: tuple[int, str, str], base: str | None
+) -> GeneratedProof:
+    """The unregistered-handler half of `_js_traversal_proof`: the response has to be 4xx.
+
+    `templates._js_rejection` writes `res.status(400).end()` for a site that owns a response, so
+    the assertion is the route's, read off the recording response the proof supplies rather than
+    off a route the snapshot never shows registered.
+    """
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    _js_callable(source, function)
+    untrusted = next((item.expression for item in function.inputs if item.expression in join[2]), None) or _js_handler_untrusted(function, join[0])
+    if untrusted is None:
+        raise SiteError("no_request_input_in_route")
+    body = [
+        "const h = require('../harness');",
+        "const path = require('node:path');",
+        "h.run(async () => {",
+        f"  const m = h.load({_js(path)});",
+        f"  const base = {base or 'h.root'};",
+        f"  for (const payload of {_js(list(DIRECT_TRAVERSAL_PAYLOADS))}) {{",
+        "    h.fs.reads.length = 0;",
+        *(f"  {line}" for line in _js_handler_drive(function, untrusted, "payload")),
+        "    h.assert.inside(h.fs.reads, base, { payload });",
+        "    h.assert(res.out.status >= 400 && res.out.status < 500, `expected a 4xx status for ${JSON.stringify(payload)}, got ${res.out.status}`);",
+        "  }",
+        "  h.fs.reads.length = 0;",
+        f"  const payload = {_js(LEGITIMATE_NAME)};",
+        *_js_handler_drive(function, untrusted, "payload"),
+        # Not "a file was read": a handler that answers with `res.sendFile` never touches the
+        # filesystem through anything the harness records. What both shapes promise is that a
+        # legitimate name is not refused, and that whatever they did read stayed inside the base.
+        "  h.assert(res.out.status < 400, `expected a legitimate name to be accepted, got ${res.out.status}`);",
+    ]
+    if base:
+        body.append("  h.assert.inside(h.fs.reads, base);")
+    body += ["});", ""]
+    return GeneratedProof(
+        finding.stable_id, PATH_CONTAINMENT, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
+        f"{function.name}(req) with {untrusted} set to a traversal payload: no file is read and the status is 4xx; "
+        "a legitimate name is still read" + (" inside the served directory" if base else ""),
         function,
     )
 
@@ -438,6 +551,8 @@ def _js_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRo
     if join is None:
         raise SiteError("path_join_not_found_in_scope")
     base = _js_base_expression(source, path, join[1])
+    if isinstance(site, JsFunction) and site.kind == "handler":
+        return _js_traversal_handler_proof(snapshot, finding, site, join, base)
     if not isinstance(site, JsRoute):
         return _js_traversal_function_proof(snapshot, finding, site, join, base)
     route = site
@@ -467,6 +582,21 @@ def _js_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRo
     )
 
 
+def _js_credential_drive(source: str, line: int) -> list[str]:
+    """The call that makes a secret inside a function run, or nothing when the import already did.
+
+    Every argument is an empty object: what is being observed is the environment read that
+    building the value performs, and the call is allowed to fail afterwards, which `h.call`
+    reports rather than raising. A secret in a function the module does not export, or one whose
+    parameters a call cannot line up with, is left to the import, and the proof then fails
+    honestly rather than claiming a repair the test never reached.
+    """
+    site = js_site_for_line(source, line)
+    if not isinstance(site, JsFunction) or site.kind != "function" or not js_module_exports_name(source, site.name):
+        return []
+    return [f"  h.call(m.{site.name}{''.join(', {}' for _ in site.parameters)});"]
+
+
 def _js_credential_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedProof:
     """The test a JavaScript hardcoded-credential repair has to satisfy.
 
@@ -475,13 +605,17 @@ def _js_credential_proof(snapshot: Snapshot, finding: FindingSnapshot) -> Genera
     and the literal is still in the file, so `assert.notInSource` fails. When the module
     exports the name, the value read back is asserted too, which is what stops a repair
     that deletes the constant instead of moving it.
+
+    A secret bound at module scope is read by the import itself. One inside a function is not,
+    so the proof calls that function first: without the call the repaired module never reads
+    the environment either, and `envRead` would fail on the fix as well as on the original.
     """
     path = finding.affected_path
     source = snapshot.full_content(path)
     found = js_literal_assignment_in_span(source, finding.line_start, finding.line_end)
     if found is None:
         raise SiteError("string_literal_assignment_not_found")
-    _line, (name, literal, _quote, kind) = found
+    line, (name, literal, _quote, kind) = found
     variable = js_environment_name(name)
     if not variable:
         raise SiteError("environment_name_not_derived")
@@ -490,6 +624,7 @@ def _js_credential_proof(snapshot: Snapshot, finding: FindingSnapshot) -> Genera
         "const h = require('../harness');",
         "h.run(async () => {",
         f"  const m = h.load({_js(path)}, {{ env: {{ {json.dumps(variable)}: {_js(ENV_VALUE)} }} }});",
+        *_js_credential_drive(source, line),
         f"  h.assert.envRead({_js(variable)});",
         f"  h.assert.notInSource(m, {_js(literal)});",
     ]
@@ -860,7 +995,10 @@ def _py_traversal_function_proof(
     arguments, setup = _py_call_arguments(function, untrusted, LEGITIMATE_NAME, None)
     body = _py_header(path) + setup + [
         f"    base = {base or 'h.ROOT'}",
-        f"    for payload in {_py(list(TRAVERSAL_PAYLOADS))}:",
+        # A function called directly gets its argument as written, so the encoded payload is a
+        # view-level concern: `os.path.join` leaves `..%2f..%2fetc%2fpasswd` inside the base and a
+        # correct helper rightly does not refuse it. The absolute path takes its place.
+        f"    for payload in {_py(list(DIRECT_TRAVERSAL_PAYLOADS))}:",
         "        h.fs.reads.clear()",
         f"        refused = h.call(m.{function.name}, {', '.join(arguments)})",
         "        h.assert_true(refused.raised(ValueError), 'expected %r to be refused, got %r' % (payload, refused.value))",
@@ -902,7 +1040,9 @@ def _py_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, function: 
     body = _py_header(path) + [
         _py_app_line(source),
         f"    base = {base or 'h.ROOT'}",
-        f"    for payload in {_py(list(DIRECT_TRAVERSAL_PAYLOADS))}:",
+        # A view receives a percent-decoded value, so the encoded payload is the one that
+        # distinguishes a repair that decodes before checking from one that does not.
+        f"    for payload in {_py(list(TRAVERSAL_PAYLOADS))}:",
         "        h.fs.reads.clear()",
         f"        response = {_py_view_invoke(function, untrusted, 'payload')}",
         "        h.assert_inside(h.fs.reads, base, payload=payload)",

@@ -57,8 +57,11 @@ class RemediationHarnessTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
-        self.assertEqual(report["summary"]["eligible_supported_cases"], 33)
-        self.assertEqual(report["summary"]["negative_adversarial_cases"], 11)
+        # These counts were 33 and 11 and had not been updated since; the fixture set has grown
+        # past them more than once. 43 and 12 are what `fixtures/` holds, including the four
+        # module-scope cases.
+        self.assertEqual(report["summary"]["eligible_supported_cases"], 43)
+        self.assertEqual(report["summary"]["negative_adversarial_cases"], 12)
         self.assertEqual(report["summary"]["failures"], [])
 
     def test_reference_candidate_must_match_the_expected_patch_not_only_claim_ready(self):
