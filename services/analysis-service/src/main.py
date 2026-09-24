@@ -18,7 +18,7 @@ from finding_quality import (
     pattern_matches_reviewable_content,
 )
 from security_rules import DEPENDENCY_RISK_PATTERNS, SECURITY_RULES, likely_llm_repo
-from opengrep_runner import run_opengrep
+from opengrep_runner import quarantined_rule_ids, run_opengrep
 from llm_client import redact
 from llm_triage import triage_findings
 from remediation_patches import build_remediation_patch
@@ -71,6 +71,17 @@ ANALYSIS_DURATION = Histogram(
     "Analysis runtime",
     buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20],
 )
+QUARANTINED_FINDING_COUNT = Counter(
+    "codesentry_analysis_quarantined_findings_total",
+    "Findings produced by a quarantined rule and withheld from posting",
+    ["rule_id"],
+)
+
+# Rules whose measured precision does not support posting. Tier 2 declares this per rule
+# in its YAML metadata (`posting: quarantine`), read once at import. Tier 1 will add its
+# own set here when fix/tier1-rule-precision lands; the two tiers then share this one
+# frozenset and the one filter below, so there is a single answer to "does this rule post".
+QUARANTINED_RULE_IDS = frozenset(quarantined_rule_ids())
 
 app = FastAPI(title="Mitig8it Analysis Service", version="1.0.0")
 app.add_middleware(
@@ -306,6 +317,38 @@ def pattern_findings(scannable_files: List[ChangedFile]) -> List[Dict[str, Any]]
     return findings
 
 
+def partition_by_posting_policy(
+    findings: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Split findings into the ones the product will stand behind and the quarantined rest.
+
+    This is the only place a quarantined finding is removed, for both tiers. A quarantined
+    rule still runs, so its output is counted here and in
+    `codesentry_analysis_quarantined_findings_total`, but it does not reach the response.
+    The api-service therefore needs no knowledge of the policy: the findings simply do not
+    arrive, so nothing is posted to GitHub, nothing is counted in the check summary, and
+    nothing is handed to remediation.
+    """
+    postable: List[Dict[str, Any]] = []
+    quarantined: List[Dict[str, Any]] = []
+    for finding in findings or []:
+        rule_id = str(finding.get("rule_id") or "")
+        if rule_id in QUARANTINED_RULE_IDS:
+            quarantined.append(finding)
+            QUARANTINED_FINDING_COUNT.labels(rule_id).inc()
+        else:
+            postable.append(finding)
+    return postable, quarantined
+
+
+def quarantined_counts_by_rule(findings: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for finding in findings or []:
+        rule_id = str(finding.get("rule_id") or "")
+        counts[rule_id] = counts.get(rule_id, 0) + 1
+    return counts
+
+
 def run_tiers_concurrently(
     tier1: Callable[[], List[Dict[str, Any]]],
     tier2: Callable[[], List[Dict[str, Any]]],
@@ -349,6 +392,7 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         lambda: pattern_findings(scannable_files),
         lambda: run_opengrep(opengrep_files),
     )
+    findings, quarantined = partition_by_posting_policy(findings)
 
     try:
         file_patches = {f.path: f.patch for f in scannable_files}
@@ -368,6 +412,7 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         "files_analyzed": len(payload.files),
         "test_files_analyzed": count_test_code_files(f.path for f in scannable_files),
         "findings": normalized,
+        "quarantined_findings": quarantined_counts_by_rule(quarantined),
     }
 
 
@@ -377,6 +422,7 @@ def analyze_tier1_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
 
     scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
     findings = pattern_findings(scannable_files)
+    findings, quarantined = partition_by_posting_policy(findings)
 
     normalized = cluster_findings(classify_findings(findings))
     return {
@@ -387,6 +433,7 @@ def analyze_tier1_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         "test_files_analyzed": count_test_code_files(f.path for f in scannable_files),
         "tier": 1,
         "findings": normalized,
+        "quarantined_findings": quarantined_counts_by_rule(quarantined),
     }
 
 
@@ -410,6 +457,8 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
     except Exception as e:
         raise RuntimeError("Required OpenGrep analysis failed") from e
 
+    findings, quarantined = partition_by_posting_policy(findings)
+
     normalized = cluster_findings(classify_findings(findings))
     return {
         "repository_full_name": payload.repository_full_name,
@@ -419,6 +468,7 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         "test_files_analyzed": count_test_code_files(f.path for f in scannable_files),
         "tier": 2,
         "findings": normalized,
+        "quarantined_findings": quarantined_counts_by_rule(quarantined),
     }
 
 
