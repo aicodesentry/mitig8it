@@ -1,6 +1,27 @@
 # Mitig8it remediation service
 
-This service turns an authorized exact-commit JavaScript/TypeScript or Python snapshot and confirmed SQL-injection, command-injection, path-traversal, hardcoded-credential, or eval code-injection findings into a bounded candidate. The affected file's extension selects the toolchain per finding group (`.js`, `.cjs`, `.mjs`, `.ts`, `.tsx`, `.jsx` run under Node; `.py` under Python), a group that mixes both is split by language, and the hardcoded-credential and eval families are repaired for Python only. It is intentionally only a proposer: a candidate is `ready` only after a separate sandbox broker returns authenticated baseline/candidate evidence. The service has no GitHub, database, cloud, or shell tool available to the model and never executes repository code in its API process.
+This service turns an authorized exact-commit JavaScript/TypeScript or Python snapshot and confirmed SQL-injection, command-injection, path-traversal, hardcoded-credential, or eval code-injection findings into a bounded candidate. The affected file's extension selects the toolchain per finding group (`.js`, `.cjs`, `.mjs`, `.ts`, `.tsx`, `.jsx` run under Node; `.py` under Python), and a group that mixes both is split by language. It is intentionally only a proposer: a candidate is `ready` only after a separate sandbox broker returns authenticated baseline/candidate evidence. The service has no GitHub, database, cloud, or shell tool available to the model and never executes repository code in its API process.
+
+## Repair families
+
+Five families, both toolchains. A family is listed for a language only once the harness can
+observe the repair, because the observation is the whole proof: `LANGUAGE_FAMILIES` in
+`src/families.py` is the table, and the assertion beside it is quoted to the model verbatim.
+
+| Family | CWE | What the repair does | What proves it |
+| --- | --- | --- | --- |
+| `sql_parameterization` | CWE-89 | The interpolated value becomes a bound parameter (`pg` `$1`, sqlite3 `?`, psycopg `%s`, SQLAlchemy `:p1`) | The recorded query text does not carry the payload and the bound values do |
+| `command_arguments` | CWE-78 | The command string becomes a file and an argument array (`execFile`, or `spawn` with `shell: true` dropped) | The recorded child ran with an argv array, no shell string, and the payload as its own element |
+| `path_containment` | CWE-22 | The candidate path is resolved against the base directory and refused unless it stays inside | A traversal payload records no filesystem read at all and answers 4xx, while a legitimate name is still read |
+| `hardcoded_credential` | CWE-798 | The literal is replaced in place by a read of the environment (`process.env.NAME`, `os.environ["NAME"]`) | The module read that variable, the literal is gone from the file, and an exported constant reads back as the supplied value |
+| `code_injection_eval` | CWE-95 | The string is parsed as data instead of interpreted (`JSON.parse`, `ast.literal_eval`) | Nothing was compiled or run, and a document the code needs still parses |
+
+Support is per finding, not per language. A static gate refuses a finding whose shape the
+repair cannot express, with an attributable reason rather than a guess: `pg_dependency_not_proven`,
+`ambiguous_query_api`, `shell_pipeline_unsupported` (a command carrying a pipeline, a
+redirection, a separator, or a substitution, which no argument list expresses), and
+`dynamic_code_unsupported` (a `new Function`, `new vm.Script`, or `vm` compile call, which hands
+back something the module calls later, so no data parser stands in for it).
 
 ## Components
 
@@ -8,16 +29,16 @@ This service turns an authorized exact-commit JavaScript/TypeScript or Python sn
 - `src/retrieval`: validates bounded flat snapshots, rejects path traversal/control characters/duplicates, verifies file hashes, and returns provenance-bound scoped reads/searches.
 - `src/agent`: a real configurable OpenAI-compatible provider adapter and a schema-constrained loop capped by tool and candidate-attempt budgets.
 - `src/grouping.py`: connected components of findings over shared file paths, so one bounded agent loop runs per group.
-- `src/families.py`: the five repair families, the two languages, the extension map, and which family is repaired for which language.
-- `src/gates.py`: the static per-finding gates that abstain before any agent runs (`pg_dependency_not_proven`, `shell_pipeline_unsupported`, `ambiguous_query_api`).
-- `src/sites.py`: derives the enclosing site over the exact snapshot, the Express route handler for JavaScript or the Python function or Flask view, with its untrusted inputs. It raises `SiteError` rather than guessing.
+- `src/families.py`: the five repair families, the two languages, the extension map, and the harness assertion each family is proven by.
+- `src/gates.py`: the static per-finding gates that abstain before any agent runs (`pg_dependency_not_proven`, `shell_pipeline_unsupported`, `ambiguous_query_api`, `dynamic_code_unsupported`).
+- `src/sites.py`: derives the enclosing site over the exact snapshot, the Express route handler or plain named function for JavaScript, or the Python function or Flask view, with its untrusted inputs. It raises `SiteError` rather than guessing.
 - `src/proofs.py`: generates one deterministic harness regression test per supported finding from that site, before any model call.
 - `src/templates.py`: generates a deterministic hunk per family from the recognized textual shape at the finding, and combines the group's template hunks into one bundle. It declines a shape it does not recognize.
 - `src/splitting.py`: attributes a verified group proposal's hunks to individual findings, so one candidate is rebuilt per proven finding and no hunk owned by an unproven finding ships.
 - `src/telemetry.py`: OpenTelemetry spans for the repair stages, with an attribute allowlist and a redaction guard.
 - `src/patches.py` and `src/git_tree.py`: exact whole-file replacement validation, protected-path enforcement, immutable SHA-256 artifacts, and real Git tree OID calculation with original modes preserved.
 - `src/verification`: constructs baseline/candidate verification work and accepts only authenticated, complete broker evidence.
-- `src/sandbox`: HTTPS broker client, executable Kubernetes/gVisor broker driver, a development-only local subprocess driver, the trusted materializer shared by both, and the two test harnesses (`harness.js` for Node, under 16 KB; `harness_py.py` for Python, under 40 KB, which is also the Python test runner).
+- `src/sandbox`: HTTPS broker client, executable Kubernetes/gVisor broker driver, a development-only local subprocess driver, the trusted materializer shared by both, and the two test harnesses (`harness.js` for Node, under 24 KB; `harness_py.py` for Python, under 40 KB, which is also the Python test runner).
 - `src/executions.py`: the durable PostgreSQL/GCS backend and a development-only SQLite/file backend with the same lease, fencing, retry, and dead-letter semantics.
 - `src/fixtures.py`: converts a `benchmarks/remediation` fixture directory into a complete RepairRequest for development and evaluation runs. It fabricates revision identifiers and must never describe a real repository.
 
@@ -201,7 +222,9 @@ before any model call, and records which path produced each candidate.
   command string becomes `execFile(command, args)` with the callback and options kept, widening
   the `child_process` require when needed; `path.join(base, input)` becomes `path.resolve` with a
   containment check that answers 400 before any read; a secret literal becomes
-  `os.environ["NAME"]` plus `import os`; `eval(x)` becomes `ast.literal_eval(x)` plus
+  `process.env.NAME` or `os.environ["NAME"]` plus `import os`; `spawn(command, { shell: true })`
+  loses the option and takes an argument array, keeping any other option; `eval(x)` becomes
+  `JSON.parse(x)` or `ast.literal_eval(x)` plus
   `import ast`; a Python `subprocess.run("..." + x, shell=True)` becomes an argv list; a Flask
   `os.path.join(base, name)` gains a realpath check that aborts 400. A template declines a shape
   it does not recognize, and refuses to bind an interpolated name that is itself a SQL fragment.
@@ -240,8 +263,12 @@ the rest of the check set from the candidate itself.
 - The sandbox has nothing installed, so the service materializes a dependency-free harness at
   `.mitig8it/harness.js` next to the tests in both workspaces. `require('../harness')` gives
   `load(path, options)`, which requires the target with fake `express`, `pg`, `child_process`,
-  and `fs` injected, `invoke(app, method, route, {params, query, body})`, recorders such as
-  `pg.queries`, `child_process.calls`, and `fs.reads`, and `assert` helpers. It is never a patch
+  `vm`, and `fs` injected and a recording `process.env`, `invoke(app, method, route, {params,
+  query, body})` for handlers, `call(fn, ...)` for plain functions, recorders such as
+  `pg.queries`, `child_process.calls`, `fs.reads`, `env.reads`, and `code.calls`, and `assert`
+  helpers. Every way a string becomes code (`eval`, `new Function`, the `vm` compile calls, a
+  string `setTimeout`/`setInterval`) is recorded and none of it runs, which is what
+  `assert.noCode` proves. It is never a patch
   or a manifest entry, and a proposal that writes to it is rejected as `harness_path_protected`.
   See [contracts/test-harness-v1.md](contracts/test-harness-v1.md).
 - Python groups get `.mitig8it/harness.py` instead, a standard-library-only file that is also
@@ -253,13 +280,16 @@ the rest of the check set from the candidate itself.
   `fs.reads`, `env.reads`; and assertions per family (`assert_param`, `assert_argv`,
   `assert_inside`, `assert_env_read`, `assert_not_in_source`, `assert_no_commands`). See
   [contracts/test-harness-python-v1.md](contracts/test-harness-python-v1.md).
-- Python families are gated before an agent runs. A CWE-89 finding whose query reaches no
-  known driver `execute()` (sqlite3, psycopg, SQLAlchemy `text()`), such as a helper named
-  `execute_query`, is skipped as `ambiguous_query_api`; a process call with a pipe is skipped as
-  `shell_pipeline_unsupported`. A hardcoded-credential repair moves the literal to
-  `os.environ["NAME"]` and records the limitation `<path> now reads NAME from the environment;
-  the deployment must provide it`; an eval repair uses `ast.literal_eval` only where a literal
-  is all the code needs, otherwise the agent abstains with `eval_semantics_unknown`.
+- Families are gated before an agent runs, in both toolchains. A CWE-89 finding whose query
+  reaches no known driver `execute()` (sqlite3, psycopg, SQLAlchemy `text()`), such as a helper
+  named `execute_query`, is skipped as `ambiguous_query_api`; a process call whose command
+  carries shell syntax an argument list cannot express is skipped as
+  `shell_pipeline_unsupported`; a JavaScript site that compiles a program rather than reading a
+  value out of a string is skipped as `dynamic_code_unsupported`. A hardcoded-credential repair
+  moves the literal to `process.env.NAME` or `os.environ["NAME"]` and records the limitation
+  `<path> now reads NAME from the environment; the deployment must provide it`; an eval repair
+  parses the value as data only where a document is all the code needs, otherwise the agent
+  abstains with `eval_semantics_unknown`.
 - Each file is materialized into both the baseline and the candidate workspace and executed as
   its own `exploit` check with a 60-second timeout. A finding is proven when its test fails on
   the original tree and passes on the patched one; the candidate claims exactly the proven

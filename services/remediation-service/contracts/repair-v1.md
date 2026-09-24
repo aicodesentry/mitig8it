@@ -49,12 +49,12 @@ A finding is classified into one of five families from its CWE and rule text. La
 | `sql_parameterization` | yes | yes |
 | `command_arguments` | yes | yes |
 | `path_containment` | yes | yes |
-| `hardcoded_credential` | no | yes |
-| `code_injection_eval` | no | yes |
+| `hardcoded_credential` | yes | yes |
+| `code_injection_eval` | yes | yes |
 
-The two Python-only families are limited by the Node harness, which records no environment reads and stubs no `eval`. A finding whose family is not supported for its language is reported in `skipped` as `unsupported_rule_family`.
+Both toolchains carry every family. A family is listed for a language only once the harness can observe the repair: the Node harness records environment reads, and it records `eval`, `new Function`, the `vm` compile calls, and a string `setTimeout`/`setInterval` without running any of them. A finding whose family is not supported for its language is reported in `skipped` as `unsupported_rule_family`; what refuses a finding today is the shape, through the static gates below.
 
-Before any agent runs, a finding may also be reported in `skipped` as `rule_family_disabled` (the family is not in `policy.allowed_rule_families`), `affected_source_missing` (the affected path is absent from the snapshot), `unsupported_language` (neither JavaScript nor Python), or one of three static gate codes: `pg_dependency_not_proven` (a JavaScript SQL repair whose snapshot declares no `pg` dependency), `shell_pipeline_unsupported` (the process call carries a pipe or `shell: true`), and `ambiguous_query_api` (a Python query that reaches no known driver `execute()`, so the placeholder style cannot be chosen safely). These gates are abstentions by design; they cost no budget and no provider call.
+Before any agent runs, a finding may also be reported in `skipped` as `rule_family_disabled` (the family is not in `policy.allowed_rule_families`), `affected_source_missing` (the affected path is absent from the snapshot), `unsupported_language` (neither JavaScript nor Python), or one of three static gate codes: `pg_dependency_not_proven` (a JavaScript SQL repair whose snapshot declares no `pg` dependency), `shell_pipeline_unsupported` (the command string's own literal text carries a pipeline, a redirection, a separator, or a substitution, which no argument list expresses), `ambiguous_query_api` (a Python query that reaches no known driver `execute()`, so the placeholder style cannot be chosen safely), and `dynamic_code_unsupported` (a JavaScript `new Function`, `new vm.Script`, or `vm` compile call, which hands back something the module calls later, so no data parser stands in for it). These gates are abstentions by design; they cost no budget and no provider call.
 
 ### Service-generated proofs and template-first patches
 

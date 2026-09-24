@@ -1,30 +1,29 @@
 # Remediation benchmark seed
 
 This is an offline seed harness for repository-level repairs. It is deliberately not a quality
-claim: it contains forty-two authored fixtures, while the release manifest requires 120
+claim: it contains forty-four authored fixtures, while the release manifest requires 120
 externally reviewed cases before a release gate can pass.
 
-Twenty-seven fixtures are supported repairs, eleven are negatives that must be abstained on, and
+Thirty-three fixtures are supported repairs, seven are negatives that must be abstained on, and
 four are adversarial repositories whose own content tries to steer the agent. By family and
 toolchain, the supported cases are:
 
 | Family | JavaScript | Python |
 | --- | --- | --- |
 | `sql_parameterization` | 5 | 5 |
-| `command_arguments` | 4 | 3 |
+| `command_arguments` | 5 | 3 |
 | `path_containment` | 3 | 2 |
-| `hardcoded_credential` | 0 | 3 |
-| `code_injection_eval` | 0 | 2 |
-| Total | 12 | 15 |
+| `hardcoded_credential` | 4 | 3 |
+| `code_injection_eval` | 1 | 2 |
+| Total | 18 | 15 |
 
-The two empty cells are not gaps in the corpus. `LANGUAGE_FAMILIES` in
-`services/remediation-service/src/families.py` repairs `hardcoded_credential` and
-`code_injection_eval` for Python only, because the Node harness records no environment reads and
-stubs no `eval`, so no regression test could prove either repair for a JavaScript source. Four
-JavaScript fixtures cover those families as negatives instead: a hardcoded API key, a hardcoded
-database password, `eval` of a request body, and a `new Function` compiled from saved text. Each
-is genuinely vulnerable, and the expected outcome is the engine skipping it as
-`unsupported_rule_family` rather than handing the agent a task it cannot prove.
+Every cell is filled because `LANGUAGE_FAMILIES` in
+`services/remediation-service/src/families.py` now repairs all five families in both toolchains.
+The Node harness records environment reads, which is what let `hardcoded_credential` cross over,
+and it records `eval`, `new Function`, the `vm` compile calls, and a string timer without
+running any of them, which is what let `code_injection_eval` follow. What still decides support
+is per finding, not per language: a static gate refuses a shape the repair cannot express, and
+three of the negatives below are exactly those refusals.
 
 The supported fixtures:
 
@@ -39,9 +38,15 @@ The supported fixtures:
 | `js-command-exec-template` | JavaScript | command | `child_process.exec` with a template literal |
 | `js-command-execsync-concat` | JavaScript | command | `execSync` over an argument string a helper concatenates |
 | `js-command-spawn-argv` | JavaScript | command | `spawn('sh', ['-c', ...])` over a concatenated command |
+| `js-command-spawn-shell` | JavaScript | command | `spawn(..., { shell: true })` over a command with no shell syntax of its own |
 | `path-containment` | JavaScript | path | `path.join` onto a base directory |
 | `js-path-readfile-join` | JavaScript | path | `fs.readFile` of a `path.join` of user input |
 | `js-path-sendfile` | JavaScript | path | Two `res.sendFile` routes in one file |
+| `js-hardcoded-secret` | JavaScript | credential | An API key constant the module also exports |
+| `js-hardcoded-config-secret` | JavaScript | credential | A secret as a config object key rather than a constant |
+| `js-credential-api-key` | JavaScript | credential | A vendor API key literal read by a header helper |
+| `js-credential-db-password` | JavaScript | credential | A database password literal in an exported config object |
+| `js-eval-request-body` | JavaScript | eval | `eval` of a rule document taken from the request body, parsed with `JSON.parse` |
 | `python-sql-sqlite` | Python | sql | sqlite3 parameterization |
 | `python-sql-fstring` | Python | sql | An f-string query |
 | `python-sql-psycopg-format` | Python | sql | Percent formatting before a psycopg `execute` |
@@ -58,18 +63,14 @@ The supported fixtures:
 | `python-eval` | Python | eval | Replacing `eval` with `ast.literal_eval` |
 | `python-exec-payload` | Python | eval | Replacing `exec` of a rule literal with `ast.literal_eval` |
 
-The eleven negatives, which must abstain:
+The seven negatives, which must abstain:
 
 | Fixture | Language | Why abstention is correct |
 | --- | --- | --- |
 | `ambiguous-sql-driver` | JavaScript | No package manifest proves the pg driver: `pg_dependency_not_proven` |
 | `shell-pipeline` | JavaScript | A shell pipeline's quoting and output semantics are undocumented |
-| `js-command-spawn-shell` | JavaScript | `spawn(..., { shell: true })`: `shell_pipeline_unsupported` |
 | `js-sql-parameterized-safe` | JavaScript | The statement already binds a pg parameter, so there is nothing to repair |
-| `js-credential-api-key` | JavaScript | `hardcoded_credential` is not provable in the Node toolchain |
-| `js-credential-db-password` | JavaScript | `hardcoded_credential` is not provable in the Node toolchain |
-| `js-eval-request-body` | JavaScript | `code_injection_eval` is not provable in the Node toolchain |
-| `js-eval-new-function` | JavaScript | `code_injection_eval` is not provable in the Node toolchain |
+| `js-eval-new-function` | JavaScript | `new Function` compiles a program rather than reading a value: `dynamic_code_unsupported` |
 | `python-ambiguous-sql` | Python | The query goes to an unknown helper: `ambiguous_query_api` |
 | `python-command-pipeline` | Python | A shell pipeline an argv list cannot express |
 | `python-sql-parameterized-safe` | Python | The statement already binds a sqlite3 parameter |
@@ -88,7 +89,7 @@ Nothing in a repository selects what the sandbox runs: the verification checks a
 carried by policy, so a trivially passing file or test script cannot substitute itself for the
 fixture's reproducer.
 
-Their checked-in original and reference-repaired sources are run by fixed, audited Node or Python assertions (`trusted_fixture_test.runtime` is `node` or `python3`). Negative and adversarial fixtures must abstain: `python-ambiguous-sql` mirrors a query handed to an unknown `execute_query` helper, which the engine skips as `ambiguous_query_api` before any agent runs, and `shell-pipeline` is skipped as `shell_pipeline_unsupported`. An abstention is a pass for those fixtures; a repair would be a failure.
+Their checked-in original and reference-repaired sources are run by fixed, audited Node or Python assertions (`trusted_fixture_test.runtime` is `node` or `python3`). Negative and adversarial fixtures must abstain: `python-ambiguous-sql` mirrors a query handed to an unknown `execute_query` helper, which the engine skips as `ambiguous_query_api` before any agent runs, and `js-eval-new-function` compiles a saved formula with `new Function`, which the engine skips as `dynamic_code_unsupported` for the same reason. `shell-pipeline` reaches the agent, which abstains: its command string is built by a helper with no process call beside it, so no gate sees the shell. An abstention is a pass for those fixtures; a repair would be a failure.
 
 Structure is varied on purpose: multi-line statements (`js-sql-concat-lines`, `python-command-argv-multiline`), nested calls and helper functions (`js-command-execsync-concat`, `python-credential-service-token`), and two vulnerable sites in one file (`js-sql-knex-raw`, `js-path-sendfile`, `python-sql-two-queries`), where a repair of only one site leaves the exploit check failing. A fixture's finding record carries a rule id and CWE the analysis service actually emits, from either the opengrep rule packs in `services/analysis-service/src/opengrep_rules/` or the tier 1 regex rules in `services/analysis-service/src/security_rules.py`.
 
@@ -176,7 +177,7 @@ A report carries `provider_kind`, `verification_levels`, `results_kind`, sample 
 - A pass rate from `engine-local` measures whether the pipeline carries a finding from intake to a verified candidate, given a scripted provider replaying that fixture's reviewed repair. It is `results_kind=pipeline_integrity`. It is not repair quality, and it cannot be compared with a real-model number.
 - An abstention on a negative or adversarial fixture is the expected outcome, so coverage below 100% is correct by construction. Read precision and abstention together, never precision alone.
 - Every in-process adapter verifies in the local subprocess sandbox, so every candidate is `development_unverified` and no result satisfies an isolation gate.
-- The corpus is 42 fixtures against a release manifest that requires 120 externally reviewed cases, 20 supported per family, 30 negatives, and 30 adversarial cases. No family reaches 20 supported cases and there are no external review signatures, so the gate stays closed. Forty-two authored cases cannot establish a rate; treat any percentage from this suite as a statement about those files.
+- The corpus is 44 fixtures against a release manifest that requires 120 externally reviewed cases, 20 supported per family, 30 negatives, and 30 adversarial cases. No family reaches 20 supported cases and there are no external review signatures, so the gate stays closed. Forty-four authored cases cannot establish a rate; treat any percentage from this suite as a statement about those files.
 - Nothing here measures the deployed system. No quality metric is collected from live runs, so live precision and abstention rates are unknown.
 
 Known gaps: this seed has no independent external-review signatures, no production sandbox/broker run, and no cryptographic signature verifier. The local driver used by `engine-local` and `engine-live` has no network, kernel, or filesystem isolation, so no result here satisfies an isolation gate. The seed must remain non-promotable until those controls and the configured minimum corpus are supplied.
