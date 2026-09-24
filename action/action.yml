@@ -55,23 +55,144 @@ inputs:
 outputs:
   findings:
     description: 'Total findings reported.'
+    value: ${{ steps.review.outputs.findings }}
   critical:
     description: 'Critical findings.'
+    value: ${{ steps.review.outputs.critical }}
   high:
     description: 'High findings.'
+    value: ${{ steps.review.outputs.high }}
   fixes:
     description: 'Fix suggestions attached.'
+    value: ${{ steps.review.outputs.fixes }}
   conclusion:
     description: 'The check run conclusion: success, neutral or failure.'
+    value: ${{ steps.review.outputs.conclusion }}
 
+# A composite action rather than a container action, for one reason: GitHub builds a container
+# action with the action's own directory as the Docker build context, and this image is built
+# from the repository root because it bundles the analysis, remediation and github services that
+# live beside the action. A composite action runs the build itself and can name the context.
+#
+# `${{ github.action_path }}/..` is the repository root in both cases that matter: `uses: ./action`
+# resolves the action path inside the checkout, and a remote `uses: owner/repo/action@ref` makes
+# GitHub check out the whole repository and point the action path at the subdirectory in it.
 runs:
-  using: 'docker'
-  image: 'Dockerfile'
-  env:
-    INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
-    INPUT_FAIL_ON: ${{ inputs.fail-on }}
-    INPUT_POST_FIXES: ${{ inputs.post-fixes }}
-    INPUT_MODEL_API_KEY: ${{ inputs.model-api-key }}
-    INPUT_MODEL_PROVIDER: ${{ inputs.model-provider }}
-    INPUT_MODEL: ${{ inputs.model }}
-    INPUT_MAX_FILES: ${{ inputs.max-files }}
+  using: composite
+  steps:
+    - name: Resolve the build context and cache key
+      id: context
+      shell: bash
+      run: |
+        set -euo pipefail
+        root="$(cd "${{ github.action_path }}/.." && pwd)"
+        echo "root=${root}" >> "$GITHUB_OUTPUT"
+        # The image changes when its recipe or its pinned dependencies change. Hashing those
+        # inputs rather than the whole tree keeps the cache warm across ordinary source edits,
+        # which is most pull requests.
+        key="$(cat \
+          "${{ github.action_path }}/Dockerfile" \
+          "${{ github.action_path }}/requirements.txt" \
+          "${root}/services/github-service/package-lock.json" \
+          | shasum -a 256 | cut -d' ' -f1)"
+        echo "key=${key}" >> "$GITHUB_OUTPUT"
+        echo "cache-dir=${RUNNER_TEMP}/mitig8it-buildx-cache" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the image layer cache
+      id: cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ steps.context.outputs.cache-dir }}
+        key: mitig8it-action-${{ runner.os }}-${{ runner.arch }}-${{ steps.context.outputs.key }}
+        # An older cache is still most of the image: the base layers, the apt packages, the Node
+        # tarball and the Python wheels rarely all change at once.
+        restore-keys: |
+          mitig8it-action-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Build the image
+      shell: bash
+      env:
+        ROOT: ${{ steps.context.outputs.root }}
+        CACHE_DIR: ${{ steps.context.outputs.cache-dir }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        start="$(date +%s)"
+        if docker buildx version >/dev/null 2>&1; then
+          # A local cache directory rather than a registry, so the image is never pushed
+          # anywhere and the cache stays inside the runner.
+          docker buildx build \
+            --file "${ACTION_PATH}/Dockerfile" \
+            --tag mitig8it-action:local \
+            --load \
+            --cache-from "type=local,src=${CACHE_DIR}" \
+            --cache-to "type=local,dest=${CACHE_DIR}.new,mode=max" \
+            "${ROOT}"
+          # buildx appends rather than replaces, so the cache would grow without bound.
+          rm -rf "${CACHE_DIR}"
+          mv "${CACHE_DIR}.new" "${CACHE_DIR}"
+        else
+          echo "buildx is unavailable; building without a layer cache."
+          docker build \
+            --file "${ACTION_PATH}/Dockerfile" \
+            --tag mitig8it-action:local \
+            "${ROOT}"
+        fi
+        elapsed="$(( $(date +%s) - start ))"
+        echo "Image built in ${elapsed}s."
+        docker image inspect mitig8it-action:local \
+          --format 'image size: {{ .Size }} bytes' || true
+
+    - name: Review the pull request
+      id: review
+      shell: bash
+      env:
+        # Passed through the environment rather than the command line, so the token never
+        # appears in a process listing or a log.
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_POST_FIXES: ${{ inputs.post-fixes }}
+        INPUT_MODEL_API_KEY: ${{ inputs.model-api-key }}
+        INPUT_MODEL_PROVIDER: ${{ inputs.model-provider }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_MAX_FILES: ${{ inputs.max-files }}
+      run: |
+        set -euo pipefail
+
+        # The event payload is copied to a known place under RUNNER_TEMP so that one mount
+        # covers it, the outputs file and the step summary, whatever paths the runner chose.
+        event="${RUNNER_TEMP}/mitig8it-event.json"
+        cp "${GITHUB_EVENT_PATH}" "${event}"
+        outputs="${RUNNER_TEMP}/mitig8it-output.txt"
+        : > "${outputs}"
+
+        status=0
+        docker run --rm \
+          --workdir /github/workspace \
+          --volume "${GITHUB_WORKSPACE}:/github/workspace" \
+          --volume "${RUNNER_TEMP}:${RUNNER_TEMP}" \
+          --env GITHUB_EVENT_PATH="${event}" \
+          --env GITHUB_OUTPUT="${outputs}" \
+          --env GITHUB_STEP_SUMMARY \
+          --env GITHUB_WORKSPACE=/github/workspace \
+          --env GITHUB_REPOSITORY \
+          --env GITHUB_API_URL \
+          --env GITHUB_SERVER_URL \
+          --env GITHUB_ACTOR \
+          --env GITHUB_SHA \
+          --env GITHUB_REF \
+          --env INPUT_GITHUB_TOKEN \
+          --env INPUT_FAIL_ON \
+          --env INPUT_POST_FIXES \
+          --env INPUT_MODEL_API_KEY \
+          --env INPUT_MODEL_PROVIDER \
+          --env INPUT_MODEL \
+          --env INPUT_MAX_FILES \
+          mitig8it-action:local || status=$?
+
+        # The outputs are forwarded whatever the exit status, so a failing review still reports
+        # what it found rather than only that it failed.
+        if [ -s "${outputs}" ]; then
+          cat "${outputs}" >> "$GITHUB_OUTPUT"
+        fi
+        exit "${status}"

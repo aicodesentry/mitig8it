@@ -23,9 +23,17 @@ function serviceRoot() {
   return path.resolve(__dirname, '../../services/github-service');
 }
 
-const root = serviceRoot();
-const githubIdentity = require(path.join(root, 'src/services/githubIdentity'));
-const operations = require(path.join(root, 'src/services/githubInternalOperations'));
+// The github-service modules are loaded when publishing starts, not when this file is required.
+// They pull in axios and the rest of the service's runtime dependencies, which exist in the
+// action's image but not in a bare checkout. Deferring them keeps the body builders below
+// importable on their own, so the tests that pin the review's wording need no npm install.
+function service() {
+  const root = serviceRoot();
+  return {
+    githubIdentity: require(path.join(root, 'src/services/githubIdentity')),
+    operations: require(path.join(root, 'src/services/githubInternalOperations')),
+  };
+}
 
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low'];
 
@@ -87,6 +95,7 @@ function checkRunSummary(request) {
 // --- publishing ------------------------------------------------------------------------
 
 async function publish(request) {
+  const { githubIdentity, operations } = service();
   githubIdentity.useProvider(createWorkflowTokenProvider({
     token: request.token,
     repositoryFullName: request.repository_full_name,

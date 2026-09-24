@@ -121,15 +121,56 @@ Without a database there are no suppressions and no baseline, so a finding you h
 to act on will be reported again on the next pull request that touches those lines. If that
 matters more to you than keeping everything in your own runner, the app is the other trade.
 
+## How it is packaged
+
+This is a composite action, not a container action, and the difference matters.
+
+The image bundles the analysis, remediation and github services, which live beside the action in
+the repository, so it has to be built with the **repository root** as the Docker context. GitHub
+builds a container action with the *action directory* as the context, which makes every one of
+those paths vanish. So the action builds the image itself:
+
+```sh
+docker build --file "${GITHUB_ACTION_PATH}/Dockerfile" --tag mitig8it-action:local "${GITHUB_ACTION_PATH}/.."
+```
+
+The parent of the action path is the repository root in both cases that matter: `uses: ./action`
+resolves inside your checkout, and a remote `uses: aicodesentry/mitig8it/action@ref` makes GitHub
+check out the whole repository and point the action path at the subdirectory in it.
+
+The first run on a runner pays for the full build. After that a layer cache keyed on the
+Dockerfile, the pinned Python requirements and the github-service lockfile is restored by
+`actions/cache`, so an ordinary source change reuses the base image, the apt packages, the Node
+tarball and the Python wheels and only replays the `COPY` layers. The build step prints
+`Image built in Ns.` on every run, which is where to read the real number for your runner.
+
 ## Working on the action
 
 ```sh
 cd action
-pip install pytest httpx
-pytest tests -q            # orchestrator, Node parity, requirements parity
-docker build -f action/Dockerfile -t mitig8it-action:dev ..
+pip install pytest httpx pyyaml
+pytest tests -q
+
+# From the repository root, not from action/: the context is the root.
+cd .. && docker build --file action/Dockerfile --tag mitig8it-action:dev .
 ```
 
-The parity tests read the Node sources that the scope rules were ported from and fail when the
-two drift, so a change to the api-service's file filters or the github-service's caps will fail
-the action's build until `orchestrator/pr_scope.py` is updated to match.
+The suite runs without the services' own dependencies installed; the tests that need the scanner
+or the repair engine skip in that case and run inside the image in CI.
+
+Two families of test exist to stop specific mistakes recurring:
+
+- `test_node_parity.py` reads the Node sources the scope rules were ported from and fails when
+  the two drift, so a change to the api-service's file filters or the github-service's caps
+  fails here until `orchestrator/pr_scope.py` is updated to match.
+- `test_action_definition.py` reads `action.yml` and the workflows. It asserts the action stays
+  composite, that every `COPY` source in the Dockerfile exists relative to the repository root,
+  and that both workflows parse. An unparsable workflow is worth a test of its own: GitHub
+  rejects the whole run before any job starts and reports only "this run likely failed because
+  of a workflow file issue", naming no file and no line.
+
+Lint the workflows the way CI does:
+
+```sh
+actionlint
+```
