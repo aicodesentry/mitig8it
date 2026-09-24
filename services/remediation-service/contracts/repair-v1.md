@@ -60,6 +60,32 @@ Before any agent runs, a finding may also be reported in `skipped` as `rule_fami
 
 For every supported finding the service attempts both halves of the repair before any model call. It derives the enclosing site (the request handler that encloses the finding, on either language, else the function or method that does), generates one harness regression test from that site, and attempts a deterministic template hunk for the family. Template hunks are combined per group, bundled with the service proofs, and verified exactly like a model proposal; a pass that ships from this path records `{"input_tokens": 0, "output_tokens": 0, "provider_request_ids": []}` and never reaches a provider. The model is asked only for findings the template pass did not prove, and it receives the same service-written proof plus the failure tail of a template that failed. A finding still unproven after the group pass gets one focused single-finding run unless the model deliberately abstained. `evidence.groups[].reason_evidence` records which path produced what.
 
+#### A finding at module scope
+
+Code with no enclosing callable runs once, when the module is imported. The template rewrites the sink in place exactly as it would inside a function, and the proof drives it by setting what the module reads and then importing it, so what decides whether a proof exists is where the tainted value comes from:
+
+| Source | How the proof drives it |
+| --- | --- |
+| `process.env.NAME`, `os.environ["NAME"]`, `os.getenv("NAME")` | `h.load(path, { env: { NAME: payload } })` / `h.load(path, env={"NAME": payload})`, then the family assertion on the load. |
+| `process.argv[i]`, `sys.argv[i]` | the same load with `argv`, the payload at the index the module reads. |
+| a member of a module required at the top level, JavaScript only and a relative specifier only | the same load with `stubs`, standing the module in. A member that is called rather than read is not one of these: replacing the function with a payload would break the module instead of driving it. |
+| a literal or a module-level constant | asserted on the load directly, which is the `hardcoded_credential` shape: the literal is the sink. |
+| anything else | refused as `module_scope_source_not_controllable`. |
+
+A `path_containment` repair at module scope throws or raises during the import, because there is no caller to answer, so its proof asserts that the import itself is refused for every traversal payload and still succeeds for a legitimate name.
+
+#### Why a service proof is refused
+
+A proof the service cannot write is reported in `reason_evidence.proofs` as `model:<reason>`, and the same code appears in `templates` as `not_attempted:<reason>` because a template without a proof is never attempted. The reasons that turn on the file rather than on the site:
+
+| Reason | Meaning |
+| --- | --- |
+| `module_not_loadable_by_node` | The affected file's suffix is not one the sandbox's Node can run: `.js`, `.cjs`, `.mjs`, `.ts`, `.cts`, and `.mts` are, and `.jsx` and `.tsx` are not, because strip-only mode deletes type syntax and does not transform JSX. |
+| `typescript_syntax_not_strippable:<construct>` | The TypeScript file carries an `enum`, a `namespace`, or a constructor parameter property. Each has to be compiled into code rather than deleted, so Node's strip-only mode refuses the whole file with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. |
+| `module_scope_source_not_controllable` | The finding is at module scope and the value reaching its sink comes from a call that happens on import, so no test can make the reproducer fail before the repair and pass after it. |
+
+TypeScript is loaded by Node's own type stripper rather than by a toolchain: the sandbox still installs nothing and compiles nothing. One shape is not detectable in advance and so is not refused: an interface imported as an ordinary value binding (`import { Settings, settings } from './config'` rather than `import type`) survives stripping and names an export the stripped module does not have. That module fails to load, so its proof fails; it is never a false pass.
+
 #### What `path_containment` repairs a site to do
 
 The containment check is the same wherever the `path.join` is: resolve the base, resolve the
@@ -69,12 +95,15 @@ an escaping path depends on what the site can promise its caller.
 | Site | Refusal |
 | --- | --- |
 | Express route handler | `return res.status(400).end()` |
+| A route handler the module exports but never registers with Express | `return res.status(400).end()`, the same: it owns a response either way, and its second parameter is it |
 | Flask view | `abort(400)` |
-| Any other JavaScript function or method | `throw new Error('path escapes base directory')` |
-| Any other Python function or method | `raise ValueError('path escapes base directory')` |
+| A JavaScript function that takes a callback | `return callback(new Error('path escapes base directory'))` |
+| Any other JavaScript function, method, or module-scope code | `throw new Error('path escapes base directory')` |
+| Any other Python function, method, or module-scope code | `raise ValueError('path escapes base directory')` |
 
-A handler owns the response, so it answers. A plain function has no response to write and no
-declared failure value, and a returned sentinel is the one outcome a caller can mistake for a
+A handler owns the response, so it answers, and a function that takes a continuation reports
+through it, because that is how it already reports every other failure. A plain function has
+neither a response to write nor a declared failure value, and a returned sentinel is the one outcome a caller can mistake for a
 path: `null` reaching `fs.readFile` is a crash at a distance, and `''` resolves to the base
 directory itself. Raising is the only refusal a caller cannot read as success. A caller that does
 not catch turns a file disclosure into a 500, which is the trade this family is for; a caller that

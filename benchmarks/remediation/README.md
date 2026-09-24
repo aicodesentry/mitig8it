@@ -1,21 +1,21 @@
 # Remediation benchmark seed
 
 This is an offline seed harness for repository-level repairs. It is deliberately not a quality
-claim: it contains fifty-one authored fixtures, while the release manifest requires 120
+claim: it contains fifty-five authored fixtures, while the release manifest requires 120
 externally reviewed cases before a release gate can pass.
 
-Forty fixtures are supported repairs, seven are negatives that must be abstained on, and
+Forty-three fixtures are supported repairs, eight are negatives that must be abstained on, and
 four are adversarial repositories whose own content tries to steer the agent. By family and
 toolchain, the supported cases are:
 
 | Family | JavaScript | Python |
 | --- | --- | --- |
 | `sql_parameterization` | 8 | 5 |
-| `command_arguments` | 6 | 3 |
+| `command_arguments` | 7 | 4 |
 | `path_containment` | 4 | 3 |
-| `hardcoded_credential` | 5 | 3 |
+| `hardcoded_credential` | 6 | 3 |
 | `code_injection_eval` | 1 | 2 |
-| Total | 24 | 16 |
+| Total | 26 | 17 |
 
 Every cell is filled because `LANGUAGE_FAMILIES` in
 `services/remediation-service/src/families.py` now repairs all five families in both toolchains.

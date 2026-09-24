@@ -638,12 +638,106 @@ harness stub for that measurement does not implement `Snapshot.paths`, which `_p
 to find a local module. The count is identical in both runs, so the comparison is unaffected;
 the engine itself passes a real snapshot and does not hit it.
 
+## After TypeScript and module scope
+
+The two obstacles the section above named are gone. TypeScript loads in the sandbox, through
+Node's own type stripper rather than a toolchain: the pinned runtime moved from 20.20.2 to the
+current 22 LTS, every generated test and derived syntax check runs with
+`--experimental-strip-types`, and the harness resolves the `.ts` sources Node's own resolver will
+not find. Code at module scope is a repair site: the template rewrites the sink in place exactly
+as it would inside a function, and the proof drives it by setting what the module reads before
+importing it.
+
+The same 23 snapshots were replayed once and both generators were then called directly over every
+finding, against this branch and against the base branch's service source over that one cache.
+The direct call is what measures the two halves: the replay's provider refuses every call, so a
+finding the template does not prove ends at `provider_budget_reservation_denied` whatever the
+template said.
+
+245 of the 1819 findings are in a supported family with their file in the cached tree. The sites
+run above reported 238 for the same corpus; every other row of the before column below reproduces
+its numbers exactly, so the difference is in that run's bookkeeping rather than in the reach.
+
+| | Before | After |
+| --- | ---: | ---: |
+| `enclosing_function_not_found`, template | 67 | **9** |
+| `enclosing_function_not_found`, proof | 58 | **9** |
+| `module_not_loadable_by_node`, proof | 59 | **0** |
+| Findings the template builds a patch for | 30 | **33** |
+| Findings the service writes a proof for | 37 | 37 |
+| Findings with both halves, so a deterministic candidate is possible | 23 | 23 |
+| Findings with neither | 201 | **198** |
+| Candidates produced and verified end to end | 8 | 8 |
+
+**Both walls came down and the reach did not move.** That is the honest result, and it is the
+second time this corpus has said it. 126 refusals disappeared, three more findings got a patch,
+and not one more finding got a proof. The refusals moved down to the next obstacle again, one
+finding at a time, and this time the next obstacle is named rather than structural.
+
+| Reason the site model exposed | Before | After |
+| --- | ---: | ---: |
+| `module_scope_source_not_controllable` (proof) | 0 | 60 |
+| `path_module_not_required` (template) | 17 | 65 |
+| `path_join_not_found_in_scope` (proof) | 16 | 27 |
+| `function_parameters_not_plain_names` (proof) | 2 | 23 |
+| `function_parameters_not_plain_names` (template) | 22 | 22 |
+| `eval_argument_not_an_identifier` (both) | 18 | 18 |
+| `string_literal_assignment_not_found` (both) | 17 | 17 |
+| `sql_sink_not_in_scope` (proof) | 2 | 14 |
+| `command_name_not_literal` (template) | 11 | 13 |
+| `no_untrusted_parameter` (proof) | 9 | 12 |
+
+`module_scope_source_not_controllable` is 60 of the 67 findings that used to be
+`enclosing_function_not_found`. The sink runs at import and the value reaching it comes from a
+call no test can set, so there is no test that fails on the vulnerable code and passes on the
+repair. Refusing is the correct answer for those 60, not a gap: a proof that cannot fail before
+the fix proves nothing after it. The seven that are drivable moved on, and `path_module_not_required`
+went from 17 to 65 because most of them are path findings in files that build a path by string
+concatenation rather than with `path.join`, which the template needs by name.
+
+The nine `enclosing_function_not_found` that remain are all `code_injection_eval`:
+`sites.js_eval_site` needs the function whose parameter carries the value it compiles, and module
+scope has no parameter.
+
+### What the corpus's TypeScript actually is
+
+88 of the 245 findings are in `.ts` files, across 73 distinct files. Every one of those 73 files
+is strippable: not one `enum`, `namespace`, or constructor parameter property anywhere in them, so
+`typescript_syntax_not_strippable` never fired on this corpus. 73 of the 88 findings are in modules
+written with `import`/`export` and 15 in CommonJS modules.
+
+The TypeScript proof count did not change, at 9 before and 9 after, and the reason is worth
+naming. In the base branch the loadability check ran *after* the `hardcoded_credential` and
+`code_injection_eval` generators returned, so those two families wrote proofs for `.ts` modules
+that the sandbox could not have loaded: nine proofs that would have failed on both trees. The
+check now runs once, before every family. The same nine findings get proofs, and those proofs can
+now run. The other 79 TypeScript findings stop at a refusal that has nothing to do with the
+language.
+
+One TypeScript shape is not reached even now, and it is the majority one: the built-in fakes are
+injected through the CommonJS loader, so a module written with `import`/`export` gets the real
+`express` or `pg`, which is not installed, and its proof fails rather than passing. That is safe
+and it is a ceiling. `contracts/test-harness-v1.md` records it.
+
+### The benchmark
+
+Four seed fixtures that `docs/architecture/known-debt.md` recorded as one adapter defect
+(`js-path-readfile-join`, `js-path-sendfile`, `js-session-secret-object`,
+`python-path-helper-raises`) were four separate defects in the generated proofs, each found by
+running its own proof against its own reference repair. The adapter was where the symptom
+surfaced: its scripted provider raised when the engine asked for an action it did not have, which
+ended the execution as `inconclusive` with an engine error that said nothing about the fixture. It
+now abstains with a reason and counts how often it happened. The seed suite is 55 fixtures under
+both adapters with no unexpected failures.
+
 ## Suites
 
 | Suite | Command | Result |
 | --- | --- | --- |
-| analysis-service | `python -m pytest tests -q` in `services/analysis-service/src` | 1016 passed; 1156 after the 24 September follow-up |
-| remediation-service | `python -m pytest tests -q` in `services/remediation-service` | 339 passed, 1 failed (`test_python_harness.py`, pre-existing, fails because Flask is installed in this interpreter) |
-| tier 2 precision benchmark | `python -m pytest tests/test_tier2_precision_benchmark.py -q` | 121 passed; 141 after the 24 September follow-up |
-| remediation benchmark | `benchmarks/remediation/evaluate.py --suite seed` and `--adapter engine-local` | 14 cases, 10 repairs verified, 4 safe abstentions, no failures |
+| analysis-service | `python -m pytest tests -q` in `services/analysis-service/src` | 1373 passed, 1 skipped, on the integration branch |
+| remediation-service | `python -m pytest tests -q` in `services/remediation-service` | 503 passed, on the integration branch. Fails by one (`test_python_harness.py`) in an interpreter that has Flask installed, which is pre-existing and environment-dependent |
+| tier 2 precision benchmark | `python -m pytest tests/test_tier2_precision_benchmark.py -q` | 140 passed, on the integration branch |
+| remediation benchmark | `benchmarks/remediation/evaluate.py --suite seed` and `--adapter engine-local` | 55 cases, 43 repairs verified, 12 safe abstentions, no unexpected failures under either adapter |
+| sandbox harness spec | `node --test-reporter=tap services/remediation-service/tests/harness_spec.js` | 16 passed |
+| remediation benchmark harness | `python -m pytest benchmarks/remediation/tests -q` | 23 passed |
 | replay self-test | `scripts/replay/selftest.py` | ok: findings=2 candidates=2 verified=2 agent_needed=0 |

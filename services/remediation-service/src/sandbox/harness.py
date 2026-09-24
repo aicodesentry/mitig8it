@@ -36,9 +36,10 @@ PYTHON_HARNESS_MODULES = frozenset(
 # Each harness travels inside every verification payload, so it stays small by construction.
 # The Node budget was 16 KiB until the environment recorder and its two assertions were added
 # for the JavaScript `hardcoded_credential` family, then 20 KiB until the dynamic-code recorder,
-# `assert.noCode`, and `call` were added for `code_injection_eval`. 24 KiB is the next size that
-# leaves room to extend an assertion without another budget change in the same commit.
-MAX_HARNESS_BYTES = 24 * 1024
+# `assert.noCode`, and `call` were added for `code_injection_eval`, then 24 KiB until TypeScript
+# resolution. 28 KiB is the next size that leaves room to extend an assertion without another
+# budget change in the same commit.
+MAX_HARNESS_BYTES = 28 * 1024
 MAX_PYTHON_HARNESS_BYTES = 40 * 1024
 HARNESS_OCCUPIED_LIMITATION = (
     f"the repository already carries {HARNESS_PATH}, so the service test harness was not materialized"

@@ -29,6 +29,8 @@ env = types.SimpleNamespace(reads=[])
 stubbed = []
 _config = {}
 _loaded_names = []
+# `sys.argv` as the test process was started, so a load that supplied none restores it.
+_real_argv = list(sys.argv)
 _real_open = builtins.open
 _real_system, _real_popen = os.system, os.popen
 _STDLIB = getattr(sys, "stdlib_module_names", frozenset())
@@ -697,7 +699,7 @@ def _module_from(name, value):
     return module
 
 
-def load(target, stubs=None, real=(), env=None, rows=None, stdout="", stderr="", code=0, content="", exists=True, auto_stub=True):
+def load(target, stubs=None, real=(), env=None, argv=None, rows=None, stdout="", stderr="", code=0, content="", exists=True, auto_stub=True):
     """Executes the repository module at `target` with the fakes injected; returns the module."""
     _reset()
     for name in _loaded_names:
@@ -718,6 +720,9 @@ def load(target, stubs=None, real=(), env=None, rows=None, stdout="", stderr="",
                 dict.__setitem__(os.environ, name, "mitig8it-unset-" + name)
     for key, value in dict(env or {}).items():
         dict.__setitem__(os.environ, key, str(value))
+    # Module-scope code may read its input from the command line, which is the only way a test
+    # can set it: the sink runs on import, before anything else can be called.
+    sys.argv = [str(item) for item in argv] if argv else list(_real_argv)
     for directory in (os.path.dirname(path), ROOT):
         if directory not in sys.path:
             sys.path.insert(0, directory)

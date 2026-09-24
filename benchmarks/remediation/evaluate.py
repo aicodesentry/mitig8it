@@ -517,6 +517,10 @@ class ScriptedFixtureProvider:
 
     def __init__(self, modules: dict[str, Any], fixture: dict[str, Any], units: list[dict[str, Any]]):
         action = modules["ProviderAction"]
+        self._action = action
+        # How often the engine asked for an action the script does not have. A group the template
+        # proved first leaves this at zero, because the provider is never consulted at all.
+        self.script_exhausted_calls = 0
         repairable = [unit for unit in units if isinstance(unit.get("replacement"), str)]
         if not repairable:
             self.actions = [
@@ -568,8 +572,22 @@ class ScriptedFixtureProvider:
         self._index = 0
 
     async def next_action(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Any:
+        # A script that runs out is an abstention, not a crash. The script covers one proposal
+        # and its verification; the engine asks for more when that proposal did not prove every
+        # finding, and a real model would answer. Raising here ended the whole execution as
+        # `inconclusive` with an engine error, which says nothing about the fixture. Abstaining
+        # leaves an outcome the report can attribute, and `script_exhausted_calls` counts it.
         if self._index >= len(self.actions):
-            raise RuntimeError("scripted provider exhausted its script")
+            self.script_exhausted_calls += 1
+            return self._action(
+                "abstain",
+                {
+                    "reason_code": "scripted_provider_exhausted",
+                    "explanation": "The scripted provider replays one reviewed repair and has no further action.",
+                },
+                input_tokens=8,
+                output_tokens=8,
+            )
         action = self.actions[self._index]
         self._index += 1
         return action
@@ -609,6 +627,7 @@ def engine_local_adapter(
         return {"state": "inconclusive", "reason": f"fixture_request_invalid:{type(error).__name__}", "usage": {}}
 
     originals = {item.path: item.content for item in request.files}
+    scripted: list[Any] = []
 
     def agent_factory(prepared: Any) -> Any:
         """One agent per connected finding group; the engine calls this once per group."""
@@ -634,6 +653,7 @@ def engine_local_adapter(
                 for path in paths
             ]
             provider = ScriptedFixtureProvider(modules, fixture, units)
+            scripted.append(provider)
         return modules["RepairAgent"](provider, verifier, None)
 
     backend = modules["LocalExecutionBackend"](state_dir / fixture["id"])
@@ -648,8 +668,7 @@ def engine_local_adapter(
         response = asyncio.run(modules["RepairEngine"](agent_factory).repair(stored, checkpoints))
     except Exception as error:  # noqa: BLE001 - one fixture's pipeline failure must not end the suite.
         # A raised engine failure is a failed case with an attributable reason, never a crash
-        # that hides the other fixtures' results. `scripted provider exhausted its script` is
-        # the shape this takes when the pipeline rejects the reviewed patch and asks again.
+        # that hides the other fixtures' results.
         return {"state": "inconclusive", "reason": f"engine_local_error:{type(error).__name__}:{str(error)[:120]}", "usage": {}}
     if not backend.complete(claimed.execution_id, worker_id, response):
         return {"state": "inconclusive", "reason": "local_execution_result_not_published", "usage": {}}
@@ -675,6 +694,9 @@ def engine_local_adapter(
         "limitations": evidence.get("limitations", []),
         "evidence": {"kind": "local_development_sandbox", "manifest_digest": persisted.manifest_digest},
         "reason": (persisted.reason or {}).get("code"),
+        # Zero means the engine never asked the script for more than it has, which includes the
+        # template path, where the provider is not consulted at all.
+        "script_exhausted_calls": sum(provider.script_exhausted_calls for provider in scripted),
     }
 
 

@@ -27,9 +27,11 @@ from .gates import PYTHON_SQL_DRIVERS, python_imports
 from .models import FindingSnapshot
 from .retrieval import Snapshot
 from .sites import (
+    JS_CALLBACK_PARAMETERS,
     JS_EVAL_ARGUMENT_RE,
     JsFunction,
     JsRoute,
+    ModuleScope,
     PyFunction,
     SiteError,
     js_bound_names,
@@ -41,7 +43,7 @@ from .sites import (
     js_require_line,
     js_site_for_line,
     scope_lines_near,
-    python_function_for_line,
+    python_site_for_line,
     python_import_anchor,
     python_module_assignment,
 )
@@ -535,7 +537,7 @@ _JS_OPTIONS_RE = re.compile(r",\s*\{(?P<body>[^{}]*)\}")
 _JS_JOIN_RE = re.compile(r"path\.join\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)")
 
 
-def _js_sql(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction) -> TemplatePatch:
+def _js_sql(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction | ModuleScope) -> TemplatePatch:
     """Interpolated SQL becomes a parameterized query, wherever the query is built.
 
     The enclosing scope is only ever read as bounds: how far back to look for the assignment
@@ -714,7 +716,7 @@ def _js_command(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
 PATH_ESCAPE_MESSAGE = "path escapes base directory"
 
 
-def _js_rejection(site: JsRoute | JsFunction) -> str:
+def _js_rejection(site: JsRoute | JsFunction | ModuleScope) -> str:
     """The statement that refuses a path escaping the base directory.
 
     A route handler owns the response, so it answers 400, which is the contract it already has.
@@ -723,15 +725,31 @@ def _js_rejection(site: JsRoute | JsFunction) -> str:
     """
     if isinstance(site, JsRoute):
         return f"return {site.res}.status(400).end();"
+    # A route handler the module never registered owns a response just the same, and its second
+    # parameter is it: answering 400 is the contract its caller already has.
+    if isinstance(site, JsFunction) and site.kind == "handler" and len(site.parameters) >= 2:
+        return f"return {site.parameters[1]}.status(400).end();"
+    # A function that takes a continuation reports the refusal through it, for the same reason:
+    # that is how it already reports every other failure, and throwing at a caller that is
+    # waiting on a callback is a behaviour change on top of the repair.
+    if isinstance(site, JsFunction):
+        callback = next((name for name in site.parameters if name in JS_CALLBACK_PARAMETERS), None)
+        if callback:
+            return f"return {callback}(new Error({js_string_literal(PATH_ESCAPE_MESSAGE)}));"
     return f"throw new Error({js_string_literal(PATH_ESCAPE_MESSAGE)});"
 
 
-def _js_containment_summary(site: JsRoute | JsFunction) -> str:
-    tail = "answers 400" if isinstance(site, JsRoute) else "throws"
+def _js_containment_summary(site: JsRoute | JsFunction | ModuleScope) -> str:
+    if isinstance(site, JsRoute) or (isinstance(site, JsFunction) and site.kind == "handler" and len(site.parameters) >= 2):
+        tail = "answers 400"
+    elif isinstance(site, JsFunction) and any(name in JS_CALLBACK_PARAMETERS for name in site.parameters):
+        tail = "calls back with an error"
+    else:
+        tail = "throws"
     return f"path.resolve with a containment check that {tail} before any read"
 
 
-def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction) -> TemplatePatch:
+def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction | ModuleScope) -> TemplatePatch:
     """A `path.join` of untrusted input becomes a resolve plus a containment check.
 
     The check is the same wherever the join is; only how it refuses differs, which is what
@@ -1050,7 +1068,7 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
         elif language == PYTHON:
             if family == HARDCODED_CREDENTIAL:
                 return _py_credential(snapshot, finding)
-            function = python_function_for_line(snapshot.full_content(path), _finding_line(finding))
+            function = python_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _py_sql(snapshot, finding, function)
             if family == CODE_INJECTION_EVAL:

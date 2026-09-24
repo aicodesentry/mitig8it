@@ -57,10 +57,11 @@ class RemediationHarnessTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
-        # 40 supported, 7 negative and 4 adversarial across 51 fixtures. The count is
-        # asserted rather than derived so adding a fixture is a deliberate change here too.
-        self.assertEqual(report["summary"]["eligible_supported_cases"], 40)
-        self.assertEqual(report["summary"]["negative_adversarial_cases"], 11)
+        # 43 supported, 8 negative and 4 adversarial across 55 fixtures. Asserted rather
+        # than derived so adding a fixture is a deliberate change here too; these counts had
+        # fallen behind the fixture set more than once before.
+        self.assertEqual(report["summary"]["eligible_supported_cases"], 43)
+        self.assertEqual(report["summary"]["negative_adversarial_cases"], 12)
         self.assertEqual(report["summary"]["failures"], [])
 
     def test_reference_candidate_must_match_the_expected_patch_not_only_claim_ready(self):

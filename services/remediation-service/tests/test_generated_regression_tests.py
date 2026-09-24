@@ -18,7 +18,7 @@ from src.patches import PatchPolicyError, build_patch_bundle
 from src.retrieval import Snapshot
 from src.sandbox import InProcessSandboxBroker, LocalSubprocessDriver
 from src.verification import Verifier
-from src.verification.checks import build_effective_checks
+from src.verification.checks import NODE_TYPESCRIPT_FLAGS, build_effective_checks
 from tests.conftest import (
     MODEL_ONLY_LINE,
     MODEL_ONLY_REPAIRED,
@@ -173,7 +173,7 @@ async def test_reproducing_generated_test_makes_a_repository_without_fixtures_re
 
     checks = {item["check_id"]: item for item in response.evidence["verification_run"]["checks"]}
     regression = checks["generated_regression_test"]
-    assert regression["kind"] == "exploit" and regression["argv"] == ["node", REGRESSION_TEST_PATH]
+    assert regression["kind"] == "exploit" and regression["argv"] == ["node", *NODE_TYPESCRIPT_FLAGS, REGRESSION_TEST_PATH]
     assert regression["baseline"]["status"] == "failed" and regression["candidate"]["status"] == "passed"
     syntax = checks["generated_node_syntax"]
     assert syntax["argv"] == ["node", "--check", "src/db.js"] and syntax["candidate"]["status"] == "passed"
@@ -307,8 +307,11 @@ def test_policy_supplied_checks_still_run_and_generated_checks_are_additive(requ
     assert "generated_regression_test" in identifiers
     assert effective.regression_check_ids == {"generated_regression_test"}
     assert effective.generated_files == ({"path": REGRESSION_TEST_PATH, "content": REPRODUCING_REGRESSION_TEST},)
-    # src/db.ts is TypeScript, so node --check cannot parse it and no syntax check is derived.
-    assert not any(item.startswith("generated_node_syntax") for item in identifiers)
+    # src/db.ts is TypeScript: `node --check` parses as JavaScript and would reject every
+    # annotation, so the derived syntax check strips the types instead of parsing them.
+    assert [item for item in identifiers if item.startswith("generated_node_syntax")] == ["generated_node_syntax"]
+    syntax = next(check for check in effective.checks if check.check_id == "generated_node_syntax")
+    assert syntax.argv[0] == "node" and syntax.argv[-1] == "src/db.ts" and "--check" not in syntax.argv
 
 
 def test_the_repository_test_script_is_skipped_with_a_recorded_limitation(request_payload, source):
