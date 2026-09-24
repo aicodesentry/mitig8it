@@ -41,13 +41,13 @@ test('an explicit audience wins over the base URL', async () => {
   process.env.GITHUB_SERVICE_URL = 'https://github.example.run.app';
   process.env.GITHUB_GRPC_AUDIENCE = 'https://audience.example.run.app/';
   getIdentityToken.mockResolvedValue('id-token');
-  await new GitHubRemediationClient().prepare({});
+  await new GitHubRemediationClient().snapshot({});
   expect(getIdentityToken).toHaveBeenCalledWith('https://audience.example.run.app');
 });
 
 test('a plain http base URL sends no identity token', async () => {
   process.env.GITHUB_SERVICE_URL = 'http://github:8081';
-  await new GitHubRemediationClient().commit({});
+  await new GitHubRemediationClient().snapshot({});
   expect(getIdentityToken).not.toHaveBeenCalled();
-  expect(instance.post).toHaveBeenCalledWith('/internal/github/remediation/commit', {}, { headers: {} });
+  expect(instance.post).toHaveBeenCalledWith('/internal/github/remediation/snapshot', {}, { headers: {} });
 });

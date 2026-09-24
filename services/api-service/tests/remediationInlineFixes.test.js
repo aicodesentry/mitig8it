@@ -9,7 +9,7 @@ jest.mock('../src/db/remediation', () => ({
 }));
 jest.mock('../src/db/findings', () => ({ listByAnalysisRun: jest.fn(async () => []) }));
 jest.mock('../src/services/githubRemediationClient', () => ({ GitHubRemediationClient: jest.fn(() => ({})) }));
-jest.mock('../src/services/mergeController', () => ({ evaluateForPullRequest: jest.fn(), publishVerificationCheck: jest.fn(), evaluateForAction: jest.fn() }));
+jest.mock('../src/services/remediationVerificationCheck', () => ({ publishVerificationCheck: jest.fn() }));
 jest.mock('../src/utils/logger', () => ({ warn: jest.fn(), error: jest.fn(), info: jest.fn() }));
 
 const remediationDb = require('../src/db/remediation');

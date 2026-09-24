@@ -52,53 +52,44 @@ function installFixture(page, options = {}) {
       return respond({ findings: [finding], pull_request: { id: pr, head_sha: session.livePrHead } })
     }
     if (path === `/api/pull-requests/${pr}/remediations`) {
-      if (session.user.id !== 'user-1') return respond({ capabilities: { generate: true, apply: true, merge: true }, job: null, action: null, merge_intent: null })
+      if (session.user.id !== 'user-1') return respond({ capabilities: { generate: true, publish: true }, job: null, action: null })
       return respond({
-        capabilities: { generate: true, apply: true, merge: false }, job: { id: 'job', state: counters.applied ? 'superseded' : 'ready' },
+        capabilities: { generate: true, publish: true }, job: { id: 'job', state: counters.applied ? 'superseded' : 'ready' },
         action: counters.applied ? { id: 'action', state: 'checking', reason: null, rejection_reason: null, commit_sha: 'c'.repeat(40) } : null,
-        merge_intent: null,
       })
     }
     if (path === '/api/remediations/job/preview') return respond(counters.applied ? appliedPreviewBody : previewBody)
-    if (path === '/api/remediations/job/apply') {
-      expect(route.request().headers()['x-csrf-protection']).toBe('1')
-      expect(route.request().postDataJSON()).toMatchObject({ manifest_digest: 'd'.repeat(64), head_sha: headSha, candidate_ids: ['candidate'] })
-      counters.writes += 1; counters.applied = true
-      return respond({ action: { id: 'action', state: 'requested' } })
-    }
     if (path === '/api/remediations/job/feedback') return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'Not found' }) })
-    if (path === '/api/remediation-actions/action/cancel-merge') {
-      counters.cancelled = true
-      return respond({ state: 'cancelled', github_cancellation: null,
-        merge_intent: { id: 'intent', action_id: 'action', state: 'cancelled', blockers: [], merge_attempts: 0,
-          cancellation_reason: 'requested_by_actor', latest_policy_checks: {} } })
+    // The App holds no write access to repository contents. The apply route is gone and
+    // the panel must never call it; a request to it here fails the test loudly.
+    if (path === '/api/remediations/job/apply' || path === '/api/remediation-actions/action/cancel-merge') {
+      counters.writes += 1
+      return route.fulfill({ status: 410, contentType: 'application/json', body: JSON.stringify({ error: 'gone', code: 'apply_removed' }) })
     }
     return route.fulfill({ status: 404, body: JSON.stringify({ error: 'Unexpected fixture request' }) })
   })
   return { session, counters }
 }
 
-test('reviewed fix survives reload, applies once by explicit request, and never offers a merge', async ({ page }) => {
+test('the reviewed fix is shown with no control that could apply or merge it', async ({ page }) => {
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
   const { counters } = installFixture(page)
   await page.goto(`/dashboard/pull-requests/${pr}/findings`)
   await expect(page.getByText('Preserve the query while separating input values.')).toBeVisible()
   await expect(page.getByText('2 verified fixes; 1 finding needs manual work')).toBeVisible()
-  await expect(page.getByText('Merging stays a human action on GitHub.')).toBeVisible()
-  await expect(page.getByRole('button', { name: /merge when ready/ })).toHaveCount(0)
+  // The panel says where the fix gets applied, and offers nothing that would apply it.
+  await expect(page.getByText(/Commit suggestion/)).toBeVisible()
+  await expect(page.getByText(/cannot push to your repository/)).toBeVisible()
+  await expect(page.getByRole('button', { name: /^Apply/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /merge/i })).toHaveCount(0)
   await page.getByRole('button', { name: 'Yes' }).first().click()
   await expect(page.getByText('Thanks. Your feedback was recorded.')).toBeVisible()
-  await page.getByRole('button', { name: 'Apply this fix' }).first().click()
-  await expect(page.getByText('Application: checking')).toBeVisible()
-  expect(counters.writes).toBe(1)
   await page.reload()
-  await expect(page.getByText('Application: checking')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Apply this fix' })).toHaveCount(0)
-  await expect(page.getByText('Stale: the pull request head moved after this fix was verified. It will not be rebased or reapplied.')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Regenerate remaining fixes' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: /^Apply/ })).toHaveCount(0)
   expect(errors).toEqual([])
-  expect(counters.writes).toBe(1)
+  // Nothing the panel does reaches a route that could write code.
+  expect(counters.writes).toBe(0)
 })
 
 test('a new commit on the pull request blocks the reviewed batch until it is regenerated', async ({ page }) => {
@@ -107,8 +98,6 @@ test('a new commit on the pull request blocks the reviewed batch until it is reg
   const { counters } = installFixture(page, { livePrHead: 'f'.repeat(40) })
   await page.goto(`/dashboard/pull-requests/${pr}/findings`)
   await expect(page.getByText('The pull request has new commits since these fixes were generated; regenerate to continue.')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Apply this fix' }).first()).toBeDisabled()
-  await expect(page.getByRole('button', { name: 'Apply all 2 verified fixes' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Generate new fixes' })).toBeEnabled()
   expect(counters.writes).toBe(0)
   expect(errors).toEqual([])

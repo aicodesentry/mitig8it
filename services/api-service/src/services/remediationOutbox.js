@@ -60,19 +60,13 @@ function registerHandler(eventType, handler) {
 
 function resolveHandler(eventType) { return handlers.get(eventType) || null; }
 
-function registerDefaultHandlers({ executeClaimedJob, executeClaimedAction, workerId }) {
+function registerDefaultHandlers({ executeClaimedJob, workerId }) {
   const runJob = async (event) => {
     const job = await remediationDb.claimJobById(event.aggregate_id, workerId);
     // Not claimable means another holder owns the lease or the row is not due yet.
     // The polling backup remains responsible; the event itself is handled.
     if (!job) return { status: 'skipped', reason: 'not_claimable' };
     await executeClaimedJob(job);
-    return { status: 'executed' };
-  };
-  const runAction = async (event) => {
-    const action = await remediationDb.claimActionById(event.aggregate_id);
-    if (!action) return { status: 'skipped', reason: 'not_claimable' };
-    await executeClaimedAction(action);
     return { status: 'executed' };
   };
   // Terminal job states have no follow-up work in this release. Recording delivery is
@@ -93,25 +87,14 @@ function registerDefaultHandlers({ executeClaimedJob, executeClaimedAction, work
     if (!result) return { status: 'skipped', reason: 'job_not_found' };
     return result.published ? { status: 'executed', sections: result.sections } : { status: 'skipped', reason: result.reason };
   });
-  registerHandler('remediation.action.requested', runAction);
-  registerHandler('remediation.action.reconciling', runAction);
-
-  // Merge hints are observations recorded by the webhook route. Dispatching one
-  // evaluates the pull request's intents once; the reconciler sweep stays the backup.
-  const mergeController = require('./mergeController');
-  registerHandler('remediation.merge.reevaluate', async (event) => {
-    const evaluated = await mergeController.evaluateForPullRequest(event.aggregate_id);
-    return { status: 'executed', evaluated: evaluated.length };
-  });
-  // A completed application is the moment its merge intent becomes evaluable.
+  // An observed apply is completed once the fresh analysis of the pushed head finished.
+  // That is the moment its verification check and residual report can be published.
   registerHandler('remediation.action.completed', async (event) => {
-    await mergeController.publishVerificationCheck(event.aggregate_id);
-    // The residual report is posted once the fresh analysis finished; a failure here is
-    // retried by the reconciler and never blocks the merge evaluation.
+    await require('./remediationVerificationCheck').publishVerificationCheck(event.aggregate_id);
+    // A failure here is retried by the reconciler and never fails the event.
     try { await require('./remediationResidualReport').publishResidualComment(event.aggregate_id); } catch (error) {
       logger.error('Residual report publication failed from the outbox', { action_id: event.aggregate_id, error: error.message });
     }
-    await mergeController.evaluateForAction(event.aggregate_id);
     return { status: 'executed' };
   });
 }

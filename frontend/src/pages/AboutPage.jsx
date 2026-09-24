@@ -23,7 +23,7 @@ const roadmapSurface = [
   {
     title: 'One-click apply',
     status: 'live',
-    description: 'Fixes arrive as GitHub suggestions. Applying and merging stay human actions.',
+    description: "GitHub's Commit suggestion button, under your identity.",
   },
 ]
 

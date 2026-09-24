@@ -38,8 +38,8 @@ const timeline = [
     summary: 'Mitig8it only needs review-related repository and pull request data to generate GitHub-native output and preserve run history.',
     bullets: [
       'Review evidence persists so findings, reports, and audit trails stay explainable.',
-      'Stored data is limited to what the product needs to present findings and run history.',
-      'Developers remain in control of merges, fixes, and any future remediation flows.',
+      'Data kept: uninstalling the App deletes all stored data for that installation within 24 hours.',
+      'It cannot push to your repository: the App does not hold write access to code.',
     ],
     accent: 'amber',
   },
@@ -106,8 +106,8 @@ const trustSurface = [
   },
   {
     title: 'One-click fix flows',
-    status: 'upcoming',
-    description: 'Future fix actions will stay approval-driven rather than silently changing code on behalf of the user.',
+    status: 'live',
+    description: "Fixes arrive as GitHub suggestions. GitHub's Commit suggestion button applies them under your identity; the App holds no write access to code.",
   },
 ]
 

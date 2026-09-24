@@ -8,22 +8,6 @@ const remediationDb = require('../db/remediation');
 
 const router = express.Router();
 
-// Events that only hint that a merge decision may need re-evaluation. They record an
-// append-only observation; a merge controller consumes it later. Nothing here decides.
-const MERGE_HINT_EVENTS = new Set(['check_run', 'check_suite', 'status', 'pull_request_review']);
-
-function mergeHintReference(event, payload) {
-  const repositoryGithubId = payload.repository?.id || null;
-  if (!repositoryGithubId) return null;
-  if (event === 'pull_request_review') {
-    return { repositoryGithubId, prNumber: payload.pull_request?.number ?? null, headSha: payload.pull_request?.head?.sha || null };
-  }
-  if (event === 'status') return { repositoryGithubId, headSha: payload.sha || null };
-  const container = event === 'check_run' ? payload.check_run : payload.check_suite;
-  const linked = Array.isArray(container?.pull_requests) ? container.pull_requests[0] : null;
-  return { repositoryGithubId, prNumber: linked?.number ?? null, headSha: container?.head_sha || null };
-}
-
 function getBodyBuffer(req) {
   if (Buffer.isBuffer(req.body)) return req.body;
   return Buffer.from(JSON.stringify(req.body || {}));
@@ -265,19 +249,22 @@ router.post('/github', async (req, res) => {
 
       // A branch push moves the head of every open pull request from that branch.
       if (event === 'push' && payload.repository?.id && typeof payload.ref === 'string' && payload.ref.startsWith('refs/heads/') && payload.after) {
+        const branch = payload.ref.slice('refs/heads/'.length);
         await remediationDb.supersedeForBranchPush({
           client, repositoryGithubId: payload.repository.id,
-          branch: payload.ref.slice('refs/heads/'.length), newHeadSha: payload.after, reason: 'head_changed',
+          branch, newHeadSha: payload.after, reason: 'head_changed',
         });
-      }
-
-      if (MERGE_HINT_EVENTS.has(event)) {
-        const reference = mergeHintReference(event, payload);
-        if (reference) {
-          await remediationDb.recordMergeReevaluationHint(
-            { client, ...reference },
-            `${event}${payload.action ? `.${payload.action}` : ''}`
-          );
+        // A commit co-authored by the app is a published suggestion that a developer
+        // applied with GitHub's "Commit suggestion" button. Recording it is what gives
+        // the residual report and the verification check something to hang off, now
+        // that the app never commits anything itself.
+        for (const commit of Array.isArray(payload.commits) ? payload.commits : []) {
+          if (!commit?.id || !remediationDb.commitAppliesPublishedFix(commit.message)) continue;
+          await remediationDb.recordObservedApply({
+            client, repositoryGithubId: payload.repository.id, branch,
+            commitSha: commit.id, commitMessage: commit.message,
+            actorLogin: commit.author?.username || payload.pusher?.name || payload.sender?.login || null,
+          });
         }
       }
 

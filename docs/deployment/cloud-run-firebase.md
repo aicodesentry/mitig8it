@@ -134,7 +134,7 @@ Remediation service deploys in single-instance development mode with `--max-inst
 
 There is no separate worker Deployment and no separate broker in this mode; the durable worker runs as an asyncio task in the same process and the broker is in-process over the local subprocess driver. No `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so tracing is inert. The execution store is a per-instance SQLite file under `/tmp` and does not survive a revision or an instance replacement. Every result carries `development_unverified`, which the API presents only when `REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION=true`.
 
-The remediation feature flags (`REMEDIATION_ENABLED`, `REMEDIATION_GENERATE_ENABLED`, `REMEDIATION_PUBLISH_ENABLED`, `REMEDIATION_APPLY_ENABLED`, `REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION`, `REMEDIATION_SERVICE_URL`, `REMEDIATION_SERVICE_AUDIENCE`) are set on the API service out of band, not by any workflow. The full list is in [the remediation runbook](../runbooks/remediation.md).
+The remediation feature flags (`REMEDIATION_ENABLED`, `REMEDIATION_GENERATE_ENABLED`, `REMEDIATION_PUBLISH_ENABLED`, `REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION`, `REMEDIATION_SERVICE_URL`, `REMEDIATION_SERVICE_AUDIENCE`) are set on the API service out of band, not by any workflow. The full list is in [the remediation runbook](../runbooks/remediation.md).
 
 ## Database Migrations
 
