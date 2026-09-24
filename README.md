@@ -60,7 +60,7 @@ The repair service classifies a finding into one of five families from its CWE a
 
 The two Python-only families are limited by the Node harness, which records no environment reads and stubs no `eval`.
 
-For every supported finding the service first writes both halves of the repair itself, before any model call. `src/sites.py` derives the enclosing Express route or Python function or Flask view over the exact snapshot, `src/proofs.py` emits one harness regression test from that site, and `src/templates.py` attempts a deterministic hunk for the family. Template hunks are verified exactly like a model proposal and are charged zero input and output tokens. Only findings the template pass did not prove reach the model, which receives the same service-written proof.
+For every supported finding the service first writes both halves of the repair itself, before any model call. `src/sites.py` derives the enclosing Express route or Python function or Flask view over the exact snapshot, falling back to the enclosing function or method and then to module scope, where the sink runs at import and a proof drives it by setting what the module reads before loading it; `src/proofs.py` emits one harness regression test from that site, and `src/templates.py` attempts a deterministic hunk for the family. TypeScript is loaded by Node's own type stripper, so a `.ts` module needs no toolchain in the sandbox. Template hunks are verified exactly like a model proposal and are charged zero input and output tokens. Only findings the template pass did not prove reach the model, which receives the same service-written proof.
 
 ### When the service abstains
 
@@ -224,7 +224,7 @@ Development-grade today:
 - All repair verification. `development_unverified` is the only level produced so far, on the local subprocess driver with no isolation.
 - The single-instance deployment: one instance, one concurrent request, per-instance SQLite state on ephemeral storage.
 - The merge controller. It exists behind `REMEDIATION_MERGE_ENABLED`, is off by default, is documented as experimental, and is not part of the product path.
-- The evaluation corpus: 11 authored fixtures against the release manifest's requirement of 120 externally reviewed cases.
+- The evaluation corpus: 55 authored fixtures (43 supported repairs, 8 negatives, 4 adversarial) against the release manifest's requirement of 120 externally reviewed cases, with no external review signatures.
 - Observability. Traces, metrics, and alert rules are written and redacted, but no collector endpoint, scrape target, or alert rule is wired to a backend in any deploy workflow.
 - Retention, deletion, and restore procedures, which are documented but have never been exercised.
 
