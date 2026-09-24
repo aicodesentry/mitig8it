@@ -85,6 +85,67 @@ Each entry states what the issue is, where it is, and why it was left. None of t
 
 **Why deferred.** Every input is bounded by policy: `max_files` is 5, `max_changed_lines` is 200, and a job carries a handful of findings, so the largest of these runs over single-digit collections. `cluster_findings` is the one that scales with something a user controls, the number of findings in a pull request, and it is the one to fix first if analysis latency becomes a complaint. PR 421 moved the combine loop onto a worker thread so it stops starving the lease heartbeat; the quadratic work itself was left in place deliberately, because the heartbeat was the defect and the cost was not.
 
+## Detection gaps the vulnerable corpus measured
+
+The September 2026 vulnerable-corpus run (`docs/validation/vulnerable-corpus-2026-09.md`)
+put 171 labelled vulnerabilities in 23 repositories through both tiers. These are the gaps
+it found and did not close, with the reason each was left.
+
+**Cross-site scripting: 1 of 32 labelled vulnerabilities found.** Two separate causes, and
+neither is a pattern that can be narrowed or widened.
+
+*Template files are not analysed at all.* `TIER2_SUPPORTED_EXTENSIONS` in
+`scripts/replay/prodfilters.py` and its production counterpart
+`shouldFetchFullFileContent` list no template language, so `.html`, `.ejs`, `.pug`, `.dust`
+and `.jinja2` files are never fetched or scanned. Eleven of the missed XSS labels are in
+those files, including every reflected and stored XSS in NodeGoat and dvna. Adding a
+template language is a scanner decision with its own precision question, not a rule edit.
+
+*HTML built by string interpolation has no rule.* The remaining misses are
+`` return `<img src="${src}" alt="${alt}">` `` in TypeScript and `'<br/>%s' % comic.text` in
+Python, which is what CVE-2026-61824, CVE-2026-68921 and GHSA-75mw-h36v-2jv7 all are. No
+rule in either tier looks for it. This is a new rule, not a narrowing.
+
+**Command injection through one variable.** `cwe-78.js-exec-interpolated` requires the
+template literal to be inside the `exec` call. Four labelled vulnerabilities
+(`sebhildebrandt/systeminformation` CVE-2026-50289 and all three `electerm/electerm`
+CVE-2026-49255 sites) build the command on one line and run it on the next. Matching
+`exec($VAR)` for any variable is how a rule reaches a precision of 0.02, so this needs one
+hop of data flow, which the AST pattern engine does not provide.
+
+**A tier 1 rule reports one finding per file.** `pattern_findings` in
+`services/analysis-service/src/main.py` emits at most one finding per rule per file, at the
+first match. `enrocrypt/hashing.py` offers eight digests including MD5; `crypto.weak.hash`
+reports the first one and the CVE is at the eighth. Nine of the 18 labels that were found in
+the file but not on the line are this. It keeps a file with fifty weak hashes from producing
+fifty comments, which is why it is there, and it caps recall on any file with more than one
+instance of the same defect.
+
+**Repair templates need an Express route.** 52 of the 103 template refusals on this corpus
+are `enclosing_route_not_found`: the JavaScript templates for the SQL, command and path
+families rewrite inside a route handler because that is where they know a 400 can be
+returned. A library, a CLI and an Electron main process have none, and most real code is one
+of those.
+
+**Three rules the corpus could not decide.** `xss.unsafe_html_render` (16 findings, 2
+adjudicated, 0.50), `auth.bypass.missing_check` (8 findings, 1 adjudicated, 0.00) and
+`opengrep.cwe-798.hardcoded-secret-js` (5 findings, 2 adjudicated, 0.50) are all below the
+three adjudicated findings the posting policy requires before it will act. A larger hand-read
+sample than 40 of 1687 is the cheapest way to close this.
+
+**`opengrep.cwe-489.py-debug-constant-true` is one reading short of re-enabling.** It has two
+measured hits, both `DEBUG = True` in a real Django settings module, which is exactly the
+shape its quarantine reason doubted. The quarantine reason is now known to be wrong and the
+rule still cannot come back, because the policy asks for three.
+
+**Pre-existing tier 2 rules pass their check id as `internal_type`.** The rules in
+`javascript.yml` and `python.yml` declare no `internal_type`, so `opengrep_runner` sets it to
+the check id and `taxonomy.canonicalize_internal_type` returns it unchanged: a finding
+arrives as `internal_type: "cwe-502.pickle-loads"`, a category of one that nothing else can
+group with. `tests/test_tier2_rule_metadata.py` forbids this for the coverage rules and the
+older files are out of its scope. `scripts/replay/score.py` works around it by deriving the
+class from the CWE.
+
 ## Provenance
 
 There is no issue tracker entry or written review document behind this list. It was reconstructed from the code, from PR 421, and from the residual-risk notes in `HARDENING-TRACKER.md` and `HARDENING-HANDOFF.md`. Every location above was confirmed in the source at the time of writing.
