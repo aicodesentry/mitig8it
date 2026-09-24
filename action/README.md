@@ -138,11 +138,22 @@ The parent of the action path is the repository root in both cases that matter: 
 resolves inside your checkout, and a remote `uses: aicodesentry/mitig8it/action@ref` makes GitHub
 check out the whole repository and point the action path at the subdirectory in it.
 
+Both the action and CI build through the same script, `action/build-image.sh`, so the image the
+dogfood builds and the image CI proves buildable cannot drift apart.
+
 The first run on a runner pays for the full build. After that a layer cache keyed on the
 Dockerfile, the pinned Python requirements and the github-service lockfile is restored by
 `actions/cache`, so an ordinary source change reuses the base image, the apt packages, the Node
 tarball and the Python wheels and only replays the `COPY` layers. The build step prints
-`Image built in Ns.` on every run, which is where to read the real number for your runner.
+`Image built in Ns.` and the image size on every run, which is where to read the real numbers
+for your runner.
+
+Caching needs a builder that can export one. buildx's default `docker` driver cannot, and asking
+it to does not degrade quietly: it fails the build with `Cache export is not supported for the
+docker driver`. The script therefore creates a `docker-container` builder on demand and reuses
+it, keeping `--load` so the image still lands in the local daemon. Nothing is pushed anywhere.
+Every step of that is optional: no buildx, a builder that cannot be created, or no cache
+directory each fall back to a plain `docker build` with a line saying why it will be slower.
 
 ## Working on the action
 
@@ -157,6 +168,15 @@ cd .. && docker build --file action/Dockerfile --tag mitig8it-action:dev .
 
 The suite runs without the services' own dependencies installed; the tests that need the scanner
 or the repair engine skip in that case and run inside the image in CI.
+
+Tests marked `repo_definition` read the workflow files and the services' own requirement lists,
+which the image has no reason to carry. They assert things about the repository rather than
+about the image, so the in-image run excludes them:
+
+```sh
+pytest tests -q -m "not repo_definition"   # what CI runs inside the image
+pytest tests -q                            # what CI runs on the host
+```
 
 Two families of test exist to stop specific mistakes recurring:
 

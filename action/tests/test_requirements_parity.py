@@ -11,6 +11,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
+# These compare declaration files against each other. The image installs what they describe but
+# does not carry the services' own requirement lists, so the comparison belongs to the
+# repository, not to the image. The in-image run excludes them; the host job runs them.
+pytestmark = pytest.mark.repo_definition
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTION_REQUIREMENTS = REPO_ROOT / "action/requirements.txt"
 ANALYSIS_REQUIREMENTS = REPO_ROOT / "services/analysis-service/src/requirements.txt"

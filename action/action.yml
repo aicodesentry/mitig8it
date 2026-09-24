@@ -86,7 +86,6 @@ runs:
       run: |
         set -euo pipefail
         root="$(cd "${{ github.action_path }}/.." && pwd)"
-        echo "root=${root}" >> "$GITHUB_OUTPUT"
         # The image changes when its recipe or its pinned dependencies change. Hashing those
         # inputs rather than the whole tree keeps the cache warm across ordinary source edits,
         # which is most pull requests.
@@ -109,39 +108,15 @@ runs:
         restore-keys: |
           mitig8it-action-${{ runner.os }}-${{ runner.arch }}-
 
+    # The same script CI runs, so the image the dogfood builds and the image CI proves buildable
+    # cannot drift apart.
     - name: Build the image
       shell: bash
-      env:
-        ROOT: ${{ steps.context.outputs.root }}
-        CACHE_DIR: ${{ steps.context.outputs.cache-dir }}
-        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
-        start="$(date +%s)"
-        if docker buildx version >/dev/null 2>&1; then
-          # A local cache directory rather than a registry, so the image is never pushed
-          # anywhere and the cache stays inside the runner.
-          docker buildx build \
-            --file "${ACTION_PATH}/Dockerfile" \
-            --tag mitig8it-action:local \
-            --load \
-            --cache-from "type=local,src=${CACHE_DIR}" \
-            --cache-to "type=local,dest=${CACHE_DIR}.new,mode=max" \
-            "${ROOT}"
-          # buildx appends rather than replaces, so the cache would grow without bound.
-          rm -rf "${CACHE_DIR}"
-          mv "${CACHE_DIR}.new" "${CACHE_DIR}"
-        else
-          echo "buildx is unavailable; building without a layer cache."
-          docker build \
-            --file "${ACTION_PATH}/Dockerfile" \
-            --tag mitig8it-action:local \
-            "${ROOT}"
-        fi
-        elapsed="$(( $(date +%s) - start ))"
-        echo "Image built in ${elapsed}s."
-        docker image inspect mitig8it-action:local \
-          --format 'image size: {{ .Size }} bytes' || true
+        "${{ github.action_path }}/build-image.sh" \
+          mitig8it-action:local \
+          "${{ steps.context.outputs.cache-dir }}"
 
     - name: Review the pull request
       id: review

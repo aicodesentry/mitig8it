@@ -47,24 +47,30 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
-      # Built exactly as the composite action builds it: the repository root is the context,
-      # because the image bundles the services the action drives. Building it any other way
-      # here would test a path no user takes.
+      - name: Restore the image layer cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/mitig8it-buildx-cache
+          key: >-
+            mitig8it-action-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('action/Dockerfile',
+            'action/requirements.txt', 'services/github-service/package-lock.json') }}
+          restore-keys: |
+            mitig8it-action-${{ runner.os }}-${{ runner.arch }}-
+
+      # The same script the composite action runs, so CI proves the path a user actually takes
+      # rather than an easier one. It reports the build time and the image size.
       - name: Build the image
-        run: |
-          start="$(date +%s)"
-          docker build --file action/Dockerfile --tag mitig8it-action:ci .
-          echo "Image built in $(( $(date +%s) - start ))s."
+        run: ./action/build-image.sh mitig8it-action:ci "${RUNNER_TEMP}/mitig8it-buildx-cache"
 
-      - name: Report the image size
-        run: |
-          docker image inspect mitig8it-action:ci --format '{{ .Size }}' \
-            | awk '{ printf "image size: %.0f MB\n", $1 / 1048576 }'
-
+      # The repo_definition tests read the workflow files and the services' own requirement
+      # lists, which the image has no reason to carry. They assert things about the repository,
+      # and the host job above runs them.
       - name: Run the unit tests inside the image
         run: |
           docker run --rm --entrypoint sh mitig8it-action:ci -c \
-            'pip install --no-cache-dir --quiet pytest && cd /opt/mitig8it/action && pytest tests -q'
+            'pip install --no-cache-dir --quiet pytest \
+             && cd /opt/mitig8it/action \
+             && pytest tests -q -m "not repo_definition"'
 
       - name: The scanner and both runtimes are present
         run: |
