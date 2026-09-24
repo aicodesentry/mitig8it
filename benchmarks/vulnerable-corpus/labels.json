@@ -1,0 +1,3011 @@
+{
+  "version": 1,
+  "description": "Ground truth for the vulnerable corpus: line ranges known to contain a vulnerability, and the classes a correct scanner could report for each. See README.md for how the snapshots are fetched and how each label was produced.",
+  "repositories": [
+    {
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "kind": "intentionally vulnerable application",
+      "languages": [
+        "JavaScript"
+      ],
+      "licence": "Apache-2.0",
+      "licence_checked": "LICENSE in the snapshot is the Apache License 2.0 verbatim",
+      "ground_truth": "the OWASP Top 10 tutorial in artifacts/ and README.md, resolved to the sink line in app/"
+    },
+    {
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "kind": "intentionally vulnerable application",
+      "languages": [
+        "TypeScript",
+        "JavaScript"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE in the snapshot is the MIT text, Bjoern Kimminich and the OWASP Juice Shop contributors",
+      "ground_truth": "data/static/challenges.yml, plus the app's own `vuln-code-snippet vuln-line` markers in the source"
+    },
+    {
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "kind": "intentionally vulnerable application",
+      "languages": [
+        "JavaScript"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE in the snapshot is the MIT text, Appsecco Ltd",
+      "ground_truth": "the README table mapping each OWASP category to its route, and docs/ per-vulnerability notes"
+    },
+    {
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "kind": "intentionally vulnerable application",
+      "languages": [
+        "JavaScript"
+      ],
+      "licence": "Apache-2.0",
+      "licence_checked": "LICENSE in the snapshot is the Apache License 2.0 verbatim",
+      "ground_truth": "the README list of vulnerabilities and where each one lives"
+    },
+    {
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "kind": "intentionally vulnerable application",
+      "languages": [
+        "Python"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE.md in the snapshot is the MIT text",
+      "ground_truth": "the per-lab documentation under introduction/, resolved to the view that implements each lab"
+    },
+    {
+      "repo": "anxolerd/dvpwa",
+      "ref": "a1d8f89fac2e57093189853c6527c2b01fc1d9c1",
+      "kind": "intentionally vulnerable application",
+      "languages": [
+        "Python"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE in the snapshot is the MIT text, Oleksandr Kovalchuk",
+      "ground_truth": "the README vulnerability list, resolved to the handler in sqli/"
+    },
+    {
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "kind": "intentionally vulnerable application",
+      "languages": [
+        "Python"
+      ],
+      "licence": "Unlicense",
+      "licence_checked": "LICENSE in the snapshot is the Unlicense (public domain dedication)",
+      "ground_truth": "the CASES table in dsvw.py, which names every vulnerability and its request"
+    },
+    {
+      "repo": "sebhildebrandt/systeminformation",
+      "ref": "da1cbf5eb09907cf5c3431f4c9ea441b7a227617",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "JavaScript"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE: The MIT License (MIT)",
+      "ground_truth": "GHSA-5xpp-75jx-m839 (CVE-2026-50289): the lines the fixing commit bbfddde48672 deleted"
+    },
+    {
+      "repo": "electerm/electerm",
+      "ref": "fde153d677a170c5816368f6586647f3af4ef284",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "JavaScript"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE: The MIT License (MIT)",
+      "ground_truth": "GHSA-v5ff-xmfp-p245 (CVE-2026-49255): the lines the fixing commit aa778818843b deleted"
+    },
+    {
+      "repo": "zamotany/logkitty",
+      "ref": "e1e229687472d8c9266d17f2969ff7431a78db86",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "TypeScript"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE: MIT License",
+      "ground_truth": "GHSA-v8v8-6859-qxm4 (CVE-2020-8149): the lines the fixing commit ef2f673e25c6 deleted"
+    },
+    {
+      "repo": "commenthol/serialize-to-js",
+      "ref": "a1e8140ed1a07013f644b5b76025f4eaab7fb9d8",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "JavaScript"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE: The MIT License (MIT)",
+      "ground_truth": "GHSA-mm62-wxc8-cf7m (CVE-2017-5954): the lines the fixing commit 1cd433960e5b deleted"
+    },
+    {
+      "repo": "commenthol/safer-eval",
+      "ref": "74e5bb845c3cf1cab4f0a5a8dea08685c20970c7",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "JavaScript"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE: The MIT License (MIT)",
+      "ground_truth": "GHSA-hgch-jjmr-gp7w (CVE-2019-10760): the lines the fixing commit 1c29f6a6e304 deleted"
+    },
+    {
+      "repo": "kepano/defuddle",
+      "ref": "19520add09282abdfadbc6d23eb6bf8393af2bf8",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "TypeScript"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE: MIT License",
+      "ground_truth": "GHSA-jg4p-g6xj-4qmf (CVE-2026-61824): the lines the fixing commit baf2eaef61d3 deleted"
+    },
+    {
+      "repo": "dicebear/dicebear",
+      "ref": "efe62f2700e9e45b60e40b0e92a22e93d07e237d",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "TypeScript"
+      ],
+      "licence": "MIT",
+      "licence_checked": "packages/@dicebear/core/package.json and packages/@dicebear/initials/package.json each declare \"license\": \"MIT\"; the monorepo root carries no LICENSE file at this commit",
+      "ground_truth": "GHSA-gcr2-9v8m-gq45 (CVE-2026-68921): the lines the fixing commit 922946d738c4 deleted"
+    },
+    {
+      "repo": "webcomics/dosage",
+      "ref": "f2817cca7ff5511d9be56750b2d2165d4c3b2f14",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "Python"
+      ],
+      "licence": "MIT",
+      "licence_checked": "COPYING: Copyright (C) 2004-2008 Tristan Seligmann and Jonathan Jacobs",
+      "ground_truth": "GHSA-75mw-h36v-2jv7: the lines the fixing commit b91fd5cc3889 deleted"
+    },
+    {
+      "repo": "scitokens/scitokens",
+      "ref": "66b075c35da18f8364276553513a53c596b4b8e3",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "Python"
+      ],
+      "licence": "Apache-2.0",
+      "licence_checked": "LICENSE: Apache License",
+      "ground_truth": "GHSA-rh5m-2482-966c (CVE-2026-32714): the lines the fixing commit 3dba108853f2 deleted"
+    },
+    {
+      "repo": "Morgan-Phoenix/EnroCrypt",
+      "ref": "d02050267cecbe4f2877a07ca8a930129528ac05",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "Python"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE: MIT License",
+      "ground_truth": "GHSA-35m5-8cvj-8783 (CVE-2021-39182): the lines the fixing commit e652d56ac60e deleted"
+    },
+    {
+      "repo": "masci/banks",
+      "ref": "3ab65baca00fd3917a12ca1fcfaab03176782bc4",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "Python"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE.txt: MIT License",
+      "ground_truth": "GHSA-x8wg-4xgc-vr54 (CVE-2026-71492): the lines the fixing commit a215f6d77996 deleted"
+    },
+    {
+      "repo": "Stranger6667/pyanyapi",
+      "ref": "aebee636ad26f387850a6c8ab820ce4aac3f9adb",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "Python"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE: The MIT License (MIT)",
+      "ground_truth": "GHSA-vg8g-jpm9-jh8r (CVE-2017-16616): the lines the fixing commit 810db626c18e deleted"
+    },
+    {
+      "repo": "illagrenan/django-make-app",
+      "ref": "e42d3bf31e7c66dc741a96de79daef0ba76f74a1",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "Python"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE: The MIT License (MIT)",
+      "ground_truth": "GHSA-9pv8-q5rx-c8gq (CVE-2017-16764): the lines the fixing commit acd814433d10 deleted"
+    },
+    {
+      "repo": "google/slo-generator",
+      "ref": "50ce1bf81d7c6a97da52cf167b1d3ee8100ddd90",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "Python"
+      ],
+      "licence": "Apache-2.0",
+      "licence_checked": "LICENSE: Apache License",
+      "ground_truth": "GHSA-j28r-j54m-gpc4 (CVE-2021-22557): the lines the fixing commit 36318beab1b8 deleted"
+    },
+    {
+      "repo": "tadashi-aikawa/owlmixin",
+      "ref": "409c30c0d2d357f3fbc3abd7a80d5c111a738aa2",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "Python"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE: MIT License",
+      "ground_truth": "GHSA-ccmq-qvcp-5mrm (CVE-2017-16618): the lines the fixing commit 5d0575303f6d deleted"
+    },
+    {
+      "repo": "benbusby/whoogle-search",
+      "ref": "8830615abcf17e0cd3991fbf963debfb161784cd",
+      "kind": "CVE fix commit, replayed against the parent tree",
+      "languages": [
+        "Python"
+      ],
+      "licence": "MIT",
+      "licence_checked": "LICENSE: MIT License",
+      "ground_truth": "GHSA-3q6g-qmpx-rqw4 (CVE-2024-22205): the lines the fixing commit 3a2e0b262e4a deleted"
+    }
+  ],
+  "labels": [
+    {
+      "id": "cve-enrocrypt-md5",
+      "repo": "Morgan-Phoenix/EnroCrypt",
+      "ref": "d02050267cecbe4f2877a07ca8a930129528ac05",
+      "path": "enrocrypt/hashing.py",
+      "line_range": [
+        70,
+        70
+      ],
+      "cwe": "CWE-327",
+      "rule_classes_expected": [
+        "weak_cipher_algorithm",
+        "weak_password_hash"
+      ],
+      "source": "GHSA-35m5-8cvj-8783 / CVE-2021-39182: the fix removed the MD5 hashing helper the library offered for user data",
+      "evidence": "sha = hashlib.md5(bytes(data.encode()))"
+    },
+    {
+      "id": "nodegoat-a1-nosql-allocations-threshold",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "app/data/allocations-dao.js",
+      "line_range": [
+        77,
+        79
+      ],
+      "cwe": "CWE-943",
+      "rule_classes_expected": [
+        "nosql_injection"
+      ],
+      "source": "NodeGoat tutorial A1 Injection (artifacts/in-code comment 'Fix for A1 - 2 NoSQL Injection'): unsanitized 'threshold' interpolated into a MongoDB $where clause",
+      "evidence": "$where: `this.userId == ${parsedUserId} && this.stocks > '${threshold}'`"
+    },
+    {
+      "id": "nodegoat-a2-plaintext-password-storage",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "app/data/user-dao.js",
+      "line_range": [
+        20,
+        25
+      ],
+      "cwe": "CWE-256",
+      "rule_classes_expected": [
+        "weak_password_hash"
+      ],
+      "source": "NodeGoat tutorial app/views/tutorial/a2.html: 'password gets stored in database in plain text ... data/user-dao.js addUser()'",
+      "evidence": "password //received from request param"
+    },
+    {
+      "id": "nodegoat-a1-ssjs-eval-contributions",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "app/routes/contributions.js",
+      "line_range": [
+        32,
+        34
+      ],
+      "cwe": "CWE-95",
+      "rule_classes_expected": [
+        "dynamic_code_execution"
+      ],
+      "source": "NodeGoat tutorial app/views/tutorial/a1.html, 'A1 - 1 Server Side JS Injection': handleContributionsUpdate() insecurely uses eval() on request body",
+      "evidence": "const preTax = eval(req.body.preTax);"
+    },
+    {
+      "id": "nodegoat-a5-error-stack-render",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "app/routes/error.js",
+      "line_range": [
+        10,
+        12
+      ],
+      "cwe": "CWE-209",
+      "rule_classes_expected": [
+        "error_detail_exposure"
+      ],
+      "source": "NodeGoat A5 Security Misconfiguration: the error middleware passes the raw Error object to the response template",
+      "evidence": "res.render(\"error-template\", { error: err });"
+    },
+    {
+      "id": "nodegoat-a10-open-redirect-learn",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "app/routes/index.js",
+      "line_range": [
+        71,
+        72
+      ],
+      "cwe": "CWE-601",
+      "rule_classes_expected": [
+        "open_redirect"
+      ],
+      "source": "NodeGoat tutorial app/views/tutorial/a10.html, 'A10 Unvalidated Redirects and Forwards': /learn?url= redirect in routes/index.js",
+      "evidence": "return res.redirect(req.query.url);"
+    },
+    {
+      "id": "nodegoat-ssrf-research",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "app/routes/research.js",
+      "line_range": [
+        15,
+        16
+      ],
+      "cwe": "CWE-918",
+      "rule_classes_expected": [
+        "server_side_request_forgery"
+      ],
+      "source": "NodeGoat tutorial app/views/tutorial/ssrf.html: /research concatenates req.query.url and fetches it with needle.get",
+      "evidence": "const url = req.query.url + req.query.symbol;"
+    },
+    {
+      "id": "nodegoat-a5-error-template-output",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "app/views/error-template.html",
+      "line_range": [
+        11,
+        11
+      ],
+      "cwe": "CWE-209",
+      "rule_classes_expected": [
+        "error_detail_exposure",
+        "cross_site_scripting"
+      ],
+      "source": "NodeGoat A5 Security Misconfiguration: internal error object written unescaped into the error page",
+      "evidence": "<br>{{error}}"
+    },
+    {
+      "id": "nodegoat-a3-xss-stored-name-layout-menu",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "app/views/layout.html",
+      "line_range": [
+        75,
+        75
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "NodeGoat tutorial a3.html: 'first and last name field values ... sent back to the browser without proper escaping to be shown at the top right menu' (swig autoescape is off)",
+      "evidence": "<i class=\"fa fa-user\"></i> {{firstName}} {{lastName}} <b class=\"caret\"></b>"
+    },
+    {
+      "id": "nodegoat-a3-xss-memos-marked",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "app/views/memos.html",
+      "line_range": [
+        31,
+        31
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "NodeGoat A3/A9: user-submitted memo rendered through marked into a swig template with autoescape disabled",
+      "evidence": "{{ marked(doc.memo) }}"
+    },
+    {
+      "id": "nodegoat-a3-xss-profile-website-url-context",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "app/views/profile.html",
+      "line_range": [
+        78,
+        78
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "NodeGoat A3 XSS; in-view @FIXME 'use a properly escaped variable that matches the URL context' plus routes/profile.js note about HTML-encoding used in a URL context",
+      "evidence": "<a href=\"{{firstNameSafeString}}\">Google search this profile by name</a>"
+    },
+    {
+      "id": "nodegoat-a2-hardcoded-admin-password-seed",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "artifacts/db-reset.js",
+      "line_range": [
+        18,
+        18
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "NodeGoat A2 Broken Authentication: DB seed script stores the admin credential in cleartext in source (bcrypt variant is commented out on the next line)",
+      "evidence": "\"password\": \"Admin_123\","
+    },
+    {
+      "id": "nodegoat-a2-hardcoded-cookie-secret",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "config/env/all.js",
+      "line_range": [
+        8,
+        8
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "NodeGoat A2/A5: session signing secret hardcoded in the default app configuration and consumed by server.js session()",
+      "evidence": "cookieSecret: \"session_cookie_secret_key_here\","
+    },
+    {
+      "id": "nodegoat-a6-hardcoded-crypto-key",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "config/env/all.js",
+      "line_range": [
+        9,
+        9
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "NodeGoat tutorial a6 (Sensitive Data Exposure) shows config.cryptoKey used for encrypting SSN/DOB; the key is hardcoded in config/env/all.js",
+      "evidence": "cryptoKey: \"a_secure_key_for_crypto_here\","
+    },
+    {
+      "id": "nodegoat-hardcoded-zap-api-key",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "config/env/development.js",
+      "line_range": [
+        6,
+        6
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "NodeGoat development configuration: ZAP API key committed in source",
+      "evidence": "zapApiKey: \"v9dn0balpqas1pcc281tn5ood1\","
+    },
+    {
+      "id": "nodegoat-a3-session-cookie-flags",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "server.js",
+      "line_range": [
+        78,
+        82
+      ],
+      "cwe": "CWE-1004",
+      "rule_classes_expected": [
+        "insecure_cookie_flags"
+      ],
+      "source": "NodeGoat tutorial a2/a3/a5 and the in-code 'Fix for A3 - XSS' comment: express session configured without httpOnly/secure cookie flags",
+      "evidence": "app.use(session({ ... secret: cookieSecret,"
+    },
+    {
+      "id": "nodegoat-a3-swig-autoescape-disabled",
+      "repo": "OWASP/NodeGoat",
+      "ref": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "path": "server.js",
+      "line_range": [
+        135,
+        137
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "NodeGoat tutorial app/views/tutorial/a3.html: 'In server.js, enable the HTML Encoding using template engine's auto escape flag'",
+      "evidence": "autoescape: false"
+    },
+    {
+      "id": "cve-pyanyapi-yaml-load",
+      "repo": "Stranger6667/pyanyapi",
+      "ref": "aebee636ad26f387850a6c8ab820ce4aac3f9adb",
+      "path": "pyanyapi/interfaces.py",
+      "line_range": [
+        277,
+        277
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "unsafe_deserialization"
+      ],
+      "source": "GHSA-vg8g-jpm9-jh8r / CVE-2017-16616: the fix changed yaml.load on response content to yaml.safe_load",
+      "evidence": "return yaml.load(self.content)"
+    },
+    {
+      "id": "pygoat-md5-csrf-lab-login",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/mitre.py",
+      "line_range": [
+        161,
+        161
+      ],
+      "cwe": "CWE-916",
+      "rule_classes_expected": [
+        "weak_password_hash"
+      ],
+      "source": "introduction/mitre.py MITRE CSRF lab login hashes passwords with md5",
+      "evidence": "        password = md5(password.encode()).hexdigest()"
+    },
+    {
+      "id": "pygoat-hardcoded-jwt-secret-mitre",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/mitre.py",
+      "line_range": [
+        169,
+        169
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "introduction/mitre.py MITRE CSRF lab signs the auth cookie with the literal key 'csrf_vulneribility' (also decoded at lines 182 and 194)",
+      "evidence": "            cookie = jwt.encode(payload, 'csrf_vulneribility', algorithm='HS256')"
+    },
+    {
+      "id": "pygoat-csrf-exempt-transfer",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/mitre.py",
+      "line_range": [
+        176,
+        178
+      ],
+      "cwe": "CWE-352",
+      "rule_classes_expected": [
+        "csrf_protection_disabled"
+      ],
+      "source": "Solutions/solution.md MITRE CSRF lab (money transfer view marked @csrf_exempt)",
+      "evidence": "@authentication_decorator\n@csrf_exempt\ndef csrf_transfer_monei(request):"
+    },
+    {
+      "id": "pygoat-eval-mitre-lab25",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/mitre.py",
+      "line_range": [
+        218,
+        218
+      ],
+      "cwe": "CWE-95",
+      "rule_classes_expected": [
+        "dynamic_code_execution"
+      ],
+      "source": "introduction/mitre.py MITRE Top 25 lab (CWE-94) eval of the POST expression",
+      "evidence": "        result = eval(expression)"
+    },
+    {
+      "id": "pygoat-command-injection-mitre-lab17",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/mitre.py",
+      "line_range": [
+        232,
+        233
+      ],
+      "cwe": "CWE-78",
+      "rule_classes_expected": [
+        "command_injection"
+      ],
+      "source": "introduction/mitre.py MITRE Top 17 lab: nmap command built from POST ip at line 241 and run with shell=True here",
+      "evidence": "def command_out(command):\n    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)"
+    },
+    {
+      "id": "pygoat-xss-lab-safe-filter",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/templates/Lab/XSS/xss_lab.html",
+      "line_range": [
+        27,
+        27
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "Solutions/solution.md A7: Cross Site Scripting lab (query rendered with the |safe filter)",
+      "evidence": "    <h3> The company '{{query|safe}}' You searched for is not Part of FAANG</h3>"
+    },
+    {
+      "id": "pygoat-xss-lab2-safe-filter",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/templates/Lab/XSS/xss_lab_2.html",
+      "line_range": [
+        20,
+        20
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "Solutions/solution.md A7: Cross Site Scripting lab 2 (username rendered with the |safe filter)",
+      "evidence": "<p>Hello, {{ username|safe }}</p>"
+    },
+    {
+      "id": "pygoat-customhash-crypto-failure-lab2",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/utility.py",
+      "line_range": [
+        58,
+        59
+      ],
+      "cwe": "CWE-916",
+      "rule_classes_expected": [
+        "weak_password_hash"
+      ],
+      "source": "Solutions/solution.md 2021-A2: Cryptographic Failure lab2 (customHash = reversed unsalted sha256)",
+      "evidence": "def customHash(password):\n    return hashlib.sha256(password.encode()).hexdigest()[::-1]"
+    },
+    {
+      "id": "pygoat-sqli-sql-lab",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        158,
+        158
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "Solutions/solution.md A1: Injection -> Sql Injection lab (sql_lab); executed via login.objects.raw at line 162",
+      "evidence": "                sql_query = \"SELECT * FROM introduction_login WHERE user='\"+name+\"' AND password='\"+password+\"'\""
+    },
+    {
+      "id": "pygoat-pickle-insecure-deserialization",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        214,
+        214
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "unsafe_deserialization"
+      ],
+      "source": "Solutions/solution.md A8: Insecure Deserialization lab (insec_des_lab pickle cookie)",
+      "evidence": "            admin = pickle.loads(token)"
+    },
+    {
+      "id": "pygoat-xxe-external-entities",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        258,
+        260
+      ],
+      "cwe": "CWE-611",
+      "rule_classes_expected": [
+        "xml_external_entity"
+      ],
+      "source": "Solutions/solution.md A4: XML External Entities lab (xxe_parse)",
+      "evidence": "    parser = make_parser()\n    parser.setFeature(feature_external_ges, True)\n    doc = parseString(request.body.decode('utf-8'), parser=parser)"
+    },
+    {
+      "id": "pygoat-insecure-cookie-flags-auth-lab",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        291,
+        291
+      ],
+      "cwe": "CWE-614",
+      "rule_classes_expected": [
+        "insecure_cookie_flags"
+      ],
+      "source": "introduction/views.py auth lab sets the identity cookie with secure=False and samesite=None (also lines 305 and 319)",
+      "evidence": "                response.set_cookie('userid', obj.userid, max_age=31449600, samesite=None, secure=False)"
+    },
+    {
+      "id": "pygoat-command-injection-cmd-lab",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        430,
+        432
+      ],
+      "cwe": "CWE-78",
+      "rule_classes_expected": [
+        "command_injection"
+      ],
+      "source": "Solutions/solution.md A1: Command Injection Lab 1 (cmd_lab, dig/nslookup with shell=True)",
+      "evidence": "                process = subprocess.Popen(\n                    command,\n                    shell=True,"
+    },
+    {
+      "id": "pygoat-eval-cmd-lab2",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        460,
+        460
+      ],
+      "cwe": "CWE-95",
+      "rule_classes_expected": [
+        "dynamic_code_execution"
+      ],
+      "source": "Solutions/solution.md A1: Command Injection Lab 2 (cmd_lab2 eval of POST value)",
+      "evidence": "                output = eval(val)"
+    },
+    {
+      "id": "pygoat-insecure-random-otp",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        496,
+        496
+      ],
+      "cwe": "CWE-330",
+      "rule_classes_expected": [
+        "insecure_randomness"
+      ],
+      "source": "Solutions/solution.md A2: Broken Authentication OTP lab (randint OTP)",
+      "evidence": "        otpN=randint(100,999)"
+    },
+    {
+      "id": "pygoat-yaml-load-a9",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        560,
+        560
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "unsafe_deserialization"
+      ],
+      "source": "Solutions/solution.md A9: Using Components with Known Vulnerability (pyyaml v5.1 yaml.load)",
+      "evidence": "                    data = yaml.load(file,yaml.Loader)"
+    },
+    {
+      "id": "pygoat-imagemath-eval-a9-lab2",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        588,
+        588
+      ],
+      "cwe": "CWE-95",
+      "rule_classes_expected": [
+        "dynamic_code_execution"
+      ],
+      "source": "Solutions/solution.md 2021-A6: Using Components with Known Vulnerabilities lab2 (Pillow ImageMath.eval on POST value)",
+      "evidence": "            output = ImageMath.eval(function_str,img = img, b=b, r=r, g=g)"
+    },
+    {
+      "id": "pygoat-sqli-2021-injection-lab",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        864,
+        864
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "Solutions/solution.md 2021-A3 Injection SQL lab (injection_sql_lab); executed via sql_lab_table.objects.raw at line 878",
+      "evidence": "            sql_query = \"SELECT * FROM introduction_sql_lab_table WHERE id='\"+name+\"'AND password='\"+password+\"'\""
+    },
+    {
+      "id": "pygoat-path-traversal-ssrf-lab",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        925,
+        927
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "Solutions/solution.md 2021-A10 SSRF lab (read arbitrary files such as the .env via the blog parameter)",
+      "evidence": "                dirname = os.path.dirname(__file__)\n                filename = os.path.join(dirname, file)\n                file = open(filename,\"r\")"
+    },
+    {
+      "id": "pygoat-ssrf-lab2",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        963,
+        963
+      ],
+      "cwe": "CWE-918",
+      "rule_classes_expected": [
+        "server_side_request_forgery"
+      ],
+      "source": "Solutions/solution.md 2021:A10 SSRF lab2 (requests.get on a user supplied URL)",
+      "evidence": "            response = requests.get(url)"
+    },
+    {
+      "id": "pygoat-ssti-blog-render",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        1006,
+        1006
+      ],
+      "cwe": "CWE-1336",
+      "rule_classes_expected": [
+        "server_side_template_injection",
+        "path_traversal"
+      ],
+      "source": "Solutions/solution.md 2021-A3: Server side Template Injection lab (user blog written to a template at lines 990-996 and rendered here)",
+      "evidence": "            return render(request,f\"Lab_2021/A3_Injection/Blogs/{blog_id}.html\")"
+    },
+    {
+      "id": "pygoat-md5-crypto-failure-lab",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "introduction/views.py",
+      "line_range": [
+        1026,
+        1026
+      ],
+      "cwe": "CWE-916",
+      "rule_classes_expected": [
+        "weak_password_hash"
+      ],
+      "source": "Solutions/solution.md 2021-A2: Cryptographic Failure lab (md5 password hash)",
+      "evidence": "                password = md5(password.encode()).hexdigest()"
+    },
+    {
+      "id": "pygoat-django-secret-key",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "pygoat/settings.py",
+      "line_range": [
+        25,
+        25
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "pygoat/settings.py hardcoded Django SECRET_KEY",
+      "evidence": "SECRET_KEY = 'lr66%-a!$km5ed@n5ug!tya5bv!0(yqwa1tn!q%0%3m2nh%oml'"
+    },
+    {
+      "id": "pygoat-debug-true",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "pygoat/settings.py",
+      "line_range": [
+        30,
+        30
+      ],
+      "cwe": "CWE-489",
+      "rule_classes_expected": [
+        "debug_mode_enabled"
+      ],
+      "source": "Solutions/solution.md A3: Sensitive Data Exposure (debug error page leaks routes/flag)",
+      "evidence": "DEBUG = True"
+    },
+    {
+      "id": "pygoat-jwt-cookie-key",
+      "repo": "adeyosemanputra/pygoat",
+      "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+      "path": "pygoat/settings.py",
+      "line_range": [
+        171,
+        171
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "pygoat/settings.py SECRET_COOKIE_KEY used to sign the sec_mis_lab3 JWT",
+      "evidence": "SECRET_COOKIE_KEY = \"PYGOAT\""
+    },
+    {
+      "id": "dvpwa-hardcoded-db-password",
+      "repo": "anxolerd/dvpwa",
+      "ref": "a1d8f89fac2e57093189853c6527c2b01fc1d9c1",
+      "path": "config/dev.yaml",
+      "line_range": [
+        1,
+        3
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "config/dev.yaml ships the postgres password in the repo",
+      "evidence": "db:\n  user: postgres\n  password: postgres"
+    },
+    {
+      "id": "dvpwa-md5-password-fixtures",
+      "repo": "anxolerd/dvpwa",
+      "ref": "a1d8f89fac2e57093189853c6527c2b01fc1d9c1",
+      "path": "migrations/001-fixtures.sql",
+      "line_range": [
+        10,
+        13
+      ],
+      "cwe": "CWE-916",
+      "rule_classes_expected": [
+        "weak_password_hash"
+      ],
+      "source": "DVPWA README.rst: Bad choice for storing passwords (database initialization script)",
+      "evidence": "  ('Super', NULL, 'Admin', 'superadmin', md5('superadmin'), TRUE),\n  ('John', 'William', 'Doe', 'j.doe', md5('password'), FALSE),\n  ('Stephen', NULL, 'King', 's.king', md5('password'), FALSE),\n  ('Peter', NULL, 'Parker', 'p.parker', md5('spidey'), FALSE);"
+    },
+    {
+      "id": "dvpwa-debug-enabled",
+      "repo": "anxolerd/dvpwa",
+      "ref": "a1d8f89fac2e57093189853c6527c2b01fc1d9c1",
+      "path": "sqli/app.py",
+      "line_range": [
+        23,
+        24
+      ],
+      "cwe": "CWE-489",
+      "rule_classes_expected": [
+        "debug_mode_enabled"
+      ],
+      "source": "sqli/app.py aiohttp Application constructed with debug=True",
+      "evidence": "    app = Application(\n        debug=True,"
+    },
+    {
+      "id": "dvpwa-jinja2-autoescape-off",
+      "repo": "anxolerd/dvpwa",
+      "ref": "a1d8f89fac2e57093189853c6527c2b01fc1d9c1",
+      "path": "sqli/app.py",
+      "line_range": [
+        33,
+        35
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "DVPWA README.rst: Stored XSS (mitigation: set autoescape=True in sqli/app.py)",
+      "evidence": "    setup_jinja(app, loader=PackageLoader('sqli', 'templates'),\n                context_processors=[csrf_processor, auth_user_processor],\n                autoescape=False)"
+    },
+    {
+      "id": "dvpwa-sqli-student-create",
+      "repo": "anxolerd/dvpwa",
+      "ref": "a1d8f89fac2e57093189853c6527c2b01fc1d9c1",
+      "path": "sqli/dao/student.py",
+      "line_range": [
+        42,
+        43
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "DVPWA README.rst: SQL Injection (add student named Robert'); DROP TABLE students CASCADE; --)",
+      "evidence": "        q = (\"INSERT INTO students (name) \"\n             \"VALUES ('%(name)s')\" % {'name': name})"
+    },
+    {
+      "id": "dvpwa-md5-password-check",
+      "repo": "anxolerd/dvpwa",
+      "ref": "a1d8f89fac2e57093189853c6527c2b01fc1d9c1",
+      "path": "sqli/dao/user.py",
+      "line_range": [
+        40,
+        41
+      ],
+      "cwe": "CWE-916",
+      "rule_classes_expected": [
+        "weak_password_hash"
+      ],
+      "source": "DVPWA README.rst: Bad choice for storing passwords (md5 in check_password)",
+      "evidence": "    def check_password(self, password: str):\n        return self.pwd_hash == md5(password.encode('utf-8')).hexdigest()"
+    },
+    {
+      "id": "dvpwa-session-cookie-httponly-off",
+      "repo": "anxolerd/dvpwa",
+      "ref": "a1d8f89fac2e57093189853c6527c2b01fc1d9c1",
+      "path": "sqli/middlewares.py",
+      "line_range": [
+        20,
+        20
+      ],
+      "cwe": "CWE-1004",
+      "rule_classes_expected": [
+        "insecure_cookie_flags"
+      ],
+      "source": "DVPWA README.rst: Stored XSS steals document.cookie; session storage sets httponly=False",
+      "evidence": "    storage = RedisStorage(app['redis'], httponly=False)"
+    },
+    {
+      "id": "dvpwa-error-detail-exposure",
+      "repo": "anxolerd/dvpwa",
+      "ref": "a1d8f89fac2e57093189853c6527c2b01fc1d9c1",
+      "path": "sqli/templates/errors/50x.jinja2",
+      "line_range": [
+        6,
+        6
+      ],
+      "cwe": "CWE-209",
+      "rule_classes_expected": [
+        "error_detail_exposure"
+      ],
+      "source": "sqli/templates/errors/50x.jinja2 renders the raw exception __dict__ to the client",
+      "evidence": "    <pre>{{ error.__dict__ }}</pre>"
+    },
+    {
+      "id": "dvna-a1-sql-injection-usersearch",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "core/appHandler.js",
+      "line_range": [
+        10,
+        11
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "dvna docs/solution/a1-injection.md 'SQL Injection', vulnerable snippet in core/appHandler.js userSearch",
+      "evidence": "var query = \"SELECT name,id FROM Users WHERE login='\" + req.body.login + \"'\";"
+    },
+    {
+      "id": "dvna-a1-command-injection-ping",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "core/appHandler.js",
+      "line_range": [
+        39,
+        39
+      ],
+      "cwe": "CWE-78",
+      "rule_classes_expected": [
+        "command_injection"
+      ],
+      "source": "dvna docs/solution/a1-injection.md 'Command Injection', /app/ping handler in core/appHandler.js",
+      "evidence": "exec('ping -c 2 ' + req.body.address, function (err, stdout, stderr) {"
+    },
+    {
+      "id": "dvna-a6-error-detail-exposure-modifyproduct",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "core/appHandler.js",
+      "line_range": [
+        128,
+        129
+      ],
+      "cwe": "CWE-209",
+      "rule_classes_expected": [
+        "error_detail_exposure"
+      ],
+      "source": "dvna docs/solution/a6-securty-misconfig.md 'Application sends Stack Trace': internal error objects are flashed back into the rendered page",
+      "evidence": "req.flash('danger',err)"
+    },
+    {
+      "id": "dvna-unvalidated-redirect",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "core/appHandler.js",
+      "line_range": [
+        187,
+        188
+      ],
+      "cwe": "CWE-601",
+      "rule_classes_expected": [
+        "open_redirect"
+      ],
+      "source": "dvna docs/solution/ax-unvalidated-redirects-and-forwards.md: /app/redirect?url= in core/appHandler.js",
+      "evidence": "res.redirect(req.query.url)"
+    },
+    {
+      "id": "dvna-a6-code-execution-calc-eval",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "core/appHandler.js",
+      "line_range": [
+        196,
+        197
+      ],
+      "cwe": "CWE-95",
+      "rule_classes_expected": [
+        "dynamic_code_execution"
+      ],
+      "source": "dvna docs/solution/a6-securty-misconfig.md and docs/resources/rce.png: /app/calc passes req.body.eqn to mathjs.eval",
+      "evidence": "output: mathjs.eval(req.body.eqn)"
+    },
+    {
+      "id": "dvna-a8-insecure-deserialization",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "core/appHandler.js",
+      "line_range": [
+        218,
+        218
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "unsafe_deserialization"
+      ],
+      "source": "dvna docs/solution/a8-insecure-deserialization.md: bulkProductsLegacy passes uploaded file contents to node-serialize unserialize()",
+      "evidence": "var products = serialize.unserialize(req.files.products.data.toString('utf8'))"
+    },
+    {
+      "id": "dvna-a4-xxe-bulkproducts",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "core/appHandler.js",
+      "line_range": [
+        235,
+        235
+      ],
+      "cwe": "CWE-611",
+      "rule_classes_expected": [
+        "xml_external_entity"
+      ],
+      "source": "dvna docs/solution/a4-xxe.md: bulkProducts parses uploaded XML with libxmljs and noent:true (entity substitution enabled)",
+      "evidence": "var products = libxmljs.parseXmlString(req.files.products.data.toString('utf8'), {noent:true,noblanks:true})"
+    },
+    {
+      "id": "dvna-a2-md5-reset-token-get",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "core/authHandler.js",
+      "line_range": [
+        49,
+        49
+      ],
+      "cwe": "CWE-328",
+      "rule_classes_expected": [
+        "weak_password_hash",
+        "insecure_randomness"
+      ],
+      "source": "dvna docs/solution/a2-broken-auth.md 'Insecure Reset Password': the reset token is md5(login), a weak and fully predictable hash",
+      "evidence": "if (req.query.token == md5(req.query.login)) {"
+    },
+    {
+      "id": "dvna-a2-md5-reset-token-post",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "core/authHandler.js",
+      "line_range": [
+        78,
+        78
+      ],
+      "cwe": "CWE-328",
+      "rule_classes_expected": [
+        "weak_password_hash",
+        "insecure_randomness"
+      ],
+      "source": "dvna docs/solution/a2-broken-auth.md 'Insecure Reset Password': resetPwSubmit validates the same md5(login) token",
+      "evidence": "if (req.body.token == md5(req.body.login)) {"
+    },
+    {
+      "id": "dvna-a2-hardcoded-session-secret",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "server.js",
+      "line_range": [
+        24,
+        24
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "dvna docs/solution/a2-broken-auth.md 'Insecure Session Secret': server.js hardcodes secret: 'keyboard cat'",
+      "evidence": "secret: 'keyboard cat',"
+    },
+    {
+      "id": "dvna-insecure-session-cookie-flags",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "server.js",
+      "line_range": [
+        27,
+        27
+      ],
+      "cwe": "CWE-614",
+      "rule_classes_expected": [
+        "insecure_cookie_flags"
+      ],
+      "source": "dvna docs/solution/a7-xss.md recommendation: 'Use cookies securely httpOnly, secure are enabled' - the session cookie sets secure:false and no httpOnly",
+      "evidence": "cookie: { secure: false }"
+    },
+    {
+      "id": "dvna-a7-dom-xss-adminusers-innerhtml",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "views/app/adminusers.ejs",
+      "line_range": [
+        40,
+        42
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "dvna docs/solution/a7-xss.md 'DOM XSS in user listing': user records from /app/admin/usersapi assigned via innerHTML",
+      "evidence": "c_name.innerHTML = users[i].name;"
+    },
+    {
+      "id": "dvna-a7-reflected-xss-search-term",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "views/app/products.ejs",
+      "line_range": [
+        20,
+        20
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "dvna docs/solution/a7-xss.md 'Reflected XSS in Search Query': views/app/products.ejs renders output.searchTerm with <%- %>",
+      "evidence": "Listing products with <strong>search query: </strong> <%- output.searchTerm %>"
+    },
+    {
+      "id": "dvna-a7-stored-xss-product-listing",
+      "repo": "appsecco/dvna",
+      "ref": "9ba473add536f66ac9007966acb2a775dd31277a",
+      "path": "views/app/products.ejs",
+      "line_range": [
+        49,
+        53
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "dvna docs/solution/a7-xss.md 'Stored XSS in Product Listing': product fields rendered with the unescaped <%- %> EJS tag",
+      "evidence": "<td><%- output.products[i].name %></td>"
+    },
+    {
+      "id": "cve-whoogle-config-path-join",
+      "repo": "benbusby/whoogle-search",
+      "ref": "8830615abcf17e0cd3991fbf963debfb161784cd",
+      "path": "app/routes.py",
+      "line_range": [
+        427,
+        429
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "GHSA-3q6g-qmpx-rqw4 / CVE-2024-22205: the same hardening commit added containment to this config path built from a request argument",
+      "evidence": "config_pkl = os.path.join(\n                app.config['CONFIG_PATH'],\n                request.args.get('name'))"
+    },
+    {
+      "id": "cve-safer-eval-runinnewcontext",
+      "repo": "commenthol/safer-eval",
+      "ref": "74e5bb845c3cf1cab4f0a5a8dea08685c20970c7",
+      "path": "src/index.js",
+      "line_range": [
+        44,
+        44
+      ],
+      "cwe": "CWE-94",
+      "rule_classes_expected": [
+        "dynamic_code_execution"
+      ],
+      "source": "GHSA-hgch-jjmr-gp7w / CVE-2019-10760: the fix rewrote the interpolated IIFE source string handed to the vm context",
+      "evidence": "'(function () {\"use strict\"; return ' + code + '})()',"
+    },
+    {
+      "id": "cve-serialize-to-js-newfunction",
+      "repo": "commenthol/serialize-to-js",
+      "ref": "a1e8140ed1a07013f644b5b76025f4eaab7fb9d8",
+      "path": "lib/deserialize.js",
+      "line_range": [
+        28,
+        28
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "dynamic_code_execution",
+        "unsafe_deserialization"
+      ],
+      "source": "GHSA-mm62-wxc8-cf7m / CVE-2017-5954: the fix deleted the `new Function('return ' + str)()` that deserialisation ran on untrusted input",
+      "evidence": "return (new Function('return ' + str))()"
+    },
+    {
+      "id": "cve-dicebear-xss-rotate",
+      "repo": "dicebear/dicebear",
+      "ref": "efe62f2700e9e45b60e40b0e92a22e93d07e237d",
+      "path": "packages/@dicebear/core/src/utils/svg.ts",
+      "line_range": [
+        79,
+        79
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "GHSA-gcr2-9v8m-gq45 / CVE-2026-68921: the fix escaped the unvalidated `rotate` option interpolated into an SVG transform attribute",
+      "evidence": "return `<g transform=\"rotate(${rotate}, ${width / 2 + x}, ${"
+    },
+    {
+      "id": "cve-dicebear-xss-initials",
+      "repo": "dicebear/dicebear",
+      "ref": "efe62f2700e9e45b60e40b0e92a22e93d07e237d",
+      "path": "packages/@dicebear/initials/src/index.ts",
+      "line_range": [
+        38,
+        38
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "GHSA-gcr2-9v8m-gq45 / CVE-2026-68921: the fix escaped fontSize and fontWeight interpolated into SVG text attributes",
+      "evidence": "`<text x=\"50%\" y=\"50%\" font-family=\"${escapeXml(fontFamily)}\" font-size=\"${fontSize}\" font-weight=\"${fontWeight}\" fill=\"${escapeXml(textColor)}\" text-anchor=\"middle\" dy=\"${(fontSize * .356).toFixed(3)}\">${escapeXml(initials)}</text>`,"
+    },
+    {
+      "id": "cve-electerm-cmdi-rmrf",
+      "repo": "electerm/electerm",
+      "ref": "fde153d677a170c5816368f6586647f3af4ef284",
+      "path": "src/app/lib/fs.js",
+      "line_range": [
+        115,
+        118
+      ],
+      "cwe": "CWE-78",
+      "rule_classes_expected": [
+        "command_injection"
+      ],
+      "source": "GHSA-v5ff-xmfp-p245 / CVE-2026-49255: the fix deleted the interpolated `rm -rf`/`Remove-Item` command string and its run()",
+      "evidence": "const cmd = isWin\n    ? `Remove-Item '${localFolderPath}' -Force -Recurse -ErrorAction SilentlyContinue`\n    : `rm -rf \"${localFolderPath}\"`\n  return isWin ? runWinCmd(cmd) : run(cmd)"
+    },
+    {
+      "id": "cve-electerm-cmdi-mv",
+      "repo": "electerm/electerm",
+      "ref": "fde153d677a170c5816368f6586647f3af4ef284",
+      "path": "src/app/lib/fs.js",
+      "line_range": [
+        126,
+        129
+      ],
+      "cwe": "CWE-78",
+      "rule_classes_expected": [
+        "command_injection"
+      ],
+      "source": "GHSA-v5ff-xmfp-p245 / CVE-2026-49255: the fix deleted the interpolated `mv`/`Move-Item` command string and its run()",
+      "evidence": "const cmd = isWin\n    ? `Move-Item '${(from)}' '${to}'`\n    : `mv '${from}' '${to}'`\n  return isWin ? runWinCmd(cmd) : run(cmd)"
+    },
+    {
+      "id": "cve-electerm-cmdi-cp",
+      "repo": "electerm/electerm",
+      "ref": "fde153d677a170c5816368f6586647f3af4ef284",
+      "path": "src/app/lib/fs.js",
+      "line_range": [
+        137,
+        140
+      ],
+      "cwe": "CWE-78",
+      "rule_classes_expected": [
+        "command_injection"
+      ],
+      "source": "GHSA-v5ff-xmfp-p245 / CVE-2026-49255: the fix deleted the interpolated `cp -r`/`Copy-Item` command string and its run()",
+      "evidence": "const cmd = isWin\n    ? `Copy-Item '${from}' -Destination '${to}' -Recurse`\n    : `cp -r \"${from}\" \"${to}\"`\n  return isWin ? runWinCmd(cmd) : run(cmd)"
+    },
+    {
+      "id": "cve-slo-generator-yaml-load",
+      "repo": "google/slo-generator",
+      "ref": "50ce1bf81d7c6a97da52cf167b1d3ee8100ddd90",
+      "path": "slo_generator/migrations/migrator.py",
+      "line_range": [
+        229,
+        229
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "unsafe_deserialization"
+      ],
+      "source": "GHSA-j28r-j54m-gpc4 / CVE-2021-22557: the fix changed yaml.load(Loader=yaml.Loader) on a config file to a safe loader",
+      "evidence": "content = yaml.load(conf, Loader=yaml.Loader)"
+    },
+    {
+      "id": "cve-slo-generator-yaml-load-2",
+      "repo": "google/slo-generator",
+      "ref": "50ce1bf81d7c6a97da52cf167b1d3ee8100ddd90",
+      "path": "slo_generator/migrations/migrator.py",
+      "line_range": [
+        264,
+        264
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "unsafe_deserialization"
+      ],
+      "source": "GHSA-j28r-j54m-gpc4 / CVE-2021-22557: the fix changed the second yaml.load(Loader=yaml.Loader) to a safe loader",
+      "evidence": "error_budget_policy = yaml.load(conf, Loader=yaml.Loader)"
+    },
+    {
+      "id": "cve-django-make-app-yaml-load",
+      "repo": "illagrenan/django-make-app",
+      "ref": "e42d3bf31e7c66dc741a96de79daef0ba76f74a1",
+      "path": "django_make_app/io_utils.py",
+      "line_range": [
+        15,
+        15
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "unsafe_deserialization"
+      ],
+      "source": "GHSA-9pv8-q5rx-c8gq / CVE-2017-16764: the fix changed yaml.load on the schema file to yaml.safe_load",
+      "evidence": "return yaml.load(the_file)"
+    },
+    {
+      "id": "juice-xss-about-feedback-gallery",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "frontend/src/app/about/about.component.ts",
+      "line_range": [
+        120,
+        122
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "challenges.yml: Client-side XSS Protection (XSS)",
+      "evidence": "feedbacks[i].comment = this.sanitizer.bypassSecurityTrustHtml(\n            feedbacks[i].comment\n          )"
+    },
+    {
+      "id": "juice-xss-admin-user-email",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "frontend/src/app/administration/administration.component.ts",
+      "line_range": [
+        74,
+        74
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "challenges.yml: Client-side XSS Protection (XSS)",
+      "evidence": "user.email = this.sanitizer.bypassSecurityTrustHtml(`<span class=\"${this.doesUserHaveAnActiveSession(user) ? 'confirmation' : 'error'}\">${user.email}</span>`)"
+    },
+    {
+      "id": "juice-xss-admin-feedback-comment",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "frontend/src/app/administration/administration.component.ts",
+      "line_range": [
+        92,
+        92
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "challenges.yml: Server-side XSS Protection (XSS)",
+      "evidence": "feedback.comment = this.sanitizer.bypassSecurityTrustHtml(feedback.comment)"
+    },
+    {
+      "id": "juice-xss-last-login-ip",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "frontend/src/app/last-login-ip/last-login-ip.component.ts",
+      "line_range": [
+        40,
+        40
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "challenges.yml: HTTP-Header XSS (XSS)",
+      "evidence": "this.lastLoginIp = this.sanitizer.bypassSecurityTrustHtml(`<small>${payload.data.lastLoginIp}</small>`)"
+    },
+    {
+      "id": "juice-xss-restful-product-description",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "frontend/src/app/search-result/search-result.component.ts",
+      "line_range": [
+        111,
+        111
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "challenges.yml: API-only XSS (XSS)",
+      "evidence": "tableData[i].description = this.sanitizer.bypassSecurityTrustHtml(tableData[i].description) // vuln-code-snippet vuln-line restfulXssChallenge"
+    },
+    {
+      "id": "juice-xss-dom-search-value",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "frontend/src/app/search-result/search-result.component.ts",
+      "line_range": [
+        144,
+        144
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "challenges.yml: DOM XSS / Bonus Payload (XSS)",
+      "evidence": "this.searchValue = this.sanitizer.bypassSecurityTrustHtml(queryParam) // vuln-code-snippet vuln-line localXssChallenge xssBonusChallenge"
+    },
+    {
+      "id": "juice-xss-track-result-orderno",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "frontend/src/app/track-result/track-result.component.ts",
+      "line_range": [
+        49,
+        49
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "challenges.yml: Reflected XSS (XSS)",
+      "evidence": "this.results.orderNo = this.sanitizer.bypassSecurityTrustHtml(`<code>${results.data[0].orderId}</code>`)"
+    },
+    {
+      "id": "juice-hardcoded-rsa-private-key",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "lib/insecurity.ts",
+      "line_range": [
+        21,
+        21
+      ],
+      "cwe": "CWE-321",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "challenges.yml: Forged Signed JWT (Vulnerable Components)",
+      "evidence": "const privateKey = '-----BEGIN RSA PRIVATE KEY-----\\r\\nMIICXAIBAAKBgQDNwqLEe9wgTXCbC7+RPdDbBbeqjdbs4kOPOIGzqLpXvJXlxxW8iMz0EaM4BKUqYsIa+ndv3NAn2RxCd5ubVdJJcX43zO6Ko0TFEZx/65gY3BE0O6syCEmUP4qbSd6exou/F+WTISzbQ5FBVPVmhnYhG/kpwt/cIxK5iUn5hm+4tQIDAQAB... -----END RSA PRIVATE KEY-----'"
+    },
+    {
+      "id": "juice-md5-hash-helper",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "lib/insecurity.ts",
+      "line_range": [
+        41,
+        41
+      ],
+      "cwe": "CWE-916",
+      "rule_classes_expected": [
+        "weak_password_hash"
+      ],
+      "source": "challenges.yml: Password Strength (Broken Authentication)",
+      "evidence": "export const hash = (data: string) => crypto.createHash('md5').update(data).digest('hex')"
+    },
+    {
+      "id": "juice-hardcoded-hmac-key",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "lib/insecurity.ts",
+      "line_range": [
+        42,
+        42
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "code inspection: HMAC key literal used for security-answer hashing (resetPassword.ts:41)",
+      "evidence": "export const hmac = (data: string) => crypto.createHmac('sha256', 'pa4qacea4VK9t9nGv7yZtwmj').update(data).digest('hex')"
+    },
+    {
+      "id": "juice-jwt-no-algorithm-pinning",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "lib/insecurity.ts",
+      "line_range": [
+        52,
+        52
+      ],
+      "cwe": "CWE-347",
+      "rule_classes_expected": [
+        "jwt_algorithm_none"
+      ],
+      "source": "challenges.yml: Unsigned JWT / Forged Signed JWT (Vulnerable Components)",
+      "evidence": "export const isAuthorized = () => expressJwt(({ secret: publicKey }) as any)"
+    },
+    {
+      "id": "juice-insecure-random-jwt-secret",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "lib/insecurity.ts",
+      "line_range": [
+        53,
+        53
+      ],
+      "cwe": "CWE-330",
+      "rule_classes_expected": [
+        "insecure_randomness"
+      ],
+      "source": "code inspection: Math.random() used to derive a JWT verification secret",
+      "evidence": "export const denyAll = () => expressJwt({ secret: '' + Math.random() } as any)"
+    },
+    {
+      "id": "juice-jwt-decode-without-verify",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "lib/insecurity.ts",
+      "line_range": [
+        56,
+        56
+      ],
+      "cwe": "CWE-347",
+      "rule_classes_expected": [
+        "jwt_signature_not_verified"
+      ],
+      "source": "code inspection: decode() returns the JWT payload with no signature check and is used for authorization (routes/chat.ts:45)",
+      "evidence": "export const decode = (token: string) => { return jws.decode(token)?.payload }"
+    },
+    {
+      "id": "juice-openredirect-allowlist-includes",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "lib/insecurity.ts",
+      "line_range": [
+        136,
+        136
+      ],
+      "cwe": "CWE-601",
+      "rule_classes_expected": [
+        "open_redirect"
+      ],
+      "source": "challenges.yml: Allowlist Bypass / Outdated Allowlist (Unvalidated Redirects)",
+      "evidence": "allowed = allowed || url.includes(allowedUrl) // vuln-code-snippet vuln-line redirectChallenge"
+    },
+    {
+      "id": "juice-insecure-cookie-token-insecurity",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "lib/insecurity.ts",
+      "line_range": [
+        192,
+        192
+      ],
+      "cwe": "CWE-1004",
+      "rule_classes_expected": [
+        "insecure_cookie_flags"
+      ],
+      "source": "code inspection: session token cookie set without httpOnly/secure/sameSite flags",
+      "evidence": "res.cookie('token', token)"
+    },
+    {
+      "id": "juice-sha1-ctf-flag-hmac",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "lib/utils.ts",
+      "line_range": [
+        80,
+        80
+      ],
+      "cwe": "CWE-327",
+      "rule_classes_expected": [
+        "weak_password_hash"
+      ],
+      "source": "code inspection: SHA-1 used to derive CTF flags from the ctf.key secret",
+      "evidence": "return crypto.createHmac('sha1', getCtfKey()).update(text).digest('hex')"
+    },
+    {
+      "id": "juice-xxe-parser-options",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "lib/xml.ts",
+      "line_range": [
+        35,
+        35
+      ],
+      "cwe": "CWE-611",
+      "rule_classes_expected": [
+        "xml_external_entity"
+      ],
+      "source": "challenges.yml: XXE Data Access / XXE DoS (XXE)",
+      "evidence": "const option = libxml2.ParseOption.XML_PARSE_NOENT | libxml2.ParseOption.XML_PARSE_DTDLOAD | libxml2.ParseOption.XML_PARSE_NOBLANKS | libxml2.ParseOption.XML_PARSE_NOCDATA"
+    },
+    {
+      "id": "juice-md5-user-password-setter",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "models/user.ts",
+      "line_range": [
+        73,
+        73
+      ],
+      "cwe": "CWE-916",
+      "rule_classes_expected": [
+        "weak_password_hash"
+      ],
+      "source": "challenges.yml: Password Strength (Broken Authentication)",
+      "evidence": "this.setDataValue('password', security.hash(clearTextPassword)) // vuln-code-snippet vuln-line weakPasswordChallenge"
+    },
+    {
+      "id": "juice-rce-b2border-vm",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/b2bOrder.ts",
+      "line_range": [
+        22,
+        23
+      ],
+      "cwe": "CWE-94",
+      "rule_classes_expected": [
+        "dynamic_code_execution"
+      ],
+      "source": "challenges.yml: Blocked RCE DoS / Successful RCE DoS (Insecure Deserialization)",
+      "evidence": "vm.createContext(sandbox)\n        vm.runInContext('safeEval(orderLinesData)', sandbox, { timeout: 2000 })"
+    },
+    {
+      "id": "juice-weak-random-captcha",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/captcha.ts",
+      "line_range": [
+        14,
+        16
+      ],
+      "cwe": "CWE-338",
+      "rule_classes_expected": [
+        "insecure_randomness"
+      ],
+      "source": "challenges.yml: CAPTCHA Bypass (Broken Anti Automation)",
+      "evidence": "const firstTerm = Math.floor((Math.random() * 10) + 1)\n    const secondTerm = Math.floor((Math.random() * 10) + 1)\n    const thirdTerm = Math.floor((Math.random() * 10) + 1)"
+    },
+    {
+      "id": "juice-eval-captcha-expression",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/captcha.ts",
+      "line_range": [
+        22,
+        22
+      ],
+      "cwe": "CWE-95",
+      "rule_classes_expected": [
+        "dynamic_code_execution"
+      ],
+      "source": "challenges.yml: CAPTCHA Bypass (Broken Anti Automation)",
+      "evidence": "const answer = eval(expression).toString() // eslint-disable-line no-eval"
+    },
+    {
+      "id": "juice-hardcoded-wallet-mnemonic",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/checkKeys.ts",
+      "line_range": [
+        10,
+        10
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "challenges.yml: NFT Takeover (Sensitive Data Exposure)",
+      "evidence": "const mnemonic = 'purpose betray marriage blame crunch monitor spin slide donate sport lift clutch'"
+    },
+    {
+      "id": "juice-lfr-dataerasure-layout",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/dataErasure.ts",
+      "line_range": [
+        104,
+        104
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "challenges.yml: Local File Read (Vulnerable Components)",
+      "evidence": "const filePath: string = path.resolve(req.body.layout).toLowerCase()"
+    },
+    {
+      "id": "juice-path-fileserver-sendfile",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/fileServer.ts",
+      "line_range": [
+        32,
+        32
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "challenges.yml: Poison Null Byte / Forgotten Sales Backup / Forgotten Developer Backup",
+      "evidence": "res.sendFile(path.resolve('ftp/', file))"
+    },
+    {
+      "id": "juice-zipslip-fileupload",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/fileUpload.ts",
+      "line_range": [
+        31,
+        34
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "challenges.yml: Arbitrary File Write (Vulnerable Components)",
+      "evidence": "const absolutePath = path.resolve('uploads/complaints/' + fileName)\n    challengeUtils.solveIf(challenges.fileWriteChallenge, () => { return absolutePath === path.resolve('ftp/legal.md') })\n    if (absolutePath.includes(path.resolve('.'))) {\n      await pipeline(entry.stream(), fs.createWriteStream('uploads/complaints/' + fileName))"
+    },
+    {
+      "id": "juice-yaml-deser-fileupload",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/fileUpload.ts",
+      "line_range": [
+        107,
+        109
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "unsafe_deserialization",
+        "dynamic_code_execution"
+      ],
+      "source": "challenges.yml: Memory Bomb (Insecure Deserialization)",
+      "evidence": "const sandbox = { yaml, data }\n        vm.createContext(sandbox)\n        const yamlString = vm.runInContext('JSON.stringify(yaml.load(data))', sandbox, { timeout: 2000 })"
+    },
+    {
+      "id": "juice-path-keyserver-sendfile",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/keyServer.ts",
+      "line_range": [
+        14,
+        14
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "code inspection: /encryptionkeys/:file handler wired in server.ts:297 (supports Forged Signed JWT key retrieval)",
+      "evidence": "res.sendFile(path.resolve('encryptionkeys/', file))"
+    },
+    {
+      "id": "juice-path-logfileserver-sendfile",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/logfileServer.ts",
+      "line_range": [
+        14,
+        14
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "challenges.yml: Access Log / Leaked Access Logs (Observability Failures)",
+      "evidence": "res.sendFile(path.resolve('logs/', file))"
+    },
+    {
+      "id": "juice-sqli-login",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/login.ts",
+      "line_range": [
+        34,
+        34
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "challenges.yml: Login Admin / Login Bender / Login Jim (Injection)",
+      "evidence": "models.sequelize.query(`SELECT * FROM Users WHERE email = '${req.body.email || ''}' AND password = '${security.hash(req.body.password || '')}' AND deletedAt IS NULL`, { model: UserModel, plain: true }) // vuln-code-snippet vuln-line loginAdminChallenge loginBenderChallenge loginJimChallenge"
+    },
+    {
+      "id": "juice-ssrf-profileimageurl-fetch",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/profileImageUrlUpload.ts",
+      "line_range": [
+        24,
+        24
+      ],
+      "cwe": "CWE-918",
+      "rule_classes_expected": [
+        "server_side_request_forgery"
+      ],
+      "source": "challenges.yml: SSRF (Broken Access Control)",
+      "evidence": "const response = await fetch(url)"
+    },
+    {
+      "id": "juice-path-quarantineserver-sendfile",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/quarantineServer.ts",
+      "line_range": [
+        14,
+        14
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "code inspection: /ftp/quarantine/:file handler wired in server.ts:290",
+      "evidence": "res.sendFile(path.resolve('ftp/quarantine/', file))"
+    },
+    {
+      "id": "juice-openredirect-res-redirect",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/redirect.ts",
+      "line_range": [
+        18,
+        18
+      ],
+      "cwe": "CWE-601",
+      "rule_classes_expected": [
+        "open_redirect"
+      ],
+      "source": "challenges.yml: Allowlist Bypass (Unvalidated Redirects)",
+      "evidence": "res.redirect(toUrl)"
+    },
+    {
+      "id": "juice-hardcoded-hashids-salt",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/restoreProgress.ts",
+      "line_range": [
+        18,
+        18
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "challenges.yml: Imaginary Challenge (Cryptographic Issues)",
+      "evidence": "const hashids = new Hashids('this is my salt', 60, hashidsAlphabet)"
+    },
+    {
+      "id": "juice-sqli-search",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/search.ts",
+      "line_range": [
+        23,
+        23
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "challenges.yml: User Credentials / Database Schema / Christmas Special (Injection)",
+      "evidence": "models.sequelize.query(`SELECT * FROM Products WHERE ((name LIKE '%${criteria}%' OR description LIKE '%${criteria}%') AND deletedAt IS NULL) ORDER BY name`) // vuln-code-snippet vuln-line unionSqlInjectionChallenge dbSchemaChallenge"
+    },
+    {
+      "id": "juice-nosqli-showreviews-where",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/showProductReviews.ts",
+      "line_range": [
+        36,
+        36
+      ],
+      "cwe": "CWE-943",
+      "rule_classes_expected": [
+        "nosql_injection"
+      ],
+      "source": "challenges.yml: NoSQL DoS (Injection)",
+      "evidence": "db.reviewsCollection.find({ $where: 'this.product == ' + id }).then((reviews: Review[]) => {"
+    },
+    {
+      "id": "juice-nosqli-trackorder-where",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/trackOrder.ts",
+      "line_range": [
+        18,
+        18
+      ],
+      "cwe": "CWE-943",
+      "rule_classes_expected": [
+        "nosql_injection"
+      ],
+      "source": "challenges.yml: NoSQL Exfiltration (Injection)",
+      "evidence": "db.ordersCollection.find({ $where: `this.orderId === '${id}'` }).then((order: any) => {"
+    },
+    {
+      "id": "juice-nosqli-updatereviews",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/updateProductReviews.ts",
+      "line_range": [
+        17,
+        20
+      ],
+      "cwe": "CWE-943",
+      "rule_classes_expected": [
+        "nosql_injection"
+      ],
+      "source": "challenges.yml: NoSQL Manipulation (Injection)",
+      "evidence": "db.reviewsCollection.update( // vuln-code-snippet neutral-line forgedReviewChallenge\n      { _id: req.body.id }, // vuln-code-snippet vuln-line noSqlReviewsChallenge forgedReviewChallenge\n      { $set: { message: req.body.message } },\n      { multi: true } // vuln-code-snippet vuln-line noSqlReviewsChallenge"
+    },
+    {
+      "id": "juice-insecure-cookie-token-profile",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/updateUserProfile.ts",
+      "line_range": [
+        42,
+        42
+      ],
+      "cwe": "CWE-1004",
+      "rule_classes_expected": [
+        "insecure_cookie_flags"
+      ],
+      "source": "challenges.yml: CSRF (Broken Access Control)",
+      "evidence": "res.cookie('token', updatedToken)"
+    },
+    {
+      "id": "juice-ssti-userprofile-eval",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/userProfile.ts",
+      "line_range": [
+        65,
+        65
+      ],
+      "cwe": "CWE-1336",
+      "rule_classes_expected": [
+        "server_side_template_injection",
+        "dynamic_code_execution"
+      ],
+      "source": "challenges.yml: SSTi (Injection)",
+      "evidence": "username = eval(code) // eslint-disable-line no-eval"
+    },
+    {
+      "id": "juice-csp-unsafe-eval-userprofile",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/userProfile.ts",
+      "line_range": [
+        91,
+        91
+      ],
+      "cwe": "CWE-693",
+      "rule_classes_expected": [
+        "security_header_disabled"
+      ],
+      "source": "challenges.yml: CSP Bypass (XSS)",
+      "evidence": "const CSP = `img-src 'self' ${user?.profileImage}; script-src 'self' 'unsafe-eval'`"
+    },
+    {
+      "id": "juice-xss-video-subtitles",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/videoHandler.ts",
+      "line_range": [
+        71,
+        71
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "challenges.yml: Video XSS (XSS)",
+      "evidence": "compiledTemplate = compiledTemplate.replace('<script id=\"subtitle\"></script>', '<script id=\"subtitle\" type=\"text/vtt\" data-label=\"English\" data-lang=\"en\">' + subs + '</script>')"
+    },
+    {
+      "id": "juice-path-vulncodesnippet-key",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "routes/vulnCodeSnippet.ts",
+      "line_range": [
+        89,
+        90
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "code inspection: req.body.key concatenated into an fs.stat/fs.readFile path with no validation",
+      "evidence": "if (await fs.stat('./data/static/codefixes/' + key + '.info.yml')) {\n    const codingChallengeInfos = yaml.load(await fs.readFile('./data/static/codefixes/' + key + '.info.yml', { encoding: 'utf8' }))"
+    },
+    {
+      "id": "juice-permissive-cors",
+      "repo": "juice-shop/juice-shop",
+      "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+      "path": "server.ts",
+      "line_range": [
+        182,
+        183
+      ],
+      "cwe": "CWE-942",
+      "rule_classes_expected": [
+        "permissive_cors_policy"
+      ],
+      "source": "challenges.yml: Cross-Site Imaging (Security Misconfiguration)",
+      "evidence": "app.options('*', cors())\n  app.use(cors())"
+    },
+    {
+      "id": "cve-defuddle-xss-substack-ogimage",
+      "repo": "kepano/defuddle",
+      "ref": "19520add09282abdfadbc6d23eb6bf8393af2bf8",
+      "path": "src/extractors/substack.ts",
+      "line_range": [
+        181,
+        181
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "GHSA-jg4p-g6xj-4qmf / CVE-2026-61824: the fix escaped this attribute interpolation into an <img src> string",
+      "evidence": "if (ogImage) return `<img src=\"${ogImage}\" alt=\"\" />`;"
+    },
+    {
+      "id": "cve-defuddle-xss-substack-src",
+      "repo": "kepano/defuddle",
+      "ref": "19520add09282abdfadbc6d23eb6bf8393af2bf8",
+      "path": "src/extractors/substack.ts",
+      "line_range": [
+        186,
+        186
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "GHSA-jg4p-g6xj-4qmf / CVE-2026-61824: the fix escaped this attribute interpolation into an <img src> string",
+      "evidence": "return src ? `<img src=\"${src}\" alt=\"\" />` : '';"
+    },
+    {
+      "id": "cve-defuddle-xss-x-article",
+      "repo": "kepano/defuddle",
+      "ref": "19520add09282abdfadbc6d23eb6bf8393af2bf8",
+      "path": "src/extractors/x-article.ts",
+      "line_range": [
+        114,
+        114
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "GHSA-jg4p-g6xj-4qmf / CVE-2026-61824: the fix escaped the src and alt interpolations in this <img> string",
+      "evidence": "return `<img src=\"${this.upgradeImageSrc(src)}\" alt=\"${alt}\">`;"
+    },
+    {
+      "id": "cve-defuddle-xss-youtube",
+      "repo": "kepano/defuddle",
+      "ref": "19520add09282abdfadbc6d23eb6bf8393af2bf8",
+      "path": "src/extractors/youtube.ts",
+      "line_range": [
+        369,
+        369
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "GHSA-jg4p-g6xj-4qmf / CVE-2026-61824: the fix escaped the description interpolated into this <p> string",
+      "evidence": "return `<p>${description.replace(/\\n/g, '<br>')}</p>`;"
+    },
+    {
+      "id": "cve-banks-path-traversal-set",
+      "repo": "masci/banks",
+      "ref": "3ab65baca00fd3917a12ca1fcfaab03176782bc4",
+      "path": "src/banks/registries/directory.py",
+      "line_range": [
+        44,
+        44
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "GHSA-x8wg-4xgc-vr54 / CVE-2026-71492: the fix added containment to this path built from the prompt name and version",
+      "evidence": "prompt_file = path / f\"{prompt.name}.{prompt.version}.jinja\""
+    },
+    {
+      "id": "cve-banks-path-traversal-index",
+      "repo": "masci/banks",
+      "ref": "3ab65baca00fd3917a12ca1fcfaab03176782bc4",
+      "path": "src/banks/registries/directory.py",
+      "line_range": [
+        140,
+        141
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "GHSA-x8wg-4xgc-vr54 / CVE-2026-71492: the fix added containment to this second path built from the prompt name and version",
+      "evidence": "if pf.path is None:\n                pf.path = self._path / f\"{pf.name}.{pf.version}.jinja\""
+    },
+    {
+      "id": "cve-scitokens-sqli-delete",
+      "repo": "scitokens/scitokens",
+      "ref": "66b075c35da18f8364276553513a53c596b4b8e3",
+      "path": "src/scitokens/utils/keycache.py",
+      "line_range": [
+        83,
+        83
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "GHSA-rh5m-2482-966c / CVE-2026-32714: the fix parameterised this DELETE, which was built by .format() on the issuer and key id",
+      "evidence": "curs.execute(\"DELETE FROM keycache WHERE issuer = '{}' AND key_id = '{}'\".format(issuer, key_id))"
+    },
+    {
+      "id": "cve-scitokens-sqli-insert",
+      "repo": "scitokens/scitokens",
+      "ref": "66b075c35da18f8364276553513a53c596b4b8e3",
+      "path": "src/scitokens/utils/keycache.py",
+      "line_range": [
+        103,
+        104
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "GHSA-rh5m-2482-966c / CVE-2026-32714: the fix parameterised this INSERT OR REPLACE, which was built by .format()",
+      "evidence": "curs.execute(insert_key_statement.format(issuer=issuer, expiration=time.time()+cache_timer, key_id=key_id,\n                                                 keydata=json.dumps(keydata), next_update=time.time()+next_update))"
+    },
+    {
+      "id": "cve-scitokens-sqli-delete-2",
+      "repo": "scitokens/scitokens",
+      "ref": "66b075c35da18f8364276553513a53c596b4b8e3",
+      "path": "src/scitokens/utils/keycache.py",
+      "line_range": [
+        140,
+        141
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "GHSA-rh5m-2482-966c / CVE-2026-32714: the fix parameterised this second DELETE, built by .format()",
+      "evidence": "curs.execute(\"DELETE FROM keycache WHERE issuer = '{}' AND key_id = '{}'\".format(issuer,\n                        key_id))"
+    },
+    {
+      "id": "cve-scitokens-sqli-insert-2",
+      "repo": "scitokens/scitokens",
+      "ref": "66b075c35da18f8364276553513a53c596b4b8e3",
+      "path": "src/scitokens/utils/keycache.py",
+      "line_range": [
+        160,
+        161
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "GHSA-rh5m-2482-966c / CVE-2026-32714: the fix parameterised this second INSERT OR REPLACE, built by .format()",
+      "evidence": "curs.execute(insert_key_statement.format(issuer=issuer, expiration=time.time()+cache_retry_interval, key_id=key_id,\n                                                    keydata=keydata, next_update=time.time()+cache_retry_interval))"
+    },
+    {
+      "id": "cve-scitokens-sqli-select",
+      "repo": "scitokens/scitokens",
+      "ref": "66b075c35da18f8364276553513a53c596b4b8e3",
+      "path": "src/scitokens/utils/keycache.py",
+      "line_range": [
+        226,
+        226
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "GHSA-rh5m-2482-966c / CVE-2026-32714: the fix parameterised this SELECT, built by .format() on the issuer and key id",
+      "evidence": "curs.execute(key_query.format(issuer=issuer, key_id=key_id))"
+    },
+    {
+      "id": "cve-systeminformation-cmdi-networkinterfaces",
+      "repo": "sebhildebrandt/systeminformation",
+      "ref": "da1cbf5eb09907cf5c3431f4c9ea441b7a227617",
+      "path": "lib/network.js",
+      "line_range": [
+        551,
+        552
+      ],
+      "cwe": "CWE-78",
+      "rule_classes_expected": [
+        "command_injection"
+      ],
+      "source": "GHSA-5xpp-75jx-m839 / CVE-2026-50289: the fix deleted the interpolated `cat ${file} | grep` string and the execSync that ran it",
+      "evidence": "const cmd = `cat ${file} 2> /dev/null | grep 'iface\\\\|source'`;\n    const lines = execSync(cmd, util.execOptsLinux).toString().split('\\n');"
+    },
+    {
+      "id": "goof-session-cookie-missing-httponly",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "app.js",
+      "line_range": [
+        42,
+        46
+      ],
+      "cwe": "CWE-1004",
+      "rule_classes_expected": [
+        "insecure_cookie_flags"
+      ],
+      "source": "nodejs-goof README: 'there's no httpOnly flag set to true, which means that the default false value of it makes the cookie accessible via JavaScript'",
+      "evidence": "cookie: { path: '/' }"
+    },
+    {
+      "id": "goof-hardcoded-session-secret",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "app.js",
+      "line_range": [
+        43,
+        43
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "nodejs-goof README '#### Hardcoded values - session information': 'the session secret used to sign the session is a hardcoded sensitive information inside the code'",
+      "evidence": "secret: 'keyboard cat',"
+    },
+    {
+      "id": "goof-errorhandler-stack-exposure",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "app.js",
+      "line_range": [
+        79,
+        81
+      ],
+      "cwe": "CWE-209",
+      "rule_classes_expected": [
+        "error_detail_exposure",
+        "debug_mode_enabled"
+      ],
+      "source": "nodejs-goof README 'Security misconfiguration exposes server information': the express errorhandler middleware returns full stack traces",
+      "evidence": "app.use(errorHandler());"
+    },
+    {
+      "id": "goof-hardcoded-api-token",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "app.js",
+      "line_range": [
+        83,
+        83
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "nodejs-goof README 'Information exposure via Hardcoded values in code'",
+      "evidence": "var token = 'SECRET_TOKEN_f8ed84e8f41e4146403dd4a6bbcea5e418d23a9';"
+    },
+    {
+      "id": "goof-hardcoded-admin-password-seed",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "mongoose-db.js",
+      "line_range": [
+        52,
+        52
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "nodejs-goof README NoSQL injection section (admin@snyk.io / SuperSecretPassword): seed admin credential hardcoded in source",
+      "evidence": "new User({ username: 'admin@snyk.io', password: 'SuperSecretPassword' }).save(function (err, user, count) {"
+    },
+    {
+      "id": "goof-nosql-injection-login",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "routes/index.js",
+      "line_range": [
+        52,
+        52
+      ],
+      "cwe": "CWE-943",
+      "rule_classes_expected": [
+        "nosql_injection"
+      ],
+      "source": "nodejs-goof README 'NoSQL injection': loginHandler passes req.body.password straight into User.find(), allowing {\"$gt\": \"\"}",
+      "evidence": "User.find({ username: req.body.username, password: req.body.password }, function (err, users) {"
+    },
+    {
+      "id": "goof-open-redirect-login",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "routes/index.js",
+      "line_range": [
+        73,
+        74
+      ],
+      "cwe": "CWE-601",
+      "rule_classes_expected": [
+        "open_redirect"
+      ],
+      "source": "nodejs-goof README 'Open redirect': redirectPage taken from the login POST body and passed to res.redirect without enforcing local URLs",
+      "evidence": "return res.redirect(redirectPage)"
+    },
+    {
+      "id": "goof-handlebars-layout-lfi-account-details",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "routes/index.js",
+      "line_range": [
+        119,
+        120
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal",
+        "server_side_template_injection"
+      ],
+      "source": "nodejs-goof README '#### Code injection': req.body is passed as-is as the Handlebars render options, so an attacker-supplied 'layout' key yields Local File Inclusion",
+      "evidence": "return res.render('account.hbs', profile)"
+    },
+    {
+      "id": "goof-command-injection-identify",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "routes/index.js",
+      "line_range": [
+        174,
+        174
+      ],
+      "cwe": "CWE-78",
+      "rule_classes_expected": [
+        "command_injection"
+      ],
+      "source": "nodejs-goof README 'Command execution' and exploits/shell-injection.md: URL parsed out of a TODO item is concatenated into a shell exec",
+      "evidence": "exec('identify ' + url, function (err, stdout, stderr) {"
+    },
+    {
+      "id": "goof-zip-slip-import",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "routes/index.js",
+      "line_range": [
+        268,
+        270
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal"
+      ],
+      "source": "nodejs-goof exploits/zip-slip/ (malicious_backup.zip): uploaded archive extracted with adm-zip without validating entry paths",
+      "evidence": "zip.extractAllTo(extracted_path, true);"
+    },
+    {
+      "id": "goof-insecure-random-admin-password",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "routes/index.js",
+      "line_range": [
+        330,
+        330
+      ],
+      "cwe": "CWE-338",
+      "rule_classes_expected": [
+        "insecure_randomness"
+      ],
+      "source": "nodejs-goof prototype-pollution chat demo: the admin account secret is generated with Math.random()",
+      "evidence": "{ name: 'admin', password: Math.random().toString(32), canDelete: true },"
+    },
+    {
+      "id": "goof-prototype-pollution-chat-merge",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "routes/index.js",
+      "line_range": [
+        360,
+        360
+      ],
+      "cwe": "CWE-1321",
+      "rule_classes_expected": [
+        "prototype_pollution"
+      ],
+      "source": "nodejs-goof exploits/prototype-pollution.sh: PUT /chat merges attacker-controlled req.body.message with lodash _.merge, allowing __proto__ injection",
+      "evidence": "_.merge(message, req.body.message, {"
+    },
+    {
+      "id": "goof-hardcoded-mysql-credentials",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "typeorm-db.js",
+      "line_range": [
+        11,
+        12
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "nodejs-goof README 'Information exposure via Hardcoded values in code'; TypeORM MySQL connection credentials committed in source",
+      "evidence": "username: \"root\", password: \"root\","
+    },
+    {
+      "id": "goof-dustjs-template-injection-about-new",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "views/about_new.dust",
+      "line_range": [
+        4,
+        4
+      ],
+      "cwe": "CWE-1336",
+      "rule_classes_expected": [
+        "server_side_template_injection",
+        "dynamic_code_execution"
+      ],
+      "source": "nodejs-goof exploits/dustjs-exploits.sh: the dustjs-helpers @if helper evaluates the cond string with the user-controlled 'device' query parameter, giving RCE",
+      "evidence": "{@if cond=\"'{device}'=='Desktop'\"}"
+    },
+    {
+      "id": "goof-xss-admin-redirectpage",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "views/admin.ejs",
+      "line_range": [
+        17,
+        17
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "nodejs-goof README '#### Open redirect': 'redirectPage is rendered as raw HTML and not properly escaped, because it uses <%- > instead of <%= >'",
+      "evidence": "<input type=\"hidden\" name=\"redirectPage\" value=\"<%- redirectPage %>\" />"
+    },
+    {
+      "id": "goof-xss-todo-marked-raw",
+      "repo": "snyk-labs/nodejs-goof",
+      "ref": "add14ba59e98240d9e00a235dd7d42cd61ae9912",
+      "path": "views/index.ejs",
+      "line_range": [
+        20,
+        20
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "nodejs-goof README 'Cross-site Scripting (XSS)' and 'marked - XSS': stored TODO content rendered through marked with the unescaped EJS <%- %> tag",
+      "evidence": "<%- marked(new String(todo.content)) %>"
+    },
+    {
+      "id": "dsvw-xss-dom",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        8,
+        8
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "DSVW CASES: Cross Site Scripting (DOM), /?#lang=en",
+      "evidence": "document.write('<div style="
+    },
+    {
+      "id": "dsvw-hardcoded-user-passwords",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        9,
+        9
+      ],
+      "cwe": "CWE-798",
+      "rule_classes_expected": [
+        "hardcoded_secret"
+      ],
+      "source": "dsvw.py USERS_XML seed table with cleartext passwords",
+      "evidence": "<password>7en8aiDoh!</password>"
+    },
+    {
+      "id": "dsvw-sqli-id-param",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        22,
+        22
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "DSVW CASES: Blind SQL Injection (boolean) / Blind SQL Injection (time) / UNION SQL Injection, ?id=2",
+      "evidence": "                    cursor.execute(\"SELECT id, username, name, surname FROM users WHERE id=\" + params[\"id\"])"
+    },
+    {
+      "id": "dsvw-xss-reflected",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        25,
+        25
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "DSVW CASES: Cross Site Scripting (reflected), /?v=0.4",
+      "evidence": "                    content += re.sub(r\"(v<b>)[^<]+(</b>)\", lambda match: \"%s%s%s\" % (match.group(1), params[\"v\"], match.group(2)), HTML_POSTFIX)"
+    },
+    {
+      "id": "dsvw-pickle-deserialization",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        27,
+        27
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "unsafe_deserialization"
+      ],
+      "source": "DSVW CASES: Component with Known Vulnerability (pickle), /?object=",
+      "evidence": "                    content = str(pickle.loads(urllib.parse.unquote_to_bytes(re.search(r\"(?:\\A|[?&])object=([^&]+)\", query).group(1))))"
+    },
+    {
+      "id": "dsvw-path-param-file-and-fetch",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        29,
+        29
+      ],
+      "cwe": "CWE-22",
+      "rule_classes_expected": [
+        "path_traversal",
+        "server_side_request_forgery"
+      ],
+      "source": "DSVW CASES: Path Traversal / Source Code Disclosure / Server Side Request Forgery, /?path=",
+      "evidence": "                    content = (open(os.path.abspath(params[\"path\"]), \"rb\") if not \"://\" in params[\"path\"] else FETCH(params[\"path\"])).read().decode(errors=\"replace\")"
+    },
+    {
+      "id": "dsvw-command-injection-domain",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        31,
+        31
+      ],
+      "cwe": "CWE-78",
+      "rule_classes_expected": [
+        "command_injection"
+      ],
+      "source": "DSVW CASES: Arbitrary Code Execution, /?domain=www.google.com",
+      "evidence": "                    content = subprocess.run(\"nslookup \" + params[\"domain\"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.PIPE, text=True, errors=\"replace\").stdout"
+    },
+    {
+      "id": "dsvw-xxe-parser",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        33,
+        33
+      ],
+      "cwe": "CWE-611",
+      "rule_classes_expected": [
+        "xml_external_entity"
+      ],
+      "source": "DSVW CASES: XML External Entity (local) and (remote), /?xml=",
+      "evidence": "parser = lxml.etree.XMLParser(load_dtd=True, resolve_entities=True, no_network=False)"
+    },
+    {
+      "id": "dsvw-sqli-comment-insert",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        42,
+        42
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "DSVW CASES: Cross Site Scripting (stored) sink chain, /?comment=",
+      "evidence": "                        cursor.execute(\"INSERT INTO comments VALUES(NULL, '%s', '%s')\" % (params[\"comment\"], time.ctime()))"
+    },
+    {
+      "id": "dsvw-xss-stored-render",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        46,
+        46
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "DSVW CASES: Cross Site Scripting (stored), /?comment=",
+      "evidence": "content += \"<div><span>Comment(s):</span></div><table>"
+    },
+    {
+      "id": "dsvw-remote-file-inclusion-exec",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        48,
+        49
+      ],
+      "cwe": "CWE-98",
+      "rule_classes_expected": [
+        "dynamic_code_execution",
+        "server_side_request_forgery"
+      ],
+      "source": "DSVW CASES: File Inclusion (remote), /?include=",
+      "evidence": "                    program, output, envs = (open(params[\"include\"], \"rb\") if not \"://\" in params[\"include\"] else FETCH(params[\"include\"])).read(), io.StringIO(), {\"DOCUMENT_ROOT\": os.getcwd(), \"HTTP_USER_AGENT\": self.headers.get(\"User-Agent\"), \"REMOTE_ADDR\": self.client_address[0], \"REMOTE_PORT\": self.client_address[1], \"PATH\": path, \"QUERY_STRING\": query, \"__name__\": \"__main__\", \"print\": lambda  ..."
+    },
+    {
+      "id": "dsvw-ssti-tmpl-format",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        55,
+        55
+      ],
+      "cwe": "CWE-1336",
+      "rule_classes_expected": [
+        "server_side_template_injection"
+      ],
+      "source": "DSVW CASES: Server-Side Template Injection, /?tmpl={0.__class__}",
+      "evidence": "                    content += \"<div><span>Result:</span></div>%s%s\" % (params[\"tmpl\"].format(open(__file__), os), HTML_POSTFIX)"
+    },
+    {
+      "id": "dsvw-xss-jsonp-callback",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        59,
+        59
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "DSVW CASES: Cross Site Scripting (JSONP), /users.json?callback=process",
+      "evidence": "content = \"%s%s%s\" % (\"\" if not \"callback\" in params else \"%s(\" % params[\"callback\"]"
+    },
+    {
+      "id": "dsvw-sqli-login-bypass",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        61,
+        61
+      ],
+      "cwe": "CWE-89",
+      "rule_classes_expected": [
+        "sql_injection"
+      ],
+      "source": "DSVW CASES: Login Bypass and HTTP Parameter Pollution, /login?username=&password=",
+      "evidence": "                found = bool(cursor.execute(\"SELECT * FROM users WHERE username='\" + re.sub(r\"[^\\w]\", \"\", params.get(\"username\", \"\")) + \"' AND password='\" + params.get(\"password\", \"\") + \"'\").fetchall())"
+    },
+    {
+      "id": "dsvw-insecure-random-sessionid",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        62,
+        62
+      ],
+      "cwe": "CWE-330",
+      "rule_classes_expected": [
+        "insecure_randomness"
+      ],
+      "source": "dsvw.py /login issues SESSIONID from random.choices",
+      "evidence": "                cookie = \"SESSIONID=%s; path=/\" % \"\".join(random.choices(string.ascii_letters + string.digits, k=20)) if found else \"SESSIONID=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT\""
+    },
+    {
+      "id": "dsvw-error-detail-traceback",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        67,
+        67
+      ],
+      "cwe": "CWE-209",
+      "rule_classes_expected": [
+        "error_detail_exposure"
+      ],
+      "source": "DSVW CASES: Full Path Disclosure, /?path=foobar",
+      "evidence": "            content, code = traceback.format_exc() if output is None else output if isinstance(output, str) else output.decode(errors=\"replace\"), http.client.INTERNAL_SERVER_ERROR"
+    },
+    {
+      "id": "dsvw-open-redirect",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        70,
+        70
+      ],
+      "cwe": "CWE-601",
+      "rule_classes_expected": [
+        "open_redirect"
+      ],
+      "source": "DSVW CASES: Unvalidated Redirect, /?redir=",
+      "evidence": "            if \"redir\" in params: self.send_header(\"Location\", LATIN1(params[\"redir\"]))"
+    },
+    {
+      "id": "dsvw-xss-protection-header-off",
+      "repo": "stamparm/DSVW",
+      "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+      "path": "dsvw.py",
+      "line_range": [
+        73,
+        73
+      ],
+      "cwe": "CWE-693",
+      "rule_classes_expected": [
+        "security_header_disabled"
+      ],
+      "source": "dsvw.py sends X-XSS-Protection: 0 on every response",
+      "evidence": "            self.send_header(\"X-XSS-Protection\", \"0\")"
+    },
+    {
+      "id": "cve-owlmixin-yaml-load-string",
+      "repo": "tadashi-aikawa/owlmixin",
+      "ref": "409c30c0d2d357f3fbc3abd7a80d5c111a738aa2",
+      "path": "owlmixin/util.py",
+      "line_range": [
+        96,
+        96
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "unsafe_deserialization"
+      ],
+      "source": "GHSA-ccmq-qvcp-5mrm / CVE-2017-16618: the fix changed yaml.load on a YAML string to yaml.safe_load",
+      "evidence": "return yaml.load(yaml_str)"
+    },
+    {
+      "id": "cve-owlmixin-yaml-load-file",
+      "repo": "tadashi-aikawa/owlmixin",
+      "ref": "409c30c0d2d357f3fbc3abd7a80d5c111a738aa2",
+      "path": "owlmixin/util.py",
+      "line_range": [
+        106,
+        106
+      ],
+      "cwe": "CWE-502",
+      "rule_classes_expected": [
+        "unsafe_deserialization"
+      ],
+      "source": "GHSA-ccmq-qvcp-5mrm / CVE-2017-16618: the fix changed yaml.load on a file to yaml.safe_load",
+      "evidence": "return yaml.load(f)"
+    },
+    {
+      "id": "cve-dosage-xss-rss-description",
+      "repo": "webcomics/dosage",
+      "ref": "f2817cca7ff5511d9be56750b2d2165d4c3b2f14",
+      "path": "dosagelib/events.py",
+      "line_range": [
+        116,
+        116
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "GHSA-75mw-h36v-2jv7: the fix escaped comic.text before it was concatenated into the RSS description HTML",
+      "evidence": "description += '<br/>%s' % comic.text"
+    },
+    {
+      "id": "cve-dosage-xss-html-output",
+      "repo": "webcomics/dosage",
+      "ref": "f2817cca7ff5511d9be56750b2d2165d4c3b2f14",
+      "path": "dosagelib/events.py",
+      "line_range": [
+        240,
+        240
+      ],
+      "cwe": "CWE-79",
+      "rule_classes_expected": [
+        "cross_site_scripting"
+      ],
+      "source": "GHSA-75mw-h36v-2jv7: the fix escaped comic.text before it was written into the generated HTML page",
+      "evidence": "self.html.write('<br/>%s\\n' % comic.text)"
+    },
+    {
+      "id": "cve-logkitty-cmdi-logcat-clear",
+      "repo": "zamotany/logkitty",
+      "ref": "e1e229687472d8c9266d17f2969ff7431a78db86",
+      "path": "src/android/adb.ts",
+      "line_range": [
+        28,
+        28
+      ],
+      "cwe": "CWE-78",
+      "rule_classes_expected": [
+        "command_injection"
+      ],
+      "source": "GHSA-v8v8-6859-qxm4 / CVE-2020-8149: the fix replaced execSync of an interpolated adb command with a spawn of an argument list",
+      "evidence": "execSync(`${adbPath} logcat -c`);"
+    },
+    {
+      "id": "cve-logkitty-cmdi-pidof",
+      "repo": "zamotany/logkitty",
+      "ref": "e1e229687472d8c9266d17f2969ff7431a78db86",
+      "path": "src/android/adb.ts",
+      "line_range": [
+        54,
+        56
+      ],
+      "cwe": "CWE-78",
+      "rule_classes_expected": [
+        "command_injection"
+      ],
+      "source": "GHSA-v8v8-6859-qxm4 / CVE-2020-8149: the fix replaced execSync of an interpolated `adb shell pidof` string with a spawn of an argument list",
+      "evidence": "output = execSync(\n      `'${getAdbPath(adbPath)}' shell pidof -s ${applicationId}`\n    );"
+    }
+  ]
+}
