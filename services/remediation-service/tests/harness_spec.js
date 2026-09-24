@@ -128,6 +128,23 @@ test('pg records query text and values across the promise, callback, config, and
   assert.equal(h.pg.queries.length, 1, 'load resets the recorders');
 });
 
+test('db() hands a proof a recording connection without requiring pg', async () => {
+  // A generated proof for a helper that takes a connection cannot `require('pg')`: nothing is
+  // installed in the sandbox and patch policy refuses a test that asks for a package. h.db() is
+  // the only way it reaches one, so it has to record onto the same h.pg.queries the assertions read.
+  write('services/lookup.js', 'function loadUser(db, id) {\n  return db.query("SELECT * FROM users WHERE id = $1", [id]);\n}\nmodule.exports = { loadUser };\n');
+  const m = h.load('services/lookup.js');
+  const db = h.db();
+  assert.equal(typeof db.query, 'function', 'h.db() hands back something with a query method');
+  const called = h.call(m.loadUser, db, "1' OR '1'='1");
+  await Promise.resolve(called.value).catch(() => {});
+  assert.equal(h.pg.queries.length, 1, 'the call was recorded on h.pg.queries');
+  assert.deepEqual(h.pg.queries[0], { text: 'SELECT * FROM users WHERE id = $1', values: ["1' OR '1'='1"] });
+  // A fresh load clears what the previous one recorded, so one proof cannot see another's calls.
+  h.load('services/lookup.js');
+  assert.equal(h.pg.queries.length, 0);
+});
+
 test('child_process records exec, execFile, spawn, and sync calls and feeds configured stdout', async () => {
   const router = h.load('services/orders.js', { child_process: { stdout: 'rendered' } });
   const rendered = await h.invoke(router, 'post', '/orders/:id/invoice', { params: { id: '7; rm -rf /' } });

@@ -330,6 +330,18 @@ def js_function_for_line(source: str, line: int) -> JsFunction:
     raise SiteError("enclosing_function_not_found")
 
 
+def scope_lines_near(start_line: int, end_line: int, line: int) -> list[int]:
+    """Every line of a scope, nearest the finding first: back to its start, then on to its end.
+
+    A rule reports the line its *pattern* opens on, which for a path helper is often the function
+    signature rather than the `path.join` inside it. Scanning only backwards from the finding
+    misses the sink in that case, and scanning the scope in source order would pick the wrong one
+    when a function holds two.
+    """
+    anchor = min(max(line, start_line), end_line)
+    return list(range(anchor, start_line - 1, -1)) + list(range(anchor + 1, end_line + 1))
+
+
 def js_site_for_line(source: str, line: int) -> JsRoute | JsFunction:
     """The Express route that encloses `line`, else the function that does.
 

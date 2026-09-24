@@ -20,7 +20,7 @@ from src.families import COMMAND_ARGUMENTS, JAVASCRIPT, PATH_CONTAINMENT, PYTHON
 from src.fixtures import build_repair_request, read_fixture
 from src.gates import SHELL_PIPELINE_MESSAGE, static_gate
 from src.git_tree import compute_tree_oid
-from src.models import GitTreeEntry, RepairRequest
+from src.models import FindingSnapshot, GitTreeEntry, RepairRequest
 from src.patches import build_patch_bundle
 from src.proofs import GeneratedProof, ProofFallback, generate_proof
 from src.retrieval import Snapshot
@@ -288,17 +288,64 @@ async def test_each_python_fixture_template_matches_the_reference_repair_and_its
     assert _outcomes(verification)[finding.stable_id] == ("failed", "passed")
 
 
-@pytest.mark.parametrize("fixture_name", ["sql-parameterized", "command-arguments", "path-containment"])
-def test_a_javascript_fixture_without_a_route_falls_back_to_the_model_with_the_reason(fixture_name):
-    """The JavaScript fixtures are plain builder functions that call no recorded sink, so no
-    harness assertion can prove them: the generators say so and the model writes the test."""
+@pytest.mark.parametrize(
+    "fixture_name,reason",
+    [("sql-parameterized", "sql_sink_not_in_scope"), ("command-arguments", "command_sink_not_in_scope")],
+)
+def test_a_builder_function_has_no_observable_sink_so_the_model_writes_the_test(fixture_name, reason):
+    """These two fixtures build a query object and an argv array and never run either.
+
+    The site is derived now that a plain function counts as one, but the harness records pg
+    queries and child processes, and neither happens here: a generated proof would pass on the
+    original code, which proves nothing and would sink the candidate. The generator says which
+    sink it wanted and the model writes the test against the caller instead.
+    """
     fixture_dir = FIXTURES / fixture_name
     fixture = read_fixture(fixture_dir)
     request = build_repair_request(fixture_dir, fixture)
     snapshot, proofs, templates = _generate(request)
     [finding] = request.findings
-    assert isinstance(proofs[finding.stable_id], ProofFallback) and proofs[finding.stable_id].reason == "enclosing_route_not_found"
-    assert isinstance(templates[finding.stable_id], TemplateFallback) and templates[finding.stable_id].reason == "enclosing_route_not_found"
+    assert isinstance(proofs[finding.stable_id], ProofFallback) and proofs[finding.stable_id].reason == reason
+    # No proof means no template pass for the finding either, whatever the template would have made.
+    assert isinstance(templates[finding.stable_id], TemplateFallback)
+
+
+def test_a_path_helper_outside_a_route_is_now_proven_and_templated():
+    """The third fixture is the one the site model reaches end to end.
+
+    `resolveUpload` joins a base and a name and returns the result, which the harness does
+    observe: the repaired helper throws on a traversal payload and still resolves a legitimate
+    name. Before the site model this was `enclosing_route_not_found` on both halves.
+    """
+    fixture_dir = FIXTURES / "path-containment"
+    fixture = read_fixture(fixture_dir)
+    request = build_repair_request(fixture_dir, fixture)
+    snapshot, proofs, templates = _generate(request)
+    [finding] = request.findings
+    proof = proofs[finding.stable_id]
+    assert isinstance(proof, GeneratedProof), proof
+    assert "h.call(m.resolveUpload" in proof.content and "to be refused" in proof.content
+    template = templates[finding.stable_id]
+    assert isinstance(template, TemplatePatch), template
+    assert "throw new Error('path escapes base directory');" in "\n".join(template.changes[0]["replacement_lines"])
+
+
+def test_the_model_only_fixture_is_refused_by_the_template():
+    """`conftest.MODEL_ONLY_SOURCE` has to stay outside the template, or the tests that use it
+    stop testing the model path. This pins the reason so the day that changes, it is here."""
+    from tests.conftest import MODEL_ONLY_LINE, MODEL_ONLY_SOURCE
+
+    finding = FindingSnapshot(
+        snapshot_id="model-only", rule_id="js.sql-injection", cwe_id="CWE-89",
+        file_path="src/db.js", line_start=MODEL_ONLY_LINE, line_end=MODEL_ONLY_LINE,
+    )
+
+    class _Snapshot:
+        def full_content(self, path):
+            return MODEL_ONLY_SOURCE
+
+    outcome = generate_template(_Snapshot(), finding, "sql_parameterization", "javascript")
+    assert isinstance(outcome, TemplateFallback) and outcome.reason == "query_text_not_literal"
 
 
 @requires_node

@@ -40,6 +40,7 @@ from .sites import (
     js_names_in,
     js_require_line,
     js_site_for_line,
+    scope_lines_near,
     python_function_for_line,
     python_import_anchor,
     python_module_assignment,
@@ -453,6 +454,18 @@ def _assignment(line: str) -> tuple[str, str, str, bool] | None:
     return match.group("prefix"), match.group("name"), match.group("expr"), bool(match.group("semi"))
 
 
+def _require_literal_query(segments: list[tuple[str, str]]) -> None:
+    """The query must carry SQL text of its own, not just be one computed expression.
+
+    `db.query(sql)` after `const sql = buildLookup(id)` parses as a single interpolated part with
+    no literal around it. Binding that as a parameter would send an empty statement and pass the
+    whole query as data. The text is built somewhere this scan cannot see, so nothing here knows
+    what is literal and what is input, and the model reads the builder instead.
+    """
+    if not any(kind == "lit" and text.strip() for kind, text in segments):
+        raise TemplateError("query_text_not_literal")
+
+
 def _sink_and_source(lines: list[str], line: int, start: int, end: int, sink_re: re.Pattern[str]) -> tuple[int, int | None, str, str, str]:
     """`(sink_line, assignment_line, sink_prefix, expression, sink_rest)` for the query call.
 
@@ -537,6 +550,7 @@ def _js_sql(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunc
     segments = js_segments(expression)
     if not any(kind == "expr" for kind, _ in segments):
         raise TemplateError("no_interpolated_input")
+    _require_literal_query(segments)
     text, values = bind_placeholders(segments, lambda n: f"${n}")
     _reject_fragments(values, lines, site.start_line, sink_line, site.parameters, js_segments)
     literal = js_string_literal(text)
@@ -694,28 +708,34 @@ def _js_command(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
     return TemplatePatch(finding.stable_id, COMMAND_ARGUMENTS, changes, summary)
 
 
-def _js_rejection(site: JsRoute | JsFunction) -> str:
-    """The statement that refuses a path escaping the base directory, or a refusal to guess one.
+# What a repaired path helper does when the resolved path leaves its base directory. A caller
+# that does not catch gets a 500 instead of somebody else's file, which is the trade the family
+# is for; `contracts/repair-v1.md` states it under path_containment.
+PATH_ESCAPE_MESSAGE = "path escapes base directory"
 
-    A route handler owns the response, so answering 400 is the contract it already has. A plain
-    function has no response and no declared failure value: returning `null` breaks a caller
-    that dereferences the result, and throwing breaks one that does not catch. Either is a
-    behaviour change the finding does not authorize, so the template declines and the model
-    reads the callers.
+
+def _js_rejection(site: JsRoute | JsFunction) -> str:
+    """The statement that refuses a path escaping the base directory.
+
+    A route handler owns the response, so it answers 400, which is the contract it already has.
+    A plain function has no response to write, so it throws: the one behaviour a caller cannot
+    mistake for a valid path, where returning a sentinel would be read as one.
     """
     if isinstance(site, JsRoute):
         return f"return {site.res}.status(400).end();"
-    raise TemplateError("containment_rejection_not_derivable")
+    return f"throw new Error({js_string_literal(PATH_ESCAPE_MESSAGE)});"
+
+
+def _js_containment_summary(site: JsRoute | JsFunction) -> str:
+    tail = "answers 400" if isinstance(site, JsRoute) else "throws"
+    return f"path.resolve with a containment check that {tail} before any read"
 
 
 def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction) -> TemplatePatch:
     """A `path.join` of untrusted input becomes a resolve plus a containment check.
 
-    This one family does need a route, and not for the reason the other two were thought to:
-    the rewrite has to *reject* an escaping path, and only a handler carries a contract for
-    doing so. A plain function returns a path; whether its caller reads a `null`, catches a
-    throw, or ignores either is not in the code being repaired, and a template that guesses
-    turns a file disclosure into a crash somewhere else. See `_js_rejection`.
+    The check is the same wherever the join is; only how it refuses differs, which is what
+    `_js_rejection` decides from the site.
     """
     path = finding.affected_path
     source = snapshot.full_content(path)
@@ -725,7 +745,7 @@ def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | 
         raise TemplateError("path_module_not_required")
     rejection = _js_rejection(site)
     join_line = None
-    for number in range(min(line, site.end_line), site.start_line, -1):
+    for number in scope_lines_near(site.start_line, site.end_line, line):
         found = _JS_JOIN_RE.search(lines[number - 1])
         if found:
             join_line = number
@@ -753,7 +773,7 @@ def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | 
     last = max(join_line, line)
     original = lines[join_line - 1 : last]
     replacement = head + tail + lines[join_line:last]
-    return TemplatePatch(finding.stable_id, PATH_CONTAINMENT, [_hunk(path, finding.stable_id, join_line, original, replacement)], "path.resolve with a containment check that answers 400 before any read")
+    return TemplatePatch(finding.stable_id, PATH_CONTAINMENT, [_hunk(path, finding.stable_id, join_line, original, replacement)], _js_containment_summary(site))
 
 
 # --- Python ---------------------------------------------------------------------------------
@@ -810,6 +830,7 @@ def _py_sql(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunction) 
     segments = py_segments(expression)
     if not any(kind == "expr" for kind, _ in segments):
         raise TemplateError("no_interpolated_input")
+    _require_literal_query(segments)
     text, values = bind_placeholders(segments, _PLACEHOLDERS[driver])
     _reject_fragments(values, lines, function.start_line, sink_line, function.parameters, py_segments)
     literal = py_string_literal(text)
@@ -953,24 +974,22 @@ def _py_command(snapshot: Snapshot, finding: FindingSnapshot, function: PyFuncti
 
 
 def _py_traversal(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunction) -> TemplatePatch:
-    """The same containment rewrite as `_js_traversal`, and the same limit.
+    """The same containment rewrite as `_js_traversal`, refusing the same way.
 
-    `abort(400)` is a Flask view's contract. A plain function has none, so this declines for
-    the reason `_js_rejection` gives rather than inventing a return value or an exception.
+    A Flask view aborts 400; a plain function raises `ValueError`, for the reason
+    `_js_rejection` gives on the JavaScript side.
     """
     path = finding.affected_path
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
-    if not function.route:
-        raise TemplateError("containment_rejection_not_derivable")
     if "os" not in python_imports(source):
         raise TemplateError("os_not_imported")
-    flask_import = re.search(r"^from flask import (?P<names>[^\n#]+)$", source, re.M)
-    if not flask_import:
+    flask_import = re.search(r"^from flask import (?P<names>[^\n#]+)$", source, re.M) if function.route else None
+    if function.route and not flask_import:
         raise TemplateError("flask_import_not_found")
     join_line = None
-    for number in range(min(line, function.end_line), function.start_line, -1):
+    for number in scope_lines_near(function.start_line, function.end_line, line):
         if _PY_JOIN_RE.search(lines[number - 1]):
             join_line = number
             break
@@ -989,19 +1008,22 @@ def _py_traversal(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunc
     else:
         target = next(name for name in ("target", "safe_target") if not re.search(rf"(?<!\w){name}(?!\w)", body_text))
         tail = [text.replace(found.group(0), target, 1)]
+    rejection = "abort(400)" if function.route else f"raise ValueError({py_string_literal(PATH_ESCAPE_MESSAGE)})"
     head = [
         f"{indent}{base_name} = os.path.realpath({base})",
         f"{indent}{target} = os.path.realpath(os.path.join({base_name}, {user_input}))",
         f"{indent}if {target} != {base_name} and not {target}.startswith({base_name} + os.sep):",
-        f"{indent}    abort(400)",
+        f"{indent}    {rejection}",
     ]
     last = max(join_line, line)
     changes = [_hunk(path, finding.stable_id, join_line, lines[join_line - 1 : last], head + tail + lines[join_line:last])]
-    names = [item.strip() for item in flask_import.group("names").split(",")]
-    if "abort" not in names:
-        number = source[: flask_import.start()].count("\n") + 1
-        changes.insert(0, _hunk(path, finding.stable_id, number, [flask_import.group(0)], [f"from flask import {', '.join(names + ['abort'])}"]))
-    return TemplatePatch(finding.stable_id, PATH_CONTAINMENT, changes, "os.path.realpath with a containment check that aborts 400 before any file access")
+    if flask_import is not None:
+        names = [item.strip() for item in flask_import.group("names").split(",")]
+        if "abort" not in names:
+            number = source[: flask_import.start()].count("\n") + 1
+            changes.insert(0, _hunk(path, finding.stable_id, number, [flask_import.group(0)], [f"from flask import {', '.join(names + ['abort'])}"]))
+    tail_text = "aborts 400" if function.route else "raises ValueError"
+    return TemplatePatch(finding.stable_id, PATH_CONTAINMENT, changes, f"os.path.realpath with a containment check that {tail_text} before any file access")
 
 
 # --- entry points ---------------------------------------------------------------------------

@@ -59,6 +59,66 @@ def source() -> str:
     return "export function loadUser(db, id) {\n  return db.query(`SELECT * FROM users WHERE id = ${id}`);\n}\n"
 
 
+# The sink is two hops from its input: the SQL text is built by another function, so the template
+# sees `db.query(sql)` over a local it cannot trace to a literal and refuses with
+# `query_variable_not_assigned_in_scope`. Nothing about the vulnerability is different; only the
+# deterministic path's reach is. Tests about what the *model* does with a finding use this, because
+# a finding the template repairs first never reaches the model at all.
+# `test_template_first.test_the_model_only_fixture_is_refused_by_the_template` pins the reason, so
+# this stops being a silent assumption the day the template learns to follow the hop.
+MODEL_ONLY_SOURCE = (
+    "function buildLookup(id) {\n"
+    "  return \"SELECT * FROM users WHERE id = '\" + id + \"'\";\n"
+    "}\n"
+    "function loadUser(db, id) {\n"
+    "  const sql = buildLookup(id);\n"
+    "  return db.query(sql);\n"
+    "}\n"
+    "module.exports = { loadUser };\n"
+)
+MODEL_ONLY_REPAIRED = (
+    "function buildLookup() {\n"
+    "  return 'SELECT * FROM users WHERE id = $1';\n"
+    "}\n"
+    "function loadUser(db, id) {\n"
+    "  const sql = buildLookup();\n"
+    "  return db.query(sql, [id]);\n"
+    "}\n"
+    "module.exports = { loadUser };\n"
+)
+# The finding is on the `db.query(sql)` line, the sink the rule reports.
+MODEL_ONLY_LINE = 6
+
+
+@pytest.fixture
+def model_only_source() -> str:
+    return MODEL_ONLY_SOURCE
+
+
+@pytest.fixture
+def model_only_payload(request_payload, model_only_source: str) -> dict[str, Any]:
+    """`request_payload` over a source the template refuses, for the model-path tests."""
+    return with_source(request_payload, model_only_source, line=MODEL_ONLY_LINE)
+
+
+def with_source(payload: dict[str, Any], text: str, line: int | None = None) -> dict[str, Any]:
+    """`payload` with every copy of the affected file replaced, and the finding moved to `line`."""
+    updated = {key: list(value) if isinstance(value, list) else value for key, value in payload.items()}
+    entries = [
+        GitTreeEntry(path=entry["path"], mode=entry["mode"], type=entry["type"], sha=git_blob(text) if entry["path"].startswith("src/db.") else entry["sha"])
+        for entry in payload["tree_entries"]
+    ]
+    updated["tree_entries"] = [entry.model_dump() for entry in entries]
+    updated["head_tree_oid"] = compute_tree_oid(entries)
+    updated["files"] = [
+        {**item, "content": text, "sha": git_blob(text)} if item["path"].startswith("src/db.") else dict(item)
+        for item in payload["files"]
+    ]
+    if line is not None:
+        updated["findings"] = [{**item, "line_start": line, "line_end": line} for item in payload["findings"]]
+    return updated
+
+
 @pytest.fixture
 def request_payload(source: str) -> dict[str, Any]:
     entries = [
