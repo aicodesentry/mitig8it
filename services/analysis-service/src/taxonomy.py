@@ -10,6 +10,51 @@ TAXONOMY_VERSIONS = {
 }
 
 
+# The vocabulary a rule may name itself with. `internal_type` is what the product groups,
+# deduplicates and reports on, so a rule that passes its own check id as the type makes a
+# category of one that nothing else can join. A tier 2 rule must declare one of these;
+# `tests/test_tier2_rule_metadata.py` enforces it.
+#
+# Adding a value here is a product decision, not a rule detail: it says the finding is a
+# kind of thing worth telling a reviewer apart from its neighbours.
+CANONICAL_INTERNAL_TYPES = frozenset({
+    # Injection
+    "sql_injection",
+    "nosql_injection",
+    "ldap_injection",
+    "command_injection",
+    "dynamic_code_execution",
+    "server_side_template_injection",
+    "cross_site_scripting",
+    "xml_external_entity",
+    # Data handling
+    "unsafe_deserialization",
+    "path_traversal",
+    "server_side_request_forgery",
+    "open_redirect",
+    "prototype_pollution",
+    # Secrets and cryptography
+    "hardcoded_secret",
+    "weak_password_hash",
+    "weak_cipher_algorithm",
+    "static_initialization_vector",
+    "insecure_randomness",
+    # Authentication and session
+    "jwt_algorithm_none",
+    "jwt_signature_not_verified",
+    "jwt_expiration_ignored",
+    "insecure_cookie_flags",
+    "csrf_protection_disabled",
+    # Transport and configuration
+    "tls_validation_disabled",
+    "weak_tls_protocol",
+    "permissive_cors_policy",
+    "security_header_disabled",
+    "debug_mode_enabled",
+    "error_detail_exposure",
+})
+
+
 RULE_TAXONOMY_OVERRIDES: Dict[str, Dict[str, Union[List[str], str]]] = {
     "secret.hardcoded.credential": {
         "internal_type": "hardcoded_secret",
@@ -86,14 +131,29 @@ CWE_ATTACK_MAP: Dict[str, List[str]] = {
     "CWE-95": ["T1059"],
     "CWE-209": [],
     "CWE-295": ["T1557"],
+    "CWE-326": ["T1557"],
+    "CWE-327": ["T1600"],
+    "CWE-329": ["T1600"],
+    "CWE-338": ["T1110"],
+    "CWE-347": ["T1134"],
+    "CWE-352": ["T1189"],
     "CWE-434": ["T1190"],
     "CWE-502": ["T1190"],
     "CWE-532": [],
+    "CWE-601": ["T1189"],
     "CWE-611": ["T1190"],
+    "CWE-613": ["T1134"],
+    "CWE-614": ["T1539"],
     "CWE-770": [],
     "CWE-798": ["T1552"],
     "CWE-862": ["T1190"],
+    "CWE-916": ["T1110"],
     "CWE-918": ["T1190"],
+    "CWE-942": ["T1190"],
+    "CWE-943": ["T1190"],
+    "CWE-1275": ["T1539"],
+    "CWE-1321": ["T1190"],
+    "CWE-1336": ["T1190"],
 }
 
 
@@ -105,11 +165,25 @@ CWE_CAPEC_MAP: Dict[str, List[str]] = {
     "CWE-90": ["CAPEC-136"],
     "CWE-95": [],
     "CWE-295": ["CAPEC-94"],
+    "CWE-326": ["CAPEC-620"],
+    "CWE-327": ["CAPEC-97"],
+    "CWE-329": ["CAPEC-97"],
+    "CWE-338": ["CAPEC-59"],
+    "CWE-347": ["CAPEC-463"],
+    "CWE-352": ["CAPEC-62"],
     "CWE-434": ["CAPEC-650"],
     "CWE-502": ["CAPEC-586"],
+    "CWE-601": ["CAPEC-178"],
     "CWE-611": ["CAPEC-221"],
+    "CWE-613": ["CAPEC-60"],
+    "CWE-614": ["CAPEC-102"],
     "CWE-798": ["CAPEC-37"],
+    "CWE-916": ["CAPEC-55"],
     "CWE-918": ["CAPEC-664"],
+    "CWE-942": ["CAPEC-664"],
+    "CWE-943": ["CAPEC-676"],
+    "CWE-1321": ["CAPEC-77"],
+    "CWE-1336": ["CAPEC-242"],
 }
 
 
@@ -166,6 +240,14 @@ def canonicalize_internal_type(
     ext = Path(file_path or "").suffix.lower()
     cwe_ids = set(_as_list(cwe_id))
 
+    # A rule that names a canonical type has already answered this question, and it knows
+    # more than the token sniffing below does. `jwt.decode(token, verify=False)` contains
+    # `verify=false`, which the TLS heuristic would otherwise read as a disabled
+    # certificate check; the rule that matched it says `jwt_signature_not_verified` and is
+    # right. The heuristics stay for rules that declare nothing, or declare their check id.
+    if explicit in CANONICAL_INTERNAL_TYPES:
+        return str(explicit)
+
     if any(token in text for token in ('sslcontext.getinstance("ssl")', "tlsv1", "sslv3", "weak tls", "weak ssl")):
         return "weak_tls_protocol"
     if ext in {".js", ".ts", ".jsx", ".tsx", ".php"} and "exec(" in text:
@@ -205,6 +287,36 @@ def canonicalize_internal_type(
         return "ldap_injection"
     if "CWE-601" in cwe_ids:
         return "open_redirect"
+    if "CWE-611" in cwe_ids:
+        return "xml_external_entity"
+    if "CWE-916" in cwe_ids:
+        return "weak_password_hash"
+    if "CWE-327" in cwe_ids:
+        return "weak_cipher_algorithm"
+    if "CWE-329" in cwe_ids:
+        return "static_initialization_vector"
+    if "CWE-330" in cwe_ids or "CWE-338" in cwe_ids:
+        return "insecure_randomness"
+    if "CWE-326" in cwe_ids:
+        return "weak_tls_protocol"
+    if "CWE-347" in cwe_ids:
+        return "jwt_signature_not_verified"
+    if "CWE-613" in cwe_ids:
+        return "jwt_expiration_ignored"
+    if "CWE-614" in cwe_ids or "CWE-1275" in cwe_ids:
+        return "insecure_cookie_flags"
+    if "CWE-352" in cwe_ids:
+        return "csrf_protection_disabled"
+    if "CWE-942" in cwe_ids:
+        return "permissive_cors_policy"
+    if "CWE-1321" in cwe_ids:
+        return "prototype_pollution"
+    if "CWE-1336" in cwe_ids:
+        return "server_side_template_injection"
+    if "CWE-489" in cwe_ids:
+        return "debug_mode_enabled"
+    if "CWE-209" in cwe_ids:
+        return "error_detail_exposure"
 
     override = RULE_TAXONOMY_OVERRIDES.get(rule_id or "", {})
     if override.get("internal_type"):

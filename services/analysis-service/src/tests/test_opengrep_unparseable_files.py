@@ -107,7 +107,10 @@ class TestUnparseableFileDoesNotSinkTheBatch:
             gaps,
         )
 
-        assert [finding["file_path"] for finding in findings] == ["svc/runner.py"]
+        # The claim is which files were covered, not how many rules matched inside one: the
+        # tier 2 coverage set gives a shell-injection line more than one matching rule.
+        assert findings, "the parseable file produced no finding"
+        assert {finding["file_path"] for finding in findings} == {"svc/runner.py"}
         assert [gap["path"] for gap in gaps] == ["svc/broken.py"]
         assert gaps[0]["code"] == "PartialParsing"
 
