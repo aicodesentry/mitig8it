@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars and fill in. Nothing here creates infrastructure other than
+# alerting configuration and one email notification channel.
+project_id  = "codesentry-260311-9f2b"
+alert_email = "owner@example.com"
+
+# Optional: an existing PagerDuty or Slack channel created outside Terraform.
+# notification_channel_ids = ["projects/codesentry-260311-9f2b/notificationChannels/1234567890"]
+
+# Optional: turn the remediation lease warning off where no worker runs.
+# enable_lease_reclaim_alert = false
