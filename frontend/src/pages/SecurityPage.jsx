@@ -54,6 +54,7 @@ const dataKept = [
 
 const access = [
   'Contents read-only. Pull requests and checks read/write. Metadata read-only.',
+  'Or run it as a GitHub Action in your own CI; nothing leaves your runner.',
   'Write actions require an actor with repository write access.',
   'Services authenticate to each other with a shared constant-time secret.',
   "A fix reaches the branch only through GitHub's Commit suggestion button, under your identity.",

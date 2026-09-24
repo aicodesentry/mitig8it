@@ -29,7 +29,7 @@ const steps = [
     number: '01',
     icon: Download,
     title: 'Install the GitHub App',
-    line: 'Connect one repo. No CI config, no YAML.',
+    line: 'Connect one repo, or run it as a GitHub Action in your own CI; nothing leaves your runner.',
   },
   {
     number: '02',

@@ -182,4 +182,6 @@ Branch `feat/least-privilege-and-uninstall-purge` removed the in-app apply commi
 
 A disposable staging GitHub repository with branch protection and the app's verification check required, a GCP project and region with GKE Sandbox, a repair model account with pricing configuration, and a budget for real-model and sandbox evaluation. Until those exist, this branch is a complete local implementation, not a release.
 
+The same engine now also runs inside a GitHub Action, in the customer's own runner with the workflow's own token and no database, producing the same `development_unverified` candidates through the same local subprocess driver; see [GitHub Action](../getting-started/github-action.md).
+
 Full specification: [implementation plan](agentic-remediation-implementation-plan.md).

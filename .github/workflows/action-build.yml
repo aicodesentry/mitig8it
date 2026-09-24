@@ -1,0 +1,110 @@
+name: Action image
+
+on:
+  pull_request:
+    paths:
+      - 'action/**'
+      - 'services/analysis-service/**'
+      - 'services/remediation-service/**'
+      - 'services/github-service/**'
+      - '.github/workflows/action-build.yml'
+  push:
+    branches: [main]
+
+# The image is built to prove it builds. It is never pushed anywhere, so this workflow needs
+# nothing beyond reading the code.
+permissions:
+  contents: read
+
+concurrency:
+  group: action-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  unit-tests:
+    name: Orchestrator unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '20'
+      # The parity tests compare the ported filters against the Node sources, and one of them
+      # runs the Node implementation, so both toolchains are present here. The tests that need
+      # the services themselves skip in this job and run inside the image below.
+      - name: Install the test dependencies
+        run: pip install pytest httpx pyyaml
+      - name: Run the tests
+        run: pytest tests -q
+        working-directory: action
+
+  image:
+    name: Build the container and run its tests inside it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Restore the image layer cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/mitig8it-buildx-cache
+          key: >-
+            mitig8it-action-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('action/Dockerfile',
+            'action/requirements.txt', 'services/github-service/package-lock.json') }}
+          restore-keys: |
+            mitig8it-action-${{ runner.os }}-${{ runner.arch }}-
+
+      # The same script the composite action runs, so CI proves the path a user actually takes
+      # rather than an easier one. It reports the build time and the image size.
+      - name: Build the image
+        run: ./action/build-image.sh mitig8it-action:ci "${RUNNER_TEMP}/mitig8it-buildx-cache"
+
+      # The repo_definition tests read the workflow files and the services' own requirement
+      # lists, which the image has no reason to carry. They assert things about the repository,
+      # and the host job above runs them.
+      - name: Run the unit tests inside the image
+        run: |
+          docker run --rm --entrypoint sh mitig8it-action:ci -c \
+            'pip install --no-cache-dir --quiet pytest \
+             && cd /opt/mitig8it/action \
+             && pytest tests -q -m "not repo_definition"'
+
+      - name: The scanner and both runtimes are present
+        run: |
+          docker run --rm --entrypoint semgrep mitig8it-action:ci --version
+          docker run --rm --entrypoint node mitig8it-action:ci --version
+          docker run --rm --entrypoint python mitig8it-action:ci --version
+
+      # The permission refusal is the action's central claim, so it is exercised against the
+      # real entrypoint rather than only against the function that implements it. No token is
+      # supplied, so the run must stop before it reaches GitHub.
+      - name: The entrypoint refuses to run without a token
+        run: |
+          set +e
+          output="$(docker run --rm \
+            --env GITHUB_REPOSITORY=acme/widgets \
+            mitig8it-action:ci 2>&1)"
+          status=$?
+          set -e
+          echo "${output}"
+          if [ "${status}" -eq 0 ]; then
+            echo "the entrypoint exited 0 with no token, which it must never do" >&2
+            exit 1
+          fi
+
+  workflow-lint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      # A workflow file that does not parse fails the whole run before any job starts, with a
+      # message that does not say which file or line. This job says both.
+      - name: Run actionlint
+        run: |
+          curl -fsSL -o actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint -color

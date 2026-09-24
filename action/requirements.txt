@@ -1,0 +1,33 @@
+# The union of what the analysis and remediation services need to run in one process.
+#
+# The two services pin some packages at different patch versions, which pip cannot satisfy from
+# two files at once. Where they differ the higher pin wins, which is the analysis service's in
+# every current case. tests/test_requirements_parity.py reads both service requirement files and
+# fails if this list drops a package or pins one below what a service asked for.
+#
+# Some of the remediation service's dependencies are deliberately absent.
+#
+# google-cloud-storage and psycopg back its Postgres execution store, and kubernetes backs the
+# production sandbox driver. None of the three is on the import path of the engine as the action
+# runs it. Leaving them out keeps the image smaller and, more usefully, means the action cannot
+# reach a database or a cluster even by accident.
+#
+# opentelemetry-api, opentelemetry-sdk and opentelemetry-exporter-otlp-proto-http are absent
+# because they cannot be pinned here at all: semgrep
+# 1.173.0 requires opentelemetry-api~=1.37.0 and the remediation service pins ==1.44.0, so the
+# two cannot both be satisfied. Nothing is lost. The remediation service's telemetry module
+# guards its imports and turns every span into a no-op when no OTLP endpoint is configured, and
+# the action configures none: a review that runs in someone else's CI has nowhere to send traces
+# and no business sending them. semgrep brings whichever version it needs.
+
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+grpcio==1.81.1
+grpcio-health-checking==1.81.1
+protobuf==6.33.5
+prometheus-client==0.26.0
+httpx==0.28.1
+semgrep==1.173.0
+openai==2.54.0
+click==8.4.2
