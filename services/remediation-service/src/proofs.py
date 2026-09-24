@@ -369,11 +369,12 @@ def _js_traversal_function_proof(
         raise SiteError("no_untrusted_parameter")
     attack, _ = _js_call_arguments_for(function, untrusted, needs_connection=False)
     body = _js_module_header(path) + [
+        f"  const base = {base or 'h.root'};",
         f"  for (const payload of {_js(list(TRAVERSAL_PAYLOADS))}) {{",
         "    h.fs.reads.length = 0;",
         f"    const refused = h.call(m.{function.name}, {attack});",
         "    h.assert(!refused.ok, `expected ${JSON.stringify(payload)} to be refused, got ${JSON.stringify(refused.value)}`);",
-        "    h.assert.inside(h.fs.reads, " + (base or "h.root") + ", { payload });",
+        "    h.assert.inside(h.fs.reads, base, { payload });",
         "  }",
         "  h.fs.reads.length = 0;",
         f"  const payload = {_js(LEGITIMATE_NAME)};",
@@ -381,7 +382,9 @@ def _js_traversal_function_proof(
         "  h.assert(allowed.ok, 'expected a legitimate name to still resolve');",
     ]
     if base:
-        body.append(f"  h.assert.includes(String(allowed.value), {base});")
+        # What the call returns depends on the helper: a resolver hands back the path, a reader
+        # hands back the file. What both do is read inside the base directory, or not read at all.
+        body.append("  h.assert.inside(h.fs.reads, base);")
     body += ["});", ""]
     return GeneratedProof(
         finding.stable_id, PATH_CONTAINMENT, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
@@ -722,7 +725,7 @@ def _py_traversal_function_proof(
         "    h.assert_true(allowed.error is None, 'expected a legitimate name to still resolve')",
     ]
     if base:
-        body.append("    h.assert_includes(str(allowed.value), base)")
+        body.append("    h.assert_inside(h.fs.reads, base)")
     body += _py_footer()
     return GeneratedProof(
         finding.stable_id, PATH_CONTAINMENT, PYTHON, test_path(finding.stable_id, PYTHON), "\n".join(body),
