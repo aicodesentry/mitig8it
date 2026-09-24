@@ -143,6 +143,8 @@ A follow-up, PR 422 (`b9d2e796`), quieted the lease reclaim alert after a day of
 
 Deployment note: codesentry-api and codesentry-remediation run with CPU always allocated (Cloud Run `--no-cpu-throttling`). Their background workers (analysis queue, remediation dispatch, reconciler, in-process repair worker) starve when CPU is only allocated during requests; that starvation caused the stalled runs of 2026-09-19. The setting was first applied by hand and is now declared in the deploy workflows. Instances still scale to zero when idle.
 
+Real-repository replay, 2026-09-24: 165 merged pull requests from 11 public repositories were replayed through the analysis and remediation pipeline; tier 2 produced no finding over 816 changed files, no finding mapped to a repairable family so the engine was never reached on real input, and four analysis-service robustness bugs were found and fixed with tests. Full report: [real-repo replay](../validation/real-repo-replay-2026-09.md).
+
 Resolved observation: the second residual report on test-only PR 127 said "Remaining open findings: 0" while listing four unrepaired findings. Cause: the app's verification analysis run was re-pointed by the duplicate webhook run for the same commit, so the count came from the wrong run. Fixed in PR 402 by scoping the count to the immutable analysis snapshot; reports published after that PR are correct.
 
 ## Not done, as of 2026-09-22

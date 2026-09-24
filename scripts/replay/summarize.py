@@ -111,26 +111,37 @@ def _short(text: Any) -> str:
     return str(text or "").splitlines()[0][:60] if text else ""
 
 
-def render(summaries: list[dict[str, Any]], detail: bool) -> str:
+def render(summaries: list[dict[str, Any]], detail: bool, baseline: dict[str, int] | None = None) -> str:
+    exceptions_header = "Exceptions (before/after)" if baseline is not None else "Exceptions"
     lines = [
-        "| Repo | PRs | Files | Findings (T1/T2) | Limitations | Exceptions | Supported family | Candidates | Verified | Agent needed | p50 ms | p95 ms |",
+        f"| Repo | PRs | Files | Findings (T1/T2) | Limitations | {exceptions_header} | Supported family | Candidates | Verified | Agent needed | p50 ms | p95 ms |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     totals = Counter()
+    baseline_total = 0
     for item in summaries:
+        if baseline is None:
+            exceptions = str(item["exceptions"])
+        else:
+            before = baseline.get(str(item["repo"]), 0)
+            baseline_total += before
+            exceptions = f"{before} / {item['exceptions']}"
         lines.append(
             f"| {item['repo']} | {item['prs']} | {item['files']} | "
             f"{item['findings']} ({item['tier1']}/{item['tier2']}) | {item['limitations']} | "
-            f"{item['exceptions']} | {item['supported_family_findings']} | {item['candidates']} | "
+            f"{exceptions} | {item['supported_family_findings']} | {item['candidates']} | "
             f"{item['verified']} | {item['agent_needed']} | {item['p50_ms']} | {item['p95_ms']} |"
         )
         for key in ("prs", "files", "findings", "tier1", "tier2", "limitations", "exceptions",
                     "supported_family_findings", "candidates", "verified", "agent_needed"):
             totals[key] += item[key]
+    total_exceptions = (
+        str(totals["exceptions"]) if baseline is None else f"{baseline_total} / {totals['exceptions']}"
+    )
     lines.append(
         f"| **total** | {totals['prs']} | {totals['files']} | "
         f"{totals['findings']} ({totals['tier1']}/{totals['tier2']}) | {totals['limitations']} | "
-        f"{totals['exceptions']} | {totals['supported_family_findings']} | {totals['candidates']} | "
+        f"{total_exceptions} | {totals['supported_family_findings']} | {totals['candidates']} | "
         f"{totals['verified']} | {totals['agent_needed']} | | |"
     )
 
@@ -170,6 +181,8 @@ def main() -> int:
     parser.add_argument("results", nargs="+", help="per-repository JSON result files")
     parser.add_argument("--out", help="write the markdown here instead of stdout")
     parser.add_argument("--detail", action="store_true", help="also break down rules, limitations and exceptions")
+    parser.add_argument("--baseline", nargs="*", default=None,
+                        help="result files from an earlier run; the table then shows exceptions before and after")
     args = parser.parse_args()
 
     summaries = []
@@ -177,7 +190,14 @@ def main() -> int:
         document = json.loads(Path(path).read_text(encoding="utf-8"))
         summaries.append(summarize_repo(document))
 
-    text = render(summaries, args.detail)
+    baseline = None
+    if args.baseline is not None:
+        baseline = {}
+        for path in sorted(args.baseline):
+            item = summarize_repo(json.loads(Path(path).read_text(encoding="utf-8")))
+            baseline[str(item["repo"])] = item["exceptions"]
+
+    text = render(summaries, args.detail, baseline)
     if args.out:
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
