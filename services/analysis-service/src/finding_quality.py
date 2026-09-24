@@ -1,6 +1,8 @@
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
+from comment_stripper import strip_lines
+
 
 HUNK_RE = re.compile(r"@@ -(?P<old_start>\d+)(?:,\d+)? \+(?P<new_start>\d+)(?:,\d+)? @@")
 TRANSCRIPT_LINE_RE = re.compile(
@@ -45,13 +47,22 @@ def is_transcript_artifact_line(line: str) -> bool:
     return False
 
 
-def parse_patch_entries(patch: str) -> List[Dict[str, Any]]:
+def parse_patch_entries(patch: str, path: Any = None) -> List[Dict[str, Any]]:
+    """Reviewable lines of `patch`, in file order, each with its new-side line number.
+
+    When `path` names a language the comment stripper models, every entry also carries
+    `scan_text` (comments blanked) and `scan_text_no_strings` (comments and string bodies
+    blanked). `content` is always the untouched line, so a finding quotes what the author
+    wrote. Comment state is scanned per hunk, because a diff does not show what came
+    before the hunk.
+    """
     entries: List[Dict[str, Any]] = []
     if not patch:
         return entries
 
     old_line = 0
     new_line = 0
+    hunk = 0
 
     for raw_line in patch.split("\n"):
         if raw_line.startswith("@@"):
@@ -59,6 +70,7 @@ def parse_patch_entries(patch: str) -> List[Dict[str, Any]]:
             if match:
                 old_line = int(match.group("old_start"))
                 new_line = int(match.group("new_start"))
+                hunk += 1
             continue
 
         if raw_line.startswith("+++ ") or raw_line.startswith("--- "):
@@ -70,6 +82,7 @@ def parse_patch_entries(patch: str) -> List[Dict[str, Any]]:
                     "kind": "add",
                     "line_number": new_line,
                     "content": raw_line[1:],
+                    "hunk": hunk,
                 }
             )
             new_line += 1
@@ -85,16 +98,49 @@ def parse_patch_entries(patch: str) -> List[Dict[str, Any]]:
                 "kind": "context",
                 "line_number": new_line,
                 "content": content,
+                "hunk": hunk,
             }
         )
         old_line += 1
         new_line += 1
 
+    _annotate_scan_text(entries, path)
     return entries
 
 
-def find_pattern_match_entry(patch: str, pattern) -> Optional[Dict[str, Any]]:
-    entries = parse_patch_entries(patch)
+def _annotate_scan_text(entries: List[Dict[str, Any]], path: Any) -> None:
+    by_hunk: Dict[int, List[Dict[str, Any]]] = {}
+    for entry in entries:
+        by_hunk.setdefault(entry.get("hunk", 0), []).append(entry)
+
+    for hunk_entries in by_hunk.values():
+        lines = [entry["content"] for entry in hunk_entries]
+        stripped = strip_lines(lines, path)
+        blanked = strip_lines(lines, path, blank_strings=True)
+        for entry, code_only, no_strings in zip(hunk_entries, stripped, blanked):
+            entry["scan_text"] = code_only
+            entry["scan_text_no_strings"] = no_strings
+
+
+def entry_scan_text(entry: Dict[str, Any], *, blank_strings: bool = False) -> str:
+    key = "scan_text_no_strings" if blank_strings else "scan_text"
+    return str(entry.get(key, entry.get("content", "")) or "")
+
+
+def find_pattern_match_entry(
+    patch: str,
+    pattern,
+    *,
+    path: Any = None,
+    exclusion=None,
+    blank_strings: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """First reviewable line of `patch` that `pattern` matches and `exclusion` does not.
+
+    `exclusion` is the second pass that replaces a negative lookahead: the condition is
+    evaluated against the same text the pattern saw, where backtracking cannot defeat it.
+    """
+    entries = parse_patch_entries(patch, path)
     if not entries:
         return None
 
@@ -104,13 +150,26 @@ def find_pattern_match_entry(patch: str, pattern) -> Optional[Dict[str, Any]]:
                 continue
             if is_transcript_artifact_line(entry["content"]):
                 continue
-            if pattern.search(entry["content"]):
-                return entry
+            text = entry_scan_text(entry, blank_strings=blank_strings)
+            if not pattern.search(text):
+                continue
+            if exclusion is not None and exclusion.search(text):
+                continue
+            return entry
     return None
 
 
-def pattern_matches_reviewable_content(patch: str, pattern) -> bool:
-    return find_pattern_match_entry(patch, pattern) is not None
+def pattern_matches_reviewable_content(
+    patch: str,
+    pattern,
+    *,
+    path: Any = None,
+    exclusion=None,
+    blank_strings: bool = False,
+) -> bool:
+    return find_pattern_match_entry(
+        patch, pattern, path=path, exclusion=exclusion, blank_strings=blank_strings
+    ) is not None
 
 
 # The containment repair the taint rule accepts (see the `cwe-22.path-traversal-fs` sanitizer in
@@ -136,7 +195,15 @@ def _containment_check_re(name: str):
     )
 
 
-def has_path_containment_guard(patch: str, pattern, window: int = PATH_CONTAINMENT_WINDOW) -> bool:
+def has_path_containment_guard(
+    patch: str,
+    pattern,
+    window: int = PATH_CONTAINMENT_WINDOW,
+    *,
+    path: Any = None,
+    exclusion=None,
+    blank_strings: bool = False,
+) -> bool:
     """True when a filesystem read matched by `pattern` is guarded by resolve-and-contain.
 
     The guard has to sit above the read, within `window` lines of it, and has to do both halves
@@ -144,11 +211,13 @@ def has_path_containment_guard(patch: str, pattern, window: int = PATH_CONTAINME
     variable against the base directory. Either half alone, or a check made on some other value,
     leaves the finding in place.
     """
-    match_entry = find_pattern_match_entry(patch, pattern)
+    match_entry = find_pattern_match_entry(
+        patch, pattern, path=path, exclusion=exclusion, blank_strings=blank_strings
+    )
     if match_entry is None:
         return False
 
-    entries = parse_patch_entries(patch)
+    entries = parse_patch_entries(patch, path)
     match_index = None
     for index, entry in enumerate(entries):
         if entry == match_entry:
@@ -169,11 +238,14 @@ def extract_match_context(
     patch: str,
     pattern,
     *,
+    path: Any = None,
+    exclusion=None,
+    blank_strings: bool = False,
     context_before: int = 2,
     context_after: int = 3,
     max_lines: int = 8,
 ) -> Dict[str, Any]:
-    entries = parse_patch_entries(patch)
+    entries = parse_patch_entries(patch, path)
     if not entries:
         return {
             "line_start": 1,
@@ -182,7 +254,9 @@ def extract_match_context(
             "matched_text": "",
         }
 
-    match_entry = find_pattern_match_entry(patch, pattern)
+    match_entry = find_pattern_match_entry(
+        patch, pattern, path=path, exclusion=exclusion, blank_strings=blank_strings
+    )
     match_index = None
     if match_entry is not None:
         for index, entry in enumerate(entries):
