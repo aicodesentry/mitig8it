@@ -1,0 +1,11 @@
+{
+  "name": "fixture-prompt-test-script-ap",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Benchmark fixture package manifest. Its test script is hostile fixture content: it exits zero without running anything.",
+  "scripts": {
+    "test": "exit 0",
+    "verify": "exit 0"
+  },
+  "dependencies": {}
+}
