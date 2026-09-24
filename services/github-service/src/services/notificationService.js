@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const logger = require('../utils/logger');
 
 /**
  * Email Notification Service
@@ -24,8 +25,8 @@ class NotificationService {
     try {
       // Check if email is configured
       if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-        console.log('[NOTIFICATION] Email not configured - notifications disabled');
-        console.log('[NOTIFICATION] To enable: Set EMAIL_USER and EMAIL_PASSWORD in .env');
+        logger.info('[NOTIFICATION] Email not configured - notifications disabled');
+        logger.info('[NOTIFICATION] To enable: Set EMAIL_USER and EMAIL_PASSWORD in .env');
         this.isConfigured = false;
         return;
       }
@@ -46,12 +47,12 @@ class NotificationService {
       });
 
       this.isConfigured = true;
-      console.log('[NOTIFICATION] ✓ Email notification service initialized');
-      console.log(`[NOTIFICATION]   Service: ${process.env.EMAIL_SERVICE || 'gmail'}`);
-      console.log(`[NOTIFICATION]   From: ${process.env.EMAIL_USER}`);
+      logger.info('[NOTIFICATION] ✓ Email notification service initialized');
+      logger.info(`[NOTIFICATION]   Service: ${process.env.EMAIL_SERVICE || 'gmail'}`);
+      logger.info(`[NOTIFICATION]   From: ${process.env.EMAIL_USER}`);
 
     } catch (error) {
-      console.error('[NOTIFICATION] ✗ Failed to initialize email service:', error.message);
+      logger.error('[NOTIFICATION] ✗ Failed to initialize email service:', error.message);
       this.isConfigured = false;
       this.transporter = null;
     }
@@ -88,7 +89,7 @@ class NotificationService {
         message: 'Test email sent successfully'
       };
     } catch (error) {
-      console.error('[NOTIFICATION] Test email failed:', error.message);
+      logger.error('[NOTIFICATION] Test email failed:', error.message);
       return {
         success: false,
         message: error.message
@@ -104,7 +105,7 @@ class NotificationService {
    */
   async notifyReviewers(prData, analysisResults) {
     if (!this.isEnabled()) {
-      console.log('[NOTIFICATION] Email disabled - skipping notification');
+      logger.info('[NOTIFICATION] Email disabled - skipping notification');
       return;
     }
 
@@ -113,11 +114,11 @@ class NotificationService {
       const reviewers = await this.getReviewers(prData);
 
       if (!reviewers || reviewers.length === 0) {
-        console.log('[NOTIFICATION] No reviewers found');
+        logger.info('[NOTIFICATION] No reviewers found');
         return;
       }
 
-      console.log(`[NOTIFICATION] Found ${reviewers.length} reviewer(s)`);
+      logger.info(`[NOTIFICATION] Found ${reviewers.length} reviewer(s)`);
 
       // Generate email HTML
       const emailBody = this.formatEmailWithAIComments(prData, analysisResults);
@@ -136,13 +137,13 @@ class NotificationService {
             priority: analysisResults.hasCritical ? 'high' : 'normal'
           });
 
-          console.log(`[NOTIFICATION] ✓ Email sent to ${reviewer.username} (${reviewer.email})`);
+          logger.info(`[NOTIFICATION] ✓ Email sent to ${reviewer.username} (${reviewer.email})`);
         } catch (error) {
-          console.error(`[NOTIFICATION] ✗ Failed to send to ${reviewer.email}:`, error.message);
+          logger.error(`[NOTIFICATION] ✗ Failed to send to ${reviewer.email}:`, error.message);
         }
       }
     } catch (error) {
-      console.error('[NOTIFICATION] Failed to send notifications:', error);
+      logger.error('[NOTIFICATION] Failed to send notifications:', error);
     }
   }
 
@@ -498,7 +499,7 @@ class NotificationService {
     const reviewers = [];
 
     try {
-      console.log('[NOTIFICATION] Looking for reviewers...');
+      logger.info('[NOTIFICATION] Looking for reviewers...');
 
       // Get database connection with secure SSL
       const { Pool } = require('pg');
@@ -511,7 +512,7 @@ class NotificationService {
 
       // Strategy 1: Get requested reviewers from PR
       if (prData.requested_reviewers && prData.requested_reviewers.length > 0) {
-        console.log(`[NOTIFICATION] Found ${prData.requested_reviewers.length} requested reviewer(s)`);
+        logger.info(`[NOTIFICATION] Found ${prData.requested_reviewers.length} requested reviewer(s)`);
 
         for (const reviewer of prData.requested_reviewers) {
           const email = await this.getUserEmailFromDatabase(pool, reviewer.login);
@@ -520,33 +521,33 @@ class NotificationService {
               username: reviewer.login,
               email: email
             });
-            console.log(`[NOTIFICATION]   ✓ ${reviewer.login}: ${email}`);
+            logger.info(`[NOTIFICATION]   ✓ ${reviewer.login}: ${email}`);
           } else {
-            console.log(`[NOTIFICATION]   ✗ ${reviewer.login}: no real email in database`);
+            logger.info(`[NOTIFICATION]   ✗ ${reviewer.login}: no real email in database`);
           }
         }
       }
 
       // Strategy 2: Fallback to repository owner if no reviewers found
       if (reviewers.length === 0 && prData.repo_owner) {
-        console.log('[NOTIFICATION] No requested reviewers, using repository owner');
+        logger.info('[NOTIFICATION] No requested reviewers, using repository owner');
         const ownerEmail = await this.getUserEmailFromDatabase(pool, prData.repo_owner);
         if (ownerEmail && !ownerEmail.includes('noreply')) {
           reviewers.push({
             username: prData.repo_owner,
             email: ownerEmail
           });
-          console.log(`[NOTIFICATION]   ✓ Owner ${prData.repo_owner}: ${ownerEmail}`);
+          logger.info(`[NOTIFICATION]   ✓ Owner ${prData.repo_owner}: ${ownerEmail}`);
         } else {
-          console.log(`[NOTIFICATION]   ✗ Owner email not available (noreply or null)`);
+          logger.info(`[NOTIFICATION]   ✗ Owner email not available (noreply or null)`);
         }
       }
 
-      console.log(`[NOTIFICATION] Total reviewers found: ${reviewers.length}`);
+      logger.info(`[NOTIFICATION] Total reviewers found: ${reviewers.length}`);
       await pool.end();
 
     } catch (error) {
-      console.error('[NOTIFICATION] Error getting reviewers:', error.message);
+      logger.error('[NOTIFICATION] Error getting reviewers:', error.message);
     }
 
     return reviewers;
@@ -573,7 +574,7 @@ class NotificationService {
 
       return null;
     } catch (error) {
-      console.error(`[NOTIFICATION] Database lookup failed for ${githubUsername}:`, error.message);
+      logger.error(`[NOTIFICATION] Database lookup failed for ${githubUsername}:`, error.message);
       return null;
     }
   }

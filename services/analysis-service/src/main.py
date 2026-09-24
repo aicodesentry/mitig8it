@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from starlette.responses import Response
 
+import request_context
 from finding_quality import (
     cluster_findings,
     extract_match_context,
@@ -71,7 +72,20 @@ ANALYSIS_DURATION = Histogram(
     buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20],
 )
 
+request_context.configure_logging(os.getenv("LOG_LEVEL", "INFO"))
+logger = request_context.get_logger("mitig8it.analysis")
+
 app = FastAPI(title="Mitig8it Analysis Service", version="1.0.0")
+
+
+# Every log line this request writes carries the delivery and run identifiers the
+# caller sent, without a single handler having to accept them as arguments.
+@app.middleware("http")
+async def correlation_middleware(request: Request, call_next):
+    with request_context.use(request_context.from_headers(request.headers)):
+        return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173"), "http://localhost:5173", "http://localhost:3001"],

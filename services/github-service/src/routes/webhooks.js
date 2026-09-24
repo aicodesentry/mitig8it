@@ -1,4 +1,6 @@
 const express = require('express');
+const logger = require('../utils/logger');
+const requestContext = require('../utils/requestContext');
 const axios = require('axios');
 const crypto = require('crypto');
 const { Pool } = require('pg');
@@ -16,7 +18,7 @@ const pool = new Pool({
 // Verify GitHub webhook signature
 function verifySignature(payloadBuffer, signatureHeader) {
   if (!process.env.WEBHOOK_SECRET) {
-    console.warn('WEBHOOK_SECRET not set - rejecting webhook');
+    logger.warn('WEBHOOK_SECRET not set - rejecting webhook');
     return false;
   }
   if (!signatureHeader) {
@@ -84,7 +86,7 @@ router.post('/register', async (req, res) => {
     );
 
     if (existingWebhook) {
-      console.log(`Webhook already exists for ${repository_full_name}, returning existing ID: ${existingWebhook.id}`);
+      logger.info(`Webhook already exists for ${repository_full_name}, returning existing ID: ${existingWebhook.id}`);
       // Persist webhook details to DB if we have the repository row
       try {
         const update = await pool.query(
@@ -95,10 +97,10 @@ router.post('/register', async (req, res) => {
           [existingWebhook.id, repoId]
         );
         if (update.rowCount === 0) {
-          console.warn(`[WARN] Repo not found for github_id=${repoId} when updating webhook_id`);
+          logger.warn(`[WARN] Repo not found for github_id=${repoId} when updating webhook_id`);
         }
       } catch (dbErr) {
-        console.error('[ERROR] Failed to persist existing webhook_id:', dbErr.message);
+        logger.error('[ERROR] Failed to persist existing webhook_id:', dbErr.message);
       }
 
       return res.json({
@@ -139,7 +141,7 @@ router.post('/register', async (req, res) => {
     );
 
     const webhook = webhookResponse.data;
-    console.log(`New webhook created for ${repository_full_name}, ID: ${webhook.id}`);
+    logger.info(`New webhook created for ${repository_full_name}, ID: ${webhook.id}`);
 
     // Persist webhook details to DB if we have the repository row
     try {
@@ -151,10 +153,10 @@ router.post('/register', async (req, res) => {
         [webhook.id, repoId]
       );
       if (update.rowCount === 0) {
-        console.warn(`[WARN] Repo not found for github_id=${repoId} when updating webhook_id`);
+        logger.warn(`[WARN] Repo not found for github_id=${repoId} when updating webhook_id`);
       }
     } catch (dbErr) {
-      console.error('[ERROR] Failed to persist webhook_id:', dbErr.message);
+      logger.error('[ERROR] Failed to persist webhook_id:', dbErr.message);
     }
 
     res.json({
@@ -167,7 +169,7 @@ router.post('/register', async (req, res) => {
   } catch (error) {
     const status = error.response?.status;
     const tokenInvalid = status === 401 || status === 403 || status === 404;
-    console.error('Webhook registration error:', error.response?.data?.message || error.message);
+    logger.error('Webhook registration error:', error.response?.data?.message || error.message);
     res.status(status || 500).json({
       error: 'Failed to register webhook',
       details: error.response?.data?.message || error.message,
@@ -182,13 +184,15 @@ router.post('/github', express.raw({ type: 'application/json' }), async (req, re
   const signature = req.headers['x-hub-signature-256'];
   const event = req.headers['x-github-event'];
 
-  console.log(`\n=== Webhook Event Received ===`);
-  console.log(`Event: ${event}`);
-  console.log(`Signature: ${signature ? 'Present' : 'Missing'}`);
+  // The delivery header is the one identifier GitHub gives us, and it is what an
+  // operator pastes in when asking what happened to a redelivery.
+  requestContext.assign({ delivery_id: req.headers['x-github-delivery'] });
+
+  logger.info('Webhook event received', { event, signature: signature ? 'present' : 'missing' });
 
   // Verify signature (reject when secret is set but signature is missing or invalid)
   if (!verifySignature(req.body, signature)) {
-    console.error('[ERROR] Invalid or missing webhook signature');
+    logger.error('[ERROR] Invalid or missing webhook signature');
     return res.status(401).json({ error: 'Invalid signature' });
   }
 
@@ -197,7 +201,7 @@ router.post('/github', express.raw({ type: 'application/json' }), async (req, re
 
   // Only process pull_request events
   if (event !== 'pull_request') {
-    console.log(`[IGNORE] Ignoring ${event} event`);
+    logger.info(`[IGNORE] Ignoring ${event} event`);
     return res.status(200).json({ message: 'Event ignored' });
   }
 
@@ -206,9 +210,9 @@ router.post('/github', express.raw({ type: 'application/json' }), async (req, re
   const pr = payload.pull_request;
   const repository = payload.repository;
 
-  console.log(`Action: ${action}`);
-  console.log(`Repository: ${repository.full_name}`);
-  console.log(`PR: #${pr.number} - ${pr.title}`);
+  logger.info(`Action: ${action}`);
+  logger.info(`Repository: ${repository.full_name}`);
+  logger.info(`PR: #${pr.number} - ${pr.title}`);
 
   try {
     // Get repository from database
@@ -218,7 +222,7 @@ router.post('/github', express.raw({ type: 'application/json' }), async (req, re
     );
 
     if (repoResult.rows.length === 0) {
-      console.log('[WARN] Repository not found in database');
+      logger.info('[WARN] Repository not found in database');
       return res.status(200).json({ message: 'Repository not connected' });
     }
 
@@ -255,9 +259,9 @@ router.post('/github', express.raw({ type: 'application/json' }), async (req, re
       JSON.stringify(sanitizedPayload)
     ]
   );
-    console.log(`[LOG] Webhook event logged: ${action} on PR #${pr.number}`);
+    logger.info(`[LOG] Webhook event logged: ${action} on PR #${pr.number}`);
 
-    console.log(`=============================\n`);
+    logger.info(`=============================\n`);
 
     // Respond to GitHub
     res.status(200).json({
@@ -266,8 +270,8 @@ router.post('/github', express.raw({ type: 'application/json' }), async (req, re
     });
 
   } catch (error) {
-    console.error('[ERROR] Error processing webhook:', error);
-    console.error(`=============================\n`);
+    logger.error('[ERROR] Error processing webhook:', error);
+    logger.error(`=============================\n`);
     res.status(500).json({ error: 'Failed to process webhook' });
   }
 });
@@ -295,14 +299,14 @@ router.post('/unregister', ensureInternalAuth, async (req, res) => {
       }
     );
 
-    console.log(`Webhook ${webhook_id} deleted for ${repository_full_name}`);
+    logger.info(`Webhook ${webhook_id} deleted for ${repository_full_name}`);
 
     res.json({
       success: true,
       message: 'Webhook deleted successfully',
     });
   } catch (error) {
-    console.error('Webhook deletion error:', error.response?.data || error.message);
+    logger.error('Webhook deletion error:', error.response?.data || error.message);
     res.status(error.response?.status || 500).json({
       error: 'Failed to delete webhook',
       details: error.response?.data?.message || error.message,
