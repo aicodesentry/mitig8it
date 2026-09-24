@@ -497,3 +497,65 @@ async def test_a_model_test_beside_the_proof_runs_in_addition_and_cannot_replace
         ("other", ".mitig8it/regression/other.test.js"),
     ]
     assert merged[0]["content"] == proof.content
+
+
+# --- a credential inside a multi-line object literal -----------------------------------------
+
+SESSION_JS = """const store = new Map();
+
+function install(app) {
+  app.use(session({
+    secret: 'keyboard cat',
+    resave: true,
+  }));
+}
+
+module.exports = { install };
+"""
+
+# Line 4 is what a rule matching the whole `app.use(session({ ... }))` call reports; line 5 is
+# where the credential is. Before the vulnerable-corpus run of September 2026 both the template
+# and the proof looked only at the reported line, and refused four real findings because of it.
+SESSION_FINDING = {
+    "snapshot_id": "session-4",
+    "rule_id": "cwe-798.js-session-secret-literal",
+    "cwe_id": "CWE-798",
+    "file_path": "server.js",
+    "line_start": 4,
+    "line_end": 7,
+}
+
+
+def _session_snapshot():
+    request = _request([("server.js", SESSION_JS)], [SESSION_FINDING])
+    return Snapshot(request), request.findings[0]
+
+
+class TestCredentialInsideAnObjectLiteral:
+    def test_the_template_rewrites_the_line_the_credential_is_on(self):
+        snapshot, finding = _session_snapshot()
+        patch = generate_template(snapshot, finding, "hardcoded_credential", JAVASCRIPT)
+        assert isinstance(patch, TemplatePatch), getattr(patch, "reason", patch)
+        [change] = patch.changes
+        assert change["start_line"] == 5
+        assert change["original_lines"] == ["    secret: \'keyboard cat\',"]
+        assert change["replacement_lines"] == ["    secret: process.env.SECRET,"]
+
+    def test_the_proof_asserts_on_the_same_credential(self):
+        snapshot, finding = _session_snapshot()
+        proof = generate_proof(snapshot, finding, "hardcoded_credential", JAVASCRIPT)
+        assert isinstance(proof, GeneratedProof), getattr(proof, "reason", proof)
+        assert "SECRET" in proof.content
+        assert "keyboard cat" in proof.content
+
+    def test_the_search_never_leaves_the_finding(self):
+        """A literal outside the reported range is a different finding\'s business.
+
+        Searching the span is only safe because it cannot reach a literal the rule did not
+        match. A finding narrowed to the call\'s first line alone has to go back to refusing,
+        or the template starts rewriting values nothing reported.
+        """
+        request = _request([("server.js", SESSION_JS)], [{**SESSION_FINDING, "line_end": 4}])
+        patch = generate_template(Snapshot(request), request.findings[0], "hardcoded_credential", JAVASCRIPT)
+        assert isinstance(patch, TemplateFallback)
+        assert patch.reason == "string_literal_assignment_not_found"

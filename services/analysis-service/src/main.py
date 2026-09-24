@@ -17,7 +17,12 @@ from finding_quality import (
     has_path_containment_guard,
     pattern_matches_reviewable_content,
 )
-from security_rules import DEPENDENCY_RISK_PATTERNS, SECURITY_RULES, likely_llm_repo
+from security_rules import (
+    DEPENDENCY_RISK_PATTERNS,
+    POSTING_QUARANTINE,
+    SECURITY_RULES,
+    likely_llm_repo,
+)
 from opengrep_runner import quarantined_rule_ids, run_opengrep
 from llm_client import redact
 from llm_triage import triage_findings
@@ -78,10 +83,13 @@ QUARANTINED_FINDING_COUNT = Counter(
 )
 
 # Rules whose measured precision does not support posting. Tier 2 declares this per rule
-# in its YAML metadata (`posting: quarantine`), read once at import. Tier 1 will add its
-# own set here when fix/tier1-rule-precision lands; the two tiers then share this one
-# frozenset and the one filter below, so there is a single answer to "does this rule post".
-QUARANTINED_RULE_IDS = frozenset(quarantined_rule_ids())
+# in its YAML metadata (`posting: quarantine`) and tier 1 on the rule object
+# (`posting=POSTING_QUARANTINE`), both read once at import. The two tiers share this one
+# frozenset and the one filter below, so there is a single answer to "does this rule post",
+# and a suppression or a metric never has to ask which tier a rule came from.
+QUARANTINED_RULE_IDS = frozenset(quarantined_rule_ids()) | frozenset(
+    rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE
+)
 
 app = FastAPI(title="Mitig8it Analysis Service", version="1.0.0")
 app.add_middleware(

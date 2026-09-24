@@ -95,6 +95,8 @@ before importing a rule from anywhere.
   rule that declared a family its CWE does not produce would be handed to the engine as
   something else.
 - `posting`, which is `post` or `quarantine`.
+- `precision_evidence`, when someone has measured the rule on a corpus. It must name the
+  corpus or the write-up, because a precision claim nobody can re-run is an opinion.
 
 ### The posting policy
 
@@ -112,16 +114,32 @@ does not do is reach a reviewer. The removal happens in exactly one place,
 knowledge of the policy: the findings simply do not arrive, nothing is posted to GitHub,
 nothing is counted in the check summary, and nothing is handed to remediation.
 
-Four rules are quarantined today; the measurement behind each is in
-[tier2-coverage-2026-09.md](../validation/tier2-coverage-2026-09.md).
+The policy is one policy, not a tier 2 one. Tier 1 declares the same states on the rule
+object in `security_rules.py` (`precision`, `posting`, `precision_evidence`), and
+`main.QUARANTINED_RULE_IDS` is the union of the two declarations, so a suppression, a metric
+or a reviewer never has to ask which tier a rule came from.
+
+Five rules are quarantined today: four tier 2 rules, whose measurement is in
+[tier2-coverage-2026-09.md](../validation/tier2-coverage-2026-09.md), and the tier 1 rule
+`path.traversal.user_path`, whose measurement is in
+[vulnerable-corpus-2026-09.md](../validation/vulnerable-corpus-2026-09.md). The same corpus
+gave 18 posting tier 2 rules a `precision_evidence` line.
 
 ### Re-enabling a quarantined rule
 
 1. Narrow the pattern so the shape it was wrong about no longer matches.
 2. Add that exact line to `benchmarks/tier2-precision/cases.json` as a no-finding case, with
    the repository and pull request it came from, and keep the rule's true-positive fixture.
-3. Re-run the replay and label what it now produces.
+3. Re-run the replay, or the vulnerable-corpus snapshot with `--include-quarantined`, and
+   adjudicate what it now produces.
 4. Change `posting` to `post` and replace `posting_evidence` with the new measurement.
+
+A rule can also earn its way back without a pattern change, by being measured on code that
+contains its shape: `scripts/replay/replay.py --snapshot --include-quarantined` keeps a
+quarantined rule's findings, and `scripts/replay/score.py` reports them separately from what
+posts. Three adjudicated findings at 0.8 or better is the bar, and it is a real bar:
+`cwe-489.py-debug-constant-true` has two, both confirming the quarantine reason was wrong,
+and it still cannot come back.
 
 ### Rule ids are resolved, not taken as given
 

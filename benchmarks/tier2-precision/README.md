@@ -31,7 +31,7 @@ Each case is one file's worth of code and what must happen to it.
 
 | Field | Meaning |
 | --- | --- |
-| `id` | The case name; for a true positive it is the rule id. |
+| `id` | The case name; for a true positive it is the rule id, prefixed `corpus.` when the code came out of the vulnerable corpus. |
 | `expect` | `finding` or `no-finding`. |
 | `rule` | True positives: the rule that must fire. |
 | `rules` | No-finding cases: the rules that must all stay silent. |
@@ -63,3 +63,19 @@ backwards from the pattern proves only that the pattern matches itself.
 A no-finding case is a line that actually appeared in the replay, with `note` naming the
 repository, the pull request and what the narrowing was. Do not invent one: a hypothetical
 false positive is an opinion, and this file is for measurements.
+
+## The `corpus.` cases
+
+The 27 cases whose id begins `corpus.` are not written, they are lifted. Each is the code of
+a finding that a label in `benchmarks/vulnerable-corpus/labels.json` confirmed as a real
+vulnerability, taken out of the repository it was measured in and named in the case's `note`.
+They are the strongest form this file has: a synthetic fixture proves the rule matches
+something, and one of these proves it matches a vulnerability someone had to fix.
+
+A snippet lifted out of a file sometimes needs what the file gave it. The generator tried the
+finding's own lines, then those lines with the file's imports, then the enclosing block, then
+both, scanned each with the real scanner and kept the first that reproduced the finding.
+Three could not be reproduced in isolation and were left out rather than adjusted until they
+passed, because a fixture edited until it fires is a fixture that proves nothing:
+`cwe-22.path-traversal-fs`, `cwe-352.py-csrf-exempt` and `cwe-918.ssrf-axios`. All three keep
+their authored fixture, so the rule is still covered.

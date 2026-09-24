@@ -353,6 +353,29 @@ def js_literal_assignment(source: str, line: int) -> tuple[str, str, str, str] |
     return None
 
 
+def js_literal_assignment_in_span(
+    source: str, line_start: int, line_end: int | None
+) -> tuple[int, tuple[str, str, str, str]] | None:
+    """The first line in a finding's own range that binds a string literal, and what it binds.
+
+    A rule that matches a multi-line object literal reports the line the *pattern* opens on,
+    not the line of the credential inside it: `cwe-798.js-session-secret-literal` points at
+    `app.use(session({` and the secret is on the next line. The vulnerable-corpus run
+    (docs/validation/vulnerable-corpus-2026-09.md) found four such sites in two repositories.
+
+    The search never leaves the finding's range, so it can only find a literal the rule
+    already matched, and it takes the first one: a second credential in the same object is a
+    second finding with a range of its own.
+    """
+    start = max(1, int(line_start or 1))
+    end = max(start, int(line_end or start))
+    for line in range(start, end + 1):
+        assignment = js_literal_assignment(source, line)
+        if assignment is not None:
+            return line, assignment
+    return None
+
+
 def js_environment_name(identifier: str) -> str:
     """The environment variable an identifier names: `apiKey` -> `API_KEY`, `API_KEY` -> `API_KEY`."""
     spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", identifier)
