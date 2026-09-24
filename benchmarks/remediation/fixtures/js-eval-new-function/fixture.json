@@ -1,0 +1,54 @@
+{
+  "schema_version": "v1",
+  "id": "js-eval-new-function-001",
+  "repository_id": "fixture-js-formula-ag",
+  "split": "validation",
+  "family": "code_injection_eval",
+  "kind": "negative",
+  "expected_state": "unsupported",
+  "source": "app.js",
+  "finding": {
+    "id": "js-eval-new-function-1",
+    "rule_id": "cwe-95.eval-injection",
+    "cwe_id": "CWE-95",
+    "category": "code injection",
+    "message": "A saved formula is compiled into a function with the Function constructor.",
+    "path": "app.js",
+    "line_start": 3,
+    "line_end": 3
+  },
+  "reason": "The Node harness stubs no dynamic compilation and records no executed code, so no regression test can prove a code_injection_eval repair for a JavaScript source; the engine skips the finding as unsupported_rule_family.",
+  "budget": {
+    "max_tool_calls": 20,
+    "max_attempts": 3,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 120000,
+    "max_cost_usd": 2.0
+  },
+  "verification_checks": [
+    {
+      "check_id": "exploit",
+      "kind": "exploit",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--exploit"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "failed",
+      "expected_candidate": "passed"
+    },
+    {
+      "check_id": "behavior",
+      "kind": "behavior",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--behavior"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    }
+  ]
+}

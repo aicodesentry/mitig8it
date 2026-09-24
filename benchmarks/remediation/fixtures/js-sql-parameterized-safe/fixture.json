@@ -1,0 +1,55 @@
+{
+  "schema_version": "v1",
+  "id": "js-sql-parameterized-safe-001",
+  "repository_id": "fixture-js-accounts-ac",
+  "split": "train",
+  "family": "sql_parameterization",
+  "kind": "negative",
+  "expected_state": "unsupported",
+  "source": "app.js",
+  "finding": {
+    "id": "js-sql-parameterized-safe-1",
+    "rule_id": "sql.injection.raw_query",
+    "cwe_id": "CWE-89",
+    "category": "SQL injection",
+    "message": "A SELECT statement is assembled near a request value.",
+    "path": "app.js",
+    "line_start": 4,
+    "line_end": 4
+  },
+  "reason": "The statement already binds the account number as a pg parameter, so there is nothing to repair and the exploit check passes on the baseline tree.",
+  "budget": {
+    "max_tool_calls": 20,
+    "max_attempts": 3,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 120000,
+    "max_cost_usd": 2.0
+  },
+  "verification_checks": [
+    {
+      "check_id": "exploit",
+      "kind": "exploit",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--exploit"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    },
+    {
+      "check_id": "behavior",
+      "kind": "behavior",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--behavior"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    }
+  ],
+  "verification_note": "The baseline is already parameterized, so the exploit check cannot demonstrate a vulnerability and no candidate can be verified."
+}

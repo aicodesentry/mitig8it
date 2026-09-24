@@ -1,0 +1,16 @@
+{
+  "schema_version": "v1",
+  "note": "Fixtures whose reviewed repair is correct but which a recorded engine or harness defect stops the pipeline from carrying. An entry labels a failure; it never turns one into a pass, never leaves the precision, coverage, or abstention arithmetic, and never satisfies the release gate. Every entry names the defect's file and line so it cannot quietly absorb a new regression.",
+  "failures": [
+    {
+      "fixture_id": "python-sql-psycopg-format-001",
+      "adapters": [
+        "engine-local",
+        "engine-live"
+      ],
+      "reason_code": "*",
+      "bug": "services/remediation-service/src/patches.py:257",
+      "note": "The service generates its own coverage proof for a Python SQL finding whose repaired function takes a cursor or connection parameter, and that proof opens with `import psycopg` (services/remediation-service/src/proofs.py:268 and :272). Generated tests are dependency-checked with allow_declared=False, and _reject_missing_python_dependencies does not exempt the modules the Python harness fakes (services/remediation-service/src/sandbox/harness_py.py:665-671 installs flask, sqlite3, psycopg, psycopg2, pymysql, sqlalchemy, and subprocess into sys.modules, and _AutoStubFinder stubs anything else). The service therefore rejects a proof it wrote itself with missing_dependency:psycopg, the template pass and then every agent patch are refused, and no candidate is ever proposed. sqlite3 escapes it only by being standard library. Fixed by exempting the harness-provided modules in the generated-test dependency check, or by having the proof take its cursor from the harness instead of importing the driver."
+    }
+  ]
+}

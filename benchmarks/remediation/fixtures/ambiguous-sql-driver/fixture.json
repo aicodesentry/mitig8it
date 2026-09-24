@@ -9,9 +9,9 @@
   "source": "app.js",
   "finding": {
     "id": "ambiguous-sql-1",
-    "rule_id": "cwe-89.unknown-driver",
+    "rule_id": "sql.injection.raw_query",
     "cwe_id": "CWE-89",
-    "category": "sql",
+    "category": "SQL injection",
     "path": "app.js",
     "line_start": 3,
     "line_end": 3

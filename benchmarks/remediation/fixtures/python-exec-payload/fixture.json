@@ -1,0 +1,59 @@
+{
+  "schema_version": "v1",
+  "id": "python-exec-payload-001",
+  "repository_id": "fixture-python-promotions-ak",
+  "split": "train",
+  "family": "code_injection_eval",
+  "kind": "supported",
+  "expected_state": "ready",
+  "source": "app.py",
+  "reference_repair": "expected/app.py",
+  "finding": {
+    "id": "python-exec-payload-1",
+    "rule_id": "code.injection.eval",
+    "cwe_id": "CWE-95",
+    "category": "code injection",
+    "message": "A saved rule literal is run with exec instead of parsed.",
+    "path": "app.py",
+    "line_start": 7,
+    "line_end": 7
+  },
+  "trusted_fixture_test": {
+    "runtime": "python3",
+    "path": "tests/verify.py",
+    "timeout_seconds": 10
+  },
+  "budget": {
+    "max_tool_calls": 20,
+    "max_attempts": 3,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 120000,
+    "max_cost_usd": 2.0
+  },
+  "verification_checks": [
+    {
+      "check_id": "exploit",
+      "kind": "exploit",
+      "argv": [
+        "python3",
+        "tests/verify.py",
+        "--exploit"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "failed",
+      "expected_candidate": "passed"
+    },
+    {
+      "check_id": "behavior",
+      "kind": "behavior",
+      "argv": [
+        "python3",
+        "tests/verify.py",
+        "--behavior"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    }
+  ]
+}
