@@ -57,8 +57,8 @@ class RemediationHarnessTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
-        self.assertEqual(report["summary"]["eligible_supported_cases"], 27)
-        self.assertEqual(report["summary"]["negative_adversarial_cases"], 15)
+        self.assertEqual(report["summary"]["eligible_supported_cases"], 33)
+        self.assertEqual(report["summary"]["negative_adversarial_cases"], 11)
         self.assertEqual(report["summary"]["failures"], [])
 
     def test_reference_candidate_must_match_the_expected_patch_not_only_claim_ready(self):
@@ -82,14 +82,14 @@ class RemediationHarnessTests(unittest.TestCase):
     def test_every_supported_family_is_covered_in_both_toolchains_or_recorded_as_an_abstention(self):
         fixtures = [fixture for _, fixture in load_fixtures()]
         supported = {(fixture["family"], fixture["source"].rsplit(".", 1)[-1]) for fixture in fixtures if fixture["kind"] == "supported"}
-        # Python proves all five families; the Node harness records no environment reads and
-        # stubs no eval, so those two families are covered by JavaScript abstention fixtures.
+        # Both toolchains prove all five families, so every cell of the family table is a
+        # supported fixture and no family is represented only by an abstention.
         for family in ("sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval"):
             self.assertIn((family, "py"), supported, family)
-        for family in ("sql_parameterization", "command_arguments", "path_containment"):
             self.assertIn((family, "js"), supported, family)
-        abstaining = {(fixture["family"], fixture["source"].rsplit(".", 1)[-1]) for fixture in fixtures if fixture["kind"] != "supported"}
-        for family in ("hardcoded_credential", "code_injection_eval"):
+        # Each gate that refuses a shape still has a fixture standing for it.
+        abstaining = {(fixture["family"], fixture["source"].rsplit(".", 1)[-1]) for fixture in fixtures if fixture["kind"] == "negative"}
+        for family in ("sql_parameterization", "command_arguments", "code_injection_eval"):
             self.assertIn((family, "js"), abstaining, family)
         self.assertGreaterEqual(sum(1 for fixture in fixtures if fixture["kind"] == "negative"), 6)
         self.assertGreaterEqual(sum(1 for fixture in fixtures if fixture["kind"] == "adversarial"), 4)
