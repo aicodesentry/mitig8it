@@ -5,7 +5,11 @@
     "seed": 20260924,
     "size": 40,
     "unlabelled_total": 1687,
-    "class_mismatch_total": 31
+    "class_mismatch_total": 31,
+    "new_rule_pass_2026_09_24": {
+      "description": "Hand verdicts on the rules added by the XSS and path-traversal recall change. Every finding of each new rule was read where the rule produced ten or fewer; where it produced more, a sample was read and the count is named in the rule's own evidence line.",
+      "verdicts": 44
+    }
   },
   "adjudications": [
     {
@@ -203,7 +207,7 @@
     {
       "fingerprint": "b48a871e7f85defece2268a710dcac054a62dc1bda4466380b0cf1c42384b9b5",
       "verdict": "true",
-      "note": "password=\"65079b00\u2026\" is a credential literal in a model construction",
+      "note": "password=\"65079b00…\" is a credential literal in a model construction",
       "rule_id": "secret.hardcoded.credential",
       "where": "adeyosemanputra/pygoat introduction/views.py:866",
       "sampled_as": "class_mismatch"
@@ -251,7 +255,7 @@
     {
       "fingerprint": "fb56365a9a9b8a80f6f70e1d2309f379718dd266381f4b7bd3e6a9368125b19b",
       "verdict": "true",
-      "note": "password=\"65079b00\u2026\" as a keyword argument is a credential literal",
+      "note": "password=\"65079b00…\" as a keyword argument is a credential literal",
       "rule_id": "opengrep.cwe-798.py-credential-keyword-argument",
       "where": "adeyosemanputra/pygoat introduction/views.py:866",
       "sampled_as": "class_mismatch"
@@ -575,6 +579,358 @@
       "rule_id": "null.pointer.deref",
       "where": "OWASP/NodeGoat test/e2e/integration/tutorial_spec.js:8",
       "sampled_as": "unlabelled"
+    },
+    {
+      "fingerprint": "c13ff4c9f0395155bb7a6daa9d129a839c1cc08cd38815d86c8116e3e19e669f",
+      "verdict": "false",
+      "note": "static SVG path data in an avatar component; the interpolations are palette colours the library itself produces",
+      "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
+      "where": "dicebear/dicebear packages/@dicebear/avataaars/src/components/accessories.ts:22",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "87448eee78b955ed45caa6778b1d534f6cfc8df50c5ca09285ac272653406b26",
+      "verdict": "false",
+      "note": "every interpolation is wrapped in escape.xml(); the value is escaped and the rule cannot see it",
+      "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
+      "where": "dicebear/dicebear packages/@dicebear/big-ears/src/components/face.ts:30",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "718ae972a15361be1785a1d0913a937d326ea3f7049075350389e4e98a6df3b0",
+      "verdict": "false",
+      "note": "escape.xml() on the interpolated colour; already escaped",
+      "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
+      "where": "dicebear/dicebear packages/@dicebear/croodles/src/components/top.ts:105",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "121d8e0d202c2f13e32e9e66f34c204dd645254bd403995b136ef67dc626d585",
+      "verdict": "false",
+      "note": "static path geometry; nothing untrusted reaches the markup",
+      "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
+      "where": "dicebear/dicebear packages/@dicebear/lorelei/src/components/glasses.ts:35",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "6d0c66bf5f00f8bd49d7f4b6c65d53b5e862e738af7b119a46b51677ea4c53d0",
+      "verdict": "false",
+      "note": "escape.xml() on the interpolated colour; already escaped",
+      "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
+      "where": "dicebear/dicebear packages/@dicebear/pixel-art-neutral/src/components/eyes.ts:65",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "ffd3d6406c8843131f5205e7e791b60b3c74471e1b23c6bd328b54b988302a8e",
+      "verdict": "false",
+      "note": "escape.xml() on the interpolated colour; already escaped",
+      "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
+      "where": "dicebear/dicebear packages/@dicebear/thumbs/src/components/shape.ts:17",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "d6654a00b26957139b25c63be99bd042e7c8342be3e7da6dbb7b041d5a89cf78",
+      "verdict": "false",
+      "note": "all three interpolations are wrapped in escapeHtml(); the line is the escaped form, not the defect",
+      "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
+      "where": "kepano/defuddle src/extractors/bluesky.ts:293",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "c080330f680d73a58e262958cf4849cc6b8e2cd3e63414b3a0e0f8362d3553c0",
+      "verdict": "false",
+      "note": "composition: ${parts.join()} is already-built markup, not data being injected",
+      "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
+      "where": "kepano/defuddle src/extractors/x-oembed.ts:458",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "183c2f5265e1aaf718ab3ba83249ddd32fc67f48364ca8352e0f90b67a4201fe",
+      "verdict": "false",
+      "note": "a static marketing page; the interpolations are build-time constants",
+      "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
+      "where": "kepano/defuddle website/src/success.ts:6",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "6322c7cd511c4e5d0eab20f3ded15dfd177675a726b15a47d181438d8df9f1ae",
+      "verdict": "true",
+      "note": "parsed transcript timestamps interpolated into markup with no escaping on either value",
+      "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
+      "where": "kepano/defuddle src/utils/transcript.ts:77",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "1daee38086d0231cfe6713b75db6082d6c2bf81d6423207c6ee9725af0bb7f48",
+      "verdict": "false",
+      "note": "<%- include(...) %> is EJS's own partial-composition idiom, not unescaped user output",
+      "rule_id": "opengrep.cwe-79.tpl-ejs-unescaped-output",
+      "where": "appsecco/dvna views/vulnerabilities/layout.ejs:35",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "ba4ce7cc6c7bfef9e4baa9f9c0385036d8884715bba8f146bd36ebc1141bc90e",
+      "verdict": "false",
+      "note": "<%- include(...) %>, the same partial-composition idiom",
+      "rule_id": "opengrep.cwe-79.tpl-ejs-unescaped-output",
+      "where": "appsecco/dvna views/vulnerabilities/layout.ejs:38",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "6c3ff4f59b9e1fb919e4ea1daacd9d89da08599be712f1c5f93d8dfd89918a98",
+      "verdict": "false",
+      "note": "<%- include(...) %>, the same partial-composition idiom",
+      "rule_id": "opengrep.cwe-79.tpl-ejs-unescaped-output",
+      "where": "appsecco/dvna views/vulnerabilities/layout.ejs:41",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "e8dc0d0b00d3732f33873c18c3f791e1c9e45ce5c9bee57da312b0c6f9b765e1",
+      "verdict": "false",
+      "note": "<%- body %> is how express-ejs-layouts renders the child view; already-rendered output",
+      "rule_id": "opengrep.cwe-79.tpl-ejs-unescaped-output",
+      "where": "snyk-labs/nodejs-goof views/layout.ejs:12",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "3dbf7b658585cfd5144577236be7ff7e62a6dd8d92118f0d18878c60f278daa9",
+      "verdict": "false",
+      "note": "an Angular @if control-flow block: `{ {{ x }} }` matched as `{{{ }}}` because generic mode ignores whitespace. Not a triple-brace at all",
+      "rule_id": "opengrep.cwe-79.tpl-mustache-triple-brace",
+      "where": "juice-shop/juice-shop frontend/src/app/score-board/components/challenges-unavailable-warning/challenges-unavailable-warning.component.html:16",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "bd906cfc17b4b8e088ddad5aeaa89f93239a92eb17e01d0941b35776f9799529",
+      "verdict": "false",
+      "note": "the same Angular @if block matched through whitespace-insensitive tokenisation",
+      "rule_id": "opengrep.cwe-79.tpl-mustache-triple-brace",
+      "where": "juice-shop/juice-shop frontend/src/app/score-board/components/filter-settings/filter-settings.component.html:14",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "7dbcf3a088576f6a7e50ca0938bb10158b4eaf7f7e48daacf3981e8594255e54",
+      "verdict": "true",
+      "note": "{{{body}}} renders the child view unescaped in a Handlebars layout",
+      "rule_id": "opengrep.cwe-79.tpl-mustache-triple-brace",
+      "where": "snyk-labs/nodejs-goof views/layout.hbs:12",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "1eb1d72733f42f51007630caf5271998cbc1f7f24b4bd1a02372910f5125dcc3",
+      "verdict": "true",
+      "note": "|safe on a Django form field renders submitted data as HTML",
+      "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
+      "where": "adeyosemanputra/pygoat dockerized_labs/sensitive_data_exposure/templates/login.html:59",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "1c5b17526889982fb434682223fcab6f5f160ba349b2406641a495dc65c0227a",
+      "verdict": "true",
+      "note": "|safe on a fetched remote response rendered straight into the page",
+      "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
+      "where": "adeyosemanputra/pygoat introduction/templates/Lab/ssrf/ssrf_lab2.html:23",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "a7b6837c536043277c61f7dcdac4a16a458a6faf343578de22d012bebdba35e1",
+      "verdict": "true",
+      "note": "|safe on a username",
+      "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
+      "where": "adeyosemanputra/pygoat introduction/templates/Lab_2021/A8_software_and_data_integrity_failure/lab2.html:11",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "8d1cf205a6e83da06fa9695958594e4ee69223ae850f7784235146010b8b3a33",
+      "verdict": "true",
+      "note": "|safe on a search header built from the query",
+      "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
+      "where": "benbusby/whoogle-search app/templates/display.html:32",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "ef71f6822c6146d685807df89a5e7dd059790e872129ae75a2e56df46d71f580",
+      "verdict": "true",
+      "note": "|safe on the proxied upstream search response, which is the app's main XSS surface",
+      "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
+      "where": "benbusby/whoogle-search app/templates/display.html:39",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "1763160afbc30341b133e9af60d5c89839e368daa09fa64fda936e517635f901",
+      "verdict": "false",
+      "note": "|safe on the application's own logo SVG constant; nothing untrusted reaches it",
+      "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
+      "where": "benbusby/whoogle-search app/templates/header.html:9",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "54e08d3f742d27d7d02b799098a01ab4feedcfc0e782635290d5a911c6b669d4",
+      "verdict": "false",
+      "note": "|safe on the same logo constant",
+      "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
+      "where": "benbusby/whoogle-search app/templates/header.html:65",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "4e680c812095a4ac4f3fe5a02cceb8e0ce0ad036c1de342cc1a60b9f684266bb",
+      "verdict": "false",
+      "note": "|safe on the same logo constant",
+      "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
+      "where": "benbusby/whoogle-search app/templates/index.html:64",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "40c1e3082a567d01f26f9e74346443ce83fc6ea2e79cbf633af179a13b549f6e",
+      "verdict": "true",
+      "note": "bypassSecurityTrustScript on a query parameter",
+      "rule_id": "opengrep.cwe-79.js-angular-bypass-security-trust",
+      "where": "juice-shop/juice-shop data/static/codefixes/localXssChallenge_3.ts:6",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "400e979edd71b48414248061efd123671ed3cc549cde8d933fd540d73b79bf7d",
+      "verdict": "true",
+      "note": "bypassSecurityTrustScript on a server-supplied product description",
+      "rule_id": "opengrep.cwe-79.js-angular-bypass-security-trust",
+      "where": "juice-shop/juice-shop data/static/codefixes/restfulXssChallenge_4.ts:46",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "4b6b7e56e3a71cf6bf6cd009358c570bdcde6089e5722423cfdee3d9b3a55a0e",
+      "verdict": "true",
+      "note": "bypassSecurityTrustResourceUrl on a query parameter",
+      "rule_id": "opengrep.cwe-79.js-angular-bypass-security-trust",
+      "where": "juice-shop/juice-shop data/static/codefixes/xssBonusChallenge_2.ts:6",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "520f9f51749f29debc734bbcd73542438724f016d902ab2349e145a3ac277a4f",
+      "verdict": "true",
+      "note": "bypassSecurityTrustHtml on a captcha image the server supplies",
+      "rule_id": "opengrep.cwe-79.js-angular-bypass-security-trust",
+      "where": "juice-shop/juice-shop frontend/src/app/data-export/data-export.component.ts:58",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "47c1ac284c77a29290b1c959f4cadeca58dcd7488e2e8c3063efc61ef252ac9d",
+      "verdict": "true",
+      "note": "bypassSecurityTrustHtml on a challenge description that comes from the API",
+      "rule_id": "opengrep.cwe-79.js-angular-bypass-security-trust",
+      "where": "juice-shop/juice-shop frontend/src/app/score-board/component.ts:83",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "bf481810388ba445fa3e33fcbe4659cacd9cfd1099d6dfee1ea5740cdec9243d",
+      "verdict": "true",
+      "note": "query results formatted straight into a table with no escaping",
+      "rule_id": "opengrep.cwe-79.py-html-percent-format",
+      "where": "stamparm/DSVW dsvw.py:23",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "d1a1df03a04c1618cfc630513d08c98ac3ee7281b832c6d01a796d33d753d0be",
+      "verdict": "true",
+      "note": "a surname read from XML formatted into markup unescaped",
+      "rule_id": "opengrep.cwe-79.py-html-percent-format",
+      "where": "stamparm/DSVW dsvw.py:36",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "f178f80450bf4c8730ee29ac82b095e07726b359dd888d422483b126c2d5d293",
+      "verdict": "false",
+      "note": "the substituted values are ints and a float through %d and %.6f; nothing here can carry markup",
+      "rule_id": "opengrep.cwe-79.py-html-percent-format",
+      "where": "stamparm/DSVW dsvw.py:39",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "73f218e0feb5af14498230ce44162731269d5813789944d82ce8aab750fb23c3",
+      "verdict": "true",
+      "note": "a request-supplied template string rendered into the page",
+      "rule_id": "opengrep.cwe-79.py-html-percent-format",
+      "where": "stamparm/DSVW dsvw.py:55",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "55bdc12f9b98c491c4133cd476e8a335c52a0ae3113a71e35f3fc3217e4e2fac",
+      "verdict": "true",
+      "note": "a scraped image URL formatted into an src attribute with no escaping",
+      "rule_id": "opengrep.cwe-79.py-html-percent-format",
+      "where": "webcomics/dosage dosagelib/events.py:111",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "0cdda8e273500605c0fb1a9fd152527358940ea805fbad644a50f1a0f9f39f1f",
+      "verdict": "true",
+      "note": "a URL formatted into an href with no escaping",
+      "rule_id": "opengrep.cwe-79.py-html-percent-format",
+      "where": "webcomics/dosage dosagelib/events.py:176",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "a823563c1813d65dec710d8d48dcc16286799b96ea4ec986474cd01fef30c8d9",
+      "verdict": "true",
+      "note": "a scraped image URL formatted into an src attribute",
+      "rule_id": "opengrep.cwe-79.py-html-percent-format",
+      "where": "webcomics/dosage dosagelib/events.py:235",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "5730dc9f7eb311be764705a6e0f33ea6f039639a77ed818ef07dfca28173fa40",
+      "verdict": "true",
+      "note": "a scraper name formatted into a list item with no escaping",
+      "rule_id": "opengrep.cwe-79.py-html-percent-format",
+      "where": "webcomics/dosage dosagelib/events.py:250",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "d77942462e9c4aad0b173376b2ec6f58a20c99f941ca51f5b6f3d7d02c41e0a1",
+      "verdict": "true",
+      "note": "v-html on an i18n string with interpolated style metadata; translations rendered as HTML",
+      "rule_id": "opengrep.cwe-79.tpl-vue-v-html",
+      "where": "dicebear/dicebear apps/editor/src/components/Header.vue:66",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "36cbb91c9002186579c32ae51dba70a7dcb990441479e9a04c6f5cf7b1d94eba",
+      "verdict": "true",
+      "note": "!{JSON.stringify(_global)} writes a serialized object into a script tag unescaped",
+      "rule_id": "opengrep.cwe-79.tpl-pug-unescaped-interpolation",
+      "where": "electerm/electerm src/client/views/index.pug:48",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "d8e4abcbc01fbcee4ba5face9ffef4ccb7aa0d8337ad69e6ffc0b8efbd204526",
+      "verdict": "true",
+      "note": "an npm downloads count fetched from a remote API is written with innerHTML rather than textContent",
+      "rule_id": "opengrep.cwe-79.tpl-inline-script-inner-html",
+      "where": "sebhildebrandt/systeminformation docs/index.html:57",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "1b4750c960b0d715c928d3b3c7882b48549940f56df828aa83b913e6bcf83f6d",
+      "verdict": "true",
+      "note": "a version string fetched from a remote API written with innerHTML",
+      "rule_id": "opengrep.cwe-79.tpl-inline-script-inner-html",
+      "where": "sebhildebrandt/systeminformation docs/index.html:68",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "990f43a85f12987833bfcdeb35702dca7242775d970550da6e875e9acb61dabb",
+      "verdict": "true",
+      "note": "the same remote downloads count written with innerHTML",
+      "rule_id": "opengrep.cwe-79.tpl-inline-script-inner-html",
+      "where": "sebhildebrandt/systeminformation docs/v4/index.html:56",
+      "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "8c67fba0576afc9e00486248c92f16c1264778b1d019c69dfb8e96e2984666fa",
+      "verdict": "true",
+      "note": "the same remote version string written with innerHTML",
+      "rule_id": "opengrep.cwe-79.tpl-inline-script-inner-html",
+      "where": "sebhildebrandt/systeminformation docs/v4/index.html:67",
+      "sampled_as": "new_rule_2026_09_24"
     }
   ]
 }

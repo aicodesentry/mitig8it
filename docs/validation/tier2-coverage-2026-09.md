@@ -8,6 +8,13 @@ in five families, and none of their shapes occurs in ordinary library code.
 This is the measurement of the widened rule set: what was added, what it found on the same
 corpus, which findings were read by hand, and which rules are allowed to post as a result.
 
+> **Superseded in part.** The XSS and path-traversal sections below describe the rule set as it
+> stood on 24 September 2026, before the recall change recorded in the second half of
+> `docs/validation/vulnerable-corpus-2026-09.md`. That change added `template_coverage.yml`
+> (9 generic rules over 16 template extensions), 5 rules to the JavaScript and Python coverage
+> files, and widened 2 path rules, taking the coverage set from 116 to 130. The rule counts and
+> the XSS numbers here are the earlier state.
+
 ## The rule set
 
 116 rules now cover JavaScript, TypeScript and Python: the 25 that were already in the tree and

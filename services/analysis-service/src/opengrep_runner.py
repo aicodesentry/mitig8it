@@ -20,6 +20,9 @@ from finding_quality import is_transcript_artifact_line
 from remediation_patches import build_remediation_patch
 from taxonomy import build_taxonomy_metadata
 from test_code_scope import (
+    CODE_EXTENSIONS,
+    SUPPORTED_EXTENSIONS,
+    TEMPLATE_EXTENSIONS,
     classify_findings,
     is_analyzable_path,
     is_runtime_scannable_path as _is_runtime_scannable_path,
@@ -546,11 +549,16 @@ def _enrich_metadata_from_match(
     return enriched
 
 
-# Languages OpenGrep should scan, mapped by file extension
-SUPPORTED_EXTENSIONS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rb", ".php",
-    ".cs", ".c", ".cpp", ".h", ".hpp", ".rs", ".swift", ".kt",
-}
+# Languages OpenGrep should scan, mapped by file extension. Defined in `test_code_scope`,
+# the module that owns what gets scanned, and re-exported here because this is where
+# callers have always read them.
+#
+# A code extension is parsed by a real language parser and carries the bulk of the rule
+# set. A template extension has no parser here at all: `template_coverage.yml` reads those
+# files in `generic` mode, which is token matching rather than an AST, and every rule there
+# names the extensions it applies to in `paths: include`. A generic rule without that
+# include would read *every* file in the batch, `.py` and `.ts` alike, so the include is
+# what keeps the two sets apart.
 
 
 def _batch_limit(env_name: str, default: int) -> int:

@@ -327,6 +327,34 @@ rules:
       confidence: "0.82"
       posting: post
 
+  - id: cwe-79.py-html-percent-format
+    patterns:
+      - pattern: $FMT % $X
+      # The format string has to open a tag and carry a substitution. `"hello %s"` and
+      # `"SELECT * FROM %s"` interpolate too, and neither is markup.
+      - metavariable-regex:
+          metavariable: $FMT
+          regex: "^['\\\"].*<[a-zA-Z/].*%[sr].*"
+    message: "HTML assembled by percent formatting. Escape the substituted value, or render it through a template that escapes"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.80"
+      posting: post
+
+  # There is deliberately no `autoescape=False` rule for Python here. One existed and was
+  # measured: `cwe-79.py-jinja-autoescape-off`, thirty lines above, is quarantined because
+  # an environment without autoescape is cross-site scripting only when the templates
+  # render HTML, and Jinja is widely used for configuration, SQL and email text where
+  # autoescaping would be wrong. A broader `$F(..., autoescape=False, ...)` written here
+  # would have inherited that defect and quietly undone the quarantine under a new id.
+  # `anxolerd/dvpwa`'s `setup_jinja(..., autoescape=False)` therefore stays a known miss;
+  # it is recorded in docs/validation/vulnerable-corpus-2026-09.md.
+
   # ── Insecure deserialization ───────────────────────────────────────────
 
   - id: cwe-502.py-marshal-loads
@@ -439,6 +467,21 @@ rules:
         - pattern: open(f"...{request.args.get(...)}...", ...)
         - pattern: open(f"...{request.form[$K]}...", ...)
     message: "File opened at a request-controlled path. Resolve with realpath and abort before any read outside the base"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-22.py-pathlib-join-interpolated
+    patterns:
+      - pattern: $BASE / f"...{$NAME}..."
+    message: "pathlib join with an interpolated name. `/` does not contain the result: an absolute or `../` value replaces or escapes the base. Resolve and check against the base before using it"
     severity: ERROR
     languages: [python]
     metadata:

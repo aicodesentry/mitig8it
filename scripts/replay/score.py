@@ -44,6 +44,14 @@ LANGUAGE_BY_EXTENSION = {
     ".js": "JavaScript", ".jsx": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript",
     ".ts": "TypeScript", ".tsx": "TypeScript",
     ".py": "Python",
+    # Template files are one row, not sixteen. They are scanned in the scanner's `generic`
+    # mode by a single rule file, so what a reader wants to know is whether that file is
+    # working, not whether `.njk` outperforms `.twig`.
+    ".html": "Template", ".htm": "Template", ".ejs": "Template", ".erb": "Template",
+    ".hbs": "Template", ".handlebars": "Template", ".mustache": "Template",
+    ".dust": "Template", ".njk": "Template", ".jinja": "Template", ".jinja2": "Template",
+    ".j2": "Template", ".twig": "Template", ".vue": "Template", ".svelte": "Template",
+    ".pug": "Template",
 }
 
 
