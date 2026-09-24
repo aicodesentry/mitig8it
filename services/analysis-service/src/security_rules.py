@@ -1,6 +1,13 @@
 import re
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
+
+# Posting policy values. A rule whose precision nobody has measured still posts: the
+# quarantine is for rules measured and found wrong, not for rules nobody has looked at.
+PRECISION_MEASURED = "measured"
+PRECISION_UNMEASURED = "unmeasured"
+POSTING_POST = "post"
+POSTING_QUARANTINE = "quarantine"
 
 
 @dataclass
@@ -16,6 +23,26 @@ class SecurityRule:
     pattern: re.Pattern
     description: str
     remediation: str
+
+    # ── Posting policy ───────────────────────────────────────────────────
+    # `precision` records whether this rule's false-positive rate has been measured on a
+    # real corpus. `posting` decides whether a match reaches a reviewer: a quarantined
+    # rule still runs and is still counted, so the replay and the metrics can keep
+    # measuring it, but nothing it produces is posted to GitHub, counted in the check
+    # summary, or handed to remediation. `precision_evidence` names the measurement.
+    precision: str = PRECISION_UNMEASURED
+    posting: str = POSTING_POST
+    precision_evidence: str = ""
+
+    # ── Matching ─────────────────────────────────────────────────────────
+    # A negative condition belongs here, not in a lookahead. A lookahead placed after a
+    # greedy `.*` can always be satisfied by letting the `.*` run to the end of the line,
+    # so it excludes nothing (see `find_ineffective_lookaheads` below). `exclusion` is a
+    # second pass over the same line: a match is dropped when this pattern also matches.
+    exclusion: Optional[re.Pattern] = None
+    # False blanks the body of every string literal before matching, for rules whose
+    # signal is code shape rather than committed text.
+    reads_string_literals: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -76,12 +103,23 @@ SECURITY_RULES: List[SecurityRule] = [
         confidence=0.58,
         exploitability="high",
         pattern=re.compile(
-            r"(def\s+delete_|def\s+update_|def\s+create_|\.destroy\(|\.remove\()"
-            r".*(?!@login_required|@auth|@permission|isAuthenticated|authorize)",
+            r"(def\s+delete_|def\s+update_|def\s+create_|\.destroy\(|\.remove\()",
+            re.IGNORECASE,
+        ),
+        exclusion=re.compile(
+            r"(@login_required|@auth|@permission|isAuthenticated|authorize)",
             re.IGNORECASE,
         ),
         description="Destructive operation may lack proper authorization checks.",
         remediation="Add authorization decorators or middleware to all state-changing operations.",
+        precision=PRECISION_MEASURED,
+        posting=POSTING_QUARANTINE,
+        precision_evidence=(
+            "Sept 2026 replay: 19 findings, 13 at `high`, every sampled one a stream, socket "
+            "or connection-pool teardown (`result.destroy()`, `session.destroy()`, "
+            "`void this.sequelize.pool.destroy(connection)`). Moving the dead lookahead out of "
+            "the regex does not help: none of those lines carries an auth token either."
+        ),
     ),
     SecurityRule(
         rule_id="cors.overly_permissive",
@@ -311,12 +349,24 @@ SECURITY_RULES: List[SecurityRule] = [
         confidence=0.52,
         exploitability="medium",
         pattern=re.compile(
-            r"(\/login|\/register|\/reset|\/forgot|\/verify|\/otp|\/auth)"
-            r".*(?!rate.?limit|throttle|limiter|slowDown)",
+            r"(\/login|\/register|\/reset|\/forgot|\/verify|\/otp|\/auth)",
+            re.IGNORECASE,
+        ),
+        exclusion=re.compile(
+            r"(rate.?limit|throttle|limiter|slowDown)",
             re.IGNORECASE,
         ),
         description="Authentication endpoint appears to lack rate limiting.",
         remediation="Add rate limiting middleware to authentication and sensitive endpoints.",
+        precision=PRECISION_MEASURED,
+        posting=POSTING_QUARANTINE,
+        precision_evidence=(
+            "Sept 2026 replay: 2 findings, both wrong, and the rule's whole output over 165 "
+            "pull requests was `location: '/login'` in a got redirect test, "
+            "` *    res.location('../login');` in an express JSDoc example, and the string "
+            "`@octokit/auth-token` in a vendored licences file. The rule has no notion of a "
+            "route declaration; it matches the substring `/auth` anywhere on a line."
+        ),
     ),
 
     # ── A05:2021 — Security Misconfiguration ─────────────────────────────
@@ -599,13 +649,28 @@ SECURITY_RULES: List[SecurityRule] = [
         severity="medium",
         confidence=0.55,
         exploitability="medium",
+        # Every alternative carries a leading word boundary. Without it `int\(` matched
+        # `models.UniqueConstraint(` and `function fingerprint(snapshot: Snapshot)`.
         pattern=re.compile(
-            r"(parseInt|Number\(|int\(|Integer\.parseInt|atoi\(|strtol\()"
-            r".*(?!isNaN|isFinite|Number\.isSafe|try|catch)",
+            r"(\bparseInt\b|\bNumber\(|\bint\(|\bInteger\.parseInt\b|\batoi\(|\bstrtol\()",
+            re.IGNORECASE,
+        ),
+        exclusion=re.compile(
+            r"(isNaN|isFinite|Number\.isSafe|\btry\b|\bcatch\b)",
             re.IGNORECASE,
         ),
         description="Integer parsing without overflow/bounds checking.",
         remediation="Validate parsed integer is within expected range before use.",
+        precision=PRECISION_MEASURED,
+        posting=POSTING_QUARANTINE,
+        precision_evidence=(
+            "Sept 2026 replay: 14 findings. The word boundary and the relocated exclusion "
+            "clear both sampled lines (`models.UniqueConstraint(`, "
+            "`function fingerprint(snapshot: Snapshot): string {`), but what remains is still "
+            "`the line contains parseInt`, with no measurement on the other 12 findings and "
+            "no true positive anywhere in the corpus. Re-enable when a measured sample says "
+            "the bare parse is worth a review comment."
+        ),
     ),
     SecurityRule(
         rule_id="null.pointer.deref",
@@ -617,11 +682,26 @@ SECURITY_RULES: List[SecurityRule] = [
         confidence=0.5,
         exploitability="low",
         pattern=re.compile(
-            r"\.\w+\s*\(.*\)\s*\.\w+\s*(?!\?\.|\?\[|&&|\|\||!=\s*null|!==\s*null)",
+            r"\.\w+\s*\(.*\)\s*\.\w+\s*",
+            re.IGNORECASE,
+        ),
+        exclusion=re.compile(
+            r"(\?\.|\?\[|&&|\|\||![=]=\s*null|![=]=\s*undefined|===\s*null|===\s*undefined)",
             re.IGNORECASE,
         ),
         description="Method chain without null check may crash on null return value.",
         remediation="Add null/undefined checks or use optional chaining (?.) before accessing properties.",
+        precision=PRECISION_MEASURED,
+        posting=POSTING_QUARANTINE,
+        precision_evidence=(
+            "Sept 2026 replay: 85 of 134 findings (63%), and all 19 sampled by hand were wrong. "
+            "The pattern is a method-chain detector, not a null check: it fired on "
+            "`connection.removeAllListeners('error').on('error', ...)`, on the Jest idiom "
+            "`await expect(next.start()).rejects.toThrow()` (27 findings on its own), and on the "
+            "Rust `chunking_context.unused_references().await?`, where its remediation text "
+            "recommends optional chaining that the language does not have. Relocating the "
+            "exclusion fixes only the guarded case; the semantics are wrong."
+        ),
     ),
     SecurityRule(
         rule_id="concurrency.shared_state",
@@ -635,12 +715,27 @@ SECURITY_RULES: List[SecurityRule] = [
         pattern=re.compile(
             r"(global\s+\w+|class\s+\w+:.*\n\s+\w+\s*=\s*\[\]|"
             r"static\s+(mut\s+)?[A-Z_]+\s*[:=]|"
-            r"threading\.Thread|multiprocessing\.Process)"
-            r".*(?!lock|mutex|synchronized|atomic|Lock\(|RLock\()",
+            r"threading\.Thread|multiprocessing\.Process)",
             re.IGNORECASE | re.MULTILINE,
         ),
+        exclusion=re.compile(
+            r"(lock|mutex|synchronized|atomic|Lock\(|RLock\()",
+            re.IGNORECASE,
+        ),
+        # `global` in a sentence is prose, and a sentence inside a string literal is not
+        # code. Blanking string bodies removes one of the two shapes the replay caught.
+        reads_string_literals=False,
         description="Shared mutable state accessed concurrently without synchronization.",
         remediation="Use locks, mutexes, or thread-safe data structures for shared state.",
+        precision=PRECISION_MEASURED,
+        posting=POSTING_QUARANTINE,
+        precision_evidence=(
+            "Sept 2026 replay: 6 findings. `global\\s+\\w+` matches English, so the rule fired "
+            "on the comment `// If agent.http2 is unset, use the global agent for connection "
+            "pooling.` and on the changelog line `Fix a global leak when multiple subnets are "
+            "trusted`. Comment stripping removes the first shape; the prose-file shape needs "
+            "the rule to know what a declaration is."
+        ),
     ),
 
     # ── LLM-specific ─────────────────────────────────────────────────────
@@ -698,6 +793,175 @@ DEPENDENCY_RISK_PATTERNS = [
     (re.compile(r"commons-collections.*3\.[0-2]\.", re.IGNORECASE),
      "Apache Commons Collections 3.x allows deserialization RCE", "critical"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Static check: negative lookaheads that exclude nothing
+# ---------------------------------------------------------------------------
+
+
+def _skip_group_body(source: str, start: int) -> int:
+    """Index just past the group that opens at `start`."""
+    depth = 0
+    index = start
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "[":
+            index = _skip_character_class(source, index)
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return len(source)
+
+
+def _skip_character_class(source: str, start: int) -> int:
+    index = start + 1
+    if index < len(source) and source[index] == "^":
+        index += 1
+    if index < len(source) and source[index] == "]":
+        index += 1
+    while index < len(source):
+        if source[index] == "\\":
+            index += 2
+            continue
+        if source[index] == "]":
+            return index + 1
+        index += 1
+    return len(source)
+
+
+def _read_quantifier(source: str, index: int) -> Tuple[int, bool, bool]:
+    """Returns (next index, token is required, quantifier is greedy and unbounded)."""
+    if index >= len(source):
+        return index, True, False
+
+    char = source[index]
+    if char in "*+?":
+        end = index + 1
+        lazy = end < len(source) and source[end] in "?+"
+        if lazy:
+            end += 1
+        required = char == "+"
+        unbounded_greedy = char in "*+" and not lazy
+        return end, required, unbounded_greedy
+
+    if char == "{":
+        close = source.find("}", index)
+        if close == -1:
+            return index, True, False
+        body = source[index + 1:close]
+        end = close + 1
+        lazy = end < len(source) and source[end] in "?+"
+        if lazy:
+            end += 1
+        low = body.split(",")[0].strip() or "0"
+        required = low.isdigit() and int(low) > 0
+        unbounded_greedy = body.rstrip().endswith(",") and not lazy
+        return end, required, unbounded_greedy
+
+    return index, True, False
+
+
+def find_ineffective_lookaheads(rules=None) -> List[Tuple[str, str]]:
+    """Rules whose negative lookahead cannot exclude anything.
+
+    The shape is `<unbounded greedy quantifier><optional tokens>(?!alternatives)`. The
+    engine can always satisfy the lookahead by letting the quantifier consume to the end
+    of the line, where the lookahead then looks at nothing, so the rule silently degrades
+    to its leading alternation. `auth.bypass.missing_check` was re-anchored for exactly
+    this reason; this check is here so no sibling rule can pick the shape back up.
+
+    The scan is a heuristic over the pattern source, not a regex engine. It walks tokens
+    left to right and flags a negative lookahead when an unbounded greedy quantifier
+    precedes it with no required token in between. A required token anchors the lookahead
+    (that is why `lodash.*4\\.17\\.(?:1\\d|20|[0-9])(?!\\d)` is not flagged), and an
+    alternation bar resets the scan because the branches are independent.
+
+    Returns `(rule_id, lookahead source)` pairs.
+    """
+    findings: List[Tuple[str, str]] = []
+    for rule_id, pattern in tier1_patterns() if rules is None else (
+        (rule.rule_id, rule.pattern) for rule in rules
+    ):
+        for lookahead in _ineffective_lookaheads_in(pattern.pattern):
+            findings.append((rule_id, lookahead))
+    return findings
+
+
+def tier1_patterns() -> List[Tuple[str, "re.Pattern"]]:
+    """Every regex tier 1 runs: the security rules and the dependency risk patterns."""
+    patterns: List[Tuple[str, re.Pattern]] = [(rule.rule_id, rule.pattern) for rule in SECURITY_RULES]
+    patterns.extend(
+        (f"dependency.risk.version[{index}]", pattern)
+        for index, (pattern, _message, _severity) in enumerate(DEPENDENCY_RISK_PATTERNS)
+    )
+    for rule in SECURITY_RULES:
+        if rule.exclusion is not None:
+            patterns.append((f"{rule.rule_id}.exclusion", rule.exclusion))
+    return patterns
+
+
+def _ineffective_lookaheads_in(source: str) -> List[str]:
+    hits: List[str] = []
+    greedy_pending = False
+    required_since_greedy = False
+    index = 0
+
+    while index < len(source):
+        char = source[index]
+
+        if char == "\\":
+            token_end = index + 2
+        elif char == "[":
+            token_end = _skip_character_class(source, index)
+        elif char == "(":
+            if source.startswith("(?!", index) or source.startswith("(?<!", index):
+                if greedy_pending and not required_since_greedy:
+                    hits.append(source[index:_skip_group_body(source, index)])
+                index = _skip_group_body(source, index)
+                continue
+            if source.startswith("(?=", index) or source.startswith("(?<=", index):
+                index = _skip_group_body(source, index)
+                continue
+            # A capturing or non-capturing group: descend into it so a greedy quantifier
+            # inside the group is seen, then apply the group's own quantifier.
+            body_end = _skip_group_body(source, index)
+            hits.extend(_ineffective_lookaheads_in(source[index + 1:body_end - 1]))
+            token_end = body_end
+        elif char == "|":
+            greedy_pending = False
+            required_since_greedy = False
+            index += 1
+            continue
+        elif char in "^$":
+            # An anchor pins the position, so nothing before it can be given back.
+            greedy_pending = False
+            required_since_greedy = False
+            index += 1
+            continue
+        elif char == ")":
+            index += 1
+            continue
+        else:
+            token_end = index + 1
+
+        after_quantifier, required, unbounded_greedy = _read_quantifier(source, token_end)
+        if unbounded_greedy:
+            greedy_pending = True
+            required_since_greedy = False
+        elif required and greedy_pending:
+            required_since_greedy = True
+        index = after_quantifier
+
+    return hits
 
 
 def likely_llm_repo(path: str, content: str) -> bool:
