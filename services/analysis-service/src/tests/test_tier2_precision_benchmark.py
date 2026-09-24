@@ -22,8 +22,8 @@ from opengrep_runner import RULES_DIR, load_rule_metadata, quarantined_rule_ids,
 
 CASES_PATH = Path(__file__).resolve().parents[4] / "benchmarks" / "tier2-precision" / "cases.json"
 
-# The two files this change added. They are the rule set the benchmark is responsible for.
-COVERAGE_FILES = ("javascript_coverage.yml", "python_coverage.yml")
+# The coverage files. They are the rule set the benchmark is responsible for.
+COVERAGE_FILES = ("javascript_coverage.yml", "python_coverage.yml", "template_coverage.yml")
 
 
 def _coverage_rule_ids() -> list[str]:

@@ -23,10 +23,20 @@ ANALYSIS_FILE_CAP = 300
 
 SCOPED_STATUSES = {"added", "modified", "renamed"}
 
-TIER2_SUPPORTED_EXTENSIONS = {
+# Mirrors CODE_EXTENSIONS and TEMPLATE_EXTENSIONS in
+# services/analysis-service/src/opengrep_runner.py and the same two lists in
+# prAnalysisOrchestrator.js. Template files are read in the scanner's `generic` mode.
+TIER2_CODE_EXTENSIONS = {
     ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rb", ".php",
     ".cs", ".c", ".cpp", ".h", ".hpp", ".rs", ".swift", ".kt",
 }
+
+TIER2_TEMPLATE_EXTENSIONS = {
+    ".html", ".htm", ".ejs", ".erb", ".hbs", ".handlebars", ".mustache",
+    ".dust", ".njk", ".jinja", ".jinja2", ".j2", ".twig", ".vue", ".svelte", ".pug",
+}
+
+TIER2_SUPPORTED_EXTENSIONS = TIER2_CODE_EXTENSIONS | TIER2_TEMPLATE_EXTENSIONS
 
 HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 

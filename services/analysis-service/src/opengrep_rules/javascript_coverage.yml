@@ -362,6 +362,26 @@ rules:
         - pattern: res.download(path.join($BASE, req.params.$P))
         - pattern: res.sendFile(`...${req.params.$P}...`)
         - pattern: res.sendFile(`...${req.query.$P}...`)
+        # The request input often arrives through a local, one hop from `req`, which the
+        # AST engine cannot follow. A resolve against a base with a *non-literal* second
+        # argument is the containment question either way: the four juice-shop file
+        # servers are all this shape and none of the patterns above reach them.
+        #
+        # The constraint is nested inside this branch rather than applied to the rule.
+        # A `metavariable-regex` at rule level drops every match that does not bind the
+        # metavariable, which silently deleted the six patterns above when it was written
+        # that way.
+        - patterns:
+          - pattern-either:
+            - pattern: res.sendFile(path.resolve($BASE, $VAR))
+            - pattern: res.sendFile(path.join($BASE, $VAR))
+            - pattern: res.download(path.resolve($BASE, $VAR))
+            - pattern: res.download(path.join($BASE, $VAR))
+          # $VAR is a name or a member access, never a literal: a fully literal path is a
+          # static asset and is not a traversal.
+          - metavariable-regex:
+              metavariable: $VAR
+              regex: "^[A-Za-z_$][A-Za-z0-9_$.\\[\\]]*$"
     message: "Response file chosen by request input. Resolve against the base and reject anything outside it"
     severity: ERROR
     languages: [javascript, typescript]
@@ -402,6 +422,12 @@ rules:
         - pattern: fs.writeFileSync(path.join($DEST, $ENTRY.name), ...)
         - pattern: fs.createWriteStream(path.join($DEST, $ENTRY.path))
         - pattern: fs.createWriteStream(path.join($DEST, $ENTRY.name))
+        # The same defect one level up: these library calls join every entry name to the
+        # destination themselves, so the `../` entry escapes without any join appearing in
+        # the caller's code at all.
+        - pattern: $Z.extractAllTo(...)
+        - pattern: $Z.extractAllToAsync(...)
+        - pattern: $Z.extractEntryTo(...)
     message: "Archive entry name used as a write path. A `../` entry escapes the destination directory"
     severity: WARNING
     languages: [javascript, typescript]
@@ -476,6 +502,84 @@ rules:
       category: "XSS"
       internal_type: "cross_site_scripting"
       confidence: "0.82"
+      posting: post
+
+  - id: cwe-79.js-angular-bypass-security-trust
+    patterns:
+      - pattern-either:
+        - pattern: $S.bypassSecurityTrustHtml(...)
+        - pattern: $S.bypassSecurityTrustScript(...)
+        - pattern: $S.bypassSecurityTrustUrl(...)
+        - pattern: $S.bypassSecurityTrustResourceUrl(...)
+    message: "Angular DomSanitizer bypass. These calls mark a value as trusted and turn Angular's escaping off for it; sanitize the value instead"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-79.js-html-string-interpolated
+    patterns:
+      - pattern: $HTML
+      - metavariable-pattern:
+          metavariable: $HTML
+          pattern: "`...${$X}...`"
+      # A tag opener before the first interpolation is what separates HTML assembly from
+      # every other template literal: a URL, a SQL string, a class name and a log line all
+      # interpolate, and none of them open a tag first.
+      - metavariable-regex:
+          metavariable: $HTML
+          regex: "^`[^`]*<[a-zA-Z/][^`]*\\$\\{"
+      # Sinks with their own rule, so one line does not draw two comments.
+      - pattern-not-inside: $S.bypassSecurityTrustHtml(...)
+      - pattern-not-inside: $S.bypassSecurityTrustScript(...)
+      - pattern-not-inside: $S.bypassSecurityTrustUrl(...)
+      - pattern-not-inside: $S.bypassSecurityTrustResourceUrl(...)
+      - pattern-not-inside: res.send(...)
+      - pattern-not-inside: res.write(...)
+      - pattern-not-inside: res.end(...)
+    message: "HTML assembled by template interpolation. Escape each interpolated value, or build the node rather than the markup"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.80"
+      posting: quarantine
+      posting_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 678 findings over 23 repositories, the largest
+        of any tier 2 rule and second largest of any rule in either tier. It reaches all six
+        labelled interpolated-HTML vulnerabilities (four defuddle, two dicebear), and a
+        hand-read sample of ten put eight of them in two false classes the pattern cannot
+        see. The first is a value already escaped: dicebear wraps every interpolation in
+        `escape.xml(...)` and defuddle wraps them in `escapeHtml(...)`, and both still
+        match. The second is composition, `${parts.join('\n')}` and `${images.join('\n')}`,
+        where the interpolated value is already-built markup rather than data. Separating
+        either from a real injection needs a data-flow answer about where the value came
+        from and whether anything escaped it on the way, which the AST pattern engine does
+        not give. Re-enable it when the rule set can answer that; the recall it would buy
+        is six labels, and is recorded in docs/validation/vulnerable-corpus-2026-09.md.
+
+  - id: cwe-79.js-template-autoescape-disabled
+    patterns:
+      - pattern-either:
+        - pattern: "autoescape: false"
+        - pattern: $E.autoescape = false
+    message: "Template autoescaping turned off. Every interpolation in every template this engine renders is now unescaped"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.90"
       posting: post
 
   - id: cwe-79.js-jquery-html-sink

@@ -61,6 +61,13 @@ mirrors, function for function:
 If one of those changes in a service, change it here in the same commit or the replay
 stops describing production.
 
+The extension list inside `should_fetch_content` is the one part of this that is now
+asserted rather than trusted: `TIER2_CODE_EXTENSIONS` and `TIER2_TEMPLATE_EXTENSIONS` exist
+in three places, here and in `opengrep_runner.py` and in `prAnalysisOrchestrator.js`, and
+`services/analysis-service/src/tests/test_supported_extension_parity.py` fails if the three
+disagree. A drift there is invisible in a replay's output: the harness would simply report
+recall over files production never fetches.
+
 Each pull request then runs in its own worker process (`worker.py`), under the wall clock,
 so a hang or a hard crash costs one pull request instead of the run:
 

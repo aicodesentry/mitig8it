@@ -38,6 +38,26 @@ PROSE_STEMS = {
     "readme", "license", "licence", "notice", "copying", "codeowners",
 }
 
+# The extensions tier 2 scans. Two sets, because the scanner reaches them by different
+# means: a code extension has a real parser and carries the bulk of the rule set, a
+# template extension is read in `generic` mode by `opengrep_rules/template_coverage.yml`.
+#
+# They live here, in the module that owns "what do we scan", and `opengrep_runner`
+# re-exports them. They are mirrored in `prAnalysisOrchestrator.js` and
+# `scripts/replay/prodfilters.py`; `tests/test_supported_extension_parity.py` fails if the
+# three copies disagree.
+CODE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rb", ".php",
+    ".cs", ".c", ".cpp", ".h", ".hpp", ".rs", ".swift", ".kt",
+}
+
+TEMPLATE_EXTENSIONS = {
+    ".html", ".htm", ".ejs", ".erb", ".hbs", ".handlebars", ".mustache",
+    ".dust", ".njk", ".jinja", ".jinja2", ".j2", ".twig", ".vue", ".svelte", ".pug",
+}
+
+SUPPORTED_EXTENSIONS = CODE_EXTENSIONS | TEMPLATE_EXTENSIONS
+
 
 def _normalize_path(path: Any) -> str:
     return str(path or "").strip().replace("\\", "/").lower()
@@ -77,6 +97,37 @@ def is_prose_path(path: Any) -> bool:
         return True
     # A file with no extension at all, such as `CHANGELOG` or `AUTHORS`.
     return not stem and name in PROSE_STEMS
+
+
+def is_template_path(path: Any) -> bool:
+    """True for a template file: `.html`, `.ejs`, `.vue` and the rest of the set."""
+    normalized = _normalize_path(path)
+    if not normalized:
+        return False
+    name = normalized.rsplit("/", 1)[-1]
+    _, dot, extension = name.rpartition(".")
+    return bool(dot) and f".{extension}" in TEMPLATE_EXTENSIONS
+
+
+def is_non_code_text_path(path: Any) -> bool:
+    """Prose and templates: text a rule that recognizes the shape of executable code
+    cannot have a true positive in.
+
+    The argument that keeps tier 1's code-shape rules out of a changelog keeps them out of
+    a template for the same reason, and the evidence is the same shape too. `signup.html`
+    drew `rate_limit.missing`, and NodeGoat's tutorial pages -- which quote vulnerable code
+    as documentation -- drew `nosql.injection`, `code.injection.eval`, `null.pointer.deref`
+    and `authz.missing_function_level`. A template declares no route, holds no handler and
+    dereferences nothing, so none of those can be true there.
+
+    This is not about the template *rules*: those are tier 2, they are written for these
+    files and they are keyed to the constructs that appear in them. It is about the tier 1
+    regexes, which are written for whole-language source.
+
+    Rules that recognize committed *data* rather than code shapes set `scans_prose` and
+    keep scanning both: a credential literal in a template is as real as one anywhere else.
+    """
+    return is_prose_path(path) or is_template_path(path)
 
 
 def is_runtime_scannable_path(path: Any) -> bool:

@@ -213,6 +213,10 @@ one, which is the limitation. Nine of the 18 "in file" labels are this.
 
 ### The three gaps worth naming
 
+> Both of the gaps named below were closed on 24 September 2026. The measurement is in
+> **The follow-up** at the end of this document; the two subsections here are left as they
+> were written, because they are what the follow-up was answering.
+
 **Cross-site scripting: 1 of 32.** This is the largest single hole in the product and it has
 two separate causes. Eleven of the missed labels are in `.html`, `.ejs`, `.pug`, `.dust` and
 `.jinja2` files, and tier 2 does not analyse those extensions at all: `TIER2_SUPPORTED_EXTENSIONS`
@@ -414,19 +418,174 @@ and 10, precision 1.00, no failures, no unsafe abstentions.
 * **The sample is 40 of 1687.** Three rules could not be decided because of it, and every
   per-rule precision in this document has a wide interval around it. The numbers are strong
   enough to separate 0.02 from 0.97 and are not strong enough to separate 0.9 from 0.95.
-* **The corpus has no CWE-798 fix commit, no Java, Go, Ruby, PHP or C#, and no template
-  language.** Recall for the rules covering those is unmeasured, exactly as tier 2's recall
-  was before this.
+* **The corpus has no CWE-798 fix commit, and no Java, Go, Ruby, PHP or C#.** Recall for the
+  rules covering those is unmeasured, exactly as tier 2's recall was before this. It did have
+  template languages all along, in `.html` and `.ejs`; what it did not have was a tier 2 that
+  read them, which is what the follow-up below changed. `.erb`, `.svelte` and `.dust` are in
+  the extension set and no repository here uses them, so those three rules remain unmeasured.
 * **Labels are sinks.** Every missing-control vulnerability in these applications is absent
   from the denominator, so the recall here is recall over the vulnerabilities a pattern
   scanner could in principle find, not over the vulnerabilities the applications have.
+
+## The follow-up: the two gaps, 24 September 2026
+
+The run above named three gaps and said which two were worth acting on. This is what acting
+on them produced, measured the same way, on the same corpus, at the same pinned refs.
+
+| | Before | After |
+| --- | ---: | ---: |
+| Labels hit on the labelled lines | 69 / 171 (0.40) | **100 / 171 (0.58)** |
+| `cross_site_scripting` | 1 / 32 (0.03) | **26 / 32 (0.81)** |
+| `path_traversal` | 2 / 14 (0.14) | **8 / 14 (0.57)** |
+| Findings | 1819 | 2568 |
+| Precision of what posts | 0.68 | **0.74** |
+
+**Recall and posted recall are not the same number, and the gap is the honest part.** Of the
+26 cross-site scripting labels now reached, 8 are reached only by a rule this change
+quarantined, so 18 of 32 reach a reviewer. For path traversal it is 7 of 14. Both are still
+several times what they were, and neither is what the first row claims.
+
+### What was added
+
+**Sixteen template extensions.** `.html`, `.htm`, `.ejs`, `.erb`, `.hbs`, `.handlebars`,
+`.mustache`, `.dust`, `.njk`, `.jinja`, `.jinja2`, `.j2`, `.twig`, `.vue`, `.svelte` and
+`.pug` now reach tier 2, in `opengrep_rules/template_coverage.yml`, which holds 9 rules.
+
+They are read in the scanner's `generic` mode rather than by a parser, and that was measured
+rather than assumed. `languages: [html]` claims only `.html` and `.htm`, so it cannot cover
+the set, and it reports `PartialParsing` on server-side tags, which books a coverage gap on
+exactly the files the rules exist to read. `languages: [vue]` returned a syntax error and
+zero results on a standard single-file component. Nothing is lost: `{{{ }}}`, `<%- %>`,
+`| safe`, `v-html`, `{@html}` and `!{ }` are lexical, not nodes in an HTML tree.
+
+The cost of `generic` is that it has no notion of a language, so a rule without
+`paths: include` reads every file in the batch, `.py` and `.ts` alongside the templates.
+Every rule in that file carries one and `tests/test_template_rules_are_path_scoped.py` fails
+if one does not, or if an include names an extension outside the template set.
+
+**The extension list is written down three times** and now asserted. It is in
+`opengrep_runner`, in `prAnalysisOrchestrator.js` and in `scripts/replay/prodfilters.py`, and
+a divergence is silent in all three directions: an extension only in the scanner scans
+nothing because no content arrives, one only in the orchestrator pays to fetch files the
+scanner drops, and one only in the replay makes the harness report recall the product cannot
+deliver. `tests/test_supported_extension_parity.py` fails on any of the three.
+`fetchPullRequestFiles` in the github service is deliberately not a fourth copy: it filters
+on status and on `dist/`/`node_modules`, never on extension.
+
+**Five rules added and three widened.**
+
+| Rule | Findings | Adjudicated | Precision | Posting |
+| --- | ---: | ---: | ---: | --- |
+| `cwe-79.js-angular-bypass-security-trust` | 14 | 12 | 1.00 | post |
+| `cwe-79.py-html-percent-format` | 14 | 12 | 0.92 | post |
+| `cwe-79.tpl-inline-script-inner-html` | 15 | 5 | 1.00 | post |
+| `cwe-79.tpl-ejs-unescaped-output` | 4 | 4 | 1.00 | post |
+| `cwe-22.js-sendfile-request-path` (widened) | 4 | 4 | 1.00 | post |
+| `cwe-22.py-pathlib-join-interpolated` | 2 | 2 | 1.00 | post |
+| `cwe-22.js-archive-entry-write` (widened) | 1 | 1 | 1.00 | post |
+| `cwe-79.js-template-autoescape-disabled` | 1 | 1 | 1.00 | post |
+| `cwe-79.tpl-mustache-triple-brace` | 1 | 1 | 1.00 | post |
+| `cwe-79.tpl-pug-unescaped-interpolation` | 1 | 1 | 1.00 | post |
+| `cwe-79.tpl-vue-v-html` | 1 | 1 | 1.00 | post |
+| `cwe-79.tpl-unescaping-filter` | 12 | 10 | 0.70 | **quarantine** |
+| `cwe-79.js-html-string-interpolated` | 678 | 17 | 0.47 | **quarantine** |
+
+The Angular sanitizer bypass was the single largest share of the cross-site scripting gap and
+is not in the original write-up above: 7 of the 32 labels are juice-shop calling
+`bypassSecurityTrustHtml`, which no rule in either tier looked for.
+
+### Quarantined: `cwe-79.js-html-string-interpolated`
+
+678 findings over 23 repositories, the largest of any tier 2 rule and second largest of any
+rule in either tier. It reaches all six labelled interpolated-HTML vulnerabilities, which is
+exactly what the write-up above asked for, and it cannot post at precision 0.47.
+
+The false positives are two classes, and neither is a pattern defect that can be narrowed
+away:
+
+| Line | Why it is not an injection |
+| --- | --- |
+| `` `<circle fill="${escape.xml(`${colors.skin}`)}"/>` `` | dicebear escapes every interpolation; the rule cannot see the wrapper |
+| `` html += `<a href="${escapeHtml(href)}"><img src="${escapeHtml(src)}" /></a>` `` | defuddle does the same |
+| `` return `<article>${parts.join('\n')}</article>` `` | composition: the value is already-built markup, not data |
+| `` return `<!DOCTYPE html>…${buildTimeConstant}…` `` | a static marketing page |
+
+Separating any of these from a real injection needs a data-flow answer about where the value
+came from and whether anything escaped it on the way, which the AST pattern engine does not
+give. This is the same reason `cwe-79.js-dangerously-set-dynamic` is quarantined.
+
+### Quarantined: `cwe-79.tpl-unescaping-filter`
+
+12 findings, 10 adjudicated, 7 true and 3 false, precision 0.70. This one is quarantined
+against its own true positives: it reaches both pygoat XSS labels, whoogle's proxied search
+response and a Django form field, and all three false positives are one shape, `{{ logo|safe }}`
+on markup the application itself builds. The policy quarantines at three adjudicated findings
+below 0.8 and this is ten, so it is quarantined; reading it the other way would make the
+threshold mean nothing the first time a rule found something real.
+
+### Two false-positive classes that only real code showed
+
+Both were found by adjudicating the run, not by the fixtures, and both had passed every
+fixture written for them.
+
+`<%- include(...) %>` is how EJS composes partials and `<%- body %>` is how
+express-ejs-layouts renders a child view. Both are unescaped output tags and neither is a
+place user input is written. Four of the eight findings of `cwe-79.tpl-ejs-unescaped-output`
+were these; excluding them takes it from 0.50 to 1.00.
+
+`generic` mode is whitespace-insensitive, so the pattern `{{{ ... }}}` also matches
+`{ {{ ... }} }` -- which is what Angular's `@if (cond) { {{ x }} } @else {` block looks like.
+Two of the three findings of `cwe-79.tpl-mustache-triple-brace` were juice-shop Angular
+templates matched that way. The rule is now a `pattern-regex`, which is whitespace-exact.
+
+### A tier 1 defect this surfaced
+
+Tier 1 has never been extension-gated: the orchestrator hands `analyze_tier1_payload` every
+changed file, so its regexes have been reading templates in production since templates have
+existed. Nothing here changed that, but widening tier 2 made it visible, because the replay's
+snapshot walk selects files with the tier 2 filter.
+
+What it was doing: thirteen findings across seven `.html` files in `OWASP/NodeGoat` alone,
+including `rate_limit.missing` on `signup.html` and `nosql.injection`,
+`code.injection.eval`, `authz.missing_function_level`, `redirect.open`, `integer.overflow`
+and `null.pointer.deref` on the tutorial pages, which quote vulnerable code as documentation.
+A template declares no route, holds no handler and dereferences nothing, so none of them can
+be true.
+
+The fix is the mechanism that already existed for prose. `is_non_code_text_path` is
+`is_prose_path` or `is_template_path`, and `pattern_findings` skips a rule on those paths
+unless it declares `scans_prose` -- so `secret.hardcoded.credential` keeps scanning
+templates, because a credential in a template is as real as one anywhere else. NodeGoat goes
+from 72 findings to 59 with none on a template.
+
+### What is still missed
+
+Five cross-site scripting labels and six path traversal labels survive.
+
+* **Three NodeGoat labels are plain `{{ }}` in swig templates.** They are unescaped only
+  because `server.js` sets `autoescape: false`, which is a different file.
+  `cwe-79.js-template-autoescape-disabled` reports that line, and a finding in `server.js`
+  cannot join to a label in `layout.html`, so the reviewer is told the right thing and the
+  join scores it as a miss.
+* **`anxolerd/dvpwa`'s `setup_jinja(..., autoescape=False)` is deliberately not matched.**
+  A rule for it would duplicate `cwe-79.py-jinja-autoescape-off`, which is quarantined
+  because a Jinja environment without autoescaping is cross-site scripting only when the
+  templates render HTML, and Jinja is widely used for configuration, SQL and email where
+  autoescaping would be wrong. Writing a broader version under a new id would have undone
+  that decision quietly.
+* **Pug's `!= expr` is not matched.** In `generic` mode `!=` is indistinguishable from the
+  inequality operator in the inline JavaScript these files carry, so the pattern would
+  report every comparison in the file. Only `!{ }` is matched.
+* **Four DSVW labels build HTML with no interpolation on the labelled line**, such as
+  `content += "<div><span>Comment(s):</span></div><table>"`, and `%s%s%s` formats with no
+  tag in the format string. Both are invisible to a pattern that keys on a tag opener.
 
 ## Suites
 
 | Suite | Command | Result |
 | --- | --- | --- |
-| analysis-service | `python -m pytest tests -q` in `services/analysis-service/src` | 1016 passed |
+| analysis-service | `python -m pytest tests -q` in `services/analysis-service/src` | 1016 passed; 1156 after the 24 September follow-up |
 | remediation-service | `python -m pytest tests -q` in `services/remediation-service` | 339 passed, 1 failed (`test_python_harness.py`, pre-existing, fails because Flask is installed in this interpreter) |
-| tier 2 precision benchmark | `python -m pytest tests/test_tier2_precision_benchmark.py -q` | 121 passed |
+| tier 2 precision benchmark | `python -m pytest tests/test_tier2_precision_benchmark.py -q` | 121 passed; 141 after the 24 September follow-up |
 | remediation benchmark | `benchmarks/remediation/evaluate.py --suite seed` and `--adapter engine-local` | 14 cases, 10 repairs verified, 4 safe abstentions, no failures |
 | replay self-test | `scripts/replay/selftest.py` | ok: findings=2 candidates=2 verified=2 agent_needed=0 |

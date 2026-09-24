@@ -21,7 +21,7 @@ from opengrep_runner import (
 )
 from taxonomy import CANONICAL_INTERNAL_TYPES
 
-COVERAGE_FILES = ("javascript_coverage.yml", "python_coverage.yml")
+COVERAGE_FILES = ("javascript_coverage.yml", "python_coverage.yml", "template_coverage.yml")
 
 # The five remediation families, as services/remediation-service/src/families.py names them,
 # and the CWE each one is derived from there by `rule_family()`. A rule that declares a

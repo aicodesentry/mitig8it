@@ -10,9 +10,25 @@ const analysisRunsDb = require('../db/analysisRuns');
 const repositoriesDb = require('../db/repositories');
 const remediationAutoGenerate = require('./remediationAutoGenerate');
 
-const TIER2_SUPPORTED_EXTENSIONS = new Set([
+// Mirrors CODE_EXTENSIONS and TEMPLATE_EXTENSIONS in
+// services/analysis-service/src/opengrep_runner.py, and the same two sets in
+// scripts/replay/prodfilters.py. Template files are scanned in the scanner's `generic`
+// mode by template_coverage.yml, not by a language parser.
+// services/analysis-service/src/tests/test_supported_extension_parity.py fails if the
+// three copies disagree.
+const TIER2_CODE_EXTENSIONS = [
   '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rb', '.php',
   '.cs', '.c', '.cpp', '.h', '.hpp', '.rs', '.swift', '.kt',
+];
+
+const TIER2_TEMPLATE_EXTENSIONS = [
+  '.html', '.htm', '.ejs', '.erb', '.hbs', '.handlebars', '.mustache',
+  '.dust', '.njk', '.jinja', '.jinja2', '.j2', '.twig', '.vue', '.svelte', '.pug',
+];
+
+const TIER2_SUPPORTED_EXTENSIONS = new Set([
+  ...TIER2_CODE_EXTENSIONS,
+  ...TIER2_TEMPLATE_EXTENSIONS,
 ]);
 
 function markdownEscape(text) {

@@ -864,6 +864,156 @@
       "path": "corpus/cwe-95_js-new-function-dynamic.js",
       "code": "return (new Function('return ' + str))()\n",
       "note": "commenthol/serialize-to-js lib/deserialize.js:28, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "cwe-79.js-angular-bypass-security-trust",
+      "expect": "finding",
+      "rule": "cwe-79.js-angular-bypass-security-trust",
+      "path": "positive/cwe-79_js-angular-bypass-security-trust.ts",
+      "code": "class Results {\n  show(sanitizer: any, comment: string) {\n    this.comment = sanitizer.bypassSecurityTrustHtml(comment);\n  }\n}\n"
+    },
+    {
+      "id": "cwe-79.js-html-string-interpolated",
+      "expect": "finding",
+      "rule": "cwe-79.js-html-string-interpolated",
+      "path": "positive/cwe-79_js-html-string-interpolated.ts",
+      "code": "export function thumbnail(src: string, alt: string) {\n  return `<img src=\"${src}\" alt=\"${alt}\">`;\n}\n"
+    },
+    {
+      "id": "cwe-79.js-template-autoescape-disabled",
+      "expect": "finding",
+      "rule": "cwe-79.js-template-autoescape-disabled",
+      "path": "positive/cwe-79_js-template-autoescape-disabled.js",
+      "code": "const swig = require('swig');\nswig.setDefaults({\n  cache: false,\n  autoescape: false\n});\n"
+    },
+    {
+      "id": "cwe-79.py-html-percent-format",
+      "expect": "finding",
+      "rule": "cwe-79.py-html-percent-format",
+      "path": "positive/cwe-79_py-html-percent-format.py",
+      "code": "def describe(comic):\n    description = ''\n    description += '<br/>%s' % comic.text\n    return description\n"
+    },
+    {
+      "id": "cwe-22.py-pathlib-join-interpolated",
+      "expect": "finding",
+      "rule": "cwe-22.py-pathlib-join-interpolated",
+      "path": "positive/cwe-22_py-pathlib-join-interpolated.py",
+      "code": "def prompt_path(base, prompt):\n    return base / f\"{prompt.name}.{prompt.version}.jinja\"\n"
+    },
+    {
+      "id": "cwe-79.tpl-ejs-unescaped-output",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-ejs-unescaped-output",
+      "path": "positive/cwe-79_tpl-ejs-unescaped-output.ejs",
+      "code": "<p>Search results for <%- output.searchTerm %></p>\n"
+    },
+    {
+      "id": "cwe-79.tpl-erb-unescaped-output",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-erb-unescaped-output",
+      "path": "positive/cwe-79_tpl-erb-unescaped-output.erb",
+      "code": "<div><%= raw @body %></div>\n"
+    },
+    {
+      "id": "cwe-79.tpl-mustache-triple-brace",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-mustache-triple-brace",
+      "path": "positive/cwe-79_tpl-mustache-triple-brace.hbs",
+      "code": "<div class=\"body\">{{{ post.body }}}</div>\n"
+    },
+    {
+      "id": "cwe-79.tpl-unescaping-filter",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-unescaping-filter",
+      "path": "positive/cwe-79_tpl-unescaping-filter.jinja2",
+      "code": "<h3>The company '{{query|safe}}' you searched for is not part of FAANG</h3>\n"
+    },
+    {
+      "id": "cwe-79.tpl-vue-v-html",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-vue-v-html",
+      "path": "positive/cwe-79_tpl-vue-v-html.vue",
+      "code": "<template>\n  <div v-html=\"profile.bio\"></div>\n</template>\n"
+    },
+    {
+      "id": "cwe-79.tpl-svelte-html-tag",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-svelte-html-tag",
+      "path": "positive/cwe-79_tpl-svelte-html-tag.svelte",
+      "code": "<div class=\"bio\">{@html profile.bio}</div>\n"
+    },
+    {
+      "id": "cwe-79.tpl-dust-unescaped-filter",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-dust-unescaped-filter",
+      "path": "positive/cwe-79_tpl-dust-unescaped-filter.dust",
+      "code": "<div class=\"comment\">{comment|s}</div>\n"
+    },
+    {
+      "id": "cwe-79.tpl-pug-unescaped-interpolation",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-pug-unescaped-interpolation",
+      "path": "positive/cwe-79_tpl-pug-unescaped-interpolation.pug",
+      "code": "div\n  p !{profile.bio}\n"
+    },
+    {
+      "id": "cwe-79.tpl-inline-script-inner-html",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-inline-script-inner-html",
+      "path": "positive/cwe-79_tpl-inline-script-inner-html.ejs",
+      "code": "<script>\n  cell.innerHTML = users[i].name;\n</script>\n"
+    },
+    {
+      "id": "html-string-rule-ignores-a-sql-template-literal",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.js-html-string-interpolated"
+      ],
+      "path": "negative/html_string_sql_literal.ts",
+      "code": "// A template literal that interpolates but opens no tag. The HTML rule keys on a\n// tag opener before the first interpolation; a query, a URL and a class name all\n// interpolate and none of them are markup.\nexport function rows(table: string, id: string) {\n  const sql = `SELECT * FROM ${table} WHERE id = ${id}`;\n  const url = `https://api.example.com/v1/${table}`;\n  const cls = `btn btn-${id}`;\n  return [sql, url, cls];\n}\n",
+      "note": "A template literal with no tag opener is not HTML assembly."
+    },
+    {
+      "id": "percent-format-rule-ignores-a-non-html-format-string",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.py-html-percent-format"
+      ],
+      "path": "negative/percent_format_not_html.py",
+      "code": "# Percent formatting is ordinary Python. The rule requires a tag opener and a\n# substitution in the same literal, so none of these are markup.\ndef messages(name, table, count):\n    greeting = 'hello %s' % name\n    query = 'SELECT * FROM %s' % table\n    total = '%d items' % count\n    return [greeting, query, total]\n",
+      "note": "A format string with no tag opener is not HTML assembly."
+    },
+    {
+      "id": "sendfile-rule-ignores-a-fully-literal-path",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-sendfile-request-path"
+      ],
+      "path": "negative/sendfile_literal_path.js",
+      "code": "// The widened branch requires a non-literal second argument. A static asset is\n// resolved from two literals and cannot be steered by a request.\nfunction home(req, res) {\n  res.sendFile(path.resolve('public/', 'index.html'));\n  res.sendFile(path.join(__dirname, 'index.html'));\n}\n",
+      "note": "A path built from literals only is a static asset, not a traversal."
+    },
+    {
+      "id": "template-rules-ignore-escaped-output",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.tpl-ejs-unescaped-output",
+        "cwe-79.tpl-inline-script-inner-html",
+        "cwe-79.tpl-mustache-triple-brace"
+      ],
+      "path": "negative/template_escaped_output.ejs",
+      "code": "<p>Search results for <%= output.searchTerm %></p>\n<div>{{ post.title }}</div>\n<script>\n  cell.textContent = users[i].name;\n  cell.innerHTML = '';\n</script>\n",
+      "note": "Escaped EJS output, double-brace interpolation, textContent and an empty clear are the safe forms of each sink."
+    },
+    {
+      "id": "erb-rule-ignores-trim-mode-and-escaped-output",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.tpl-erb-unescaped-output"
+      ],
+      "path": "negative/erb_trim_mode.erb",
+      "code": "<%- total = items.count -%>\n<h1><%= @title %></h1>\n<p><%= @body %></p>\n",
+      "note": "ERB's trim-mode tag is whitespace control, not unescaped output, and the plain output tag escapes. Reading the trim tag as a sink would report every trimmed tag in the file."
     }
   ]
 }
