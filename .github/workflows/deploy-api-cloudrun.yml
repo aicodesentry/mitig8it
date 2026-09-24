@@ -150,7 +150,7 @@ jobs:
 
       - name: Load API migration secrets
         run: |
-          echo "DATABASE_URL=$(gcloud secrets versions access latest --secret=codesentry-database-url${SECRET_SUFFIX} | tr -d '\n')" >> "$GITHUB_ENV"
+          echo "DATABASE_URL=$(gcloud secrets versions access latest --secret="codesentry-database-url${SECRET_SUFFIX}" | tr -d '\n')" >> "$GITHUB_ENV"
 
       - name: Set release metadata
         shell: bash
