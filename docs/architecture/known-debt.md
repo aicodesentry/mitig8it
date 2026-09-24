@@ -121,11 +121,15 @@ the file but not on the line are this. It keeps a file with fifty weak hashes fr
 fifty comments, which is why it is there, and it caps recall on any file with more than one
 instance of the same defect.
 
-**Repair templates need an Express route.** 52 of the 103 template refusals on this corpus
-are `enclosing_route_not_found`: the JavaScript templates for the SQL, command and path
-families rewrite inside a route handler because that is where they know a 400 can be
-returned. A library, a CLI and an Electron main process have none, and most real code is one
-of those.
+**Repair templates need a function they can call.** The route requirement this entry used to
+describe is gone: `sites.js_site_for_line` falls back from the enclosing route to the enclosing
+function, method or `exports.name` binding, and the 123 `enclosing_route_not_found` refusals on
+the corpus are now 0. The reach barely moved with it, from 25 templated findings to 30, because
+the refusals moved down to the next obstacle rather than away. The largest is now
+`enclosing_function_not_found`: 67 findings in code at module scope, where there is no function
+for a generated test to drive at all. Next is `module_not_loadable_by_node`, 52 findings in
+TypeScript, which plain `node` cannot `require` and for which the sandbox has no toolchain.
+`docs/validation/vulnerable-corpus-2026-09.md` has the full before and after.
 
 **Three rules the corpus could not decide.** `xss.unsafe_html_render` (16 findings, 2
 adjudicated, 0.50), `auth.bypass.missing_check` (8 findings, 1 adjudicated, 0.00) and

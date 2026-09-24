@@ -31,7 +31,7 @@ back something the module calls later, so no data parser stands in for it).
 - `src/grouping.py`: connected components of findings over shared file paths, so one bounded agent loop runs per group.
 - `src/families.py`: the five repair families, the two languages, the extension map, and the harness assertion each family is proven by.
 - `src/gates.py`: the static per-finding gates that abstain before any agent runs (`pg_dependency_not_proven`, `shell_pipeline_unsupported`, `ambiguous_query_api`, `dynamic_code_unsupported`).
-- `src/sites.py`: derives the enclosing site over the exact snapshot, the Express route handler or plain named function for JavaScript, or the Python function or Flask view, with its untrusted inputs. It raises `SiteError` rather than guessing.
+- `src/sites.py`: derives the enclosing site over the exact snapshot. It prefers the request handler that encloses the finding and falls back to the function, class or object method, or `exports.name` binding that does, on either language, with its untrusted inputs. It raises `SiteError` rather than guessing.
 - `src/proofs.py`: generates one deterministic harness regression test per supported finding from that site, before any model call.
 - `src/templates.py`: generates a deterministic hunk per family from the recognized textual shape at the finding, and combines the group's template hunks into one bundle. It declines a shape it does not recognize.
 - `src/splitting.py`: attributes a verified group proposal's hunks to individual findings, so one candidate is rebuilt per proven finding and no hunk owned by an unproven finding ships.
@@ -203,15 +203,20 @@ The deterministic suite injects scripted provider and broker doubles; those test
 For every supported finding the engine first tries to write both halves of the repair itself,
 before any model call, and records which path produced each candidate.
 
-- `src/sites.py` derives the enclosing site over the exact snapshot: the Express route handler
+- `src/sites.py` derives the enclosing site over the exact snapshot. The route comes first
+  because it is the reachable entry point: an Express route handler
   (`router.get('/orders/:id', (req, res) => ...)`, with its method, path, request and response
-  names, and every `req.params/query/body` read) or the Python function or Flask view (its
-  parameters, rule, methods, and `request.args/form/json` reads).
+  names, and every `req.params/query/body` read), or a Flask view (its parameters, rule,
+  methods, and `request.args/form/json` reads). A line no handler encloses falls back to the
+  function that does, which may be a declaration, a `const` binding, an `exports.name`
+  assignment, or a class or object method. A method is derived but not proven: reaching one
+  means constructing a receiver, so `method_receiver_not_supported` sends it to the model.
 - `src/proofs.py` emits one harness regression test per finding from that site: it invokes the
   route or function with the family's injection payload and asserts the family's contract
   through the harness recorders (query text without the payload and values carrying it; an
   `execFile`/`spawn` argument array with the payload as its own element; no read outside the
-  served directory and a 4xx for a traversal payload, then a legitimate name still read; the
+  served directory for a traversal payload and the refusal the site's contract calls for, a 4xx
+  from a handler or a throw from a plain function, then a legitimate name still read; the
   secret taken from the environment with the literal gone; nothing run for an `eval` payload
   while a literal still parses). The test is generated before the model is asked and handed to
   it as `proofs` in the task message: it is always the test that runs for that finding, and a
