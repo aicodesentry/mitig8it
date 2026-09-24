@@ -31,6 +31,17 @@ function buildAnalyzeRequest(payload = {}) {
   return request;
 }
 
+function limitationToPlain(limitation) {
+  const line = limitation.getLine();
+  return {
+    path: limitation.getPath(),
+    kind: limitation.getKind(),
+    type: limitation.getType(),
+    message: limitation.getMessage(),
+    line: line > 0 ? line : null,
+  };
+}
+
 function analyzeResponseToPlain(response) {
   return {
     repository_full_name: response.getRepositoryFullName(),
@@ -39,6 +50,7 @@ function analyzeResponseToPlain(response) {
     files_analyzed: response.getFilesAnalyzed(),
     tier: response.getTier(),
     findings: response.getFindingsList().map(findingToPlain),
+    analysis_limitations: response.getAnalysisLimitationsList().map(limitationToPlain),
   };
 }
 
@@ -109,4 +121,5 @@ module.exports = {
   AnalysisGrpcClient,
   buildAnalyzeRequest,
   buildTriageRequest,
+  analyzeResponseToPlain,
 };
