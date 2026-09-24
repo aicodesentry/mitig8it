@@ -14,6 +14,7 @@ import base64
 import random
 import time
 from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -172,7 +173,9 @@ class GitHubReader:
         for path in list(paths)[: pr_scope.MAX_CHANGED_FILES]:
             if not path or not isinstance(path, str):
                 continue
-            encoded = "/".join(httpx.URL(path="/" + part).path[1:] for part in path.split("/"))
+            # Each segment is encoded on its own so the separators survive, matching the
+            # `path.split('/').map(encodeURIComponent).join('/')` the github-service uses.
+            encoded = "/".join(quote(part, safe="") for part in path.split("/"))
             response = self.get(
                 f"/repos/{self.owner}/{self.repo}/contents/{encoded}", {"ref": ref}
             )

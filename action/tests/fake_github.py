@@ -38,6 +38,11 @@ class FakeGitHub:
             self._routes.append((compiled, lambda _match, _params, value=handler: value))
         return self
 
+    def reroute(self, pattern: str, handler) -> "FakeGitHub":
+        """Replace an existing route, so a test can change one answer without rebuilding all."""
+        self._routes = [route for route in self._routes if route[0].pattern != pattern]
+        return self.route(pattern, handler)
+
     def get(self, url: str, headers=None, params=None) -> FakeResponse:  # noqa: ARG002
         path = url.split("https://api.github.com", 1)[-1]
         self.calls.append((path, dict(params) if params else None))

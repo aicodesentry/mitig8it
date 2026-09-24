@@ -103,13 +103,8 @@ def test_the_head_is_asserted_before_and_after_the_listing(api):
 
 
 def test_a_moved_head_abandons_the_run(api):
-    api._routes.insert(
-        0,
-        (
-            __import__("re").compile(r"/repos/acme/widgets/pulls/42"),
-            lambda _m, _p: fake_github.pull_request(42, "c" * 40),
-        ),
-    )
+    """A push between the request and the read must not produce a review of neither commit."""
+    api.reroute(r"/repos/acme/widgets/pulls/42", fake_github.pull_request(42, "c" * 40))
     with pytest.raises(github_api.HeadMovedError):
         reader_for(api).list_pull_request_files(42, HEAD_SHA)
 
@@ -169,11 +164,7 @@ def test_the_payload_is_accepted_by_the_analysis_service_model(api):
 
 def test_an_unreadable_file_fails_the_run_closed(api, event, monkeypatch):
     """A file skipped for size must not become a clean review."""
-    api._routes = [
-        route for route in api._routes
-        if "contents" not in route[0].pattern
-    ]
-    api.route(
+    api.reroute(
         r"/repos/acme/widgets/contents/src/reports\.py",
         fake_github.contents_payload("x" * (pr_scope.MAX_FILE_CONTENT_BYTES + 1)),
     )
@@ -185,8 +176,7 @@ def test_an_unreadable_file_fails_the_run_closed(api, event, monkeypatch):
 # --- the permission refusal ---------------------------------------------------------------
 
 def test_contents_write_is_refused(api):
-    api._routes = [r for r in api._routes if r[0].pattern != r"/repos/acme/widgets"]
-    api.route(r"/repos/acme/widgets", fake_github.repository({"pull": True, "push": True, "admin": False}))
+    api.reroute(r"/repos/acme/widgets", fake_github.repository({"pull": True, "push": True, "admin": False}))
     with pytest.raises(run.ActionError) as error:
         run.assert_least_privilege(reader_for(api))
     message = str(error.value)
@@ -201,8 +191,7 @@ def test_least_privilege_passes_on_a_read_only_token(api):
 
 
 def test_an_unreadable_permissions_object_refuses_rather_than_assumes(api):
-    api._routes = [r for r in api._routes if r[0].pattern != r"/repos/acme/widgets"]
-    api.route(r"/repos/acme/widgets", {"full_name": REPO, "id": 1})
+    api.reroute(r"/repos/acme/widgets", {"full_name": REPO, "id": 1})
     with pytest.raises(github_api.PermissionError_) as error:
         run.assert_least_privilege(reader_for(api))
     assert "could not confirm" in str(error.value)
