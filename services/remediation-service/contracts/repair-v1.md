@@ -109,9 +109,14 @@ Every candidate's evidence carries `evidence.verification_level`:
 | Value | Meaning |
 | --- | --- |
 | `independent_sandbox` | The check pair ran in the isolated Kubernetes/gVisor sandbox with a digest-pinned runner image, denied network, and a read-only root filesystem. |
+| `isolated_job` | Each half of the check pair ran in its own Cloud Run job container, as an unprivileged user holding none of the job's credentials, on a network that the task's own probes measured as unreachable before the check started. The image digest matches `policy.sandbox_image_digest`. There is no read-only root filesystem and no gVisor runtime class. |
 | `development_unverified` | The check pair ran through the development-only local subprocess driver with no network, kernel, or filesystem isolation. |
 
-`development_unverified` evidence is accepted only when the request policy sets `allow_development_verification: true`. That field defaults to `false` and the API control plane keeps it `false` in production, so a development run can never be labelled with the production verification level. A response whose evidence carries an unrecognized level, or `development_unverified` without the policy flag, is never `ready`.
+Levels are ordered `development_unverified` < `isolated_job` < `independent_sandbox`.
+
+`isolated_job` evidence carries `runner.environment_kind: "cloud-run-job"`, `runner.job_executions` naming every Cloud Run execution that produced it, and, on every completed baseline and candidate result, `network_probes` with a `metadata`, `internet`, and `dns` entry and that result's own `job_execution`. Each probe must report `reached: false`; `reached: null` means the probe did not run and is refused exactly like a probe that connected. The driver itself refuses first: a reached or unmeasured probe returns `inconclusive` with `sandbox_network_not_denied`, and a task that reported an image digest other than the pinned one returns `inconclusive` with `sandbox_image_digest_mismatch`. Neither carries check results, so partial evidence can never be read as a pass. `isolated_job` evidence is accepted only when the request policy sets `allow_isolated_job_verification`, which defaults to `true`.
+
+`development_unverified` evidence is accepted only when the request policy sets `allow_development_verification: true`. That field defaults to `false` and the API control plane keeps it `false` in production, so a development run can never be labelled with the production verification level. A response whose evidence carries an unrecognized level, `development_unverified` without the policy flag, or `isolated_job` with `allow_isolated_job_verification: false`, is never `ready`.
 
 ## Scanner findings contract
 
@@ -167,6 +172,8 @@ Settling against an **absent** reservation still raises: a call that was never a
 | `regression_test_not_reproducing` | No finding in the group was shown repaired by its own regression test. |
 | `dependent_hunk_unproven` | Every proven finding in the group was proven only together with hunks owned by an unproven finding, which are never shipped; the same code names each such finding in `skipped`. |
 | `verification_level_not_permitted` | The group's evidence carried a level this policy does not accept. |
+| `sandbox_network_not_denied` | A Cloud Run job sandbox probe reached its target, or could not be run, so the network was not shown denied and no check result is reported. |
+| `sandbox_image_digest_mismatch` | A Cloud Run job task reported running an image other than the pinned `policy.sandbox_image_digest`, or could not report one at all. |
 | any agent reason code | The group's bounded loop abstained or could not reach verified evidence. |
 
 Partial coverage is therefore explicit. A finding absent from every candidate's `finding_ids` was not repaired, and `evidence.groups` states why. The response-level `skipped: [{finding_id, code, message}]` lists every such finding the request carried, including findings outside the enabled families and findings a candidate's group could not prove (`not_repaired`, `regression_test_not_reproducing`, `dependent_hunk_unproven`). A batch of two or more candidates must also prove every claimed finding again on the combined tree; otherwise the response is `inconclusive` with `combined_verification_failed`.

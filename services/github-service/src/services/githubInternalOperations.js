@@ -1295,8 +1295,18 @@ async function suggestionFor(section, comment, readFileLines) {
   return { ok: true, lines };
 }
 
+// How each verification level is named to a reader of the pull request. The text says what the
+// sandbox actually was, so a reader never has to know the level's internal name, and the
+// development level keeps saying it is a development sandbox. An unrecognized level is named
+// the most cautious way rather than the most flattering one.
+const VERIFICATION_LEVEL_TEXT = {
+  independent_sandbox: 'isolated sandbox',
+  isolated_job: 'isolated sandbox (Cloud Run job, network denied)',
+  development_unverified: 'development sandbox',
+};
+
 function verifiedLine(section) {
-  const where = section.verification_level === 'independent_sandbox' ? 'isolated sandbox' : 'development sandbox';
+  const where = VERIFICATION_LEVEL_TEXT[section.verification_level] || VERIFICATION_LEVEL_TEXT.development_unverified;
   return `Verified: regression test failed on the original code and passed with this change (${where}).`;
 }
 

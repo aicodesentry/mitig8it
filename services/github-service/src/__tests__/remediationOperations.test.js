@@ -846,6 +846,36 @@ test('a verified fix is appended to the existing finding comment as a suggestion
   expect(comments[0].body.startsWith(`${FINDING_MARKER}\n**SQL injection**\nUse parameters.`)).toBe(true);
 });
 
+// The verified line names the sandbox the check pair actually ran in. `isolated_job` is the
+// Cloud Run job sandbox: separate containers and a network the job's own probes measured as
+// unreachable, so it is named as an isolated sandbox and never given the development wording.
+// A level this service does not recognize is named the most cautious way, not the most
+// flattering one, because an unknown sandbox is not evidence of a strong one.
+test.each([
+  ['independent_sandbox', 'isolated sandbox'],
+  ['isolated_job', 'isolated sandbox (Cloud Run job, network denied)'],
+  ['development_unverified', 'development sandbox'],
+  ['', 'development sandbox'],
+  ['some_level_from_the_future', 'development sandbox'],
+])('the verified line names the sandbox for verification level "%s"', async (level, where) => {
+  const comments = findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\n**SQL injection**\nUse parameters.`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
+  const result = await publishFindingFixSections(fixPayload([fixSection({ verification_level: level })]));
+  expect(result.state).toBe('published');
+  expect(comments[0].body).toContain(`Verified: regression test failed on the original code and passed with this change (${where}).`);
+});
+
+test('the Cloud Run job sandbox is never described to a reviewer as a development sandbox', async () => {
+  const comments = findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\n**SQL injection**\nUse parameters.`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
+  await publishFindingFixSections(fixPayload([fixSection({
+    verification_level: 'isolated_job',
+    limitations: ['verification ran in an isolated Cloud Run job container without a read-only root filesystem or a gVisor runtime class'],
+  })]));
+  const body = comments[0].body;
+  expect(body).toContain('(isolated sandbox (Cloud Run job, network denied))');
+  expect(body).not.toContain('development sandbox');
+  expect(body).toContain('**Limitations:** verification ran in an isolated Cloud Run job container without a read-only root filesystem or a gVisor runtime class');
+});
+
 test('a multi-line hunk inside a ranged finding comment becomes a suggestion for the whole comment range', async () => {
   const file = ['const path = require(\'path\');', 'function read(base, name) {', '  const target = path.join(base, name);', '  return fs.readFileSync(target);', '}', 'module.exports = { read };'].join('\n');
   const comments = findingCommentGitHub(

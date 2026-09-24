@@ -138,6 +138,11 @@ class RepairPolicy(StrictModel):
     )
     sandbox_image_digest: str | None = None
     allow_development_verification: bool = False
+    # The Cloud Run job sandbox level. Default true, unlike the development flag: its evidence
+    # comes from separate containers whose own probes measured the network as unreachable, so
+    # it is real verification rather than a development convenience. An operator who wants
+    # nothing below the Kubernetes/gVisor level sets this false.
+    allow_isolated_job_verification: bool = True
     # Plan section 8 step 4: the agent must ship a reproducer that distinguishes a real repair
     # from disabling the feature. With this set, an empty `verification_checks` is allowed,
     # because the generated regression test supplies the exploit check.

@@ -196,6 +196,28 @@ it('warns in amber when a candidate was never verified in a sandbox', async () =
   expect(screen.getByText('No regression test was produced')).toBeInTheDocument()
 })
 
+// The Cloud Run job sandbox is a real sandbox with a denied network, so the panel names it as
+// one and never shows the amber development warning for it. An unfamiliar level still gets the
+// plain fallback rendering rather than a claim the panel cannot support.
+it('names the Cloud Run job sandbox without the development warning', async () => {
+  remediationAPI.preview.mockResolvedValue({ ...preview,
+    candidates: [{ ...fixOne, verification_level: 'isolated_job', evidence: null,
+      limitations: ['verification ran in an isolated Cloud Run job container without a read-only root filesystem or a gVisor runtime class'] }] })
+  render(<RepairSession pullRequestId="pr-1" />)
+  const line = await screen.findByText('Verification level: isolated sandbox (Cloud Run job, network denied)')
+  expect(line.className).not.toContain('amber')
+  expect(screen.queryByText(/This fix was not verified in an isolated sandbox/)).not.toBeInTheDocument()
+  expect(screen.getByText('verification ran in an isolated Cloud Run job container without a read-only root filesystem or a gVisor runtime class')).toBeInTheDocument()
+})
+
+it('names the Kubernetes sandbox as an isolated sandbox', async () => {
+  remediationAPI.preview.mockResolvedValue({ ...preview,
+    candidates: [{ ...fixOne, verification_level: 'independent_sandbox', evidence: null, limitations: [] }] })
+  render(<RepairSession pullRequestId="pr-1" />)
+  const line = await screen.findByText('Verification level: isolated sandbox')
+  expect(line.className).not.toContain('amber')
+})
+
 it('renders only the matching candidate for a single finding and keeps batch actions secondary', async () => {
   remediationAPI.preview.mockResolvedValue(twoFilePreview)
   render(<RepairSession pullRequestId="pr-1" findingId="finding-1" />)

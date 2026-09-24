@@ -13,6 +13,14 @@ const cancellableMerge = new Set(['waiting_for_application', 'waiting_for_checks
 // Previews are readable while ready and after an application commit superseded them.
 const previewable = new Set(['ready', 'superseded'])
 const label = (state) => String(state || 'queued').replaceAll('_', ' ')
+
+// What each verification level is called on screen. The isolated job level names the sandbox
+// and what it denied, so nobody has to read `isolated_job` and guess how strong it is; the
+// development level keeps its own warning styling below.
+const VERIFICATION_LEVEL_TEXT = {
+  independent_sandbox: 'isolated sandbox',
+  isolated_job: 'isolated sandbox (Cloud Run job, network denied)',
+}
 const errorMessage = (error) => error?.response?.data?.error || 'Could not refresh repair status. Refresh before taking another action.'
 const buttonClass = 'rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50'
 const smallButtonClass = 'rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50'
@@ -323,7 +331,7 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
         <p className={`text-sm ${unverified ? 'rounded bg-amber-50 p-2 font-medium text-amber-900' : 'text-neutral-600'}`}>
           {unverified
             ? 'Verification level: development unverified. This fix was not verified in an isolated sandbox.'
-            : `Verification level: ${label(level || 'unknown')}`}
+            : `Verification level: ${VERIFICATION_LEVEL_TEXT[level] || label(level || 'unknown')}`}
         </p>
         {limits.length > 0 && <div className="rounded bg-amber-50 p-2 text-xs text-amber-900">
           <p className="font-medium">Coverage limits</p>
