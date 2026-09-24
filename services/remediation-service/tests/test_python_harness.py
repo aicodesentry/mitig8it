@@ -25,16 +25,19 @@ from src.patches import (
     python_declared_dependencies,
     python_module_specifiers,
     PYTHON_STDLIB_MODULES,
+    _reject_missing_python_dependencies,
 )
 from src.retrieval import Snapshot
 from src.sandbox import InProcessSandboxBroker, LocalSubprocessDriver
 from src.sandbox.harness import (
     HARNESS_PATH,
     MAX_PYTHON_HARNESS_BYTES,
+    PYTHON_HARNESS_MODULES,
     PYTHON_HARNESS_OCCUPIED_LIMITATION,
     PYTHON_HARNESS_PATH,
     PYTHON_HARNESS_SOURCE_FILE,
     is_harness_path,
+    python_harness_modules,
     python_harness_source,
 )
 from src.sandbox.runner import materialize_tree
@@ -194,6 +197,96 @@ def test_patch_policy_rejects_a_python_test_that_imports_a_package_and_names_the
     build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, "import flask\n" + APP_SOURCE)], [])
     with pytest.raises(PatchPolicyError, match="missing_dependency:boto3"):
         build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, "import boto3\n" + APP_SOURCE)], [])
+
+
+# The shape the service writes for a Python SQL finding whose repaired function takes a cursor:
+# the driver is imported so the proof can hand that driver's own cursor to the function and
+# assert on that driver's placeholder syntax. `psycopg` binds `%s`, `sqlite3` binds `?`, so the
+# proof cannot state what it exercises without naming the driver.
+SQL_APP_PATH = "app/tickets.py"
+SQL_APP_SOURCE = (
+    '"""Ticket search."""\n'
+    "import psycopg\n"
+    "\n"
+    "\n"
+    "def find_tickets(cursor, status):\n"
+    "    cursor.execute(\"SELECT id FROM tickets WHERE status = '%s'\" % status)\n"
+    "    return cursor.fetchall()\n"
+)
+PSYCOPG_PROOF = (
+    "import harness as h\n"
+    "\n"
+    "\n"
+    "def body():\n"
+    f'    m = h.load("{SQL_APP_PATH}")\n'
+    "    import psycopg\n"
+    "    cursor = psycopg.connect('').cursor()\n"
+    "    payload = \"1' OR '1'='1\"\n"
+    "    h.call(m.find_tickets, cursor, payload)\n"
+    "    h.assert_true(h.db.queries, 'expected one query to be executed')\n"
+    "    h.assert_param(h.db.queries[0], payload)\n"
+    "\n"
+    "\n"
+    "h.run(body)\n"
+)
+
+
+def test_the_harness_module_exemption_matches_the_harness_fake_table():
+    """The exempted names are the ones the harness actually installs, read from its source."""
+    assert PYTHON_HARNESS_MODULES == python_harness_modules()
+    assert "psycopg" in PYTHON_HARNESS_MODULES and "requests" not in PYTHON_HARNESS_MODULES
+
+
+def test_a_generated_python_test_may_import_a_driver_the_harness_fakes(request_payload):
+    """The service used to reject the coverage proof it had just written for itself.
+
+    The Python harness installs recorded fakes for its drivers into `sys.modules` before it
+    loads the module under test, so `import psycopg` in a proof resolves in a sandbox where
+    nothing is installed. The generated-test check did not know that: it ran with
+    `allow_declared=False`, found no standard-library, snapshot, or harness module of that
+    name, and raised `missing_dependency:psycopg`. The template pass and then every agent patch
+    were refused, so no candidate was ever proposed for such a finding.
+    """
+    request = RepairRequest.model_validate(
+        _payload(request_payload, extra_files=[(SQL_APP_PATH, SQL_APP_SOURCE), ("requirements.txt", "psycopg==3.2.10\n")])
+    )
+    snapshot = Snapshot(request)
+
+    # The old behaviour, still reachable by asking for it: the proof is refused.
+    with pytest.raises(PatchPolicyError) as rejected:
+        _reject_missing_python_dependencies(
+            TEST_PATH, "", PSYCOPG_PROOF, snapshot, allow_declared=False, allow_harness_modules=False
+        )
+    assert rejected.value.code == "missing_dependency:psycopg"
+
+    # What generated tests get today: the drivers the harness supplies, and nothing else.
+    tests, _ = build_generated_tests(request, snapshot, [_spec(PSYCOPG_PROOF)])
+    assert [test.path for test in tests] == [TEST_PATH]
+    with pytest.raises(PatchPolicyError, match="missing_dependency:requests"):
+        build_generated_tests(request, snapshot, [_spec("import harness as h\nimport requests\n")])
+
+
+def test_the_harness_exemption_does_not_reach_application_patches(request_payload):
+    """A driver the sandbox fakes is still a dependency the deployment has to install.
+
+    The widening is for generated tests only, so a patch that introduces an undeclared import
+    of a faked driver is rejected exactly as before, and one the requirements declare is not.
+    """
+    undeclared = RepairRequest.model_validate(_payload(request_payload))
+    with pytest.raises(PatchPolicyError, match="missing_dependency:psycopg"):
+        build_patch_bundle(
+            undeclared,
+            Snapshot(undeclared),
+            [whole_file_change(APP_PATH, APP_SOURCE, "import psycopg\n" + APP_SOURCE)],
+            [],
+        )
+    declared = RepairRequest.model_validate(_payload(request_payload, extra_files=[("requirements.txt", "psycopg==3.2.10\n")]))
+    build_patch_bundle(
+        declared,
+        Snapshot(declared),
+        [whole_file_change(APP_PATH, APP_SOURCE, "import psycopg\n" + APP_SOURCE)],
+        [],
+    )
 
 
 def test_a_python_test_that_only_reads_the_file_as_text_is_rejected(request_payload):

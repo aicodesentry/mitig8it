@@ -4,9 +4,10 @@
   "repository_id": "fixture-js-warehouse-ae",
   "split": "holdout",
   "family": "hardcoded_credential",
-  "kind": "negative",
-  "expected_state": "unsupported",
+  "kind": "supported",
+  "expected_state": "ready",
   "source": "app.js",
+  "reference_repair": "expected/app.js",
   "finding": {
     "id": "js-credential-db-password-1",
     "rule_id": "cwe-798.hardcoded-secret-js",
@@ -17,7 +18,11 @@
     "line_start": 6,
     "line_end": 6
   },
-  "reason": "The Node toolchain records no environment reads, so no regression test can prove a hardcoded_credential repair for a JavaScript source; the engine skips the finding as unsupported_rule_family rather than hand the agent an unprovable task.",
+  "trusted_fixture_test": {
+    "runtime": "node",
+    "path": "tests/verify.js",
+    "timeout_seconds": 5
+  },
   "budget": {
     "max_tool_calls": 20,
     "max_attempts": 3,

@@ -1,29 +1,66 @@
-// Abstention fixture: the eval really does run request text, but the Node harness stubs no
-// eval and records no executed code, so no regression test can prove a code_injection_eval
-// repair for a JavaScript source. The engine skips the finding rather than hand the agent an
-// unprovable task, and no candidate should reach these checks.
+// Two invocation modes.
+//   node tests/verify.js --exploit | --behavior   Sandbox mode: checks the app.js in this tree.
+//   node tests/verify.js <original> <repaired>    Harness mode: compares the checked-in trees.
+//
+// The rule the request carries is a document the function reads back as a value, so parsing it
+// as data keeps what the function returns and removes the interpreter. The payload sets a flag
+// rather than doing damage, so the check observes execution without any side effect: eval runs
+// it, JSON.parse rejects it. The document is an array, which eval and JSON.parse read the same
+// way, so the behavior check can pass on both trees and still say something.
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const fs = require('node:fs');
+
+const PAYLOAD = '(globalThis.__mitig8itOwned = true)';
+const DOCUMENT = '[1, 2]';
+const PARSED = [1, 2];
+
+function load(target) {
+  globalThis.__mitig8itOwned = false;
+  delete require.cache[require.resolve(target)];
+  return require(target);
+}
 
 function localPath() {
   return path.resolve(__dirname, '..', 'app.js');
 }
 
+function attempt(module, expression) {
+  try {
+    return module.applyRule({ expression }, {});
+  } catch (error) {
+    return undefined;
+  }
+}
+
 function exploit() {
-  if (/\beval\s*\(/.test(fs.readFileSync(localPath(), 'utf8'))) {
-    process.stderr.write('vulnerability present: request text is handed to eval\n');
+  const module = load(localPath());
+  attempt(module, PAYLOAD);
+  if (globalThis.__mitig8itOwned) {
+    process.stderr.write('vulnerability present: the rule from the request body was executed as code\n');
     process.exit(1);
   }
+  assert.deepEqual(attempt(module, DOCUMENT), PARSED);
   process.exit(0);
 }
 
 function behavior() {
-  assert.equal(require(localPath()).applyRule({ expression: '2 + 3' }, {}), 5);
+  const module = load(localPath());
+  assert.deepEqual(module.applyRule({ expression: DOCUMENT }, {}), PARSED);
+  assert.deepEqual(module.applyRule({ expression: '[]' }, {}), []);
   process.exit(0);
+}
+
+function compare(originalPath, repairedPath) {
+  attempt(load(originalPath), PAYLOAD);
+  assert.equal(globalThis.__mitig8itOwned, true);
+  const repaired = load(repairedPath);
+  attempt(repaired, PAYLOAD);
+  assert.equal(globalThis.__mitig8itOwned, false);
+  assert.deepEqual(repaired.applyRule({ expression: DOCUMENT }, {}), PARSED);
+  process.stdout.write(JSON.stringify({ vulnerability_observed: true, behavior_preserved: true }));
 }
 
 const mode = process.argv[2];
 if (mode === '--exploit') exploit();
 else if (mode === '--behavior') behavior();
-else { process.stderr.write('this abstention fixture has no reference repair to compare\n'); process.exit(64); }
+else compare(process.argv[2], process.argv[3]);

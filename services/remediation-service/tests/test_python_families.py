@@ -167,10 +167,11 @@ def test_language_is_decided_by_the_affected_file_extension():
 def test_families_are_supported_per_language():
     assert family_supported(HARDCODED_CREDENTIAL, PYTHON) and family_supported(CODE_INJECTION_EVAL, PYTHON)
     # `hardcoded_credential` joined JavaScript once the Node harness could record an environment
-    # read; see tests/test_javascript_credential_family.py. `code_injection_eval` has not, because
-    # the Node harness still stubs no `eval`, so a repair of it could not be proven.
+    # read (tests/test_javascript_credential_family.py), and `code_injection_eval` once it could
+    # record a compile without running it (tests/test_javascript_eval_family.py). Both toolchains
+    # now carry every family, so what refuses a finding is the gate, not the language.
     assert family_supported(HARDCODED_CREDENTIAL, JAVASCRIPT)
-    assert not family_supported(CODE_INJECTION_EVAL, JAVASCRIPT)
+    assert family_supported(CODE_INJECTION_EVAL, JAVASCRIPT)
     assert family_supported(SQL_PARAMETERIZATION, JAVASCRIPT) and family_supported(SQL_PARAMETERIZATION, PYTHON)
     assert not family_supported(SQL_PARAMETERIZATION, None)
     assert "h.db.queries" in family_assertion(SQL_PARAMETERIZATION, PYTHON)
@@ -178,6 +179,7 @@ def test_families_are_supported_per_language():
     assert "os.environ" in family_assertion(HARDCODED_CREDENTIAL, PYTHON)
     assert "h.assert.envRead" in family_assertion(HARDCODED_CREDENTIAL, JAVASCRIPT)
     assert "assert_no_commands" in family_assertion(CODE_INJECTION_EVAL, PYTHON)
+    assert "h.assert.noCode" in family_assertion(CODE_INJECTION_EVAL, JAVASCRIPT)
 
 
 def test_a_mixed_language_group_is_split_by_language_in_order():
@@ -245,16 +247,18 @@ def test_a_python_shell_pipeline_is_skipped(request_payload):
 
 @pytest.mark.asyncio
 async def test_engine_skips_per_finding_by_language_family_and_gate(request_payload):
-    """Every skip is attributable: an unsupported language, a family the language lacks, an
+    """Every skip is attributable: an unsupported language, a site that compiles a program, an
     ambiguous query API, and a JavaScript SQL finding without a pg proof, while the eval finding
     still reaches the agent."""
-    files = [("text.py", TEXT_PY), ("main.rb", "x = 1\n"), ("src/db.js", "module.exports = (db, id) => db.query('SELECT ' + id);\n"), ("package.json", '{"dependencies":{}}\n')]
+    formula = "module.exports = (src) => new Function('row', 'return ' + src + ';');\n"
+    files = [("text.py", TEXT_PY), ("main.rb", "x = 1\n"), ("src/db.js", "module.exports = (db, id) => db.query('SELECT ' + id);\n"), ("src/formula.js", formula), ("package.json", '{"dependencies":{}}\n')]
     findings = [
         TEXT_FINDINGS[0],
         {"snapshot_id": "ruby", "rule_id": "sql", "cwe_id": "CWE-89", "file_path": "main.rb", "line_start": 1, "line_end": 1},
-        # A family JavaScript lacks. It used to be the credential family; that is now supported,
-        # so the case is carried by `code_injection_eval`, which the Node harness still cannot prove.
-        {"snapshot_id": "js-eval", "rule_id": "code.injection.eval", "cwe_id": "CWE-95", "file_path": "src/db.js", "line_start": 1, "line_end": 1},
+        # No family is missing from a language any more, so the case that used to be carried by
+        # a language gap is carried by the gate: a `new Function` compiles a program, and no data
+        # parser stands in for it.
+        {"snapshot_id": "js-eval", "rule_id": "code.injection.eval", "cwe_id": "CWE-95", "file_path": "src/formula.js", "line_start": 1, "line_end": 1},
         {"snapshot_id": "js-sql", "rule_id": "sql", "cwe_id": "CWE-89", "file_path": "src/db.js", "line_start": 1, "line_end": 1},
         TEXT_FINDINGS[2],
     ]
@@ -270,7 +274,7 @@ async def test_engine_skips_per_finding_by_language_family_and_gate(request_payl
     assert {item["finding_id"]: item["code"] for item in response.skipped} == {
         "sql-6": "ambiguous_query_api",
         "ruby": "unsupported_language",
-        "js-eval": "unsupported_rule_family",
+        "js-eval": "dynamic_code_unsupported",
         "js-sql": "pg_dependency_not_proven",
     }
     # The eval finding is proven by the template path with the service-generated proof, so the

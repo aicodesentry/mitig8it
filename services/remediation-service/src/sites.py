@@ -58,6 +58,17 @@ class JsRoute:
 
 
 @dataclass(frozen=True)
+class JsFunction:
+    """A named JavaScript function that is not an Express handler, called directly by a proof."""
+
+    name: str
+    start_line: int
+    end_line: int
+    parameters: tuple[str, ...]
+    returns_directly: bool = False
+
+
+@dataclass(frozen=True)
 class PyFunction:
     name: str
     start_line: int
@@ -189,6 +200,107 @@ def js_route_for_line(source: str, line: int) -> JsRoute:
                 inputs.append(UntrustedInput(found.group("source"), name, found.group(0), number))
         return JsRoute(match.group("owner"), match.group("method"), match.group("route"), index + 1, end + 1, req, res, tuple(inputs))
     raise SiteError("enclosing_route_not_found")
+
+
+_JS_FUNCTION_RE = re.compile(
+    r"^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?(?:"
+    r"function\s+(?P<name>[\w$]+)\s*\((?P<params>[^()]*)\)"
+    r"|(?:const|let|var)\s+(?P<name2>[\w$]+)\s*=\s*(?:async\s+)?(?:function\s*[\w$]*\s*)?\((?P<params2>[^()]*)\)\s*(?:=>\s*)?"
+    r")"
+)
+_JS_MEMBER_ASSIGNMENT_RE = re.compile(
+    r"^\s*(?:const|let|var)\s+(?P<name>[\w$]+)\s*=\s*(?P<root>[\w$]+)(?P<member>(?:\.[\w$]+)*)\s*;?\s*$"
+)
+
+
+def _js_brace_end(stripped_lines: list[str], start_index: int, column: int = 0) -> int | None:
+    """The 0-based index of the line closing the block that opens at or after `column`.
+
+    The column matters: a destructured parameter list carries its own braces, and counting those
+    would close the function on its own signature line.
+    """
+    depth = 0
+    opened = False
+    for index in range(start_index, len(stripped_lines)):
+        for ch in stripped_lines[index][column if index == start_index else 0 :]:
+            if ch == "{":
+                depth += 1
+                opened = True
+            elif ch == "}":
+                depth -= 1
+                if opened and depth == 0:
+                    return index
+    return None
+
+
+def js_function_for_line(source: str, line: int) -> JsFunction:
+    """The named function enclosing `line`, or a SiteError naming what is missing.
+
+    The JavaScript families that live inside a request handler are found with
+    `js_route_for_line`. This is for the ones that do not: a repair of a module's own function is
+    proven by calling that function, so the proof needs its name and its parameters. Two shapes
+    are recognized, the two the corpus and the live files carry: a declaration
+    (`function parse(raw) {`) and a const-bound function or arrow (`const parse = (raw) => {`).
+    A parameter list with a default, a rest element, or destructuring is not one of them, and
+    says so rather than being called with arguments that do not line up.
+    """
+    lines = source.splitlines()
+    stripped = js_strip_strings(source).splitlines()
+    if line > len(lines):
+        raise SiteError("finding_line_outside_file")
+    for index in range(min(line, len(lines)) - 1, -1, -1):
+        match = _JS_FUNCTION_RE.match(lines[index])
+        if not match or "{" not in stripped[index][match.end() :]:
+            continue
+        end = _js_brace_end(stripped, index, match.end())
+        if end is None or end < line - 1:
+            continue
+        declared = match.group("params") if match.group("name") else match.group("params2")
+        written = [item.strip() for item in declared.split(",") if item.strip()]
+        if any(not re.fullmatch(r"[\w$]+", item) for item in written):
+            raise SiteError("function_parameters_not_plain_names")
+        returns = bool(re.match(r"^\s*return\s", lines[line - 1]))
+        return JsFunction(match.group("name") or match.group("name2"), index + 1, end + 1, tuple(written), returns)
+    raise SiteError("enclosing_function_not_found")
+
+
+def js_value_origin(lines: list[str], function: JsFunction, line: int, name: str) -> tuple[str, tuple[str, ...]] | None:
+    """The parameter an identifier holds at `line` and the member path read off it, or None.
+
+    `eval(expression)` after `const expression = body.expression;` resolves to `('body',
+    ('expression',))`, which is what lets a proof place its payload where the request put it.
+    One assignment is followed, because a second would be a chain the scan cannot vouch for.
+    """
+    if name in function.parameters:
+        return name, ()
+    for number in range(line - 1, function.start_line - 1, -1):
+        match = _JS_MEMBER_ASSIGNMENT_RE.match(lines[number - 1])
+        if not match or match.group("name") != name:
+            continue
+        root = match.group("root")
+        return (root, tuple(part for part in match.group("member").split(".") if part)) if root in function.parameters else None
+    return None
+
+
+# `eval(raw)` over a single identifier: the one shape the eval family reads as data.
+JS_EVAL_ARGUMENT_RE = re.compile(r"(?<![\w$.])eval\s*\(\s*(?P<arg>[A-Za-z_$][\w$]*)\s*\)")
+
+
+def js_eval_site(source: str, line: int) -> tuple[JsFunction, str, tuple[str, ...]]:
+    """`(function, untrusted parameter, member path)` for an `eval` of one identifier at `line`.
+
+    The proof and the template both go through here, so both accept and refuse the same shapes
+    for the same recorded reason.
+    """
+    function = js_function_for_line(source, line)
+    lines = source.splitlines()
+    found = JS_EVAL_ARGUMENT_RE.search(lines[line - 1])
+    if not found:
+        raise SiteError("eval_argument_not_an_identifier")
+    origin = js_value_origin(lines, function, line, found.group("arg"))
+    if origin is None:
+        raise SiteError("eval_argument_not_request_data")
+    return function, origin[0], origin[1]
 
 
 def js_names_in(lines: list[str]) -> set[str]:

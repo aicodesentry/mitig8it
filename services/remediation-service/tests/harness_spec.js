@@ -182,6 +182,47 @@ process.stdout.write(String(typeof a.get === 'function' && a === b));
   assert.equal(result.stdout, 'true', result.stderr);
 });
 
+test('every way of turning a string into code is recorded and none of it runs', () => {
+  // The module tries each interpreter with a payload that would end the process if it ran, so a
+  // recorder that forgot to stub one is the difference between a passing run and no run at all.
+  write('services/interpreters.js', `const vm = require('node:vm');
+const KILL = "process.exit(3)";
+function viaEval(source) { return eval(source); }
+function viaFunction(source) { return new Function('row', 'return ' + source + ';'); }
+function viaVm(source) { return [vm.runInNewContext(source), vm.runInThisContext(source)]; }
+function viaTimer(source) { setTimeout(source, 0); setInterval(source, 0); }
+function viaTimerFunction() { let ran = false; setTimeout(() => { ran = true; }, 0); return ran; }
+module.exports = { KILL, viaEval, viaFunction, viaVm, viaTimer, viaTimerFunction };
+`);
+  write('.mitig8it/regression/code.test.js', `const h = require('../harness');
+const m = h.load('services/interpreters.js');
+h.assert.noCode('nothing has been compiled yet');
+m.viaEval(m.KILL);
+h.assert.equal(typeof m.viaFunction(m.KILL), 'function', 'new Function must still hand back something callable');
+m.viaVm(m.KILL);
+m.viaTimer(m.KILL);
+h.assert.equal(h.code.calls.length, 6);
+h.assert.equal(h.code.calls.map((c) => c.kind).join(','), 'eval,Function,vm.runInNewContext,vm.runInThisContext,setTimeout,setInterval');
+for (const entry of h.code.calls) h.assert.includes(entry.source, m.KILL);
+// A function handler is a real timer, not a string of code, so it is left alone.
+h.assert.equal(m.viaTimerFunction(), false);
+h.assert.equal(h.code.calls.length, 6);
+// call() reports a throw instead of raising, so one test can send a payload and a document.
+const bad = h.call(() => { throw new Error('rejected'); });
+h.assert.equal(bad.ok, false);
+h.assert.equal(bad.error.message, 'rejected');
+h.assert.equal(h.call((text) => JSON.parse(text), '[1, 2]').value.length, 2);
+let failed = null;
+try { h.assert.noCode(); } catch (error) { failed = error; }
+h.assert(failed && failed.name === 'HarnessAssertion', 'noCode must fail once a string has been compiled');
+h.assert.includes(String(failed.message), 'process.exit(3)');
+process.stdout.write('recorded');
+`);
+  const result = cp.spawnSync(process.execPath, [pathReal.join('.mitig8it', 'regression', 'code.test.js')], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'recorded', result.stderr);
+});
+
 test('assert helpers throw HarnessAssertion with the given message', () => {
   assert.throws(() => h.assert(false, 'plain'), { name: 'HarnessAssertion', message: 'plain' });
   assert.throws(() => h.assert.equal(1, 2, 'eq'), /eq: \{ actual: 1, expected: 2 \}/);

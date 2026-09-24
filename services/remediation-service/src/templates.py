@@ -27,11 +27,14 @@ from .gates import PYTHON_SQL_DRIVERS, python_imports
 from .models import FindingSnapshot
 from .retrieval import Snapshot
 from .sites import (
+    JS_EVAL_ARGUMENT_RE,
     JsRoute,
     PyFunction,
     SiteError,
     js_bound_names,
     js_environment_name,
+    js_eval_site,
+    js_literal_assignment,
     js_literal_assignment_in_span,
     js_names_in,
     js_require_line,
@@ -510,6 +513,11 @@ def _reject_fragments(values: list[BoundValue], lines: list[str], scope_start: i
 
 _JS_QUERY_RE = re.compile(r"\.query\s*\(")
 _JS_EXEC_RE = re.compile(r"(?P<callee>(?:[\w$]+\.)?exec(?P<sync>Sync)?)\s*\((?!File)")
+_JS_SPAWN_RE = re.compile(r"(?P<callee>(?:[\w$]+\.)?spawn(?P<sync>Sync)?)\s*\(")
+_JS_SHELL_OPTION_RE = re.compile(r"shell\s*:\s*true")
+# The options object of a process call. Its properties split on commas because it carries no
+# nested object; one that does makes the shape unrecognized rather than mis-parsed.
+_JS_OPTIONS_RE = re.compile(r",\s*\{(?P<body>[^{}]*)\}")
 _JS_JOIN_RE = re.compile(r"path\.join\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)")
 
 
@@ -592,18 +600,55 @@ def _py_argv_element(token: list[tuple[str, str]]) -> str:
     return "f" + py_string_literal("".join(text if kind == "lit" else f"{{{text}}}" for kind, text in token))
 
 
+def _js_without_shell_option(rest: str) -> str:
+    """Removes `shell: true` from a process call's options object, and the object once it empties.
+
+    `, { shell: true });` becomes `);`, while `, { shell: true, cwd: base });` keeps the `cwd`.
+    """
+    match = _JS_OPTIONS_RE.search(rest)
+    if match is None:
+        raise TemplateError("shell_option_object_not_found")
+    kept = [
+        item.strip()
+        for item in match.group("body").split(",")
+        if item.strip() and not _JS_SHELL_OPTION_RE.fullmatch(item.strip())
+    ]
+    replacement = ", { " + ", ".join(kept) + " }" if kept else ""
+    return rest[: match.start()] + replacement + rest[match.end() :]
+
+
 def _js_command(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> TemplatePatch:
+    """`exec` of a command string becomes `execFile` with an argument array.
+
+    `spawn(command, { shell: true })` takes the same rewrite with the shell option dropped and
+    the callee left alone, because `spawn` already takes a file and an argument array: the shell
+    was the only thing putting the interpolated value back within reach of a command separator.
+    The gate has already refused a command whose literal text carries shell syntax an argument
+    list cannot express, so what arrives here is a command name and its arguments.
+    """
     path = finding.affected_path
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
     text = lines[line - 1]
+    shell_mode = False
     sink = _JS_EXEC_RE.search(text)
     if not sink:
-        raise TemplateError("exec_call_not_found")
+        sink = _JS_SPAWN_RE.search(text)
+        if not sink:
+            raise TemplateError("exec_call_not_found")
+        shell_mode = True
     argument, rest = split_first_argument(text, sink.end())
-    if re.search(r"shell\s*:\s*true", rest):
-        raise TemplateError("shell_option_set")
+    if _JS_SHELL_OPTION_RE.search(rest):
+        if not shell_mode:
+            # `exec` runs a shell whatever its options say, so the option is not what makes this
+            # call shell-mode and removing it would repair nothing.
+            raise TemplateError("shell_option_set")
+        rest = _js_without_shell_option(rest)
+    elif shell_mode:
+        # `spawn` without the option already takes an argument array, so this is a different
+        # shape (`spawn('sh', ['-c', command])`) that this rewrite does not recognize.
+        raise TemplateError("spawn_without_shell_option")
     segments = js_segments(argument)
     tokens = _tokens(segments)
     if not tokens or len(tokens[0]) != 1 or tokens[0][0][0] != "lit":
@@ -612,7 +657,10 @@ def _js_command(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) ->
     argv = "[" + ", ".join(_js_argv_element(token) for token in tokens[1:]) + "]"
     callee = sink.group("callee")
     sync = bool(sink.group("sync"))
-    new_name = "execFileSync" if sync else "execFile"
+    if shell_mode:
+        new_name = "spawnSync" if sync else "spawn"
+    else:
+        new_name = "execFileSync" if sync else "execFile"
     changes: list[dict[str, Any]] = []
     if "." in callee:
         namespace = callee.rsplit(".", 1)[0]
@@ -628,7 +676,12 @@ def _js_command(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) ->
             changes.append(_hunk(path, finding.stable_id, number, [require_line], [widened]))
     replacement = f"{text[: sink.start()]}{new_callee}({command}, {argv}{rest}"
     changes.append(_hunk(path, finding.stable_id, line, [text], [replacement]))
-    return TemplatePatch(finding.stable_id, COMMAND_ARGUMENTS, changes, f"{callee} of a command string becomes {new_callee} with an argument array")
+    summary = (
+        f"{callee} of a command string loses shell: true and takes an argument array"
+        if shell_mode
+        else f"{callee} of a command string becomes {new_callee} with an argument array"
+    )
+    return TemplatePatch(finding.stable_id, COMMAND_ARGUMENTS, changes, summary)
 
 
 def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> TemplatePatch:
@@ -784,6 +837,36 @@ def _js_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatc
     )
 
 
+def _js_eval(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """`eval(raw)` of a request value becomes `JSON.parse(raw)`.
+
+    This is the JavaScript reading of the decision the Python family makes with
+    `ast.literal_eval`: when the string is a document the code reads back as a value, parsing it
+    as data preserves what the function returns and removes the interpreter. When the string is
+    a program, the gate has already refused the finding, so what arrives here is the data shape.
+    `eval` of anything but a single identifier, or of an identifier that does not come from a
+    parameter, is left to the model, because the template cannot say what the string holds.
+    """
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    line = _finding_line(finding)
+    try:
+        _function, _untrusted, _members = js_eval_site(source, line)
+    except SiteError as exc:
+        raise TemplateError(exc.code) from exc
+    text = source.splitlines()[line - 1]
+    found = JS_EVAL_ARGUMENT_RE.search(text)
+    if not found:
+        raise TemplateError("eval_argument_not_an_identifier")
+    replacement = text[: found.start()] + f"JSON.parse({found.group('arg')})" + text[found.end() :]
+    return TemplatePatch(
+        finding.stable_id,
+        CODE_INJECTION_EVAL,
+        [_hunk(path, finding.stable_id, line, [text], [replacement])],
+        f"eval({found.group('arg')}) becomes JSON.parse({found.group('arg')})",
+    )
+
+
 def _py_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
     path = finding.affected_path
     source = snapshot.full_content(path)
@@ -895,10 +978,12 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
     path = finding.affected_path
     try:
         if language == JAVASCRIPT:
-            # A secret literal is not inside a request handler, so it is recognized before
-            # the route lookup that every other JavaScript family needs.
+            # A secret literal is not inside a request handler, and neither is a parser a route
+            # calls, so both are recognized before the route lookup the other families need.
             if family == HARDCODED_CREDENTIAL:
                 return _js_credential(snapshot, finding)
+            if family == CODE_INJECTION_EVAL:
+                return _js_eval(snapshot, finding)
             route = js_route_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _js_sql(snapshot, finding, route)

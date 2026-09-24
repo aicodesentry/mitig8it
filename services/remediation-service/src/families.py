@@ -28,12 +28,15 @@ SUPPORTED_LANGUAGES = (JAVASCRIPT, PYTHON)
 JAVASCRIPT_SUFFIXES = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"})
 PYTHON_SUFFIXES = frozenset({".py"})
 
-# The families each toolchain can repair and prove. JavaScript has no eval family: the Node
-# harness stubs no `eval`, so such a finding is skipped rather than handed to the agent
-# unprovable. `hardcoded_credential` joined JavaScript once the Node harness could record an
-# environment read (`h.assert.envRead`), which is the observation the repair is proven by.
+# The families each toolchain can repair and prove. A family is listed for a language only once
+# the harness can observe the repair: `hardcoded_credential` joined JavaScript when the Node
+# harness could record an environment read (`h.assert.envRead`), and `code_injection_eval`
+# joined it when the harness could record `eval`, `new Function`, the `vm` compile calls, and a
+# string timer without running any of them (`h.assert.noCode`). Both toolchains now repair every
+# family; what still decides support per finding is the static gate, which refuses a site that
+# compiles a program rather than reading a value.
 LANGUAGE_FAMILIES: dict[str, frozenset[str]] = {
-    JAVASCRIPT: frozenset({SQL_PARAMETERIZATION, COMMAND_ARGUMENTS, PATH_CONTAINMENT, HARDCODED_CREDENTIAL}),
+    JAVASCRIPT: frozenset(ALL_FAMILIES),
     PYTHON: frozenset(ALL_FAMILIES),
 }
 
@@ -61,6 +64,12 @@ FAMILY_ASSERTIONS: dict[str, str] = {
         "h.assert.notInSource(m, literal), and h.assert.equal(m.<identifier>, 'value-from-env') when "
         "the module exports it: the value must come from process.env.NAME, with NAME derived from "
         "the identifier the literal was bound to, and the literal must be gone from the file"
+    ),
+    CODE_INJECTION_EVAL: (
+        "with FUNC the function at the finding: h.call(m.FUNC, ...) with a payload that would run "
+        "code; h.assert.noCode(); then h.assert.equal(JSON.stringify(h.call(m.FUNC, ...'[1, 2]'...).value), "
+        "'[1,2]'): the payload must never be compiled (eval, new Function, the vm compile calls, and "
+        "a string setTimeout/setInterval are stubbed and recorded) while a JSON document still parses"
     ),
 }
 

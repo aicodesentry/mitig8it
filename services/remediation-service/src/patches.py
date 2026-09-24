@@ -20,7 +20,7 @@ from .models import FilePatch, RepairRequest
 from .retrieval import Snapshot, SnapshotError
 from .retrieval.snapshot import validate_repo_path
 from .families import PYTHON, language_of_path
-from .sandbox.harness import HARNESS_PATH, PYTHON_HARNESS_PATH, is_harness_path
+from .sandbox.harness import HARNESS_PATH, PYTHON_HARNESS_MODULES, PYTHON_HARNESS_PATH, is_harness_path
 
 
 class PatchPolicyError(ValueError):
@@ -246,21 +246,31 @@ def python_local_modules(snapshot: Snapshot) -> set[str]:
 
 
 def _reject_missing_python_dependencies(
-    path: str, original: str, replacement: str, snapshot: Snapshot, *, allow_declared: bool = True
+    path: str,
+    original: str,
+    replacement: str,
+    snapshot: Snapshot,
+    *,
+    allow_declared: bool = True,
+    allow_harness_modules: bool = False,
 ) -> None:
     introduced = {python_top_level(item) for item in python_module_specifiers(replacement) - python_module_specifiers(original)}
     if not introduced:
         return
     local = python_local_modules(snapshot)
     allowed = python_declared_dependencies(snapshot) if allow_declared else set()
+    harness_modules = PYTHON_HARNESS_MODULES if allow_harness_modules else frozenset()
     for name in sorted(introduced):
         if name in PYTHON_STDLIB_MODULES or name in local or name == "harness" or name.lower() in allowed:
+            continue
+        if name in harness_modules:
             continue
         raise PatchPolicyError(
             f"missing_dependency:{name}",
             f"{name!r} is not in the Python standard library, no module of that name is in the snapshot, "
             f"and no requirements file or pyproject in the snapshot declares it. Nothing is installed in "
             f"the sandbox, so a regression test must import only the standard library, repository modules, "
+            f"the drivers the harness fakes ({', '.join(sorted(PYTHON_HARNESS_MODULES))}), "
             f"and the service harness at {PYTHON_HARNESS_PATH} (import harness as h). "
             + PYTHON_BEHAVIOR_TEST_GUIDANCE,
         )
@@ -307,16 +317,35 @@ MAX_SYNTAX_DIAGNOSTIC_CHARS = 600
 
 
 def _reject_missing_dependencies(
-    path: str, original: str, replacement: str, snapshot: Snapshot, *, allow_declared: bool = True
+    path: str,
+    original: str,
+    replacement: str,
+    snapshot: Snapshot,
+    *,
+    allow_declared: bool = True,
+    allow_harness_modules: bool = False,
 ) -> None:
     """Rejects a specifier the sandbox cannot resolve.
 
     An application file may import what package.json declares: the repository installs it. A
     generated regression test may not, because the sandbox installs nothing, so for tests only
     Node built-ins, relative paths, and the service harness resolve.
+
+    `allow_harness_modules` is the one widening, and it is for generated Python tests only: the
+    Python harness installs fakes for a fixed set of drivers before it loads the module under
+    test, so a test that imports one of them gets the harness's recorded fake rather than a
+    missing module. An application patch never gets this, because a driver the harness fakes in
+    the sandbox is still a real dependency the deployment has to install.
     """
     if language_of_path(path) == PYTHON:
-        _reject_missing_python_dependencies(path, original, replacement, snapshot, allow_declared=allow_declared)
+        _reject_missing_python_dependencies(
+            path,
+            original,
+            replacement,
+            snapshot,
+            allow_declared=allow_declared,
+            allow_harness_modules=allow_harness_modules,
+        )
         return
     introduced = {
         root
@@ -743,7 +772,7 @@ def build_generated_tests(
                 "The test reads a file as text and never requires a repository module, so it proves "
                 "nothing about behavior. " + BEHAVIOR_TEST_GUIDANCE,
             )
-        _reject_missing_dependencies(path, "", content, snapshot, allow_declared=False)
+        _reject_missing_dependencies(path, "", content, snapshot, allow_declared=False, allow_harness_modules=True)
         limitation = _syntax_check(path, content)
         if limitation:
             limitations.append(limitation)

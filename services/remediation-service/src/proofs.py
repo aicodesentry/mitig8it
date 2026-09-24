@@ -31,10 +31,13 @@ from .models import FindingSnapshot
 from .patches import GENERATED_TEST_DIRECTORY
 from .retrieval import Snapshot
 from .sites import (
+    JsFunction,
     JsRoute,
     PyFunction,
     SiteError,
     js_environment_name,
+    js_eval_site,
+    js_literal_assignment,
     js_literal_assignment_in_span,
     js_module_constant,
     js_module_exports_name,
@@ -51,6 +54,10 @@ COMMAND_PAYLOAD = "x; rm -rf /"
 TRAVERSAL_PAYLOADS = ("../../etc/passwd", "..%2f..%2fetc%2fpasswd")
 LEGITIMATE_NAME = "report.txt"
 EVAL_PAYLOAD = "__import__('os').system('id')"
+JS_EVAL_PAYLOAD = "require('node:child_process').execSync('id')"
+# A JSON document the repaired parser must still accept, and its exact re-serialization.
+JS_EVAL_DOCUMENT = "[1, 2]"
+JS_EVAL_DOCUMENT_JSON = "[1,2]"
 ENV_VALUE = "value-from-env"
 BENIGN_VALUE = "sample"
 # Parameter names that stand for a database handle rather than untrusted input.
@@ -272,6 +279,59 @@ def _js_credential_proof(snapshot: Snapshot, finding: FindingSnapshot) -> Genera
     return GeneratedProof(
         finding.stable_id, HARDCODED_CREDENTIAL, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
         f"{name} must come from process.env.{variable} and the literal must be gone from the module",
+        None,
+    )
+
+
+def _js_call_arguments(function: JsFunction, untrusted: str, members: tuple[str, ...], value: str) -> str:
+    """The argument list for a direct call, with `value` placed where the request put it.
+
+    Every other parameter gets an empty object: the eval families take a row or a context there,
+    and a value the function never reads cannot change what the assertion observes.
+    """
+    arguments = []
+    for parameter in function.parameters:
+        if parameter != untrusted:
+            arguments.append("{}")
+            continue
+        placed = value
+        for part in reversed(members):
+            placed = "{ " + _js(part) + ": " + placed + " }"
+        arguments.append(placed)
+    return ", ".join(arguments)
+
+
+def _js_eval_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedProof:
+    """The test a JavaScript code_injection_eval repair has to satisfy.
+
+    It fails on the original for two independent reasons: the harness records the payload
+    reaching `eval`, and the document the function is meant to read comes back as `undefined`
+    because the recorder ran nothing. It passes only when the value is parsed as data.
+    """
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    line = _finding_line(finding)
+    function, untrusted, members = js_eval_site(source, line)
+    attack = _js_call_arguments(function, untrusted, members, "payload")
+    document = _js_call_arguments(function, untrusted, members, _js(JS_EVAL_DOCUMENT))
+    body = [
+        "const h = require('../harness');",
+        "h.run(async () => {",
+        f"  const m = h.load({_js(path)});",
+        f"  const payload = {_js(JS_EVAL_PAYLOAD)};",
+        f"  h.call(m.{function.name}, {attack});",
+        "  h.assert.noCode();",
+        f"  const parsed = h.call(m.{function.name}, {document});",
+    ]
+    if function.returns_directly:
+        body.append(f"  h.assert.equal(JSON.stringify(parsed.value), {_js(JS_EVAL_DOCUMENT_JSON)});")
+    else:
+        body.append("  h.assert(parsed.ok, 'expected a JSON document to still be accepted');")
+    body += ["});", ""]
+    reached = ".".join((untrusted, *members))
+    return GeneratedProof(
+        finding.stable_id, CODE_INJECTION_EVAL, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
+        f"{function.name}({reached}) with a payload that would run a command: nothing is compiled, and a JSON document still parses",
         None,
     )
 
@@ -534,9 +594,12 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
     path = finding.affected_path
     try:
         if language == JAVASCRIPT:
-            # A secret literal is not inside a request handler, so it is proven without one.
+            # A secret literal is not inside a request handler, and neither is a parser a route
+            # calls, so both are proven without one.
             if family == HARDCODED_CREDENTIAL:
                 return _js_credential_proof(snapshot, finding)
+            if family == CODE_INJECTION_EVAL:
+                return _js_eval_proof(snapshot, finding)
             route = js_route_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _js_sql_proof(snapshot, finding, route)

@@ -8,7 +8,7 @@ const { Readable } = require('node:stream');
 const realFs = require('node:fs');
 
 const ROOT = path.resolve(__dirname, '..');
-const state = { express: { routes: [] }, pg: { queries: [] }, child_process: { calls: [] }, fs: { reads: [] }, env: { reads: [] } };
+const state = { express: { routes: [] }, pg: { queries: [] }, child_process: { calls: [] }, fs: { reads: [] }, env: { reads: [] }, code: { calls: [] } };
 let config = {};
 let fakes = {};
 const later = (fn) => setImmediate(fn);
@@ -166,7 +166,33 @@ fs.createReadStream = (file) => (seen(file), Readable.from([encode(content(file)
 Object.defineProperty(fs, 'promises', { value: Object.create(realFs.promises) });
 fs.promises.readFile = (file, options) => (seen(file), exists(file) ? Promise.resolve(encode(content(file), options)) : Promise.reject(enoent(file)));
 
-const builtinFakes = { express, pg, child_process, fs, 'fs/promises': fs.promises };
+// Every way a module can turn a string into running code is recorded and none of them runs. A
+// code_injection_eval repair is proven by the payload never being compiled, so an interpreter
+// that still ran it would prove the opposite of what the test claims. `eval`, `Function`, and a
+// string timer are resolved through the global scope chain, so replacing the global binding is
+// what the module under test sees; `vm` is a fake module like the others. Each entry is
+// { kind, source }: the call that would have compiled, and the text it was given.
+const recordCode = (kind, source) => { state.code.calls.push({ kind, source: String(source) }); };
+const noop = function compiledByHarness() {};
+global.eval = (source) => { recordCode('eval', source); };
+const RealFunction = global.Function;
+const FakeFunction = function Function(...args) { recordCode('Function', args.length ? args[args.length - 1] : ''); return noop; };
+FakeFunction.prototype = RealFunction.prototype;
+global.Function = FakeFunction;
+const realTimer = { setTimeout: global.setTimeout, setInterval: global.setInterval };
+for (const name of ['setTimeout', 'setInterval']) {
+  global[name] = (handler, ...rest) => (typeof handler === 'string' ? recordCode(name, handler) : realTimer[name](handler, ...rest));
+}
+const vm = {
+  runInNewContext: (code) => { recordCode('vm.runInNewContext', code); },
+  runInThisContext: (code) => { recordCode('vm.runInThisContext', code); },
+  runInContext: (code) => { recordCode('vm.runInContext', code); },
+  compileFunction: (code) => (recordCode('vm.compileFunction', code), noop),
+  createContext: (sandbox) => obj(sandbox),
+  Script: class Script { constructor(code) { recordCode('vm.Script', code); } runInNewContext() {} runInThisContext() {} runInContext() {} },
+};
+
+const builtinFakes = { express, pg, child_process, fs, 'fs/promises': fs.promises, vm };
 const originalLoad = Module._load;
 Module._load = function load(request, parent, isMain) {
   const name = String(request).replace(/^node:/, '');
@@ -248,10 +274,25 @@ assert.notInSource = (target, literal, message) => {
 // argv(call, payload): the child ran with an argv array (no shell string) and the injected payload is its own element (the command name itself is argv[0]).
 assert.argv = (call, payload, message) => { if (!call) fail(message || 'no child process call was recorded'); if (typeof call.shell === 'string') fail(message || `command ran through a shell: ${call.shell}`); const want = String(payload); if (want !== call.command && !(Array.isArray(call.args) && call.args.some((a) => String(a) === want))) fail(message || `expected the injected input ${JSON.stringify(payload)} to be its own args element of ${call.command}`, call.args); };
 
+// noCode(message): nothing the module did turned a string into code. It is the whole proof of a
+// code_injection_eval repair, so it names what would have been compiled when it fails.
+assert.noCode = (message) => { if (state.code.calls.length) fail(message || 'expected no string to be compiled or evaluated', state.code.calls.map((c) => `${c.kind}: ${c.source}`)); };
+// call(fn, ...args): calls a plain exported function and never throws. Returns { ok, value, error },
+// so one test can send a payload that is meant to be rejected and a document that must still parse.
+const call = (fn, ...args) => {
+  if (!isFn(fn)) fail(`expected a function to call, got ${util.inspect(fn)}`);
+  try {
+    return { ok: true, value: fn(...args), error: null };
+  } catch (error) {
+    process.stderr.write(`harness: call(${fn.name || 'anonymous'}) threw ${(error && error.message) || error}\n`);
+    return { ok: false, value: undefined, error };
+  }
+};
+
 // Runs one test body: exit 0 when it resolves, exit 1 with the error otherwise.
 const run = (body) => Promise.resolve().then(body).then(
   () => { process.stdout.write('harness: ok\n'); process.exit(0); },
   (error) => { process.stderr.write(`harness: ${(error && error.stack) || error}\n`); process.exit(1); },
 );
 
-module.exports = { version: 1, root: ROOT, load, invoke, run, assert, reset, express: state.express, pg: state.pg, child_process: state.child_process, fs: state.fs, app };
+module.exports = { version: 1, root: ROOT, load, invoke, call, run, assert, reset, express: state.express, pg: state.pg, child_process: state.child_process, fs: state.fs, code: state.code, app };
