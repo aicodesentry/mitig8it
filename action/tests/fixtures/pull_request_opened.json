@@ -1,0 +1,28 @@
+{
+  "action": "opened",
+  "number": 42,
+  "pull_request": {
+    "number": 42,
+    "state": "open",
+    "title": "Add the report export endpoint",
+    "user": { "login": "dana" },
+    "head": {
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ref": "feat/report-export",
+      "repo": { "full_name": "acme/widgets" }
+    },
+    "base": {
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ref": "main",
+      "repo": { "full_name": "acme/widgets" }
+    }
+  },
+  "repository": {
+    "id": 12345,
+    "name": "widgets",
+    "full_name": "acme/widgets",
+    "private": false,
+    "owner": { "login": "acme" }
+  },
+  "sender": { "login": "dana" }
+}

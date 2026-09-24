@@ -1,0 +1,61 @@
+name: Action image
+
+on:
+  pull_request:
+    paths:
+      - 'action/**'
+      - 'services/analysis-service/**'
+      - 'services/remediation-service/**'
+      - 'services/github-service/**'
+      - '.github/workflows/action-build.yml'
+  push:
+    branches: [main]
+
+# The image is built to prove it builds. It is never pushed anywhere, so this workflow needs
+# nothing beyond reading the code.
+permissions:
+  contents: read
+
+concurrency:
+  group: action-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  unit-tests:
+    name: Orchestrator unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: action
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '20'
+      # The parity tests compare the ported filters against the Node sources, and one of them
+      # runs the Node implementation, so both toolchains are present here.
+      - run: pip install pytest httpx
+      - run: pytest tests -q
+
+  image:
+    name: Build the container and run its tests inside it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      # Built from the repository root: the image bundles the services the action drives.
+      - name: docker build
+        run: docker build -f action/Dockerfile -t mitig8it-action:ci .
+      - name: Unit tests inside the image
+        run: |
+          docker run --rm --entrypoint sh mitig8it-action:ci -c \
+            'pip install --no-cache-dir pytest >/dev/null && cd /opt/mitig8it/action && pytest tests -q'
+      - name: The scanner and both runtimes are present
+        run: |
+          docker run --rm --entrypoint semgrep mitig8it-action:ci --version
+          docker run --rm --entrypoint node mitig8it-action:ci --version
+          docker run --rm --entrypoint python mitig8it-action:ci --version
+      - name: Report the image size
+        run: docker image inspect mitig8it-action:ci --format 'image size: {{.Size}} bytes'

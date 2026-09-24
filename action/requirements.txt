@@ -1,0 +1,27 @@
+# The union of what the analysis and remediation services need to run in one process.
+#
+# The two services pin some packages at different patch versions, which pip cannot satisfy from
+# two files at once. Where they differ the higher pin wins, which is the analysis service's in
+# every current case. tests/test_requirements_parity.py reads both service requirement files and
+# fails if this list drops a package or pins one below what a service asked for.
+#
+# Four of the remediation service's dependencies are deliberately absent: google-cloud-storage
+# and psycopg back its Postgres execution store, kubernetes backs the production sandbox driver,
+# and none of the three is on the import path of the engine as the action runs it. Leaving them
+# out keeps the image smaller and, more usefully, means the action cannot reach a database or a
+# cluster even by accident.
+
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+grpcio==1.81.1
+grpcio-health-checking==1.81.1
+protobuf==6.33.5
+prometheus-client==0.26.0
+httpx==0.28.1
+semgrep==1.173.0
+openai==2.54.0
+click==8.4.2
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0

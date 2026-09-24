@@ -1,0 +1,77 @@
+name: 'Mitig8it Security Review'
+description: >-
+  Review a pull request for exploitable code and post verified fix suggestions. Runs entirely in
+  your own runner with the workflow's own token; nothing leaves the runner unless you supply a
+  model key.
+author: 'Mitig8it'
+
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  github-token:
+    description: >-
+      The token the review posts with. The default is the workflow's own token, which is scoped
+      to this repository and expires when the job ends. The action refuses to run if this token
+      carries write access to file contents.
+    required: false
+    default: ${{ github.token }}
+  fail-on:
+    description: >-
+      Which findings fail the job: none, high, or critical. The default reports without failing,
+      so adding the action never breaks a merge on the day you install it.
+    required: false
+    default: 'none'
+  post-fixes:
+    description: >-
+      Whether to attach fix suggestions under findings. Fixes are posted as GitHub suggestion
+      blocks, which apply only when a human clicks Commit suggestion.
+    required: false
+    default: 'true'
+  model-api-key:
+    description: >-
+      Optional. Without it the repair agent is disabled and only deterministic template fixes are
+      produced, and the review says so. With it, redacted code snippets are sent to the model
+      provider you name.
+    required: false
+    default: ''
+  model-provider:
+    description: >-
+      Optional base URL for an OpenAI-compatible model API. Defaults to OpenAI when a key is set.
+    required: false
+    default: ''
+  model:
+    description: 'Optional model name, used only when model-api-key is set.'
+    required: false
+    default: ''
+  max-files:
+    description: >-
+      Refuse to review a pull request that changes more than this many files, rather than review
+      part of it and report on the whole.
+    required: false
+    default: '200'
+
+outputs:
+  findings:
+    description: 'Total findings reported.'
+  critical:
+    description: 'Critical findings.'
+  high:
+    description: 'High findings.'
+  fixes:
+    description: 'Fix suggestions attached.'
+  conclusion:
+    description: 'The check run conclusion: success, neutral or failure.'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+    INPUT_FAIL_ON: ${{ inputs.fail-on }}
+    INPUT_POST_FIXES: ${{ inputs.post-fixes }}
+    INPUT_MODEL_API_KEY: ${{ inputs.model-api-key }}
+    INPUT_MODEL_PROVIDER: ${{ inputs.model-provider }}
+    INPUT_MODEL: ${{ inputs.model }}
+    INPUT_MAX_FILES: ${{ inputs.max-files }}
