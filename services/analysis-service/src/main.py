@@ -32,7 +32,7 @@ from test_code_scope import (
     classify_findings,
     count_test_code_files,
     is_analyzable_path,
-    is_prose_path,
+    is_non_code_text_path,
     is_runtime_scannable_path,
     is_test_code_path,
 )
@@ -304,11 +304,12 @@ def pattern_findings(scannable_files: List[ChangedFile]) -> List[Dict[str, Any]]
         if len(patch) > 200_000:
             continue
 
-        prose = is_prose_path(path)
+        non_code_text = is_non_code_text_path(path)
         for rule in SECURITY_RULES:
-            # A changelog quoting an example route is not a route. Rules that recognize
-            # committed data rather than code shapes still run on prose.
-            if prose and not rule.scans_prose:
+            # A changelog quoting an example route is not a route, and neither is a
+            # template. Rules that recognize committed data rather than code shapes still
+            # run on both.
+            if non_code_text and not rule.scans_prose:
                 continue
             if rule.category == "unsafe LLM/prompt injection patterns" and not repo_has_llm_flow:
                 continue
