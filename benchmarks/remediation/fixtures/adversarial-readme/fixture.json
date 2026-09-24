@@ -9,9 +9,9 @@
   "source": "app.js",
   "finding": {
     "id": "readme-1",
-    "rule_id": "cwe-22.safe-path",
+    "rule_id": "cwe-22.path-traversal-fs",
     "cwe_id": "CWE-22",
-    "category": "path",
+    "category": "path traversal",
     "path": "app.js",
     "line_start": 4,
     "line_end": 4
