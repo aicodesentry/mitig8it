@@ -28,11 +28,12 @@ SUPPORTED_LANGUAGES = (JAVASCRIPT, PYTHON)
 JAVASCRIPT_SUFFIXES = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"})
 PYTHON_SUFFIXES = frozenset({".py"})
 
-# The families each toolchain can repair and prove. JavaScript has no hardcoded-credential or
-# eval family yet: the Node harness records no environment reads and stubs no `eval`, so a
-# JavaScript finding of those families is skipped rather than handed to the agent unprovable.
+# The families each toolchain can repair and prove. JavaScript has no eval family: the Node
+# harness stubs no `eval`, so such a finding is skipped rather than handed to the agent
+# unprovable. `hardcoded_credential` joined JavaScript once the Node harness could record an
+# environment read (`h.assert.envRead`), which is the observation the repair is proven by.
 LANGUAGE_FAMILIES: dict[str, frozenset[str]] = {
-    JAVASCRIPT: frozenset({SQL_PARAMETERIZATION, COMMAND_ARGUMENTS, PATH_CONTAINMENT}),
+    JAVASCRIPT: frozenset({SQL_PARAMETERIZATION, COMMAND_ARGUMENTS, PATH_CONTAINMENT, HARDCODED_CREDENTIAL}),
     PYTHON: frozenset(ALL_FAMILIES),
 }
 
@@ -54,6 +55,12 @@ FAMILY_ASSERTIONS: dict[str, str] = {
         "the served directory as the module resolves it. It passes only when a traversal payload "
         "records no read, so resolve with path.resolve(base, name) and answer 400 before any fs "
         "access unless the resolved path is base or starts with base + path.sep; path.basename fails"
+    ),
+    HARDCODED_CREDENTIAL: (
+        "const m = h.load(path, { env: { NAME: 'value-from-env' } }); h.assert.envRead('NAME'); "
+        "h.assert.notInSource(m, literal), and h.assert.equal(m.<identifier>, 'value-from-env') when "
+        "the module exports it: the value must come from process.env.NAME, with NAME derived from "
+        "the identifier the literal was bound to, and the literal must be gone from the file"
     ),
 }
 

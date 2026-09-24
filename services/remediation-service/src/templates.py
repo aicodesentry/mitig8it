@@ -31,6 +31,8 @@ from .sites import (
     PyFunction,
     SiteError,
     js_bound_names,
+    js_environment_name,
+    js_literal_assignment,
     js_names_in,
     js_require_line,
     js_route_for_line,
@@ -749,6 +751,40 @@ def _py_sql(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunction) 
     return TemplatePatch(finding.stable_id, SQL_PARAMETERIZATION, [_hunk(path, finding.stable_id, first, original, replacement)], f"{driver} placeholders with bound parameters")
 
 
+def _js_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """`const apiKey = "sk-live-…"` becomes `const apiKey = process.env.API_KEY`.
+
+    The environment name is derived from the identifier the literal is bound to, so the
+    repair does not invent a name the author has to look up, and `process.env` needs no
+    import. A config key (`apiKey: "sk-live-…"`) takes the same rewrite on the value.
+    """
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    line = _finding_line(finding)
+    assignment = js_literal_assignment(source, line)
+    if assignment is None:
+        raise TemplateError("string_literal_assignment_not_found")
+    name, literal, quote, _kind = assignment
+    variable = js_environment_name(name)
+    if not variable:
+        raise TemplateError("environment_name_not_derived")
+    text = source.splitlines()[line - 1]
+    needle = f"{quote}{literal}{quote}"
+    if text.count(needle) != 1:
+        # More than one occurrence means the rewrite would have to choose, and choosing
+        # wrong rewrites a different value on the same line.
+        raise TemplateError("literal_not_uniquely_placed")
+    replacement = text.replace(needle, f"process.env.{variable}", 1)
+    if replacement == text:
+        raise TemplateError("assignment_not_rewritten")
+    return TemplatePatch(
+        finding.stable_id,
+        HARDCODED_CREDENTIAL,
+        [_hunk(path, finding.stable_id, line, [text], [replacement])],
+        f"{name} read from process.env.{variable} instead of a literal",
+    )
+
+
 def _py_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
     path = finding.affected_path
     source = snapshot.full_content(path)
@@ -860,6 +896,10 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
     path = finding.affected_path
     try:
         if language == JAVASCRIPT:
+            # A secret literal is not inside a request handler, so it is recognized before
+            # the route lookup that every other JavaScript family needs.
+            if family == HARDCODED_CREDENTIAL:
+                return _js_credential(snapshot, finding)
             route = js_route_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _js_sql(snapshot, finding, route)

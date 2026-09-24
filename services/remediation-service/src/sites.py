@@ -201,6 +201,66 @@ def js_module_constant(source: str, name: str) -> str | None:
     return match.group("value") if match else None
 
 
+_JS_CONSTANT_RE = re.compile(
+    r"^(?P<prefix>\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*"
+    r"(?::\s*[\w$.<>\[\]| ]+\s*)?=\s*)(?P<quote>['\"])(?P<literal>(?:(?!(?P=quote)).)*)(?P=quote)\s*;?\s*$"
+)
+_JS_PROPERTY_RE = re.compile(
+    r"^(?P<prefix>\s*(?P<name>[A-Za-z_$][\w$]*|['\"][A-Za-z_$][\w$]*['\"])\s*:\s*)"
+    r"(?P<quote>['\"])(?P<literal>(?:(?!(?P=quote)).)*)(?P=quote)\s*,?\s*$"
+)
+
+
+def js_literal_assignment(source: str, line: int) -> tuple[str, str, str, str] | None:
+    """`(name, literal, quote, kind)` for a string literal bound at `line`, or None.
+
+    Two shapes, which are the two the September 2026 replay found: a declared constant
+    (`const apiKey = "..."`, with or without `export` and a TypeScript annotation) and an
+    object property used as a config key (`apiKey: "..."`). `kind` is `"constant"` or
+    `"property"`; the caller needs to know because only a constant can be read back as a
+    module value. The line is read lexically after strings and comments are blanked, so a
+    literal that merely looks like an assignment inside a comment is not one.
+    """
+    lines = source.splitlines()
+    if line < 1 or line > len(lines):
+        return None
+    text = lines[line - 1]
+    blanked = js_strip_strings(source).splitlines()[line - 1]
+    if blanked.lstrip().startswith(("//", "*", "/*")):
+        return None
+    for pattern, kind in ((_JS_CONSTANT_RE, "constant"), (_JS_PROPERTY_RE, "property")):
+        match = pattern.match(text)
+        if not match:
+            continue
+        literal = match.group("literal")
+        if not literal or "\\" in literal or "${" in literal:
+            # An escape or an interpolation means the literal in the source is not the
+            # value, so the test could not assert on it and the rewrite could not be exact.
+            return None
+        return match.group("name").strip("'\""), literal, match.group("quote"), kind
+    return None
+
+
+def js_environment_name(identifier: str) -> str:
+    """The environment variable an identifier names: `apiKey` -> `API_KEY`, `API_KEY` -> `API_KEY`."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", identifier)
+    return re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9]+", "_", spaced)).strip("_").upper()
+
+
+def js_module_exports_name(source: str, name: str) -> bool:
+    """Whether the module makes `name` readable to a caller under that name."""
+    stripped = js_strip_strings(source)
+    escaped = re.escape(name)
+    patterns = (
+        rf"module\.exports\s*=\s*\{{[^}}]*(?<![\w$]){escaped}(?![\w$])",
+        rf"module\.exports\.{escaped}\s*=",
+        rf"exports\.{escaped}\s*=",
+        rf"^\s*export\s+(?:const|let|var)\s+{escaped}(?![\w$])",
+        rf"^\s*export\s*\{{[^}}]*(?<![\w$]){escaped}(?![\w$])",
+    )
+    return any(re.search(pattern, stripped, re.M) for pattern in patterns)
+
+
 def js_require_line(source: str, module: str) -> tuple[int, str] | None:
     """The 1-based line and text of the top-level require of `module` (with or without node:)."""
     pattern = re.compile(rf"""^(?:const|let|var)\s+.+?=\s*require\(\s*['"](?:node:)?{re.escape(module)}['"]\s*\)""")
