@@ -74,10 +74,18 @@ describe("this repository's own file", () => {
     const root = path.resolve(__dirname, '../../..');
     const exclusions = repositoryConfig.parse(fs.readFileSync(path.join(root, '.mitig8it.yml'), 'utf8'));
 
-    expect(exclusions.matches('benchmarks/remediation/fixtures/sql-parameterized-001/db.js')).toBe(true);
-    expect(exclusions.matches('benchmarks/vulnerable-corpus/anything.py')).toBe(true);
-    expect(exclusions.matches('action/tests/fixtures/pull_request_opened.json')).toBe(true);
-    expect(exclusions.matches('benchmarks/remediation/evaluate.py')).toBe(false);
-    expect(exclusions.matches('services/api-service/src/index.js')).toBe(false);
+    for (const path of [
+      'benchmarks/remediation/fixtures/sql-parameterized-001/db.js',
+      'benchmarks/vulnerable-corpus/anything.py',
+      'benchmarks/tier1-precision/cases.json',
+      'benchmarks/tier2-precision/cases.json',
+      'docs/validation/tier2-coverage-2026-09.md',
+      'action/tests/fixtures/pull_request_opened.json',
+    ]) {
+      expect([path, exclusions.matches(path)]).toEqual([path, true]);
+    }
+    for (const path of ['services/api-service/src/index.js', 'docs/README.md', 'scripts/replay/prodfilters.py']) {
+      expect([path, exclusions.matches(path)]).toEqual([path, false]);
+    }
   });
 });
