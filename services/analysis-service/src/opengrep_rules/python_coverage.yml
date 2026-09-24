@@ -48,6 +48,10 @@ rules:
       internal_type: "sql_injection"
       family: "sql_parameterization"
       confidence: "0.88"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 7 findings over 2 repositories, all 7 adjudicated by
+        label and true (DSVW, and 5 of the SciTokens keycache statements in CVE-2026-32714),
+        precision 1.00.
       posting: post
 
   - id: cwe-89.py-sqlalchemy-text-interpolated
@@ -166,6 +170,9 @@ rules:
       internal_type: "command_injection"
       family: "command_arguments"
       confidence: "0.90"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, adjudicated by label and true (DSVW's
+        nslookup), precision 1.00.
       posting: post
 
   - id: cwe-78.py-os-popen-interpolated
@@ -276,6 +283,9 @@ rules:
         when the templates render HTML, which the pattern cannot see, and Jinja is widely
         used for configuration files, SQL and email text where autoescape would be wrong.
         Re-enable it when the pattern can tell the template language from the loader.
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, on a Jinja Environment that renders
+        Python source files in django-make-app, not HTML. That is exactly the false positive the
+        quarantine predicted, so it stays quarantined.
 
   # ── XSS ────────────────────────────────────────────────────────────────
 
@@ -371,6 +381,9 @@ rules:
       category: "insecure deserialization"
       internal_type: "unsafe_deserialization"
       confidence: "0.88"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 2 findings, 1 hand-read and true (whoogle-search
+        unpickles a file named by a request argument), precision 1.00.
       posting: post
 
   # ── Path traversal and unsafe file access ──────────────────────────────
@@ -458,6 +471,9 @@ rules:
       category: "SSRF"
       internal_type: "server_side_request_forgery"
       confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, hand-read and true (DSVW's FETCH
+        primitive), precision 1.00.
       posting: post
 
   - id: cwe-918.py-requests-interpolated-url
@@ -504,6 +520,9 @@ rules:
       category: "weak password hashing"
       internal_type: "weak_password_hash"
       confidence: "0.88"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 3 findings over 2 repositories, all 3 adjudicated by
+        label and true, precision 1.00.
       posting: post
 
   - id: cwe-327.py-ecb-cipher-mode
@@ -567,6 +586,9 @@ rules:
       category: "insecure randomness"
       internal_type: "insecure_randomness"
       confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, adjudicated by label and true (DSVW's
+        `random.choices` session id), precision 1.00.
       posting: post
 
   # ── Hardcoded credentials ──────────────────────────────────────────────
@@ -611,6 +633,9 @@ rules:
       internal_type: "hardcoded_secret"
       family: "hardcoded_credential"
       confidence: "0.82"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 3 findings in pygoat, 1 hand-read and true
+        (`sql_lab_table(id="admin", password="65079b00…")`), precision 1.00.
       posting: post
 
   # ── JWT misuse ─────────────────────────────────────────────────────────
@@ -751,6 +776,9 @@ rules:
       category: "XXE"
       internal_type: "xml_external_entity"
       confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, adjudicated by label and true (DSVW's XXE
+        parser), precision 1.00.
       posting: post
 
   # ── Flask and Django misconfiguration ──────────────────────────────────
@@ -791,6 +819,10 @@ rules:
         no security meaning. The anchored half of this shape posts as
         `cwe-489.py-app-debug-true`. Re-enable it when the pattern can require a settings
         module.
+        benchmarks/vulnerable-corpus 2026-09: 2 findings, both `DEBUG = True` in a real Django
+        settings module and one of them confirmed by a label, which is the shape the quarantine
+        doubted. The policy needs 3 measured hits to re-enable, so this rule is one hit short
+        and stays quarantined.
 
   - id: cwe-798.py-framework-secret-key-literal
     patterns:
@@ -812,6 +844,9 @@ rules:
       internal_type: "hardcoded_secret"
       family: "hardcoded_credential"
       confidence: "0.88"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 2 findings in pygoat, 1 adjudicated by label and true
+        (a Django SECRET_KEY literal), precision 1.00.
       posting: post
 
   - id: cwe-614.py-session-cookie-insecure
@@ -849,6 +884,10 @@ rules:
       category: "security misconfiguration"
       internal_type: "csrf_protection_disabled"
       confidence: "0.80"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 25 findings in pygoat, 2 adjudicated, both true (a
+        documented CSRF lab view and an API view that turns Django's protection off), precision
+        1.00.
       posting: post
 
   - id: cwe-942.py-cors-credentials-wildcard

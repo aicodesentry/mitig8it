@@ -105,6 +105,24 @@ class TestRuleShape:
                 "measurement, and the measurement is what lets someone re-enable it"
             )
 
+    @pytest.mark.parametrize("rule", [rule for _, rule in COVERAGE_RULES], ids=IDS)
+    def test_precision_evidence_names_the_corpus_it_was_measured_on(self, rule):
+        """A precision claim without a corpus is an opinion.
+
+        `precision_evidence` is written by whoever ran a measurement, and the next person
+        to touch the pattern has to be able to re-run it. A sentence that does not say
+        where the numbers came from cannot be re-run, so it is not allowed to be there.
+        """
+        evidence = (rule.get("metadata") or {}).get("precision_evidence")
+        if evidence is None:
+            return
+        text = str(evidence).strip()
+        assert text, f"{rule['id']} declares an empty precision_evidence"
+        assert "benchmarks/" in text or "docs/validation/" in text, (
+            f"{rule['id']} records precision without naming the corpus or the write-up it "
+            "was measured on; a reader cannot check or repeat it"
+        )
+
 
 class TestPolicyLoading:
     def test_quarantined_set_is_what_the_files_declare(self):

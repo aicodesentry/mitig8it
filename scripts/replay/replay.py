@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""Replay merged pull requests of a public repository through the real pipeline.
+"""Replay a public repository through the real pipeline, as pull requests or as a tree.
 
     scripts/replay/replay.py --repo expressjs/express --prs 15 --out results/expressjs-express.json
+    scripts/replay/replay.py --snapshot --repo OWASP/NodeGoat --ref <sha> --out results/nodegoat.json
 
-For each merged pull request the harness reproduces the production payload (the same
-file filters, the same 200-file cap, the same head-sha content fetch, the same
-reviewable line spans), runs the analysis service in-process under a wall clock, and
-then runs the remediation engine's template path for every finding in a supported
-repair family. GitHub is only ever read, and every response is cached on disk.
+In pull request mode the harness reproduces the production payload (the same file
+filters, the same 200-file cap, the same head-sha content fetch, the same reviewable
+line spans) for each merged pull request. In snapshot mode it does the same for every
+analysable file of one repository tree at a pinned commit, which is how a corpus that
+actually contains vulnerabilities is measured. Either way the analysis service runs
+in-process under a wall clock, and the remediation engine's template path runs for every
+finding in a supported repair family. GitHub is only ever read, and every response and
+tarball is cached on disk.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -25,6 +30,7 @@ REPO_ROOT = HERE.parents[1]
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+from corpus import SnapshotCache, SnapshotError, read_snapshot_file, walk_analysable_files  # noqa: E402
 from ghcache import GitHubError, GitHubReader  # noqa: E402
 from prodfilters import (  # noqa: E402
     ANALYSIS_FILE_CAP,
@@ -36,6 +42,13 @@ from prodfilters import (  # noqa: E402
 )
 
 DEFAULT_TIMEOUT_SECONDS = 300
+
+# A snapshot is a whole repository, so it is sent in batches. The analysis service
+# rejects a payload of more than ANALYSIS_FILE_CAP files, and one scanner process over
+# megabytes of source is where a replay hangs, so a batch is bounded by both.
+SNAPSHOT_BATCH_MAX_FILES = 120
+SNAPSHOT_BATCH_MAX_BYTES = 1_500_000
+SNAPSHOT_TIMEOUT_SECONDS = 1800
 
 
 def build_payload(reader: GitHubReader, repo: str, pull: dict[str, Any]) -> dict[str, Any]:
@@ -137,6 +150,102 @@ def _failure(payload: dict[str, Any], kind: str, detail: str, elapsed: int, retu
     }
 
 
+# --- snapshot mode ---------------------------------------------------------------------------
+
+
+def snapshot_batches(
+    root: Path,
+    max_files: int = SNAPSHOT_BATCH_MAX_FILES,
+    max_bytes: int = SNAPSHOT_BATCH_MAX_BYTES,
+) -> tuple[list[list[dict[str, Any]]], list[str], int]:
+    """Every analysable file of the tree, in batches the analysis service will accept.
+
+    Returns the batches, the limitations the fetch itself produced, and how many files
+    were looked at before the production filters were applied.
+    """
+    batches: list[list[dict[str, Any]]] = []
+    limitations: list[str] = []
+    current: list[dict[str, Any]] = []
+    current_bytes = 0
+    considered = 0
+
+    for path in walk_analysable_files(root):
+        considered += 1
+        relative = path.relative_to(root).as_posix()
+        entry = read_snapshot_file(path, relative)
+        if "skipped" in entry:
+            limitations.append(f"content_skipped:{entry['skipped']}")
+            continue
+        if entry.pop("non_utf8", False):
+            limitations.append("content_not_utf8_replaced")
+        size = len(entry["content"].encode("utf-8"))
+        if current and (len(current) >= max_files or current_bytes + size > max_bytes):
+            batches.append(current)
+            current = []
+            current_bytes = 0
+        current.append(entry)
+        current_bytes += size
+
+    if current:
+        batches.append(current)
+    if any(len(batch) > ANALYSIS_FILE_CAP for batch in batches):
+        limitations.append("analysis_service_300_file_cap_would_reject")
+    return batches, limitations, considered
+
+
+def run_snapshot(
+    repo: str,
+    ref: str,
+    cache: SnapshotCache,
+    timeout: int,
+    python: str,
+    run_remediation: bool,
+) -> dict[str, Any]:
+    root = cache.tree(repo, ref)
+    batches, fetch_limitations, considered = snapshot_batches(root)
+    print(f"{repo}@{ref[:10]}: {considered} candidate files, {len(batches)} batches", flush=True)
+
+    records: list[dict[str, Any]] = []
+    for index, batch in enumerate(batches, start=1):
+        payload = {
+            "repo": repo,
+            "number": index,
+            "head_sha": ref,
+            "base_sha": ref,
+            "files": batch,
+            "limitations": fetch_limitations if index == 1 else [],
+            "run_remediation": run_remediation,
+        }
+        record = run_pull_request(payload, timeout, python)
+        record["snapshot_batch"] = index
+        records.append(record)
+        summary = (
+            f"  batch {index}/{len(batches)}: files={record.get('files')} "
+            f"findings={len(record.get('findings') or [])} {record.get('wall_ms')}ms"
+        )
+        if record.get("fatal"):
+            summary += f" FATAL={record['fatal']['kind']}"
+        print(summary, flush=True)
+
+    return {
+        "repo": repo,
+        "mode": "snapshot",
+        "ref": ref,
+        "candidate_files": considered,
+        "analysed_files": sum(len(batch) for batch in batches),
+        "batches": len(batches),
+        "snapshot_downloads": cache.downloads,
+        "snapshot_cache_hits": cache.cache_hits,
+        "tier3": "skipped: no model key, LLM_TRIAGE_ENABLED=false",
+        "remediation_path": (
+            "template only; the model path is refused and counted as agent_needed"
+            if run_remediation
+            else "not run"
+        ),
+        "records": records,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repo", required=True, help="owner/name of a public repository")
@@ -147,7 +256,36 @@ def main() -> int:
     parser.add_argument("--python", default=sys.executable, help="interpreter used for the worker process")
     parser.add_argument("--refresh", action="store_true", help="ignore the cache and re-read GitHub")
     parser.add_argument("--only-pr", type=int, action="append", help="replay only these pull request numbers")
+    parser.add_argument("--snapshot", action="store_true",
+                        help="analyse a whole repository tree at --ref instead of pull requests")
+    parser.add_argument("--ref", help="snapshot mode: the full 40-character commit sha to pin")
+    parser.add_argument("--no-remediation", action="store_true",
+                        help="skip the remediation stage (analysis only)")
+    parser.add_argument("--include-quarantined", action="store_true",
+                        help="report findings from quarantined rules too, so they can be re-measured")
     args = parser.parse_args()
+
+    if args.include_quarantined:
+        os.environ["REPLAY_INCLUDE_QUARANTINED"] = "1"
+
+    if args.snapshot:
+        if not args.ref:
+            print("--snapshot requires --ref", file=sys.stderr)
+            return 2
+        cache = SnapshotCache(Path(args.cache) / "snapshots", refresh=args.refresh)
+        timeout = args.timeout if args.timeout != DEFAULT_TIMEOUT_SECONDS else SNAPSHOT_TIMEOUT_SECONDS
+        try:
+            result = run_snapshot(
+                args.repo, args.ref, cache, timeout, args.python, not args.no_remediation
+            )
+        except SnapshotError as exc:
+            print(f"{args.repo}: snapshot failed: {exc}", file=sys.stderr)
+            return 2
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        print(f"{args.repo}: wrote {out_path}", flush=True)
+        return 0
 
     reader = GitHubReader(Path(args.cache), refresh=args.refresh)
     try:

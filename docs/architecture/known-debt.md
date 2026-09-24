@@ -87,7 +87,7 @@ Each entry states what the issue is, where it is, and why it was left. None of t
 
 ## Quarantined tier 1 rules
 
-**What.** Five tier 1 rules were measured on real code and found wrong often enough that their output cannot be posted. They are quarantined rather than deleted: they still run and are still counted, so they can be re-measured, but nothing they produce reaches a reviewer. The mechanism is `precision` and `posting` on `SecurityRule`, filtered in one place by `partition_by_posting_policy` in `services/analysis-service/src/main.py`.
+**What.** Six tier 1 rules were measured on real code and found wrong often enough that their output cannot be posted. They are quarantined rather than deleted: they still run and are still counted, so they can be re-measured, but nothing they produce reaches a reviewer. The mechanism is `precision` and `posting` on `SecurityRule`, filtered in one place by `partition_by_posting_policy` in `services/analysis-service/src/main.py`.
 
 **Where.** `services/analysis-service/src/security_rules.py`. Each rule carries its own `precision_evidence` string.
 
@@ -99,11 +99,73 @@ Each entry states what the issue is, where it is, and why it was left. None of t
 | `authz.missing_function_level` | 19, 13 at `high` | Reduced to "the line contains `.destroy(` or `.remove(`". Every sampled finding was stream, socket or connection-pool teardown. Moving the dead lookahead into an `exclusion` pass changes nothing, because none of those lines carries an auth token either |
 | `integer.overflow` | 14 | `int(` had no word boundary, so it matched `models.UniqueConstraint(` and `function fingerprint(snapshot: Snapshot)`. The boundary and the relocated exclusion clear both sampled lines, but what is left is still "the line contains `parseInt`", with no measurement on the other 12 findings and no true positive anywhere in the corpus |
 | `concurrency.shared_state` | 6 | `global\s+\w+` matches English. It fired on the comment `// If agent.http2 is unset, use the global agent for connection pooling.` and on the changelog line `Fix a global leak when multiple subnets are trusted`. Comment stripping removes the first shape; the prose-file shape needs the rule to know what a declaration is |
+| `path.traversal.user_path` | 86 over the vulnerable corpus | Measured separately, on the September 2026 vulnerable corpus rather than the replay: 7 adjudicated, 3 true and 4 false, precision 0.43. Every false positive arrived through the `\{` alternative, which was meant to catch an f-string or a template interpolation and instead matches the brace of an options object. Removing that alternative also removes the rule's own true positive, so the pattern cannot be narrowed without a data-flow answer about where the path came from |
 | `rate_limit.missing` | 2 | Reduced to "the line contains `/login`, `/auth`, ...". Its entire output over 165 pull requests was a redirect target in a test fixture, a JSDoc usage example, and the package name `@octokit/auth-token` in a vendored licence file |
 
 **Why deferred.** Each of these needs a rule design, not a regex repair: a null check needs to know what can be null, an authorization rule needs to know what a route handler is, and a shared-state rule needs to know what a declaration is. The quarantine stops the harm now and keeps the measurement running. Re-enabling one is a change of its own, with its cases added to `benchmarks/tier1-precision/cases.json` and the gate green.
 
-**Related gap, not fixed here.** Tier 1 still reads prose files (changelogs, READMEs, licence text) as code. `auth.bypass.missing_check` is not quarantined and still fires on the express changelog line `app.get('/user/:id').remove();`. The fix is prose-path scoping, which exists on `feat/real-repo-replay` and has not merged. The case is recorded in the precision benchmark with a `known_gap` marker that the gate asserts is still open.
+**Related gap, now closed.** Tier 1 used to read prose files (changelogs, READMEs, licence text) as code, and `auth.bypass.missing_check` fired on the express changelog line `app.get('/user/:id').remove();`. Prose-path scoping landed with the real-repository replay work, and the rule was separately re-anchored, so the case in `benchmarks/tier1-precision/cases.json` is now a suppressed false positive (`suppressed_by: prose_path_scope`) rather than a recorded gap.
+
+## Detection gaps the vulnerable corpus measured
+
+The September 2026 vulnerable-corpus run (`docs/validation/vulnerable-corpus-2026-09.md`)
+put 171 labelled vulnerabilities in 23 repositories through both tiers. These are the gaps
+it found and did not close, with the reason each was left.
+
+**Cross-site scripting: 1 of 32 labelled vulnerabilities found.** Two separate causes, and
+neither is a pattern that can be narrowed or widened.
+
+*Template files are not analysed at all.* `TIER2_SUPPORTED_EXTENSIONS` in
+`scripts/replay/prodfilters.py` and its production counterpart
+`shouldFetchFullFileContent` list no template language, so `.html`, `.ejs`, `.pug`, `.dust`
+and `.jinja2` files are never fetched or scanned. Eleven of the missed XSS labels are in
+those files, including every reflected and stored XSS in NodeGoat and dvna. Adding a
+template language is a scanner decision with its own precision question, not a rule edit.
+
+*HTML built by string interpolation has no rule.* The remaining misses are
+`` return `<img src="${src}" alt="${alt}">` `` in TypeScript and `'<br/>%s' % comic.text` in
+Python, which is what CVE-2026-61824, CVE-2026-68921 and GHSA-75mw-h36v-2jv7 all are. No
+rule in either tier looks for it. This is a new rule, not a narrowing.
+
+**Command injection through one variable.** `cwe-78.js-exec-interpolated` requires the
+template literal to be inside the `exec` call. Four labelled vulnerabilities
+(`sebhildebrandt/systeminformation` CVE-2026-50289 and all three `electerm/electerm`
+CVE-2026-49255 sites) build the command on one line and run it on the next. Matching
+`exec($VAR)` for any variable is how a rule reaches a precision of 0.02, so this needs one
+hop of data flow, which the AST pattern engine does not provide.
+
+**A tier 1 rule reports one finding per file.** `pattern_findings` in
+`services/analysis-service/src/main.py` emits at most one finding per rule per file, at the
+first match. `enrocrypt/hashing.py` offers eight digests including MD5; `crypto.weak.hash`
+reports the first one and the CVE is at the eighth. Nine of the 18 labels that were found in
+the file but not on the line are this. It keeps a file with fifty weak hashes from producing
+fifty comments, which is why it is there, and it caps recall on any file with more than one
+instance of the same defect.
+
+**Repair templates need an Express route.** 52 of the 103 template refusals on this corpus
+are `enclosing_route_not_found`: the JavaScript templates for the SQL, command and path
+families rewrite inside a route handler because that is where they know a 400 can be
+returned. A library, a CLI and an Electron main process have none, and most real code is one
+of those.
+
+**Three rules the corpus could not decide.** `xss.unsafe_html_render` (16 findings, 2
+adjudicated, 0.50), `auth.bypass.missing_check` (8 findings, 1 adjudicated, 0.00) and
+`opengrep.cwe-798.hardcoded-secret-js` (5 findings, 2 adjudicated, 0.50) are all below the
+three adjudicated findings the posting policy requires before it will act. A larger hand-read
+sample than 40 of 1687 is the cheapest way to close this.
+
+**`opengrep.cwe-489.py-debug-constant-true` is one reading short of re-enabling.** It has two
+measured hits, both `DEBUG = True` in a real Django settings module, which is exactly the
+shape its quarantine reason doubted. The quarantine reason is now known to be wrong and the
+rule still cannot come back, because the policy asks for three.
+
+**Pre-existing tier 2 rules pass their check id as `internal_type`.** The rules in
+`javascript.yml` and `python.yml` declare no `internal_type`, so `opengrep_runner` sets it to
+the check id and `taxonomy.canonicalize_internal_type` returns it unchanged: a finding
+arrives as `internal_type: "cwe-502.pickle-loads"`, a category of one that nothing else can
+group with. `tests/test_tier2_rule_metadata.py` forbids this for the coverage rules and the
+older files are out of its scope. `scripts/replay/score.py` works around it by deriving the
+class from the CWE.
 
 ## Provenance
 

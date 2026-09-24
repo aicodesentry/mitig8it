@@ -187,3 +187,64 @@ class TestEndpointsReportTheWithheld:
         result = analyze_tier2_payload(self._payload())
         assert [f["rule_id"] for f in result["findings"]] == ["opengrep.good.rule"]
         assert result["quarantined_findings"] == {"opengrep.noisy.rule": 1}
+
+
+class TestLoadedPolicy:
+    def test_the_service_starts_with_the_policy_both_tiers_declare(self):
+        from opengrep_runner import quarantined_rule_ids
+        from security_rules import POSTING_QUARANTINE, SECURITY_RULES
+
+        tier1 = {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
+        assert main.QUARANTINED_RULE_IDS == frozenset(quarantined_rule_ids()) | tier1
+
+    def test_at_least_one_rule_is_quarantined_so_the_path_is_exercised(self):
+        assert main.QUARANTINED_RULE_IDS
+
+    def test_both_tiers_contribute_to_the_one_set(self):
+        """One filter, two sources. If either source stops feeding it, a rule that was
+        measured and found wrong quietly starts posting again."""
+        assert any(rule_id.startswith("opengrep.") for rule_id in main.QUARANTINED_RULE_IDS)
+        assert any(not rule_id.startswith("opengrep.") for rule_id in main.QUARANTINED_RULE_IDS)
+
+
+class TestTier1PostingPolicy:
+    """A tier 1 rule declares its posting state next to the pattern whose precision was
+    measured, exactly as a tier 2 rule does in its YAML metadata."""
+
+    def test_a_quarantined_tier1_rule_carries_its_evidence(self):
+        from security_rules import POSTING_QUARANTINE, PRECISION_MEASURED, SECURITY_RULES
+
+        quarantined = [rule for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE]
+        assert quarantined, "the tier 1 quarantine path is not exercised by any rule"
+        for rule in quarantined:
+            assert rule.precision == PRECISION_MEASURED, (
+                f"{rule.rule_id} is quarantined without a measurement; the quarantine is for "
+                "rules measured and found wrong, not for rules nobody has looked at"
+            )
+            assert rule.precision_evidence.strip(), (
+                f"{rule.rule_id} is quarantined with no evidence, so nothing says what would "
+                "let someone re-enable it"
+            )
+
+    def test_an_unmeasured_tier1_rule_still_posts(self):
+        from security_rules import POSTING_POST, PRECISION_UNMEASURED, SECURITY_RULES
+
+        for rule in SECURITY_RULES:
+            if rule.precision == PRECISION_UNMEASURED:
+                assert rule.posting == POSTING_POST, rule.rule_id
+
+    def test_a_quarantined_tier1_finding_does_not_reach_the_response(self, monkeypatch):
+        from security_rules import POSTING_QUARANTINE, SECURITY_RULES
+
+        rule_id = next(
+            rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE
+        )
+        monkeypatch.setattr(main, "pattern_findings", lambda files, limitations=None: [_finding(rule_id)])
+        result = analyze_tier1_payload(
+            AnalyzePRRequest(
+                repository_full_name="acme/app", pull_request_number=1,
+                commit_sha="deadbeef", files=[],
+            )
+        )
+        assert result["findings"] == []
+        assert result["quarantined_findings"] == {rule_id: 1}

@@ -21,12 +21,15 @@ from security_rules import (
     tier1_patterns,
 )
 
+# The five the September 2026 real-repository replay measured, plus the one the September
+# 2026 vulnerable corpus measured. Each carries its own `precision_evidence`.
 EXPECTED_QUARANTINE = {
     "null.pointer.deref",
     "integer.overflow",
     "rate_limit.missing",
     "authz.missing_function_level",
     "concurrency.shared_state",
+    "path.traversal.user_path",
 }
 
 

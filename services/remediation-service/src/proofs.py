@@ -35,7 +35,7 @@ from .sites import (
     PyFunction,
     SiteError,
     js_environment_name,
-    js_literal_assignment,
+    js_literal_assignment_in_span,
     js_module_constant,
     js_module_exports_name,
     js_route_for_line,
@@ -251,10 +251,10 @@ def _js_credential_proof(snapshot: Snapshot, finding: FindingSnapshot) -> Genera
     """
     path = finding.affected_path
     source = snapshot.full_content(path)
-    assignment = js_literal_assignment(source, _finding_line(finding))
-    if assignment is None:
+    found = js_literal_assignment_in_span(source, finding.line_start, finding.line_end)
+    if found is None:
         raise SiteError("string_literal_assignment_not_found")
-    name, literal, _quote, kind = assignment
+    _line, (name, literal, _quote, kind) = found
     variable = js_environment_name(name)
     if not variable:
         raise SiteError("environment_name_not_derived")

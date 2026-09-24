@@ -129,7 +129,21 @@ class TestKnownGaps:
 class TestTruePositivesStillFire:
     @pytest.mark.parametrize("case", TRUE_POSITIVES, ids=_ids(TRUE_POSITIVES))
     def test_the_case_still_produces_its_finding(self, case):
-        posted = [finding["rule_id"] for finding in _tier1(case)["findings"]]
+        """The rule still recognizes its true positive.
+
+        A quarantined rule is withheld, not removed: its finding is counted rather than
+        posted. Asserting the count for those keeps the evidence that the rule still works,
+        which is what would justify re-enabling it, without asserting a posting the policy
+        has deliberately taken away.
+        """
+        result = _tier1(case)
+        if case["rule_id"] in QUARANTINED_RULE_IDS:
+            assert result["quarantined_findings"].get(case["rule_id"], 0) >= 1, (
+                f"{case['id']} no longer fires at all, so the quarantine measurement "
+                "has stopped describing the rule"
+            )
+            return
+        posted = [finding["rule_id"] for finding in result["findings"]]
         assert case["rule_id"] in posted, posted
 
     def test_the_true_positive_set_covers_every_posting_rule_family(self):
