@@ -147,6 +147,8 @@ Resolved observation: the second residual report on test-only PR 127 said "Remai
 
 Resolved observation: test-only PR 135 published "Security analysis incomplete" with no findings and no fixes because one warning-level lexical error in one file made the tier 2 runner discard all 97 results from all 12 files. The scanner's errors are now classified, a per-file parse problem or resource ceiling is reported as an `analysis_limitations` entry on the run and stated in the check summary and the review comment, and only an unattributable error-level failure still fails the scan closed.
 
+Every decision about a finding, in the workspace or on GitHub, is now appended to `finding_outcomes` and rolled up daily into the apply, dismiss and residual rates described in [finding outcomes](finding-outcomes.md); the rates are exported and shown, but no live installation has yet produced enough of them to read.
+
 ## Not done, as of 2026-09-22
 
 | Item | Where it stands |

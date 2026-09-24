@@ -17,24 +17,12 @@ router.use((_req, res, next) => {
 });
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
-const DEFAULT_GITHUB_APP_SLUG = 'mitig8it';
 const AUTH_COOKIE_NAME = '__session';
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const STATE_TTL_MS = 10 * 60 * 1000;
 
-function resolveGithubAppSlug() {
-  const raw = (process.env.GITHUB_APP_SLUG || '').trim();
-  const lowered = raw.toLowerCase();
-
-  if (!raw || lowered.includes('replace_me') || lowered.includes('your_') || lowered === 'github_app_slug') {
-    return DEFAULT_GITHUB_APP_SLUG;
-  }
-
-  const match = raw.match(/github\.com\/apps\/([^/]+)/i);
-  if (match?.[1]) return match[1];
-
-  return raw;
-}
+// Shared with the webhook handlers, which have to recognise the app's own bot login.
+const { resolveGithubAppSlug } = require('../services/githubAppIdentity');
 
 function cookieOptions(req) {
   const isProduction = process.env.NODE_ENV === 'production';

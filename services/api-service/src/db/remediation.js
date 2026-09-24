@@ -1,5 +1,7 @@
 const crypto = require('crypto');
 const { pool } = require('../config/database');
+const findingsDb = require('./findings');
+const findingOutcomes = require('./findingOutcomes');
 
 const ACTIVE_STATES = new Set(['queued', 'snapshotting', 'retrieving', 'planning', 'generating', 'verifying']);
 const TERMINAL_STATES = new Set(['ready', 'cancelled', 'superseded', 'unsupported', 'inconclusive', 'failed', 'dead_letter']);
@@ -775,6 +777,55 @@ async function actionMaterial(action) {
   });
 }
 
+// Every finding the action's candidates repair, recorded as applied the moment the
+// commit exists. The key is the action, so the later completion replays onto the same
+// rows instead of counting the apply twice. Recorded on the action's own transaction.
+async function recordAppliedOutcomes(client, action) {
+  if (!action?.job_id || !Array.isArray(action.candidate_ids) || !action.candidate_ids.length) return 0;
+  const job = await client.query(
+    `SELECT id, installation_id, repository_id, pull_request_id, analysis_run_id, finding_snapshot_ids
+       FROM remediation_jobs WHERE id=$1`, [action.job_id]);
+  const jobRow = job.rows[0];
+  if (!jobRow) return 0;
+  const candidates = await client.query(
+    `SELECT id, finding_snapshot_ids FROM remediation_candidates WHERE id = ANY($1::uuid[]) AND job_id=$2`,
+    [action.candidate_ids, action.job_id]);
+  const snapshots = await findingSnapshots(client, jobRow);
+  const bySnapshotId = new Map(snapshots.map((finding) => [String(finding.id), finding]));
+  const rows = await findingsDb.listByIds(snapshots.map((finding) => finding.id), client);
+  const byFindingId = new Map(rows.map((finding) => [String(finding.id), finding]));
+
+  let recorded = 0;
+  const seen = new Set();
+  for (const candidate of candidates.rows) {
+    for (const findingId of candidate.finding_snapshot_ids || []) {
+      const key = String(findingId);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // The live row when it still exists, the immutable snapshot otherwise.
+      const finding = byFindingId.get(key) || bySnapshotId.get(key);
+      if (!finding?.fingerprint) continue;
+      const id = await findingOutcomes.recordOutcome(client, {
+        ...findingOutcomes.identityOf(finding),
+        findingId,
+        repositoryId: jobRow.repository_id,
+        installationId: jobRow.installation_id,
+        pullRequestId: jobRow.pull_request_id,
+        outcome: 'applied_in_app',
+        source: 'remediation',
+        actorLogin: action.actor_login || null,
+        candidateId: candidate.id,
+        actionId: action.id,
+        jobId: jobRow.id,
+        commitSha: action.observed_commit_sha || null,
+        externalId: action.id,
+      });
+      if (id) recorded += 1;
+    }
+  }
+  return recorded;
+}
+
 const TERMINAL_ACTION_STATES = new Set(['applied', 'completed', 'cancelled', 'superseded', 'blocked', 'failed', 'rejected']);
 
 async function updateAction(action, state, fields = {}) {
@@ -796,6 +847,7 @@ async function updateAction(action, state, fields = {}) {
           WHERE action_id=$1 AND state='waiting_for_application'`,
         [action.id, fields.commitSha]
       );
+      await recordAppliedOutcomes(client, result.rows[0]);
     }
     return result.rows[0] || null;
   });
@@ -859,6 +911,9 @@ async function completeAction(actionId, { headSha } = {}) {
       { head_sha: row.verification_head_sha || row.observed_commit_sha, analysis_run_id: row.verification_analysis_run_id });
     await audit(client, null, row.repository_id, 'remediation.action.completed', 'remediation_action', row.id,
       { commit_sha: row.observed_commit_sha, analysis_run_id: row.verification_analysis_run_id });
+    // Replays onto the rows the apply already wrote; it is here so an action that
+    // reached completion without passing through this process still records the apply.
+    await recordAppliedOutcomes(client, updated.rows[0]);
     return updated.rows[0];
   });
 }
@@ -1402,4 +1457,5 @@ module.exports = {
   manifestDigestFor, selectCandidates, markCandidatesAfterApply, appliedReportForAction,
   recordResidualComment, listActionsNeedingResidualComment,
   createAutomaticJob, jobPublishContext, recordInlineFixesPublished, readyJobsWithPublishedInlineFixes,
+  recordAppliedOutcomes,
 };

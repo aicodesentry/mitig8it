@@ -1,6 +1,7 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const findingsDb = require('../db/findings');
+const findingOutcomes = require('../db/findingOutcomes');
 
 const router = express.Router();
 
@@ -53,9 +54,24 @@ router.patch('/findings/:id/status', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Invalid status' });
   }
 
+  // A dismissal is only useful to the learning loop when its reason is one of the four
+  // the log understands. Legacy phrasings such as 'false_positive' are mapped, an
+  // unrecognised reason is refused, and an omitted one is recorded as 'other'.
+  let dismissalReason = null;
+  if (status === 'dismissed') {
+    const given = dismissal_reason == null || dismissal_reason === '' ? 'other' : dismissal_reason;
+    dismissalReason = findingOutcomes.normalizeDismissalReason(given, null);
+    if (!dismissalReason) {
+      return res.status(400).json({
+        error: 'Invalid dismissal_reason',
+        allowed: findingOutcomes.DISMISSAL_REASONS,
+      });
+    }
+  }
+
   const finding = await findingsDb.updateStatus(req.params.id, req.user.user_id, {
     status,
-    dismissalReason: dismissal_reason,
+    dismissalReason,
   });
 
   if (!finding) {

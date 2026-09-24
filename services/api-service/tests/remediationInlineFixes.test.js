@@ -343,3 +343,69 @@ test('the outbox routes remediation.ready to the publication and records refusal
   publish.mockRejectedValueOnce(Object.assign(new Error('ECONNREFUSED'), { code: 'ECONNREFUSED' }));
   await expect(handler({ aggregate_id: JOB })).rejects.toThrow('ECONNREFUSED');
 });
+
+// The outcome log entry a publication produces. One row per finding the published
+// candidate covers, and nothing at all for a finding no candidate repaired.
+describe('publishedFixOutcomes', () => {
+  const JOB_ROW = {
+    id: JOB, repository_id: 'r-1', installation_id: 42, pull_request_id: 'pr-1', head_sha: HEAD,
+  };
+  const finding = (id, overrides = {}) => ({
+    id, fingerprint: `${id}`.padEnd(64, '0'), rule_id: 'sql-injection', cwe_id: 'CWE-89',
+    severity: 'high', confidence: 0.9, category: 'injection', repository_id: 'r-1',
+    installation_id: 42, pull_request_id: 'pr-1', ...overrides,
+  });
+
+  test('records one fix_published per finding the candidate covers', () => {
+    const outcomes = inline.publishedFixOutcomes({
+      job: JOB_ROW,
+      findings: [finding('f-1'), finding('f-2')],
+      sections: [{ candidate_id: 'c-1', finding_ids: ['f-1', 'f-2'] }],
+    });
+
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes[0]).toMatchObject({
+      findingId: 'f-1', outcome: 'fix_published', source: 'remediation',
+      candidateId: 'c-1', externalId: 'c-1', jobId: JOB, repositoryId: 'r-1',
+      installationId: 42, pullRequestId: 'pr-1', commitSha: HEAD, ruleId: 'sql-injection',
+    });
+  });
+
+  test('a section with no candidate is a skipped finding and publishes nothing', () => {
+    expect(inline.publishedFixOutcomes({
+      job: JOB_ROW,
+      findings: [finding('f-1')],
+      sections: [{ candidate_id: '', finding_ids: ['f-1'] }],
+    })).toEqual([]);
+  });
+
+  test('the same finding under the same candidate is recorded once', () => {
+    const outcomes = inline.publishedFixOutcomes({
+      job: JOB_ROW,
+      findings: [finding('f-1')],
+      sections: [
+        { candidate_id: 'c-1', finding_ids: ['f-1'] },
+        { candidate_id: 'c-1', finding_ids: ['f-1'] },
+      ],
+    });
+    expect(outcomes).toHaveLength(1);
+  });
+
+  test('the same finding under two candidates is recorded once per candidate', () => {
+    const outcomes = inline.publishedFixOutcomes({
+      job: JOB_ROW,
+      findings: [finding('f-1')],
+      sections: [
+        { candidate_id: 'c-1', finding_ids: ['f-1'] },
+        { candidate_id: 'c-2', finding_ids: ['f-1'] },
+      ],
+    });
+    expect(outcomes.map((outcome) => outcome.candidateId)).toEqual(['c-1', 'c-2']);
+  });
+
+  test('a finding with no snapshot behind it is skipped rather than recorded blank', () => {
+    expect(inline.publishedFixOutcomes({
+      job: JOB_ROW, findings: [], sections: [{ candidate_id: 'c-1', finding_ids: ['f-9'] }],
+    })).toEqual([]);
+  });
+});

@@ -1,4 +1,13 @@
 const { pool, transaction } = require('../config/database');
+const findingOutcomes = require('./findingOutcomes');
+
+// What a workspace status change means in the outcome log.
+const STATUS_OUTCOMES = {
+  dismissed: 'dismissed',
+  accepted_risk: 'accepted_risk',
+  open: 'reopened',
+  fixed: 'marked_fixed',
+};
 
 async function listByPullRequest(pullRequestId, userId, { status = 'open', minConfidence = 0 }) {
   await restoreExpiredSuppressions(null, userId);
@@ -90,10 +99,11 @@ async function getById(findingId, userId) {
 async function updateStatus(findingId, userId, { status, dismissalReason }) {
   return transaction(async (client) => {
     const finding = await client.query(
-      `SELECT f.id, f.repository_id
+      `SELECT f.id, f.repository_id, u.github_username AS actor_login
        FROM findings f
        JOIN repositories r ON r.id = f.repository_id
        JOIN repository_access ra ON ra.repository_id = r.id
+       LEFT JOIN users u ON u.id = ra.user_id
        WHERE f.id = $1 AND ra.user_id = $2`,
       [findingId, userId]
     );
@@ -115,7 +125,20 @@ async function updateStatus(findingId, userId, { status, dismissalReason }) {
        JSON.stringify({ status, dismissal_reason: dismissalReason || null })]
     );
 
-    return statusResult.rows[0];
+    // The outcome commits with the status change; a status the log has no word for is
+    // simply not recorded rather than recorded as something else.
+    const updated = statusResult.rows[0];
+    if (updated && STATUS_OUTCOMES[status]) {
+      await findingOutcomes.recordOutcome(client, {
+        ...findingOutcomes.identityOf(updated),
+        outcome: STATUS_OUTCOMES[status],
+        source: 'workspace',
+        reason: status === 'dismissed' ? findingOutcomes.normalizeDismissalReason(dismissalReason) : null,
+        actorLogin: finding.rows[0].actor_login || null,
+      });
+    }
+
+    return updated;
   });
 }
 
@@ -210,21 +233,101 @@ async function dismiss(findingId, reason) {
   );
 }
 
-async function markFixed({ repositoryId, pullRequestId, activeFingerprints }) {
-  if (activeFingerprints.length === 0) {
-    await pool.query(
-      `UPDATE findings SET status = 'fixed', suppression_applied = FALSE, dismissal_reason = NULL, updated_at = NOW()
-       WHERE repository_id = $1 AND pull_request_id = $2 AND (status = 'open' OR suppression_applied)`,
-      [repositoryId, pullRequestId]
-    );
-    return;
-  }
-  await pool.query(
-    `UPDATE findings SET status = 'fixed', suppression_applied = FALSE, dismissal_reason = NULL, updated_at = NOW()
-     WHERE repository_id = $1 AND pull_request_id = $2 AND (status = 'open' OR suppression_applied)
-       AND fingerprint <> ALL($3::text[])`,
-    [repositoryId, pullRequestId, activeFingerprints]
+// A finding the fresh analysis no longer reports is fixed. The status change and the
+// outcome row commit together, keyed on the analysis run so a re-run records once.
+async function markFixed({ repositoryId, pullRequestId, activeFingerprints, analysisRunId = null, commitSha = null }) {
+  return transaction(async (client) => {
+    const result = activeFingerprints.length === 0
+      ? await client.query(
+        `UPDATE findings SET status = 'fixed', suppression_applied = FALSE, dismissal_reason = NULL, updated_at = NOW()
+         WHERE repository_id = $1 AND pull_request_id = $2 AND (status = 'open' OR suppression_applied)
+         RETURNING *`,
+        [repositoryId, pullRequestId]
+      )
+      : await client.query(
+        `UPDATE findings SET status = 'fixed', suppression_applied = FALSE, dismissal_reason = NULL, updated_at = NOW()
+         WHERE repository_id = $1 AND pull_request_id = $2 AND (status = 'open' OR suppression_applied)
+           AND fingerprint <> ALL($3::text[])
+         RETURNING *`,
+        [repositoryId, pullRequestId, activeFingerprints]
+      );
+
+    await findingOutcomes.recordOutcomesForFindings(client, result.rows, {
+      outcome: 'fixed_by_reanalysis',
+      source: 'reanalysis',
+      commitSha,
+      externalId: analysisRunId || null,
+    });
+
+    return result.rows;
+  });
+}
+
+// The identity rows the outcome log copies onto its own records. Not user-scoped: the
+// callers are workers that already resolved the tenant.
+const IDENTITY_COLUMNS = `id, fingerprint, rule_id, cwe_id, severity, confidence, category,
+  repository_id, installation_id, pull_request_id, file_path, line_start, status`;
+
+async function listByIds(findingIds = [], client = null) {
+  const ids = findingIds.filter(Boolean).map(String);
+  if (!ids.length) return [];
+  const executor = client || pool;
+  const result = await executor.query(
+    `SELECT ${IDENTITY_COLUMNS} FROM findings WHERE id = ANY($1::uuid[])`, [ids]
   );
+  return result.rows;
+}
+
+// The findings of one pull request whose file path is in the given list. Used to tie a
+// "Commit suggestion" commit back to the findings whose fix it applied.
+async function listByPullRequestPaths({ repositoryId, pullRequestId, paths = [] }, client = null) {
+  if (!repositoryId || !pullRequestId || !paths.length) return [];
+  const executor = client || pool;
+  const result = await executor.query(
+    `SELECT ${IDENTITY_COLUMNS} FROM findings
+      WHERE repository_id = $1 AND pull_request_id = $2 AND file_path = ANY($3::text[])`,
+    [repositoryId, pullRequestId, paths]
+  );
+  return result.rows;
+}
+
+async function findByPullRequestFingerprint({ repositoryId, pullRequestId, fingerprint }, client = null) {
+  if (!repositoryId || !pullRequestId || !fingerprint) return null;
+  const executor = client || pool;
+  const result = await executor.query(
+    `SELECT ${IDENTITY_COLUMNS} FROM findings
+      WHERE repository_id = $1 AND pull_request_id = $2 AND fingerprint = $3
+      ORDER BY updated_at DESC LIMIT 1`,
+    [repositoryId, pullRequestId, fingerprint]
+  );
+  return result.rows[0] || null;
+}
+
+// The root review comment of a finding, remembered the first time the bot's own marked
+// comment is seen. A reply carries only that comment's id, never its body.
+async function rememberInlineComment({ repositoryId, pullRequestId, fingerprint, commentId }, client = null) {
+  if (!repositoryId || !pullRequestId || !fingerprint || !commentId) return false;
+  const executor = client || pool;
+  const result = await executor.query(
+    `UPDATE findings SET inline_comment_id = $4
+      WHERE repository_id = $1 AND pull_request_id = $2 AND fingerprint = $3
+        AND inline_comment_id IS DISTINCT FROM $4`,
+    [repositoryId, pullRequestId, fingerprint, String(commentId)]
+  );
+  return result.rowCount > 0;
+}
+
+async function findByInlineCommentId({ repositoryId, pullRequestId, commentId }, client = null) {
+  if (!repositoryId || !commentId) return null;
+  const executor = client || pool;
+  const result = await executor.query(
+    `SELECT ${IDENTITY_COLUMNS} FROM findings
+      WHERE repository_id = $1 AND inline_comment_id = $2
+        AND ($3::uuid IS NULL OR pull_request_id = $3)
+      ORDER BY updated_at DESC LIMIT 1`,
+    [repositoryId, String(commentId), pullRequestId || null]
+  );
+  return result.rows[0] || null;
 }
 
 async function mergeEvidenceDetails(findingId, metadata) {
@@ -282,4 +385,6 @@ module.exports = {
   restoreExpiredSuppressions, snapshotRun,
   listByPullRequest, listAll, getById, updateStatus, listByAnalysisRun,
   findByFingerprint, upsert, dismiss, markFixed, mergeEvidenceDetails, getActiveSuppressions,
+  listByIds, listByPullRequestPaths, findByPullRequestFingerprint,
+  rememberInlineComment, findByInlineCommentId,
 };

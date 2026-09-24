@@ -155,6 +155,15 @@ export const remediationAPI = {
   feedback: async (id, payload) => (await api.post(`/api/remediations/${id}/feedback`, payload)).data,
 }
 
+// The four reasons the API accepts for a dismissal or a suppression. They are the same
+// list the outcome log validates against, so the workspace never sends free text.
+export const DISMISSAL_REASONS = [
+  { value: 'not_exploitable', label: 'Not exploitable here' },
+  { value: 'test_or_sample_code', label: 'Test or sample code' },
+  { value: 'wrong_rule_match', label: 'Wrong rule match' },
+  { value: 'other', label: 'Other' },
+]
+
 export const findingAPI = {
   listByPR: async (pullRequestId, params = {}) => {
     const q = new URLSearchParams(params).toString()
@@ -208,8 +217,19 @@ export const reportsAPI = {
   getSummary: async () => {
     const { data } = await api.get('/api/reports/summary')
     return data
+  },
+  getQuality: async ({ window = 30, repositoryId = null } = {}) => {
+    const params = new URLSearchParams({ window: String(window) })
+    if (repositoryId) params.set('repository_id', repositoryId)
+    const { data } = await api.get(`/api/reports/quality?${params.toString()}`)
+    return data
   }
 }
+
+// A rate is null when its denominator is zero, which is not the same as zero. Rendering
+// it as "n/a" is the only honest answer; a "0%" would read as a measured result.
+export const formatRate = (rate) =>
+  (typeof rate === 'number' && Number.isFinite(rate) ? `${Math.round(rate * 100)}%` : 'n/a')
 
 export const analysisAPI = {
   healthCheck: async () => {

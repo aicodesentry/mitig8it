@@ -5,6 +5,7 @@ const { notifyAnalysisQueued } = require('../services/prAnalysisOrchestrator');
 const logger = require('../utils/logger');
 const installationsDb = require('../db/installations');
 const remediationDb = require('../db/remediation');
+const findingThreadEvents = require('../services/findingThreadEvents');
 
 const router = express.Router();
 
@@ -269,6 +270,24 @@ router.post('/github', async (req, res) => {
           client, repositoryGithubId: payload.repository.id,
           branch: payload.ref.slice('refs/heads/'.length), newHeadSha: payload.after, reason: 'head_changed',
         });
+      }
+
+      // A reviewer resolving the bot's thread, or replying "not an issue" to it, is a
+      // decision about a finding. Both land in the outcome log on the same transaction
+      // as the delivery marker, so a redelivery records nothing twice.
+      if (event === 'pull_request_review_thread') {
+        await findingThreadEvents.handleReviewThread(client, payload);
+      }
+
+      if (event === 'pull_request_review_comment') {
+        await findingThreadEvents.handleReviewComment(client, payload);
+      }
+
+      // "Commit suggestion" applies a published fix without the workspace ever seeing
+      // it. Only the push carries the commits; a pull_request synchronize payload has
+      // none, which is why nothing is read from it here.
+      if (event === 'push') {
+        await findingThreadEvents.handleCommitSuggestions(client, payload);
       }
 
       if (MERGE_HINT_EVENTS.has(event)) {

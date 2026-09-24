@@ -1,5 +1,6 @@
 const remediationDb = require('../db/remediation');
 const findingsDb = require('../db/findings');
+const findingOutcomes = require('../db/findingOutcomes');
 const policy = require('./remediationPolicy');
 const logger = require('../utils/logger');
 const { GitHubRemediationClient } = require('./githubRemediationClient');
@@ -345,6 +346,11 @@ async function publishInlineFixes(jobId, options = {}) {
     return { published: false, reason: result?.reason || 'not_published' };
   }
   await remediationDb.recordInlineFixesPublished(job, { headSha: job.head_sha });
+  // The outcome log is what the quality numbers are computed from; a failure to append
+  // is reported and never reverts a publication that already happened on GitHub.
+  try { await recordPublishedFixOutcomes(context, sections); } catch (error) {
+    logger.error('Published fix outcomes could not be recorded', { job_id: job.id, error: error.message });
+  }
   const results = Array.isArray(result.results) ? result.results : [];
   const unplaced = results.filter((item) => item?.mode === 'comment_not_found').length;
   const created = results.filter((item) => item?.created && item.placement === 'inline').length;
@@ -356,4 +362,47 @@ async function publishInlineFixes(jobId, options = {}) {
   return { published: true, results, sections: sections.length, comments_created: created, pull_request_comments_created: fallback, unplaced };
 }
 
-module.exports = { publishInlineFixes, buildSections, attachFindingBodies, computeHunk, computeRegions, evidenceLines, countHunks, proofLine, sameLines };
+// Every finding a published candidate proves or covers, paired with the candidate that
+// carries its fix. A section without a candidate is a skipped finding: no fix was
+// published for it, so it contributes nothing here.
+function publishedFixOutcomes({ job, findings = [], sections = [] }) {
+  const byId = new Map(findings.map((finding) => [String(finding.id), finding]));
+  const seen = new Set();
+  const outcomes = [];
+  for (const section of sections) {
+    if (!section?.candidate_id) continue;
+    for (const findingId of section.finding_ids || []) {
+      const key = `${findingId}:${section.candidate_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const finding = byId.get(String(findingId));
+      if (!finding?.fingerprint) continue;
+      outcomes.push({
+        ...findingOutcomes.identityOf(finding),
+        repositoryId: job.repository_id,
+        installationId: job.installation_id,
+        pullRequestId: job.pull_request_id,
+        outcome: 'fix_published',
+        source: 'remediation',
+        candidateId: section.candidate_id,
+        jobId: job.id,
+        commitSha: job.head_sha || null,
+        externalId: section.candidate_id,
+      });
+    }
+  }
+  return outcomes;
+}
+
+async function recordPublishedFixOutcomes(context, sections) {
+  const outcomes = publishedFixOutcomes({ job: context.job, findings: context.findings || [], sections });
+  for (const outcome of outcomes) {
+    await findingOutcomes.recordOutcome(null, outcome);
+  }
+  return outcomes.length;
+}
+
+module.exports = {
+  publishInlineFixes, buildSections, attachFindingBodies, computeHunk, computeRegions,
+  evidenceLines, countHunks, proofLine, sameLines, publishedFixOutcomes,
+};
