@@ -67,19 +67,56 @@ def make_fingerprint(rule_id: str, path: str, line: int, snippet: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
 def _extract_file_content(patch: str) -> str:
-    """Extract added lines from a unified diff patch."""
+    """Rebuild the new side of a file from its unified diff, at the file's own line numbers.
+
+    Every added and context line is placed at the line number the hunk header gives it and
+    the gaps between hunks are left blank, so a line the scanner reports is the line the
+    file really has. Concatenating the hunks instead reported a finding at line 3 of a
+    reconstruction when the code was at line 501 of the file, and the inline review comment
+    went to the wrong line.
+
+    A context line also keeps its text without the diff's one-character marker. Leaving the
+    marker in shifted every context line one column right while added lines kept their own
+    indentation, which by itself makes a patch-only Python file unparseable.
+    """
     if not patch:
         return ""
-    lines = []
-    for line in patch.split("\n"):
-        if line.startswith("+") and not line.startswith("+++"):
-            candidate = line[1:]
-            if not is_transcript_artifact_line(candidate):
-                lines.append(candidate)
-        elif not line.startswith("-") and not line.startswith("@@"):
-            if not is_transcript_artifact_line(line):
-                lines.append(line)
+
+    lines: List[str] = []
+    new_line = 1
+
+    def place(text: str) -> None:
+        nonlocal new_line
+        while len(lines) < new_line - 1:
+            lines.append("")
+        if len(lines) < new_line:
+            lines.append(text)
+        else:
+            lines[new_line - 1] = text
+        new_line += 1
+
+    for raw in patch.split("\n"):
+        if raw.startswith("@@"):
+            match = HUNK_HEADER_RE.match(raw)
+            if match:
+                new_line = max(1, int(match.group(1)))
+            continue
+        if raw.startswith("+++ ") or raw.startswith("--- "):
+            continue
+        # "\ No newline at end of file" is diff prose, never a line of the file.
+        if raw.startswith("\\"):
+            continue
+        if raw.startswith("-"):
+            continue
+        text = raw[1:] if raw[:1] in ("+", " ") else raw
+        # A transcript artifact keeps its position as a blank line rather than pulling
+        # every following line up by one.
+        place("" if is_transcript_artifact_line(text) else text)
+
     return "\n".join(lines)
 
 

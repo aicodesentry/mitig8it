@@ -16,6 +16,10 @@ class SecurityRule:
     pattern: re.Pattern
     description: str
     remediation: str
+    # Most rules recognize the shape of executable code, so they have no true positive in a
+    # changelog or a README: that text never runs. A rule that looks for committed data
+    # rather than code, such as a credential literal, sets this and keeps scanning prose.
+    scans_prose: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +411,8 @@ SECURITY_RULES: List[SecurityRule] = [
         ),
         description="Credential-like literal appears committed in source.",
         remediation="Move secrets to secure secret management and rotate leaked values.",
+        # A secret pasted into a README or a changelog is still a leaked secret.
+        scans_prose=True,
     ),
     SecurityRule(
         rule_id="auth.weak_password_hash",

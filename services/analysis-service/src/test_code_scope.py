@@ -25,6 +25,19 @@ EXCLUDED_PATH_PATTERNS = [
 
 NON_RUNTIME_PATH_PATTERNS = TEST_CODE_PATH_PATTERNS + EXCLUDED_PATH_PATTERNS
 
+# Prose: documentation, changelogs and translation catalogues. Nothing in them executes,
+# so a rule that recognizes the shape of executable code cannot have a true positive
+# there; a changelog entry quoting `app.get('/user/:id')` is not a route without an auth
+# check. Rules that look for committed data rather than code keep scanning these files.
+PROSE_EXTENSIONS = {
+    ".md", ".markdown", ".mdx", ".rst", ".txt", ".adoc", ".asciidoc", ".textile", ".pod",
+    ".po", ".pot",
+}
+PROSE_STEMS = {
+    "changelog", "changes", "history", "news", "authors", "contributors", "contributing",
+    "readme", "license", "licence", "notice", "copying", "codeowners",
+}
+
 
 def _normalize_path(path: Any) -> str:
     return str(path or "").strip().replace("\\", "/").lower()
@@ -47,6 +60,23 @@ def is_excluded_path(path: Any) -> bool:
 def is_analyzable_path(path: Any) -> bool:
     """Every path we scan, including test code."""
     return not is_excluded_path(path)
+
+
+def is_prose_path(path: Any) -> bool:
+    """True for documentation, changelogs and translation catalogues.
+
+    An unrecognized extension is not prose: the classification only ever narrows what a
+    code-shape rule scans, so anything it is unsure about keeps being scanned.
+    """
+    normalized = _normalize_path(path)
+    if not normalized:
+        return False
+    name = normalized.rsplit("/", 1)[-1]
+    stem, _, extension = name.rpartition(".")
+    if extension and f".{extension}" in PROSE_EXTENSIONS:
+        return True
+    # A file with no extension at all, such as `CHANGELOG` or `AUTHORS`.
+    return not stem and name in PROSE_STEMS
 
 
 def is_runtime_scannable_path(path: Any) -> bool:
