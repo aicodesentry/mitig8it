@@ -53,6 +53,11 @@ from .sites import (
 SQL_PAYLOAD = "1' OR '1'='1"
 COMMAND_PAYLOAD = "x; rm -rf /"
 TRAVERSAL_PAYLOADS = ("../../etc/passwd", "..%2f..%2fetc%2fpasswd")
+# A function called directly receives its argument as written: nothing percent-decodes it, so the
+# encoded payload above is a route-level concern and a correct helper rightly does not refuse it.
+# An absolute path takes its place, because `path.resolve` and `os.path.join` discard the base for
+# one, which is the other way a name leaves the directory it was supposed to stay in.
+DIRECT_TRAVERSAL_PAYLOADS = ("../../etc/passwd", "/etc/passwd")
 LEGITIMATE_NAME = "report.txt"
 EVAL_PAYLOAD = "__import__('os').system('id')"
 JS_EVAL_PAYLOAD = "require('node:child_process').execSync('id')"
@@ -370,7 +375,7 @@ def _js_traversal_function_proof(
     attack, _ = _js_call_arguments_for(function, untrusted, needs_connection=False)
     body = _js_module_header(path) + [
         f"  const base = {base or 'h.root'};",
-        f"  for (const payload of {_js(list(TRAVERSAL_PAYLOADS))}) {{",
+        f"  for (const payload of {_js(list(DIRECT_TRAVERSAL_PAYLOADS))}) {{",
         "    h.fs.reads.length = 0;",
         f"    const refused = h.call(m.{function.name}, {attack});",
         "    h.assert(!refused.ok, `expected ${JSON.stringify(payload)} to be refused, got ${JSON.stringify(refused.value)}`);",
@@ -756,7 +761,7 @@ def _py_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, function: 
     body = _py_header(path) + [
         _py_app_line(source),
         f"    base = {base or 'h.ROOT'}",
-        f"    for payload in {_py(list(TRAVERSAL_PAYLOADS))}:",
+        f"    for payload in {_py(list(DIRECT_TRAVERSAL_PAYLOADS))}:",
         "        h.fs.reads.clear()",
         f"        response = {_py_view_invoke(function, untrusted, 'payload')}",
         "        h.assert_inside(h.fs.reads, base, payload=payload)",

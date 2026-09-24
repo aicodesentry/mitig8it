@@ -131,6 +131,16 @@ for a generated test to drive at all. Next is `module_not_loadable_by_node`, 52 
 TypeScript, which plain `node` cannot `require` and for which the sandbox has no toolchain.
 `docs/validation/vulnerable-corpus-2026-09.md` has the full before and after.
 
+**The engine-local benchmark adapter runs out of script when a template fires.** Its scripted
+provider supplies a fixed sequence of actions, and a finding the template pass reaches still
+consults the model for whatever the group did not prove, so the script is exhausted and the case
+is reported `inconclusive`. Four seed fixtures land there
+(`js-path-readfile-join`, `js-path-sendfile`, `js-session-secret-object`,
+`python-path-helper-raises`); every one of them has `fixture_tests.passed` true, so the repairs
+themselves are sound. `js-session-secret-object` did this before the site model existed, which is
+what identifies the adapter rather than the engine as the cause. The `reference` adapter runs the
+same 51 cases with no unexpected failures.
+
 **Three rules the corpus could not decide.** `xss.unsafe_html_render` (16 findings, 2
 adjudicated, 0.50), `auth.bypass.missing_check` (8 findings, 1 adjudicated, 0.00) and
 `opengrep.cwe-798.hardcoded-secret-js` (5 findings, 2 adjudicated, 0.50) are all below the
