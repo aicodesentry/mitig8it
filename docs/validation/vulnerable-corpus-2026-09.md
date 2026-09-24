@@ -580,6 +580,64 @@ Five cross-site scripting labels and six path traversal labels survive.
   `content += "<div><span>Comment(s):</span></div><table>"`, and `%s%s%s` formats with no
   tag in the format string. Both are invisible to a pattern that keys on a tag opener.
 
+## After generalised sites
+
+The refusal above said the JavaScript templates need an Express route. They no longer do:
+`sites.js_site_for_line` prefers the enclosing route and falls back to the enclosing function,
+method, or `exports.name` binding, on both languages. The same 23 snapshots were replayed
+before and after over one cache, and the two generators were also called directly over every
+finding, because the replay's provider refuses every call and a finding the template does not
+prove ends at `provider_budget_reservation_denied` whatever the template said.
+
+238 of the 1819 findings are in a supported family with their file in the cached tree.
+
+| | Before | After |
+| --- | ---: | ---: |
+| `enclosing_route_not_found`, template | 123 | **0** |
+| `enclosing_route_not_found`, proof | 123 | **0** |
+| Findings the template builds a patch for | 25 | **30** |
+| Findings the service writes a proof for | 29 | **37** |
+| Findings with both halves, so a deterministic candidate is possible | 22 | **23** |
+| Findings with neither | 206 | **194** |
+| Candidates produced and verified end to end | 8 | 8 |
+
+**The route requirement is gone and the reach barely moved.** 123 refusals disappeared and five
+more findings got a patch. That is the honest result, and the reason is in where the refusals
+went rather than in the totals: they moved down to the next obstacle, one finding at a time.
+
+| Reason the site model exposed | After |
+| --- | ---: |
+| `enclosing_function_not_found` (template) | 67 |
+| `module_not_loadable_by_node` (proof) | 52 |
+| `path_module_not_required` | 17 |
+| `function_parameters_not_plain_names` | 17 |
+| `path_join_not_found_in_scope` (proof) | 16 |
+| `command_name_not_literal` | 11 |
+
+Three of those are worth naming. `enclosing_function_not_found` is 67 findings in code at module
+scope, where there is no function to call and so nothing a generated test can drive; that is a
+bigger group than the route requirement ever was. `module_not_loadable_by_node` is 52 findings in
+TypeScript, which plain `node` cannot `require`, and which this replay found only because the
+site model made the proof reachable enough to hit that wall. `path_module_not_required` is 17
+path findings whose file joins with string concatenation rather than `path.join`.
+
+**End to end the corpus is unchanged at 8.** The one extra complete pair did not survive
+verification, and the eight that do are all `hardcoded_credential`, exactly as before. Nothing
+here measures the model path: 184 of the 245 attempts stop at the refusing provider by design.
+
+What this does buy, and what the 23-to-1 gap between reachable sites and shipped candidates
+says, is that the site model is a precondition rather than a fix. The fixtures under
+`benchmarks/remediation/fixtures` now carry six shapes it reaches (a module function, an
+`exports.name` assignment, a class method, an `exec` helper, a path helper that throws, and a
+Python path helper that raises), and five of the six produce a template patch and a proof that
+match their reference repair exactly. On this corpus the binding constraint has moved to
+module-scope code and to snapshots without their dependency tree.
+
+Five Python SQL findings raise `AttributeError` in the direct-generator measurement because the
+harness stub for that measurement does not implement `Snapshot.paths`, which `_py_driver` reads
+to find a local module. The count is identical in both runs, so the comparison is unaffected;
+the engine itself passes a real snapshot and does not hit it.
+
 ## Suites
 
 | Suite | Command | Result |

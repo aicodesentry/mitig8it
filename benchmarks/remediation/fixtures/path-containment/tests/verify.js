@@ -11,9 +11,21 @@ function loadLocal() {
   return require(path.resolve(__dirname, '..', 'app.js'));
 }
 
+// A repaired helper refuses an escaping path one of two ways, and both are correct: it throws,
+// or it returns a value that is not a path. A returned path that leaves the base directory is
+// the vulnerability. `resolve` reports which happened so each mode can assert what it needs.
+function resolve(module, name) {
+  try {
+    return { threw: false, value: module.resolveUpload(name) };
+  } catch (error) {
+    return { threw: true, error };
+  }
+}
+
+const contained = (outcome) => outcome.threw || typeof outcome.value !== 'string' || outcome.value.startsWith('/srv/uploads/');
+
 function exploit() {
-  const resolved = loadLocal().resolveUpload(ATTACK);
-  if (typeof resolved === 'string' && !resolved.startsWith('/srv/uploads/')) {
+  if (!contained(resolve(loadLocal(), ATTACK))) {
     process.stderr.write('vulnerability present: the resolved path escapes the base directory\n');
     process.exit(1);
   }
@@ -30,7 +42,7 @@ function compare(originalPath, repairedPath) {
   const original = require(originalPath);
   const repaired = require(repairedPath);
   assert.equal(original.resolveUpload(ATTACK), '/etc/passwd');
-  assert.equal(repaired.resolveUpload(ATTACK), null);
+  assert.ok(contained(resolve(repaired, ATTACK)), 'the repair still returns a path outside the base directory');
   assert.equal(repaired.resolveUpload(LEGITIMATE), '/srv/uploads/avatars/user.png');
   process.stdout.write(JSON.stringify({ vulnerability_observed: true, behavior_preserved: true }));
 }

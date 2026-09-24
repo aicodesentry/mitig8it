@@ -41,17 +41,23 @@ from .sites import (
     js_literal_assignment_in_span,
     js_module_constant,
     js_module_exports_name,
-    js_route_for_line,
+    js_site_for_line,
     module_directory,
     python_flask_app_name,
     python_function_for_line,
     python_module_assignment,
     python_module_value,
+    scope_lines_near,
 )
 
 SQL_PAYLOAD = "1' OR '1'='1"
 COMMAND_PAYLOAD = "x; rm -rf /"
 TRAVERSAL_PAYLOADS = ("../../etc/passwd", "..%2f..%2fetc%2fpasswd")
+# A function called directly receives its argument as written: nothing percent-decodes it, so the
+# encoded payload above is a route-level concern and a correct helper rightly does not refuse it.
+# An absolute path takes its place, because `path.resolve` and `os.path.join` discard the base for
+# one, which is the other way a name leaves the directory it was supposed to stay in.
+DIRECT_TRAVERSAL_PAYLOADS = ("../../etc/passwd", "/etc/passwd")
 LEGITIMATE_NAME = "report.txt"
 EVAL_PAYLOAD = "__import__('os').system('id')"
 JS_EVAL_PAYLOAD = "require('node:child_process').execSync('id')"
@@ -62,6 +68,10 @@ ENV_VALUE = "value-from-env"
 BENIGN_VALUE = "sample"
 # Parameter names that stand for a database handle rather than untrusted input.
 CONNECTION_PARAMETERS = frozenset({"conn", "connection", "db", "database", "engine", "session"})
+# The same idea on the JavaScript side, plus the names a pg handle is bound to.
+JS_CONNECTION_PARAMETERS = frozenset({"conn", "connection", "db", "database", "pool", "client", "pg"})
+# Parameters a generated call fills with a value that cannot change what is asserted.
+JS_IGNORED_PARAMETERS = frozenset({"next", "callback", "cb", "done", "options", "opts"})
 CURSOR_PARAMETERS = frozenset({"cursor", "cur"})
 _SQL_SINK_RE = re.compile(r"\.(?:execute|executemany|exec_driver_sql)\s*\(|\bquery\s*\(")
 _JS_INLINE_SQL_RE = re.compile(r"\.query\s*\(")
@@ -76,7 +86,7 @@ class GeneratedProof:
     content: str
     # What the test exercises, for the evidence and the model's task message.
     description: str
-    site: JsRoute | PyFunction | None = None
+    site: JsRoute | JsFunction | PyFunction | None = None
 
     def spec(self) -> dict[str, str]:
         return {"finding_id": self.finding_id, "path": self.path, "content": self.content}
@@ -143,6 +153,106 @@ def _js_header(path: str) -> list[str]:
     ]
 
 
+def _js_module_header(path: str) -> list[str]:
+    """The header for a proof that calls an exported function instead of driving a route."""
+    return [
+        "const h = require('../harness');",
+        "h.run(async () => {",
+        f"  const m = h.load({_js(path)});",
+    ]
+
+
+def _js_untrusted_parameter(function: JsFunction, lines: list[str], sink_line: int) -> str | None:
+    """The parameter used nearest the sink, ignoring the ones that stand for a handle.
+
+    A helper's untrusted input is an argument, not a `req.*` read, so the proof has to decide
+    which argument carries it. The one named on the sink line, or on the assignment feeding it,
+    is that argument; a function whose only parameters are a connection and a callback has none.
+    """
+    candidates = [
+        name for name in function.parameters
+        if name not in JS_CONNECTION_PARAMETERS and name not in JS_IGNORED_PARAMETERS
+    ]
+    if not candidates:
+        return None
+    for number in range(min(sink_line, function.end_line), function.start_line - 1, -1):
+        text = lines[number - 1]
+        for parameter in candidates:
+            if re.search(rf"(?<![\w$.]){re.escape(parameter)}(?![\w$])", text):
+                return parameter
+    return candidates[-1]
+
+
+def _js_call_arguments_for(function: JsFunction, untrusted: str, needs_connection: bool) -> tuple[str, list[str]]:
+    """`(argument list, setup lines)` for calling `function` with the payload in place.
+
+    Every parameter that is not the untrusted one gets a value that cannot change what the
+    assertion observes: a pg handle where the name says the function expects one, a no-op
+    function where it expects a callback, and an empty object everywhere else.
+    """
+    setup: list[str] = []
+    arguments: list[str] = []
+    for parameter in function.parameters:
+        if parameter == untrusted:
+            arguments.append("payload")
+        elif parameter in JS_CONNECTION_PARAMETERS and needs_connection:
+            # `h.db()`, not `require('pg')`: nothing is installed in the sandbox and the patch
+            # policy refuses a regression test that asks for a package.
+            arguments.append("h.db()")
+        elif parameter in ("cb", "callback", "done", "next"):
+            arguments.append("() => {}")
+        else:
+            arguments.append("{}")
+    return ", ".join(arguments), list(dict.fromkeys(setup))
+
+
+def _js_function_call(function: JsFunction, arguments: str) -> list[str]:
+    """The call and the await that lets an async function finish before anything is asserted.
+
+    `h.call` never throws and never awaits, so a function that returns a promise would be
+    asserted on before its query ran. `Promise.resolve` over a plain value is a no-op, so the
+    same two lines are correct whether or not the function is async.
+    """
+    return [
+        f"  const called = h.call(m.{function.name}, {arguments});",
+        "  await Promise.resolve(called.value).catch(() => {});",
+    ]
+
+
+# The suffixes plain `node` can `require`. The sandbox has no TypeScript toolchain and nothing
+# is installed there, so a proof that loads a `.ts` module could never run.
+NODE_LOADABLE_SUFFIXES = (".js", ".cjs", ".mjs", ".jsx")
+
+
+def _js_loadable(path: str) -> None:
+    """Raises unless plain `node` can `require` the module a generated proof has to load."""
+    if not path.endswith(NODE_LOADABLE_SUFFIXES):
+        raise SiteError("module_not_loadable_by_node")
+
+
+# The calls the harness records for each family. A generated proof asserts on those recorders, so
+# the scope it drives has to contain one: a builder that returns a query object or an argv array
+# without running it is a real finding, but nothing the harness observes changes when it is
+# repaired, and a proof that cannot fail on the original code would sink the candidate instead of
+# proving it. The model writes that test, against the caller it can read.
+_JS_COMMAND_SINK_RE = re.compile(r"(?<![\w$.])(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(|\.(?:exec|execSync|spawn|spawnSync)\s*\(")
+
+
+def _js_sink_in_scope(lines: list[str], function: JsFunction, pattern: re.Pattern[str], code: str) -> None:
+    """Raises unless the function's own body carries the call the family's assertion watches."""
+    body = "\n".join(lines[function.start_line - 1 : function.end_line])
+    if not pattern.search(body):
+        raise SiteError(code)
+
+
+def _js_callable(source: str, function: JsFunction) -> None:
+    """Raises unless a generated test can reach `function` as `m.<name>`."""
+    if function.kind == "method":
+        raise SiteError("method_receiver_not_supported")
+    if not js_module_exports_name(source, function.name):
+        raise SiteError("function_not_exported")
+
+
 def _js_base_expression(source: str, path: str, base: str) -> str | None:
     """The served directory as the test can compute it, or None when it is not derivable."""
     value = base.strip()
@@ -161,69 +271,161 @@ def _js_base_expression(source: str, path: str, base: str) -> str | None:
     return None
 
 
-def _js_sql_proof(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> GeneratedProof:
+_JS_QUERY_ASSERTIONS = [
+    "  const q = h.pg.queries[0];",
+    "  h.assert(q, 'expected one pg query to be run');",
+    "  h.assert.notIncludes(q.text, payload);",
+    "  h.assert.includes(JSON.stringify(q.values || []), payload);",
+    "});",
+    "",
+]
+
+
+def _js_sql_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction) -> GeneratedProof:
+    """The test a JavaScript SQL repair has to satisfy, driven however the site is reachable.
+
+    A route is driven through `h.invoke`; a helper is called directly. The assertions are the
+    same either way, because what is being proven is a property of the query the module built,
+    not of how it was reached.
+    """
     path = finding.affected_path
-    lines = snapshot.full_content(path).splitlines()
+    source = snapshot.full_content(path)
+    lines = source.splitlines()
     line = _finding_line(finding)
-    untrusted = _js_untrusted_for(route, lines, line, route.start_line)
-    if untrusted is None:
-        raise SiteError("no_request_input_in_route")
-    body = _js_header(path) + [
-        f"  const payload = {_js(SQL_PAYLOAD)};",
-        f"  await h.invoke(app, {_js(route.method)}, {_js(route.route)}, {_js_invoke_options(route, untrusted, SQL_PAYLOAD)});",
-        "  const q = h.pg.queries[0];",
-        "  h.assert(q, 'expected the handler to run one pg query');",
-        "  h.assert.notIncludes(q.text, payload);",
-        "  h.assert.includes(JSON.stringify(q.values || []), payload);",
-        "});",
-        "",
-    ]
+    if isinstance(site, JsRoute):
+        untrusted = _js_untrusted_for(site, lines, line, site.start_line)
+        if untrusted is None:
+            raise SiteError("no_request_input_in_route")
+        drive = [f"  await h.invoke(app, {_js(site.method)}, {_js(site.route)}, {_js_invoke_options(site, untrusted, SQL_PAYLOAD)});"]
+        head = _js_header(path) + [f"  const payload = {_js(SQL_PAYLOAD)};"]
+        what = f"{site.method.upper()} {site.route} with {untrusted}"
+    else:
+        _js_callable(source, site)
+        _js_sink_in_scope(lines, site, _JS_INLINE_SQL_RE, "sql_sink_not_in_scope")
+        untrusted = _js_untrusted_parameter(site, lines, line)
+        if untrusted is None:
+            raise SiteError("no_untrusted_parameter")
+        arguments, setup = _js_call_arguments_for(site, untrusted, needs_connection=True)
+        head = _js_module_header(path) + setup + [f"  const payload = {_js(SQL_PAYLOAD)};"]
+        drive = _js_function_call(site, arguments)
+        what = f"{site.name}({untrusted})"
     return GeneratedProof(
-        finding.stable_id, SQL_PARAMETERIZATION, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
-        f"{route.method.upper()} {route.route} with {untrusted} = {SQL_PAYLOAD!r}: the query text must not carry the payload and the values must",
-        route,
+        finding.stable_id, SQL_PARAMETERIZATION, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT),
+        "\n".join(head + drive + _JS_QUERY_ASSERTIONS),
+        f"{what} = {SQL_PAYLOAD!r}: the query text must not carry the payload and the values must",
+        site,
     )
 
 
-def _js_command_proof(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> GeneratedProof:
+_JS_ARGV_ASSERTIONS = [
+    "  h.assert(h.child_process.calls.length > 0, 'expected one child process to be started');",
+    "  h.assert.argv(h.child_process.calls[0], payload);",
+    "});",
+    "",
+]
+
+
+def _js_command_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction) -> GeneratedProof:
+    """The test a JavaScript command repair has to satisfy, driven however the site is reachable."""
     path = finding.affected_path
-    lines = snapshot.full_content(path).splitlines()
+    source = snapshot.full_content(path)
+    lines = source.splitlines()
     line = _finding_line(finding)
-    untrusted = _js_untrusted_for(route, lines, line, route.start_line)
-    if untrusted is None:
-        raise SiteError("no_request_input_in_route")
-    body = _js_header(path) + [
-        f"  const payload = {_js(COMMAND_PAYLOAD)};",
-        f"  await h.invoke(app, {_js(route.method)}, {_js(route.route)}, {_js_invoke_options(route, untrusted, COMMAND_PAYLOAD)});",
-        "  h.assert(h.child_process.calls.length > 0, 'expected the handler to start one child process');",
-        "  h.assert.argv(h.child_process.calls[0], payload);",
-        "});",
-        "",
-    ]
+    if isinstance(site, JsRoute):
+        untrusted = _js_untrusted_for(site, lines, line, site.start_line)
+        if untrusted is None:
+            raise SiteError("no_request_input_in_route")
+        head = _js_header(path) + [f"  const payload = {_js(COMMAND_PAYLOAD)};"]
+        drive = [f"  await h.invoke(app, {_js(site.method)}, {_js(site.route)}, {_js_invoke_options(site, untrusted, COMMAND_PAYLOAD)});"]
+        what = f"{site.method.upper()} {site.route} with {untrusted}"
+    else:
+        _js_callable(source, site)
+        _js_sink_in_scope(lines, site, _JS_COMMAND_SINK_RE, "command_sink_not_in_scope")
+        untrusted = _js_untrusted_parameter(site, lines, line)
+        if untrusted is None:
+            raise SiteError("no_untrusted_parameter")
+        arguments, setup = _js_call_arguments_for(site, untrusted, needs_connection=False)
+        head = _js_module_header(path) + setup + [f"  const payload = {_js(COMMAND_PAYLOAD)};"]
+        drive = _js_function_call(site, arguments)
+        what = f"{site.name}({untrusted})"
     return GeneratedProof(
-        finding.stable_id, COMMAND_ARGUMENTS, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
-        f"{route.method.upper()} {route.route} with {untrusted} = {COMMAND_PAYLOAD!r}: the child must run with an argument array and the payload as its own element",
-        route,
+        finding.stable_id, COMMAND_ARGUMENTS, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT),
+        "\n".join(head + drive + _JS_ARGV_ASSERTIONS),
+        f"{what} = {COMMAND_PAYLOAD!r}: the child must run with an argument array and the payload as its own element",
+        site,
     )
 
 
-def _js_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> GeneratedProof:
+def _js_traversal_function_proof(
+    snapshot: Snapshot, finding: FindingSnapshot, function: JsFunction, join: tuple[int, str, str], base: str | None
+) -> GeneratedProof:
+    """The plain-function half of `_js_traversal_proof`: the call must throw on a traversal.
+
+    `h.call` reports a throw rather than raising, so one test can require the payload to be
+    refused and a legitimate name to still come back. The benign call is what stops a repair
+    that simply throws for every input.
+    """
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    lines = source.splitlines()
+    _js_callable(source, function)
+    untrusted = _js_untrusted_parameter(function, lines, join[0])
+    if untrusted is None:
+        raise SiteError("no_untrusted_parameter")
+    attack, _ = _js_call_arguments_for(function, untrusted, needs_connection=False)
+    body = _js_module_header(path) + [
+        f"  const base = {base or 'h.root'};",
+        f"  for (const payload of {_js(list(DIRECT_TRAVERSAL_PAYLOADS))}) {{",
+        "    h.fs.reads.length = 0;",
+        f"    const refused = h.call(m.{function.name}, {attack});",
+        "    h.assert(!refused.ok, `expected ${JSON.stringify(payload)} to be refused, got ${JSON.stringify(refused.value)}`);",
+        "    h.assert.inside(h.fs.reads, base, { payload });",
+        "  }",
+        "  h.fs.reads.length = 0;",
+        f"  const payload = {_js(LEGITIMATE_NAME)};",
+        f"  const allowed = h.call(m.{function.name}, {attack});",
+        "  h.assert(allowed.ok, 'expected a legitimate name to still resolve');",
+    ]
+    if base:
+        # What the call returns depends on the helper: a resolver hands back the path, a reader
+        # hands back the file. What both do is read inside the base directory, or not read at all.
+        body.append("  h.assert.inside(h.fs.reads, base);")
+    body += ["});", ""]
+    return GeneratedProof(
+        finding.stable_id, PATH_CONTAINMENT, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
+        f"{function.name}({untrusted}) with a traversal payload: the call throws and reads nothing; a legitimate name still resolves"
+        + (" inside the base directory" if base else ""),
+        function,
+    )
+
+
+def _js_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction) -> GeneratedProof:
+    """The test a JavaScript path-containment repair has to satisfy.
+
+    A route is driven and must answer 4xx without reading anything. A plain function is called
+    and must throw, which is the contract `templates._js_rejection` writes for it: a returned
+    sentinel would be indistinguishable from a path. Both then check that a legitimate name is
+    still resolved, so a repair cannot pass by refusing everything.
+    """
     path = finding.affected_path
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
     join = None
-    for number in range(min(line, route.end_line), route.start_line, -1):
+    for number in scope_lines_near(site.start_line, site.end_line, line):
         found = re.search(r"path\.(?:join|resolve)\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)", lines[number - 1])
         if found:
             join = (number, found.group("base"), found.group("input"))
             break
     if join is None:
-        raise SiteError("path_join_not_found_in_route")
+        raise SiteError("path_join_not_found_in_scope")
+    base = _js_base_expression(source, path, join[1])
+    if not isinstance(site, JsRoute):
+        return _js_traversal_function_proof(snapshot, finding, site, join, base)
+    route = site
     untrusted = next((item.expression for item in route.inputs if item.expression in join[2]), None) or _js_untrusted_for(route, lines, join[0], route.start_line)
     if untrusted is None:
         raise SiteError("no_request_input_in_route")
-    base = _js_base_expression(source, path, join[1])
     body = _js_header(path) + [
         f"  const base = {base or 'h.root'};",
         f"  for (const payload of {_js(list(TRAVERSAL_PAYLOADS))}) {{",
@@ -499,29 +701,67 @@ def _py_base_expression(source: str, base: str) -> str | None:
     return None
 
 
+def _py_traversal_function_proof(
+    snapshot: Snapshot, finding: FindingSnapshot, function: PyFunction, join: tuple[int, str, str], base: str | None
+) -> GeneratedProof:
+    """The plain-function half of `_py_traversal_proof`: the call must raise on a traversal.
+
+    A view aborts 400 and this raises, which is the contract `templates._py_traversal` writes for
+    a function. `h.call` reports the exception rather than propagating it, so one test can require
+    the payload to be refused and a legitimate name to still resolve.
+    """
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    lines = source.splitlines()
+    untrusted = _py_untrusted_parameter(function, lines, join[0])
+    if untrusted is None:
+        raise SiteError("no_untrusted_parameter")
+    arguments, setup = _py_call_arguments(function, untrusted, LEGITIMATE_NAME, None)
+    body = _py_header(path) + setup + [
+        f"    base = {base or 'h.ROOT'}",
+        f"    for payload in {_py(list(TRAVERSAL_PAYLOADS))}:",
+        "        h.fs.reads.clear()",
+        f"        refused = h.call(m.{function.name}, {', '.join(arguments)})",
+        "        h.assert_true(refused.raised(ValueError), 'expected %r to be refused, got %r' % (payload, refused.value))",
+        "        h.assert_inside(h.fs.reads, base, payload=payload)",
+        "    h.fs.reads.clear()",
+        f"    payload = {_py(LEGITIMATE_NAME)}",
+        f"    allowed = h.call(m.{function.name}, {', '.join(arguments)})",
+        "    h.assert_true(allowed.error is None, 'expected a legitimate name to still resolve')",
+    ]
+    if base:
+        body.append("    h.assert_inside(h.fs.reads, base)")
+    body += _py_footer()
+    return GeneratedProof(
+        finding.stable_id, PATH_CONTAINMENT, PYTHON, test_path(finding.stable_id, PYTHON), "\n".join(body),
+        f"{function.name}({untrusted}) with a traversal payload: the call raises ValueError and opens nothing; a legitimate name still resolves",
+        function,
+    )
+
+
 def _py_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunction) -> GeneratedProof:
     path = finding.affected_path
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
-    if not function.route:
-        raise SiteError("traversal_outside_flask_view")
     join = None
-    for number in range(min(line, function.end_line), function.start_line, -1):
+    for number in scope_lines_near(function.start_line, function.end_line, line):
         found = re.search(r"os\.path\.join\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)", lines[number - 1])
         if found:
             join = (number, found.group("base"), found.group("input"))
             break
     if join is None:
-        raise SiteError("path_join_not_found_in_view")
+        raise SiteError("path_join_not_found_in_scope")
+    base = _py_base_expression(source, join[1])
+    if not function.route:
+        return _py_traversal_function_proof(snapshot, finding, function, join, base)
     untrusted = _py_view_untrusted(function, lines, join[0])
     if untrusted is None:
         raise SiteError("no_request_input_in_view")
-    base = _py_base_expression(source, join[1])
     body = _py_header(path) + [
         _py_app_line(source),
         f"    base = {base or 'h.ROOT'}",
-        f"    for payload in {_py(list(TRAVERSAL_PAYLOADS))}:",
+        f"    for payload in {_py(list(DIRECT_TRAVERSAL_PAYLOADS))}:",
         "        h.fs.reads.clear()",
         f"        response = {_py_view_invoke(function, untrusted, 'payload')}",
         "        h.assert_inside(h.fs.reads, base, payload=payload)",
@@ -594,19 +834,20 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
     path = finding.affected_path
     try:
         if language == JAVASCRIPT:
-            # A secret literal is not inside a request handler, and neither is a parser a route
-            # calls, so both are proven without one.
+            # A secret literal is not inside any function, and neither is a parser a route
+            # calls, so both are proven without an enclosing scope.
             if family == HARDCODED_CREDENTIAL:
                 return _js_credential_proof(snapshot, finding)
             if family == CODE_INJECTION_EVAL:
                 return _js_eval_proof(snapshot, finding)
-            route = js_route_for_line(snapshot.full_content(path), _finding_line(finding))
+            _js_loadable(path)
+            site = js_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
-                return _js_sql_proof(snapshot, finding, route)
+                return _js_sql_proof(snapshot, finding, site)
             if family == COMMAND_ARGUMENTS:
-                return _js_command_proof(snapshot, finding, route)
+                return _js_command_proof(snapshot, finding, site)
             if family == PATH_CONTAINMENT:
-                return _js_traversal_proof(snapshot, finding, route)
+                return _js_traversal_proof(snapshot, finding, site)
             return ProofFallback(finding.stable_id, family, "family_not_generated")
         if language == PYTHON:
             if family == HARDCODED_CREDENTIAL:
