@@ -6,6 +6,18 @@ FROM python:3.12.12-slim
 # which runs as 65532, cannot write its SQLite database or artifacts. The default matches the
 # compose mount path, and the build argument keeps a different deployment path buildable.
 ARG REMEDIATION_DATA_DIR=/var/lib/remediation
+
+# The image builds twice from this file. The service image runs unprivileged as 65532, as it
+# always has. The Cloud Run job image is built with RUNTIME_UID=0 because its entrypoint
+# (src/sandbox/job_entrypoint.py) has to drop the repository's check to a *different*
+# unprivileged user, and only a process that starts as root can change uid. Cloud Run offers
+# no way to override a container's user, so the difference has to live in the image.
+#
+# Root in the job image is not a loosening of the sandbox: the entrypoint is trusted code that
+# never executes repository content, and the check itself runs as `sandboxcheck`, which holds
+# none of the task's credentials and cannot read the entrypoint's environment or /proc entries.
+ARG RUNTIME_UID=65532
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     REMEDIATION_DATA_DIR=${REMEDIATION_DATA_DIR}
@@ -39,13 +51,19 @@ RUN set -eux; \
     npm --version
 
 COPY requirements.txt .
+# `sandboxcheck` owns nothing and is a member of no group. It exists so the Cloud Run job
+# entrypoint has an identity to run repository checks as that is not the identity holding the
+# job's Google credentials and the per-execution result nonce. It is created in both images so
+# the two stay byte-comparable apart from the runtime user.
 RUN pip install --no-cache-dir -r requirements.txt \
     && addgroup --system --gid 65532 app \
     && adduser --system --uid 65532 --gid 65532 --no-create-home app \
+    && addgroup --system --gid 65533 sandboxcheck \
+    && adduser --system --uid 65533 --gid 65533 --no-create-home --shell /usr/sbin/nologin sandboxcheck \
     && mkdir -p "${REMEDIATION_DATA_DIR}" \
     && chown 65532:65532 "${REMEDIATION_DATA_DIR}" \
     && chmod 700 "${REMEDIATION_DATA_DIR}"
 COPY src ./src
-USER 65532:65532
+USER ${RUNTIME_UID}
 EXPOSE 8002
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8002", "--no-access-log"]
