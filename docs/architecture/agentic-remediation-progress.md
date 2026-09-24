@@ -145,6 +145,8 @@ Deployment note: codesentry-api and codesentry-remediation run with CPU always a
 
 Resolved observation: the second residual report on test-only PR 127 said "Remaining open findings: 0" while listing four unrepaired findings. Cause: the app's verification analysis run was re-pointed by the duplicate webhook run for the same commit, so the count came from the wrong run. Fixed in PR 402 by scoping the count to the immutable analysis snapshot; reports published after that PR are correct.
 
+Resolved observation: test-only PR 135 published "Security analysis incomplete" with no findings and no fixes because one warning-level lexical error in one file made the tier 2 runner discard all 97 results from all 12 files. The scanner's errors are now classified, a per-file parse problem or resource ceiling is reported as an `analysis_limitations` entry on the run and stated in the check summary and the review comment, and only an unattributable error-level failure still fails the scan closed.
+
 ## Not done, as of 2026-09-22
 
 | Item | Where it stands |

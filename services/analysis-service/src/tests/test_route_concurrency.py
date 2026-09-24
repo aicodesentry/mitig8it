@@ -39,14 +39,14 @@ def client(monkeypatch):
 def test_slow_analysis_does_not_block_health(client, route):
     def slow_opengrep(files):
         time.sleep(1.0)
-        return []
+        return [], []
 
     outcome = {}
 
     def analyze():
         outcome["response"] = client.post(route, json=PAYLOAD, headers=HEADERS)
 
-    with patch("main.run_opengrep", side_effect=slow_opengrep):
+    with patch("main.run_opengrep_with_limitations", side_effect=slow_opengrep):
         worker = threading.Thread(target=analyze)
         worker.start()
         time.sleep(0.2)  # the analysis request is now inside the blocking call
@@ -117,9 +117,9 @@ def test_combined_route_merges_tier_findings_in_tier_order(opengrep_delay):
 
     def opengrep(files):
         time.sleep(opengrep_delay)
-        return [_opengrep_finding(template)]
+        return [_opengrep_finding(template)], []
 
-    with patch("main.run_opengrep", side_effect=opengrep):
+    with patch("main.run_opengrep_with_limitations", side_effect=opengrep):
         result = analyze_pull_request_payload(request)
 
     assert [f["rule_id"] for f in result["findings"]] == ["code.injection.eval", "opengrep.fake"]
@@ -138,6 +138,6 @@ def test_tier_order_is_fixed_when_tier1_finishes_last():
 
 def test_combined_route_fails_closed_when_opengrep_fails_after_tier1_succeeds():
     request = _request()
-    with patch("main.run_opengrep", side_effect=RuntimeError("detector unavailable")):
+    with patch("main.run_opengrep_with_limitations", side_effect=RuntimeError("detector unavailable")):
         with pytest.raises(RuntimeError, match="Required OpenGrep analysis failed"):
             analyze_pull_request_payload(request)
