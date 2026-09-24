@@ -270,6 +270,9 @@ def _run() -> int:
     log(f"Reading the changed files on #{pr_number} at {head_sha[:8]}.")
     raw_files = reader.list_pull_request_files(pr_number, head_sha)
     scoped = pr_scope.scope_changed_files(raw_files)
+    cap_limitation = pr_scope.changed_file_limitation(raw_files)
+    if cap_limitation:
+        log(cap_limitation["message"] + "; the rest of the change was not reviewed.")
     if len(scoped) > max_files:
         raise ActionError(
             f"this pull request changes {len(scoped)} files, above the max-files input of "

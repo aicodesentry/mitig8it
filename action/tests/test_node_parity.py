@@ -54,11 +54,18 @@ def test_vendor_filter_matches_fetch_pull_request_files():
 
 
 def test_changed_file_cap_matches_fetch_pull_request_files():
+    """The cap selects rather than refuses, and the port has to select the same way.
+
+    `fetchPullRequestFiles` sorts by path and takes the first FILE_CAP, reporting a
+    `file_cap` limitation. A port that still raised, or that truncated an unsorted list,
+    would review a different set of files than the hosted product does.
+    """
     source = read(GITHUB_OPERATIONS)
-    match = re.search(r"if \(scoped\.length > (\d+)\)", source)
-    assert match, "fetchPullRequestFiles no longer caps the scoped file count"
+    match = re.search(r"const FILE_CAP = (\d+);", source)
+    assert match, "fetchPullRequestFiles no longer declares a FILE_CAP"
     assert int(match.group(1)) == pr_scope.MAX_CHANGED_FILES
-    assert f"{pr_scope.MAX_CHANGED_FILES}-file analysis limit" in source
+    assert "ordered.slice(0, FILE_CAP)" in source, "the cap no longer selects by slice"
+    assert "kind: 'file_cap'" in source, "the cap no longer reports a limitation"
 
 
 def test_file_content_byte_cap_matches_fetch_file_contents():
@@ -72,12 +79,15 @@ def test_file_content_byte_cap_matches_fetch_file_contents():
 
 def test_tier2_extensions_match_the_api_service_constant():
     source = read(API_ORCHESTRATOR)
-    match = re.search(
-        r"const TIER2_SUPPORTED_EXTENSIONS = new Set\(\[(.*?)\]\);", source, re.DOTALL
+    code = re.search(r"const TIER2_CODE_EXTENSIONS = \[(.*?)\];", source, re.DOTALL)
+    template = re.search(r"const TIER2_TEMPLATE_EXTENSIONS = \[(.*?)\];", source, re.DOTALL)
+    assert code, "TIER2_CODE_EXTENSIONS is no longer an array literal"
+    assert template, "TIER2_TEMPLATE_EXTENSIONS is no longer an array literal"
+    assert frozenset(re.findall(r"'([^']+)'", code.group(1))) == pr_scope.TIER2_CODE_EXTENSIONS
+    assert (
+        frozenset(re.findall(r"'([^']+)'", template.group(1)))
+        == pr_scope.TIER2_TEMPLATE_EXTENSIONS
     )
-    assert match, "TIER2_SUPPORTED_EXTENSIONS is no longer a Set literal"
-    extensions = frozenset(re.findall(r"'([^']+)'", match.group(1)))
-    assert extensions == pr_scope.TIER2_SUPPORTED_EXTENSIONS
 
 
 def test_inline_comment_cap_matches_the_api_service_constant():
@@ -113,12 +123,19 @@ def test_scanner_extension_set_matches_the_analysis_service():
     scans. If they diverge, the action fetches bytes nothing reads, or starves a scan that has
     rules for the language.
     """
-    opengrep = REPO_ROOT / "services/analysis-service/src/opengrep_runner.py"
-    source = read(opengrep)
-    match = re.search(r"SUPPORTED_EXTENSIONS = \{(.*?)\}", source, re.DOTALL)
-    assert match, "SUPPORTED_EXTENSIONS is no longer a set literal"
-    extensions = frozenset(re.findall(r'"([^"]+)"', match.group(1)))
-    assert extensions == pr_scope.TIER2_SUPPORTED_EXTENSIONS
+    # The sets moved to test_code_scope.py, which owns "what do we scan"; opengrep_runner
+    # re-exports them.
+    scope = REPO_ROOT / "services/analysis-service/src/test_code_scope.py"
+    source = read(scope)
+    code = re.search(r"CODE_EXTENSIONS = \{(.*?)\}", source, re.DOTALL)
+    template = re.search(r"TEMPLATE_EXTENSIONS = \{(.*?)\}", source, re.DOTALL)
+    assert code, "CODE_EXTENSIONS is no longer a set literal"
+    assert template, "TEMPLATE_EXTENSIONS is no longer a set literal"
+    assert frozenset(re.findall(r'"([^"]+)"', code.group(1))) == pr_scope.TIER2_CODE_EXTENSIONS
+    assert (
+        frozenset(re.findall(r'"([^"]+)"', template.group(1)))
+        == pr_scope.TIER2_TEMPLATE_EXTENSIONS
+    )
 
 
 # The patches below are run through the Node implementation and the Python port in

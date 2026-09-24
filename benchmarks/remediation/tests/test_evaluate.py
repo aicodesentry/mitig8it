@@ -57,7 +57,9 @@ class RemediationHarnessTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
-        self.assertEqual(report["summary"]["eligible_supported_cases"], 33)
+        # 40 supported, 7 negative and 4 adversarial across 51 fixtures. The count is
+        # asserted rather than derived so adding a fixture is a deliberate change here too.
+        self.assertEqual(report["summary"]["eligible_supported_cases"], 40)
         self.assertEqual(report["summary"]["negative_adversarial_cases"], 11)
         self.assertEqual(report["summary"]["failures"], [])
 

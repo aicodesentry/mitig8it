@@ -26,6 +26,7 @@ REMEDIATION_REQUIREMENTS = REPO_ROOT / "services/remediation-service/requirement
 # Deliberately not installed. Each backs a production backend the action does not have, and none
 # is imported by the code paths the action runs. See the note in action/requirements.txt.
 EXCLUDED = {
+    "google-cloud-run",
     "google-cloud-storage",
     "kubernetes",
     "psycopg",

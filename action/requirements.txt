@@ -7,10 +7,11 @@
 #
 # Some of the remediation service's dependencies are deliberately absent.
 #
-# google-cloud-storage and psycopg back its Postgres execution store, and kubernetes backs the
-# production sandbox driver. None of the three is on the import path of the engine as the action
-# runs it. Leaving them out keeps the image smaller and, more usefully, means the action cannot
-# reach a database or a cluster even by accident.
+# google-cloud-storage and psycopg back its Postgres execution store, and kubernetes and
+# google-cloud-run back the production sandbox drivers. None of the four is on the import path
+# of the engine as the action runs it. Leaving them out keeps the image smaller and, more
+# usefully, means the action cannot reach a database, a cluster or a Cloud Run job even by
+# accident: a review that runs in someone else's CI verifies in that runner or not at all.
 #
 # opentelemetry-api, opentelemetry-sdk and opentelemetry-exporter-otlp-proto-http are absent
 # because they cannot be pinned here at all: semgrep
@@ -31,3 +32,5 @@ httpx==0.28.1
 semgrep==1.173.0
 openai==2.54.0
 click==8.4.2
+# The tier 2 runner parses its rule files at import to read the posting policy off them.
+PyYAML==6.0.3

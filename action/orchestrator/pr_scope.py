@@ -19,7 +19,7 @@ scanner-asset exclusion come from the analysis service's own test_code_scope mod
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 # githubInternalOperations.js: .filter((f) => ['added', 'modified', 'renamed'].includes(f.status))
 REVIEWABLE_FILE_STATUSES = ("added", "modified", "renamed")
@@ -34,19 +34,31 @@ VENDOR_PATH_SUBSTRINGS = ("node_modules",)
 # broader of the two, but both are kept verbatim so the parity test compares like with like.
 CONTENT_VENDOR_PATH_SUBSTRINGS = ("node_modules/",)
 
-# githubInternalOperations.js: if (scoped.length > 200) throw ... 422
+# githubInternalOperations.js: const FILE_CAP = 200, and the run reviews the first
+# FILE_CAP in path order rather than refusing the pull request.
 MAX_CHANGED_FILES = 200
 
 # githubInternalOperations.js: if (Buffer.byteLength(content || '', 'utf8') > 500000) continue;
 MAX_FILE_CONTENT_BYTES = 500000
 
-# prAnalysisOrchestrator.js: const TIER2_SUPPORTED_EXTENSIONS = new Set([...])
-TIER2_SUPPORTED_EXTENSIONS = frozenset(
+# prAnalysisOrchestrator.js: TIER2_CODE_EXTENSIONS and TIER2_TEMPLATE_EXTENSIONS, unioned
+# into TIER2_SUPPORTED_EXTENSIONS. The template half is what lets the scanner reach the
+# cross-site scripting that lives in `.ejs`, `.pug` and friends.
+TIER2_CODE_EXTENSIONS = frozenset(
     {
         ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rb", ".php",
         ".cs", ".c", ".cpp", ".h", ".hpp", ".rs", ".swift", ".kt",
     }
 )
+
+TIER2_TEMPLATE_EXTENSIONS = frozenset(
+    {
+        ".html", ".htm", ".ejs", ".erb", ".hbs", ".handlebars", ".mustache",
+        ".dust", ".njk", ".jinja", ".jinja2", ".j2", ".twig", ".vue", ".svelte", ".pug",
+    }
+)
+
+TIER2_SUPPORTED_EXTENSIONS = TIER2_CODE_EXTENSIONS | TIER2_TEMPLATE_EXTENSIONS
 
 # prAnalysisOrchestrator.js: const INLINE_COMMENT_CAP = 40;
 INLINE_COMMENT_CAP = 40
@@ -59,10 +71,12 @@ _HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 class ChangedFileLimitError(Exception):
-    """Raised when a pull request has more in-scope files than a review will look at.
+    """Kept for callers that still catch it; the scope function no longer raises it.
 
-    Mirrors the 422 that `fetchPullRequestFiles` raises rather than truncating, so an oversized
-    pull request is reported to the author instead of being reviewed in part and reported whole.
+    `fetchPullRequestFiles` used to refuse an oversized pull request with a 422. It now
+    reviews the first `MAX_CHANGED_FILES` in path order and reports a `file_cap` limitation,
+    because a partial review of a large change is worth more than no review at all. The port
+    follows, so nothing raises this any more.
     """
 
 
@@ -93,11 +107,12 @@ def scope_changed_files(files: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]
         if str(entry.get("status") or "") in REVIEWABLE_FILE_STATUSES
         and not is_vendor_path(str(entry.get("filename") or entry.get("path") or ""))
     ]
-    if len(scoped) > MAX_CHANGED_FILES:
-        raise ChangedFileLimitError(
-            f"PR exceeds the {MAX_CHANGED_FILES}-file analysis limit; "
-            "split the change before retrying"
-        )
+    # Sorted by path first so the same pull request always yields the same selection,
+    # whatever order the API returned the pages in, then truncated to the cap. The caller
+    # reads `changed_file_limitation` to say how many of how many were reviewed.
+    ordered = sorted(
+        scoped, key=lambda entry: str(entry.get("filename") or entry.get("path") or "")
+    )
     return [
         {
             "path": str(entry.get("filename") or entry.get("path") or ""),
@@ -107,8 +122,28 @@ def scope_changed_files(files: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]
             "status": str(entry.get("status") or ""),
             "raw_url": entry.get("raw_url") or "",
         }
-        for entry in scoped
+        for entry in ordered[:MAX_CHANGED_FILES]
     ]
+
+
+def changed_file_limitation(files: List[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    """The `file_cap` limitation for a pull request over the cap, or None.
+
+    Mirrors the limitation `fetchPullRequestFiles` returns, so the action states the same
+    partial-review fact the hosted product states.
+    """
+    scoped = [
+        entry
+        for entry in files
+        if str(entry.get("status") or "") in REVIEWABLE_FILE_STATUSES
+        and not is_vendor_path(str(entry.get("filename") or entry.get("path") or ""))
+    ]
+    if len(scoped) <= MAX_CHANGED_FILES:
+        return None
+    return {
+        "kind": "file_cap",
+        "message": f"Reviewed {MAX_CHANGED_FILES} of {len(scoped)} changed files",
+    }
 
 
 def should_fetch_full_file_content(file_entry: Dict[str, Any]) -> bool:

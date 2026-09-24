@@ -92,7 +92,9 @@ def reader_for(api) -> github_api.GitHubReader:
 def test_changed_file_scope_matches_production(api):
     reader = reader_for(api)
     scoped = pr_scope.scope_changed_files(reader.list_pull_request_files(42, HEAD_SHA))
-    assert [f["path"] for f in scoped] == ["src/reports.py", "README.md"]
+    # Path order, not listing order: the scope is sorted so the same pull request always
+    # yields the same selection when the cap truncates it.
+    assert [f["path"] for f in scoped] == ["README.md", "src/reports.py"]
 
 
 def test_the_head_is_asserted_before_and_after_the_listing(api):
@@ -159,7 +161,8 @@ def test_the_payload_is_accepted_by_the_analysis_service_model(api):
         commit_sha=HEAD_SHA,
         files=pr_scope.build_analysis_files(scoped, contents),
     )
-    assert request.files[0].reviewable_line_spans == [{"start": 3, "end": 4}]
+    reports = next(f for f in request.files if f.path == "src/reports.py")
+    assert reports.reviewable_line_spans == [{"start": 3, "end": 4}]
 
 
 def test_an_unreadable_file_fails_the_run_closed(api, event, monkeypatch):
@@ -371,11 +374,30 @@ def test_the_recorded_event_is_read_the_way_the_runner_supplies_it(event):
     assert pull["base"]["sha"] == BASE_SHA
 
 
-def test_too_many_files_is_refused_rather_than_partly_reviewed():
+def test_too_many_files_is_reviewed_to_the_cap_and_says_so():
+    """A pull request over the cap is reviewed as far as the cap allows, in path order.
+
+    It used to be refused outright, which was the one case where a developer got nothing
+    back. The selection is sorted first so the same pull request always yields the same
+    files, and the limitation states how many of how many were reviewed.
+    """
     files = [
-        {"filename": f"src/f{i}.py", "status": "modified", "patch": "+x"}
-        for i in range(pr_scope.MAX_CHANGED_FILES + 1)
+        {"filename": f"src/f{i:04d}.py", "status": "modified", "patch": "+x"}
+        for i in range(pr_scope.MAX_CHANGED_FILES + 5)
     ]
-    with pytest.raises(pr_scope.ChangedFileLimitError) as error:
-        pr_scope.scope_changed_files(files)
-    assert "split the change" in str(error.value)
+    scoped = pr_scope.scope_changed_files(files)
+    assert len(scoped) == pr_scope.MAX_CHANGED_FILES
+    assert [entry["path"] for entry in scoped] == [
+        f"src/f{i:04d}.py" for i in range(pr_scope.MAX_CHANGED_FILES)
+    ]
+
+    limitation = pr_scope.changed_file_limitation(files)
+    assert limitation == {
+        "kind": "file_cap",
+        "message": f"Reviewed {pr_scope.MAX_CHANGED_FILES} of {pr_scope.MAX_CHANGED_FILES + 5} changed files",
+    }
+
+
+def test_a_pull_request_within_the_cap_reports_no_limitation():
+    files = [{"filename": "src/a.py", "status": "modified", "patch": "+x"}]
+    assert pr_scope.changed_file_limitation(files) is None
