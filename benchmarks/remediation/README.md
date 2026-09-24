@@ -115,15 +115,17 @@ failure: the case stays `failed`, keeps counting against precision, coverage, an
 gate, and is reported under `summary.known_failures` so a run can tell a reported defect apart
 from a new regression. `summary.unexpected_failures` is what a green run must keep empty.
 
-One entry is recorded today. `python-sql-psycopg-format` cannot reach a candidate under
-`engine-local`: the service generates its own coverage proof for a Python SQL finding whose
-repaired function takes a cursor parameter, that proof opens with `import psycopg`
-(`services/remediation-service/src/proofs.py:268` and `:272`), and the generated-test dependency
-check (`services/remediation-service/src/patches.py:257`) rejects it with
-`missing_dependency:psycopg` because it does not exempt the modules the Python harness fakes
-(`services/remediation-service/src/sandbox/harness_py.py:665-671`). The template pass and then
-every agent patch are refused, so the fixture is kept as the witness for that defect rather than
-reshaped to avoid it. sqlite3 fixtures escape the same path only by being standard library.
+No entry is recorded today. The one that was, `python-sql-psycopg-format`, is fixed. The service
+generates its own coverage proof for a Python SQL finding whose repaired function takes a cursor,
+and that proof opens with `import psycopg` so it can hand the function that driver's own cursor
+and assert on that driver's placeholder syntax. The generated-test dependency check rejected it
+with `missing_dependency:psycopg`, because nothing is installed in the sandbox and the check did
+not know that the Python harness installs fakes for its drivers before it loads a module under
+test, which is where the import actually resolves. The check now exempts exactly those modules
+(`PYTHON_HARNESS_MODULES` in `services/remediation-service/src/sandbox/harness.py`, read back out
+of the harness source so the two cannot drift). It stays strict for every other name, and for
+application patches at any time: a driver the sandbox fakes is still a dependency a deployment
+has to install.
 
 Generate a release report (expected to exit `2` until the release manifest's case/review requirements are genuinely met):
 
