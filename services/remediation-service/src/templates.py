@@ -27,11 +27,13 @@ from .gates import PYTHON_SQL_DRIVERS, python_imports
 from .models import FindingSnapshot
 from .retrieval import Snapshot
 from .sites import (
+    JS_EVAL_ARGUMENT_RE,
     JsRoute,
     PyFunction,
     SiteError,
     js_bound_names,
     js_environment_name,
+    js_eval_site,
     js_literal_assignment,
     js_names_in,
     js_require_line,
@@ -835,6 +837,36 @@ def _js_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatc
     )
 
 
+def _js_eval(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """`eval(raw)` of a request value becomes `JSON.parse(raw)`.
+
+    This is the JavaScript reading of the decision the Python family makes with
+    `ast.literal_eval`: when the string is a document the code reads back as a value, parsing it
+    as data preserves what the function returns and removes the interpreter. When the string is
+    a program, the gate has already refused the finding, so what arrives here is the data shape.
+    `eval` of anything but a single identifier, or of an identifier that does not come from a
+    parameter, is left to the model, because the template cannot say what the string holds.
+    """
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    line = _finding_line(finding)
+    try:
+        _function, _untrusted, _members = js_eval_site(source, line)
+    except SiteError as exc:
+        raise TemplateError(exc.code) from exc
+    text = source.splitlines()[line - 1]
+    found = JS_EVAL_ARGUMENT_RE.search(text)
+    if not found:
+        raise TemplateError("eval_argument_not_an_identifier")
+    replacement = text[: found.start()] + f"JSON.parse({found.group('arg')})" + text[found.end() :]
+    return TemplatePatch(
+        finding.stable_id,
+        CODE_INJECTION_EVAL,
+        [_hunk(path, finding.stable_id, line, [text], [replacement])],
+        f"eval({found.group('arg')}) becomes JSON.parse({found.group('arg')})",
+    )
+
+
 def _py_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
     path = finding.affected_path
     source = snapshot.full_content(path)
@@ -946,10 +978,12 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
     path = finding.affected_path
     try:
         if language == JAVASCRIPT:
-            # A secret literal is not inside a request handler, so it is recognized before
-            # the route lookup that every other JavaScript family needs.
+            # A secret literal is not inside a request handler, and neither is a parser a route
+            # calls, so both are recognized before the route lookup the other families need.
             if family == HARDCODED_CREDENTIAL:
                 return _js_credential(snapshot, finding)
+            if family == CODE_INJECTION_EVAL:
+                return _js_eval(snapshot, finding)
             route = js_route_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _js_sql(snapshot, finding, route)

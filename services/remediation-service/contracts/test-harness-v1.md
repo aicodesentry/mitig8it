@@ -57,6 +57,9 @@ Fakes and their recorders:
 - `child_process`: `exec`, `execFile`, `spawn`, `execSync`, `execFileSync`, and `spawnSync` record `{ fn, command, args, options, shell }` in `h.child_process.calls` (`args` is `null` for `exec` and `execSync`; `shell` is the command line a shell would interpret, the whole string for `exec`/`execSync` or command plus args when `options.shell` is set, and `null` when the child ran with an argv array), then report the configured stdout through the callback, the returned child's `stdout`/`close` events, or the sync return value. `util.promisify(exec|execFile)` works.
 - `process.env`: a recording view of the real environment. Every name read is appended to `h.env.reads`; names given in `load(..., { env })` answer with the supplied value, and every other name answers as the real environment does.
 - `fs`: `readFile`, `readFileSync`, `existsSync`, `createReadStream`, and `fs.promises.readFile` (also `fs/promises`) record each read in `h.fs.reads` as `{ path, resolved }`, the string the module passed and its absolute form (`String(read)` is the raw path), and return the configured content; every other `fs` function is the real one.
+- dynamic code: `eval`, `new Function`, `vm.runInNewContext`, `vm.runInThisContext`, `vm.runInContext`, `vm.compileFunction`, `new vm.Script`, and `setTimeout`/`setInterval` given a string record `{ kind, source }` in `h.code.calls` and run nothing. `eval` and `vm.runIn*Context` answer `undefined`, `new Function` and `vm.compileFunction` hand back a function that does nothing, and a timer given a function is the real timer. `eval`, `Function`, and the timers are resolved through the global scope chain, so the module under test gets the recorder without naming it.
+
+`h.call(fn, ...args)` calls a plain exported function and never throws: it returns `{ ok, value, error }`, so one test can send a payload that is meant to be rejected and a document that must still be read.
 
 Assertions (each throws a `HarnessAssertion` with the message on failure):
 
@@ -67,6 +70,7 @@ Assertions (each throws a `HarnessAssertion` with the message on failure):
 - `h.assert.envRead(name, message)`: the module read `process.env.<name>` at least once. A module that still holds the literal never reads it, which is what makes this fail before a repair and pass after one.
 - `h.assert.notInSource(module, literal, message)`: the file the last `load()` executed no longer contains the literal, and no string the module exports carries it. A path may be passed in place of the module.
 - `h.assert.argv(call, payload, message)`: the recorded child process call has no `shell` string and `payload`, the injected input, is its own element of `args` (the command name itself is argv[0] and also satisfies it); one call covers the command-injection assertion.
+- `h.assert.noCode(message)`: nothing the module did turned a string into code. On failure it names every recorded call and the text it was given.
 
 `h.reset()` clears every recorder. `h.root` is the repository root the harness was materialized in.
 
@@ -75,6 +79,7 @@ Assertions (each throws a `HarnessAssertion` with the message on failure):
 - SQL injection: the recorded query `text` does not contain the payload and `values` does.
 - Command injection: `h.assert.argv(h.child_process.calls[0], payload)`: the call has no `shell` string and the payload is its own `args` element.
 - Hardcoded credential: `const m = h.load(path, { env: { NAME: 'value-from-env' } })`, then `h.assert.envRead('NAME')` and `h.assert.notInSource(m, literal)`, and `h.assert.equal(m.<identifier>, 'value-from-env')` when the module exports the identifier. `NAME` is derived from the identifier the literal was bound to (`apiKey` gives `API_KEY`). The repair this proves replaces the literal with `process.env.NAME` in place; deleting the constant fails the exported-value assertion.
+- Code injection: with `FUNC` the function at the finding, `h.call(m.FUNC, ...)` with a payload that would run code, then `h.assert.noCode()`, then `h.assert.equal(JSON.stringify(h.call(m.FUNC, ...'[1, 2]'...).value), '[1,2]')`. The repair this proves parses the value as data (`JSON.parse`) instead of interpreting it. It is for a string the code reads back as a value; a string compiled into something the module calls later is refused by the `dynamic_code_unsupported` gate rather than rewritten.
 - Path traversal: for each traversal payload (`../../etc/passwd` and its encoded form `..%2f..%2fetc%2fpasswd`), reset `h.fs.reads.length = 0`, invoke the handler, and assert `h.assert.inside(h.fs.reads, base, { payload })`, where `base` is the directory the handler serves from; the handler has to answer 400 or an equivalent error before any filesystem access, so no read is recorded. Then send one legitimate name and assert `h.assert.inside(h.fs.reads, base)`. The repair this proves resolves the candidate path against the base directory (`path.resolve(base, name)`) and rejects it unless the resolved path is the base itself or starts with base + `path.sep`; `path.basename` alone does not pass, and the analysis service reports it as an insufficient sanitizer.
 
 ## Policy

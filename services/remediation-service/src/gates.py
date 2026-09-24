@@ -12,7 +12,7 @@ import json
 import re
 from pathlib import PurePosixPath
 
-from .families import COMMAND_ARGUMENTS, JAVASCRIPT, PYTHON, SQL_PARAMETERIZATION
+from .families import CODE_INJECTION_EVAL, COMMAND_ARGUMENTS, JAVASCRIPT, PYTHON, SQL_PARAMETERIZATION
 from .models import FindingSnapshot
 from .retrieval import Snapshot
 
@@ -29,6 +29,12 @@ AMBIGUOUS_QUERY_API_MESSAGE = (
     "sqlite3, psycopg, or SQLAlchemy execute() call takes it at the finding, so a parameterized "
     "rewrite cannot be chosen safely."
 )
+DYNAMIC_CODE_MESSAGE = (
+    "The site compiles a program rather than reading a value: new Function and the vm compile "
+    "calls hand back something callable later, which no data parser can stand in for. Replacing "
+    "it means deciding what the strings are allowed to compute, which is a design decision, not "
+    "a rewrite."
+)
 
 # Python database APIs whose placeholder syntax the Python harness knows and the prompt names.
 PYTHON_SQL_DRIVERS = ("sqlite3", "psycopg2", "psycopg", "sqlalchemy", "pymysql", "MySQLdb", "mysql.connector", "aiosqlite", "asyncpg")
@@ -40,6 +46,8 @@ _JS_SHELL_CALL_RE = re.compile(r"(?<![\w$])(?:[\w$]+\.)?(?:exec|spawn)(?:Sync)?\
 # Shell syntax no argument list can express: a pipeline, a redirection, a command separator,
 # a substitution, or a background job.
 _SHELL_METACHARACTER_RE = re.compile(r"[|&;<>`]|\$\(")
+# Compiling a string into something callable, as opposed to reading a value out of one.
+_JS_DYNAMIC_CODE_RE = re.compile(r"\bnew\s+Function\s*\(|\bnew\s+vm\.Script\s*\(|\bvm\.(?:runIn\w*Context|compileFunction)\s*\(")
 _PYTHON_SHELL_LINE_RE = re.compile(r"\b(?:subprocess\.\w+|os\.system|os\.popen|Popen|check_output|check_call|run)\s*\(")
 _PYTHON_PIPE_RE = re.compile(r"\|")
 # How far past the finding a Python query may travel before it is executed, in lines.
@@ -180,6 +188,19 @@ def javascript_shell_pipeline(snapshot: Snapshot, finding: FindingSnapshot) -> b
     return False
 
 
+def javascript_dynamic_code(snapshot: Snapshot, finding: FindingSnapshot) -> bool:
+    """Whether the site compiles a program instead of reading a value.
+
+    `eval(raw)` of a request value is a parser written the dangerous way: the repair is to parse
+    the value as data and the harness proves nothing was compiled. `new Function(args, body)`,
+    `new vm.Script(...)`, and the `vm` compile calls are not that. They hand back something the
+    module calls later, with the string deciding what runs, so no data parser stands in for
+    them. Replacing one means deciding what those strings are allowed to compute, which the
+    engine refuses to guess.
+    """
+    return bool(_JS_DYNAMIC_CODE_RE.search(_window(snapshot, finding, 2, 2)))
+
+
 def python_shell_pipeline(snapshot: Snapshot, finding: FindingSnapshot) -> bool:
     """A process call whose command line carries a pipe: an argv list cannot express it."""
     for line in _window(snapshot, finding, 3, 3).splitlines():
@@ -195,6 +216,8 @@ def static_gate(snapshot: Snapshot, finding: FindingSnapshot, family: str, langu
             return "pg_dependency_not_proven", PG_NOT_PROVEN_MESSAGE
         if family == COMMAND_ARGUMENTS and javascript_shell_pipeline(snapshot, finding):
             return "shell_pipeline_unsupported", SHELL_PIPELINE_MESSAGE
+        if family == CODE_INJECTION_EVAL and javascript_dynamic_code(snapshot, finding):
+            return "dynamic_code_unsupported", DYNAMIC_CODE_MESSAGE
     elif language == PYTHON:
         if family == SQL_PARAMETERIZATION and not python_sql_api_known(snapshot, finding):
             return "ambiguous_query_api", AMBIGUOUS_QUERY_API_MESSAGE

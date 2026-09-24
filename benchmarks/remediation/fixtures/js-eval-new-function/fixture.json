@@ -17,7 +17,7 @@
     "line_start": 3,
     "line_end": 3
   },
-  "reason": "The Node harness stubs no dynamic compilation and records no executed code, so no regression test can prove a code_injection_eval repair for a JavaScript source; the engine skips the finding as unsupported_rule_family.",
+  "reason": "new Function compiles a program: it hands back something the module calls later, with the saved string deciding what runs, so no data parser stands in for it the way JSON.parse stands in for an eval of a document. Replacing it means deciding what a formula is allowed to compute, which is a design decision rather than a rewrite, so the engine skips the finding as dynamic_code_unsupported. The eval family is otherwise supported for JavaScript: js-eval-request-body is repaired.",
   "budget": {
     "max_tool_calls": 20,
     "max_attempts": 3,
