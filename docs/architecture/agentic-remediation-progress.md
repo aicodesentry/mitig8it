@@ -145,6 +145,8 @@ Deployment note: codesentry-api and codesentry-remediation run with CPU always a
 
 Resolved observation: the second residual report on test-only PR 127 said "Remaining open findings: 0" while listing four unrepaired findings. Cause: the app's verification analysis run was re-pointed by the duplicate webhook run for the same commit, so the count came from the wrong run. Fixed in PR 402 by scoping the count to the immutable analysis snapshot; reports published after that PR are correct.
 
+A third sandbox driver, `SANDBOX_DRIVER=cloud_run_job`, now runs each half of each check pair in its own Cloud Run job container under a separate unprivileged user and reports `isolated_job` evidence only when the task's own probes measured the metadata server, a public address, and DNS as unreachable; it is off by default, nothing has been applied to a project, and `docs/runbooks/sandbox-cloud-run-job.md` states what it still cannot guarantee.
+
 ## Not done, as of 2026-09-22
 
 | Item | Where it stands |
