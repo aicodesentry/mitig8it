@@ -128,6 +128,10 @@ async function claimNextQueuedRun(staleAfterMinutes = 20) {
            candidate.pr_number AS pull_request_number
          FROM analysis_runs candidate
          JOIN repositories candidate_repo ON candidate_repo.id = candidate.repository_id
+         -- An uninstalled installation's data is being deleted; never analyse for it.
+         JOIN installations candidate_installation
+           ON candidate_installation.id = candidate_repo.installation_id
+          AND candidate_installation.deleted_at IS NULL
          WHERE candidate_repo.is_active = true
            AND NOT (candidate.id = ANY($2::uuid[]))
            AND ((candidate.status = 'pending'

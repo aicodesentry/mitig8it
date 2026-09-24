@@ -1,4 +1,5 @@
 const remediationDb = require('../db/remediation');
+const installationPurge = require('./installationPurge');
 const verificationCheck = require('./remediationVerificationCheck');
 const residualReport = require('./remediationResidualReport');
 
@@ -71,6 +72,13 @@ async function publishResidualComments(limit) {
   return residualReport.publishPendingResidualComments({ limit });
 }
 
+// Uninstalling the App deletes every stored row for that installation. The webhook
+// marks it and schedules the purge; this is what runs the purge once the 24 hour grace
+// period has passed and no reinstall cancelled it.
+async function purgeInstallations(limit) {
+  return installationPurge.purgeDeletedInstallations(limit);
+}
+
 async function quarantineJobs(limit) {
   const quarantined = await remediationDb.quarantineExhaustedJobs(limit);
   if (quarantined.length) logger.error('Quarantined remediation jobs into dead_letter', { count: quarantined.length });
@@ -93,7 +101,7 @@ async function releaseStrandedUsage(limit) {
 
 async function runReconciliation(options = {}) {
   const { leaseLimit = 50, outboxStuckSeconds = 300, outboxLimit = 100, actionLimit = 20,
-    jobLimit = 50, usageLimit = 200 } = options;
+    jobLimit = 50, usageLimit = 200, purgeLimit = 5 } = options;
   const summary = {};
   await step('leases', () => reclaimLeases(leaseLimit), summary);
   await step('outbox', () => redispatchOutbox(outboxStuckSeconds, outboxLimit), summary);
@@ -102,6 +110,7 @@ async function runReconciliation(options = {}) {
   await step('usage', () => releaseStrandedUsage(usageLimit), summary);
   await step('verification_checks', () => publishVerificationChecks(actionLimit), summary);
   await step('residual_comments', () => publishResidualComments(actionLimit), summary);
+  await step('installation_purge', () => purgeInstallations(purgeLimit), summary);
   return summary;
 }
 
@@ -122,5 +131,5 @@ function startReconciler(options = {}) {
 
 module.exports = {
   runReconciliation, startReconciler, intervalMs, completeVerifiedActions, releaseStrandedUsage,
-  publishVerificationChecks, publishResidualComments,
+  publishVerificationChecks, publishResidualComments, purgeInstallations,
 };

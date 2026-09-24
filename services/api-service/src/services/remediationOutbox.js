@@ -9,11 +9,13 @@ function maxAttempts() {
   return Number.isInteger(configured) && configured > 0 ? configured : DEFAULT_MAX_ATTEMPTS;
 }
 
+// An event for an uninstalled installation is never dispatched: its data is being
+// deleted, so handling it would write rows the purge has already passed.
 async function claimPendingOutbox(limit = 20) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN'); await client.query("SELECT set_config('app.remediation_worker', '1', true)");
-    const result = await client.query(`WITH pending AS (SELECT id FROM workflow_outbox WHERE status='pending' AND next_attempt_at<=NOW() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT $1) UPDATE workflow_outbox o SET status='dispatching',attempts=attempts+1,updated_at=NOW() FROM pending WHERE o.id=pending.id RETURNING o.*`, [limit]);
+    const result = await client.query(`WITH pending AS (SELECT id FROM workflow_outbox WHERE status='pending' AND next_attempt_at<=NOW() AND installation_id IN (SELECT id FROM installations WHERE deleted_at IS NULL) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT $1) UPDATE workflow_outbox o SET status='dispatching',attempts=attempts+1,updated_at=NOW() FROM pending WHERE o.id=pending.id RETURNING o.*`, [limit]);
     await client.query('COMMIT'); return result.rows;
   } catch (e) { try { await client.query('ROLLBACK'); } catch (_) { /* ignored */ } throw e; } finally { client.release(); }
 }

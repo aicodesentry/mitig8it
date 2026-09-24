@@ -5,6 +5,7 @@ const { notifyAnalysisQueued } = require('../services/prAnalysisOrchestrator');
 const logger = require('../utils/logger');
 const installationsDb = require('../db/installations');
 const remediationDb = require('../db/remediation');
+const installationPurge = require('../services/installationPurge');
 
 const router = express.Router();
 
@@ -55,6 +56,23 @@ router.post('/github', async (req, res) => {
           payload.installation,
           payload.action === 'deleted' ? 'deleted' : payload.action === 'suspend' ? 'suspended' : 'active'
         );
+        if (payload.action === 'deleted') {
+          // Mark the installation now: every worker and reconciler query skips a marked
+          // installation, so nothing else runs for data that is about to be deleted.
+          // The purge itself happens after the grace period, from the reconciler.
+          const marked = await installationPurge.markInstallationDeleted(client, payload.installation.id);
+          logger.info('Installation uninstalled; data purge scheduled', {
+            installationId: payload.installation.id, purge_after: marked?.purge_after || null,
+          });
+        } else if (payload.action === 'created' || payload.action === 'unsuspend') {
+          // A reinstall of the same GitHub installation id inside the grace period is
+          // the owner changing their mind. Cancel the purge rather than delete their data.
+          if (await installationPurge.cancelScheduledPurge(client, payload.installation.id)) {
+            logger.info('Reinstall within the grace period cancelled the scheduled data purge', {
+              installationId: payload.installation.id,
+            });
+          }
+        }
       }
 
       if (event === 'installation_repositories' && payload.installation?.id) {

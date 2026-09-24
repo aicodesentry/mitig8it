@@ -334,11 +334,14 @@ async function getEvidenceForUser(jobId, userId) {
 const FALLBACK_ACTOR_SQL = `(SELECT fu.github_username FROM repository_access ra JOIN users fu ON fu.id = ra.user_id
           WHERE ra.repository_id = j.repository_id AND fu.github_username IS NOT NULL
           ORDER BY CASE ra.role WHEN 'admin' THEN 0 WHEN 'write' THEN 1 ELSE 2 END, ra.created_at LIMIT 1)`;
+// A job belonging to an uninstalled installation is never claimed: its data is being
+// deleted, so running it would write rows the purge has already passed.
 const CLAIM_SQL = `WITH candidate AS (
          SELECT id, created_by FROM remediation_jobs
           WHERE state = ANY($1::text[]) AND next_attempt_at <= NOW()
             AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
             AND ($4::uuid IS NULL OR id = $4::uuid)
+            AND installation_id IN (SELECT id FROM installations WHERE deleted_at IS NULL)
           ORDER BY next_attempt_at, created_at FOR UPDATE SKIP LOCKED LIMIT 1
        ) UPDATE remediation_jobs j SET lease_owner=$2, lease_expires_at=NOW()+($3::int * INTERVAL '1 second'),
           fencing_token=j.fencing_token+1, updated_at=NOW()
