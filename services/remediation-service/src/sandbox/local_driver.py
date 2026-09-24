@@ -172,9 +172,11 @@ class InProcessSandboxBroker:
         deadline = int(payload["execution_policy"].get("deadline_seconds") or deadline_seconds)
         try:
             result = await asyncio.to_thread(self.driver.execute, payload, deadline)
-        except (LocalExecutionError, OSError, KeyError, TypeError, ValueError):
+        except (RuntimeError, OSError, KeyError, TypeError, ValueError):
             # OSError included deliberately: the driver touches the filesystem, and a raised
             # driver failure that escapes here ends the worker's attempt with the lease still
-            # held instead of producing inconclusive evidence.
+            # held instead of producing inconclusive evidence. RuntimeError covers every
+            # driver's own failure type (LocalExecutionError, CloudRunJobExecutionError,
+            # KubernetesExecutionError) without importing the cloud clients on this path.
             result = {"outcome": "inconclusive", "reason_code": "sandbox_execution_failed", "checks": []}
         return build_evidence(payload, result, self.driver.runner_identity(payload), self.driver.verification_level)

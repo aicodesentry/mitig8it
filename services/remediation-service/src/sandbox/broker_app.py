@@ -12,9 +12,13 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException
 
 from ..digests import canonical_json, digest_json
+from .cloud_run_job_driver import CloudRunJobExecutionError
+from .drivers import DriverSelectionError
+from .drivers import build_driver as build_selected_driver
+from .drivers import selected_driver_kind as _selected_driver_kind
 from .execution import build_evidence
-from .kubernetes_driver import KubernetesExecutionError, KubernetesJobDriver
-from .local_driver import LocalExecutionError, LocalSubprocessDriver
+from .kubernetes_driver import KubernetesExecutionError
+from .local_driver import LocalExecutionError
 
 app = FastAPI(title="Mitig8it Sandbox Broker", version="1.0.0")
 
@@ -32,17 +36,19 @@ _idempotency_lock = asyncio.Lock()
 
 
 def selected_driver_kind() -> str:
-    kind = os.getenv("SANDBOX_DRIVER", "kubernetes").strip().lower() or "kubernetes"
-    if kind not in {"kubernetes", "local"}:
-        raise HTTPException(503, "SANDBOX_DRIVER must be 'kubernetes' or 'local'")
-    return kind
+    try:
+        return _selected_driver_kind()
+    except DriverSelectionError as error:
+        raise HTTPException(503, str(error)) from error
 
 
 def build_driver() -> Any:
-    """Production default is the Kubernetes/gVisor driver. `local` is development only."""
-    if selected_driver_kind() == "local":
-        return LocalSubprocessDriver()
-    return KubernetesJobDriver()
+    """Production default is the Kubernetes/gVisor driver. `local` is development only.
+
+    `cloud_run_job` is the Cloud Run Jobs driver: weaker than gVisor, far stronger than local,
+    and the only one of the three this product's own deployment can actually run.
+    """
+    return build_selected_driver(selected_driver_kind())
 
 
 async def get_driver() -> Any:
@@ -102,7 +108,7 @@ async def verify(payload: dict[str, Any], idempotency_key: str | None = Header(d
     driver = await get_driver()
     try:
         result = await asyncio.to_thread(driver.execute, payload, int(payload["execution_policy"]["deadline_seconds"]))
-    except (KubernetesExecutionError, LocalExecutionError, KeyError, TypeError, ValueError):
+    except (CloudRunJobExecutionError, KubernetesExecutionError, LocalExecutionError, KeyError, TypeError, ValueError):
         result = {"outcome": "inconclusive", "reason_code": "sandbox_execution_failed", "checks": []}
     evidence = _attest(build_evidence(payload, result, driver.runner_identity(payload), driver.verification_level))
     if idempotency_key is not None:
@@ -125,6 +131,6 @@ async def cancel_verification(request_digest: str) -> dict[str, str]:
     driver = await get_driver()
     try:
         await asyncio.to_thread(driver.cancel, request_digest)
-    except (KubernetesExecutionError, LocalExecutionError) as exc:
+    except (CloudRunJobExecutionError, KubernetesExecutionError, LocalExecutionError) as exc:
         raise HTTPException(503, "Sandbox cancellation could not be confirmed") from exc
     return {"schema_version": "v1", "request_digest": request_digest, "state": "cancelled"}

@@ -121,6 +121,7 @@ function capabilityReport() {
   const reasons = capabilityReasons();
   const report = Object.fromEntries(Object.keys(enabled).map((name) => [name, { enabled: enabled[name], reason: reasons[name] }]));
   report.development_verification_allowed = allowDevelopmentVerification();
+  report.isolated_job_verification_allowed = allowIsolatedJobVerification();
   return report;
 }
 
@@ -154,12 +155,22 @@ function stageEstimate(policyManifest, stage) {
 // Observed feedback expires; an unreviewed observation never influences generation and
 // never outlives its retention window.
 const PRODUCTION_VERIFICATION_LEVEL = 'independent_sandbox';
+// The Cloud Run job sandbox: separate containers, an unprivileged check user holding none of
+// the job's credentials, and a network the job's own probes measured as unreachable before
+// each check ran. Weaker than the Kubernetes/gVisor level, which also pins a read-only root
+// filesystem and a gVisor runtime class, and not comparable to the development level, where
+// repository code runs in the service's own container.
+const ISOLATED_JOB_VERIFICATION_LEVEL = 'isolated_job';
 
 // Development verification (local subprocess sandbox) never satisfies the production
 // gate. It is accepted for apply only when an operator opts in explicitly.
 function allowDevelopmentVerification() { return flagEnv('REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION'); }
+// Default true, and the repair service defaults its policy field the same way; the two must
+// agree. An operator who will accept nothing below the gVisor sandbox sets this to 'false'.
+function allowIsolatedJobVerification() { return process.env.REMEDIATION_ALLOW_ISOLATED_JOB_VERIFICATION !== 'false'; }
 function verificationLevelPermitted(level) {
   if (level === PRODUCTION_VERIFICATION_LEVEL) return true;
+  if (level === ISOLATED_JOB_VERIFICATION_LEVEL) return allowIsolatedJobVerification();
   return level === 'development_unverified' && allowDevelopmentVerification();
 }
 
@@ -185,6 +196,7 @@ module.exports = {
   // Retained name so existing callers keep the same behaviour.
   assertGenerationEnabled: assertGenerateEnabled,
   stageEstimate, branchAllowed, repairMemoryExpiryDays,
-  PRODUCTION_VERIFICATION_LEVEL, allowDevelopmentVerification, verificationLevelPermitted,
+  PRODUCTION_VERIFICATION_LEVEL, ISOLATED_JOB_VERIFICATION_LEVEL,
+  allowDevelopmentVerification, allowIsolatedJobVerification, verificationLevelPermitted,
   requireGeneratedRegressionTest,
 };

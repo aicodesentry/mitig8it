@@ -153,6 +153,8 @@ Resolved observation: test-only PR 135 published "Security analysis incomplete" 
 
 Every decision about a finding, in the workspace or on GitHub, is now appended to `finding_outcomes` and rolled up daily into the apply, dismiss and residual rates described in [finding outcomes](finding-outcomes.md); the rates are exported and shown, but no live installation has yet produced enough of them to read.
 
+A third sandbox driver, `SANDBOX_DRIVER=cloud_run_job`, now runs each half of each check pair in its own Cloud Run job container under a separate unprivileged user and reports `isolated_job` evidence only when the task's own probes measured the metadata server, a public address, and DNS as unreachable; it is off by default, nothing has been applied to a project, and `docs/runbooks/sandbox-cloud-run-job.md` states what it still cannot guarantee.
+
 ## Not done, as of 2026-09-22
 
 | Item | Where it stands |

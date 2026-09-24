@@ -211,7 +211,9 @@ function repairPolicy(policy) {
     'allowed_rule_families', 'sandbox_image_digest', 'verification_checks', 'forbidden_path_prefixes', 'forbidden_filenames',
     'require_generated_regression_test', 'run_repository_tests'];
   const selected = Object.fromEntries(names.filter((name) => policy[name] !== undefined).map((name) => [name, policy[name]]));
-  selected.allow_development_verification = require('./remediationPolicy').allowDevelopmentVerification();
+  const remediationPolicy = require('./remediationPolicy');
+  selected.allow_development_verification = remediationPolicy.allowDevelopmentVerification();
+  selected.allow_isolated_job_verification = remediationPolicy.allowIsolatedJobVerification();
   return selected;
 }
 
