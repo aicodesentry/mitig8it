@@ -510,6 +510,11 @@ def _reject_fragments(values: list[BoundValue], lines: list[str], scope_start: i
 
 _JS_QUERY_RE = re.compile(r"\.query\s*\(")
 _JS_EXEC_RE = re.compile(r"(?P<callee>(?:[\w$]+\.)?exec(?P<sync>Sync)?)\s*\((?!File)")
+_JS_SPAWN_RE = re.compile(r"(?P<callee>(?:[\w$]+\.)?spawn(?P<sync>Sync)?)\s*\(")
+_JS_SHELL_OPTION_RE = re.compile(r"shell\s*:\s*true")
+# The options object of a process call. Its properties split on commas because it carries no
+# nested object; one that does makes the shape unrecognized rather than mis-parsed.
+_JS_OPTIONS_RE = re.compile(r",\s*\{(?P<body>[^{}]*)\}")
 _JS_JOIN_RE = re.compile(r"path\.join\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)")
 
 
@@ -592,18 +597,55 @@ def _py_argv_element(token: list[tuple[str, str]]) -> str:
     return "f" + py_string_literal("".join(text if kind == "lit" else f"{{{text}}}" for kind, text in token))
 
 
+def _js_without_shell_option(rest: str) -> str:
+    """Removes `shell: true` from a process call's options object, and the object once it empties.
+
+    `, { shell: true });` becomes `);`, while `, { shell: true, cwd: base });` keeps the `cwd`.
+    """
+    match = _JS_OPTIONS_RE.search(rest)
+    if match is None:
+        raise TemplateError("shell_option_object_not_found")
+    kept = [
+        item.strip()
+        for item in match.group("body").split(",")
+        if item.strip() and not _JS_SHELL_OPTION_RE.fullmatch(item.strip())
+    ]
+    replacement = ", { " + ", ".join(kept) + " }" if kept else ""
+    return rest[: match.start()] + replacement + rest[match.end() :]
+
+
 def _js_command(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> TemplatePatch:
+    """`exec` of a command string becomes `execFile` with an argument array.
+
+    `spawn(command, { shell: true })` takes the same rewrite with the shell option dropped and
+    the callee left alone, because `spawn` already takes a file and an argument array: the shell
+    was the only thing putting the interpolated value back within reach of a command separator.
+    The gate has already refused a command whose literal text carries shell syntax an argument
+    list cannot express, so what arrives here is a command name and its arguments.
+    """
     path = finding.affected_path
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
     text = lines[line - 1]
+    shell_mode = False
     sink = _JS_EXEC_RE.search(text)
     if not sink:
-        raise TemplateError("exec_call_not_found")
+        sink = _JS_SPAWN_RE.search(text)
+        if not sink:
+            raise TemplateError("exec_call_not_found")
+        shell_mode = True
     argument, rest = split_first_argument(text, sink.end())
-    if re.search(r"shell\s*:\s*true", rest):
-        raise TemplateError("shell_option_set")
+    if _JS_SHELL_OPTION_RE.search(rest):
+        if not shell_mode:
+            # `exec` runs a shell whatever its options say, so the option is not what makes this
+            # call shell-mode and removing it would repair nothing.
+            raise TemplateError("shell_option_set")
+        rest = _js_without_shell_option(rest)
+    elif shell_mode:
+        # `spawn` without the option already takes an argument array, so this is a different
+        # shape (`spawn('sh', ['-c', command])`) that this rewrite does not recognize.
+        raise TemplateError("spawn_without_shell_option")
     segments = js_segments(argument)
     tokens = _tokens(segments)
     if not tokens or len(tokens[0]) != 1 or tokens[0][0][0] != "lit":
@@ -612,7 +654,10 @@ def _js_command(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) ->
     argv = "[" + ", ".join(_js_argv_element(token) for token in tokens[1:]) + "]"
     callee = sink.group("callee")
     sync = bool(sink.group("sync"))
-    new_name = "execFileSync" if sync else "execFile"
+    if shell_mode:
+        new_name = "spawnSync" if sync else "spawn"
+    else:
+        new_name = "execFileSync" if sync else "execFile"
     changes: list[dict[str, Any]] = []
     if "." in callee:
         namespace = callee.rsplit(".", 1)[0]
@@ -628,7 +673,12 @@ def _js_command(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) ->
             changes.append(_hunk(path, finding.stable_id, number, [require_line], [widened]))
     replacement = f"{text[: sink.start()]}{new_callee}({command}, {argv}{rest}"
     changes.append(_hunk(path, finding.stable_id, line, [text], [replacement]))
-    return TemplatePatch(finding.stable_id, COMMAND_ARGUMENTS, changes, f"{callee} of a command string becomes {new_callee} with an argument array")
+    summary = (
+        f"{callee} of a command string loses shell: true and takes an argument array"
+        if shell_mode
+        else f"{callee} of a command string becomes {new_callee} with an argument array"
+    )
+    return TemplatePatch(finding.stable_id, COMMAND_ARGUMENTS, changes, summary)
 
 
 def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> TemplatePatch:

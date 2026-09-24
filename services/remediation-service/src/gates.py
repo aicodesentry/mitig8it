@@ -20,7 +20,10 @@ UNSUPPORTED_LANGUAGE_MESSAGE = (
     "The affected file is neither JavaScript/TypeScript nor Python, so no toolchain can check a repair of it."
 )
 PG_NOT_PROVEN_MESSAGE = "SQL auto-repair requires an exact package manifest proving the pg driver."
-SHELL_PIPELINE_MESSAGE = "Shell pipelines and shell-mode process execution require manual handling."
+SHELL_PIPELINE_MESSAGE = (
+    "The command string carries shell syntax an argument list cannot express, so the rewrite "
+    "would silently change what runs: this one needs manual handling."
+)
 AMBIGUOUS_QUERY_API_MESSAGE = (
     "The query is handed to a helper whose placeholder syntax the snapshot does not show: no "
     "sqlite3, psycopg, or SQLAlchemy execute() call takes it at the finding, so a parameterized "
@@ -31,7 +34,12 @@ AMBIGUOUS_QUERY_API_MESSAGE = (
 PYTHON_SQL_DRIVERS = ("sqlite3", "psycopg2", "psycopg", "sqlalchemy", "pymysql", "MySQLdb", "mysql.connector", "aiosqlite", "asyncpg")
 _PYTHON_IMPORT_RE = re.compile(r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*))", re.MULTILINE)
 _PYTHON_EXECUTE_RE = re.compile(r"\.(?:execute|executemany|executescript|exec_driver_sql)\s*\(|\btext\s*\(")
-_JS_SHELL_RE = re.compile(r"\b(?:exec|spawn)\s*\([^\n]*(?:\||shell\s*:\s*true)")
+# A process call that hands a command line to a shell: `exec` and `execSync` always do, and
+# `spawn`/`spawnSync` do when `shell: true` is set.
+_JS_SHELL_CALL_RE = re.compile(r"(?<![\w$])(?:[\w$]+\.)?(?:exec|spawn)(?:Sync)?\s*\(")
+# Shell syntax no argument list can express: a pipeline, a redirection, a command separator,
+# a substitution, or a background job.
+_SHELL_METACHARACTER_RE = re.compile(r"[|&;<>`]|\$\(")
 _PYTHON_SHELL_LINE_RE = re.compile(r"\b(?:subprocess\.\w+|os\.system|os\.popen|Popen|check_output|check_call|run)\s*\(")
 _PYTHON_PIPE_RE = re.compile(r"\|")
 # How far past the finding a Python query may travel before it is executed, in lines.
@@ -118,8 +126,58 @@ def _window(snapshot: Snapshot, finding: FindingSnapshot, before: int, after: in
     return snapshot.read(finding.affected_path, max(1, finding.line_start - before), (finding.line_end or finding.line_start) + after).content
 
 
+def js_literal_command_text(expression: str) -> str:
+    """The text inside the string literals of a JavaScript expression, interpolations dropped.
+
+    A bounded lexical scan, not a parser. It answers one question: did the author write shell
+    syntax into the command. An interpolated value or a concatenated identifier contributes
+    nothing, because that is the untrusted data the repair exists to keep away from a shell.
+    """
+    out: list[str] = []
+    index, end = 0, len(expression)
+    while index < end:
+        quote = expression[index]
+        if quote in "'\"":
+            index += 1
+            while index < end and expression[index] != quote:
+                if expression[index] == "\\":
+                    index += 2
+                    continue
+                out.append(expression[index])
+                index += 1
+        elif quote == "`":
+            index += 1
+            while index < end and expression[index] != "`":
+                if expression[index] == "\\":
+                    index += 2
+                    continue
+                if expression.startswith("${", index):
+                    depth, index = 1, index + 2
+                    while index < end and depth:
+                        depth += (expression[index] == "{") - (expression[index] == "}")
+                        index += 1
+                    continue
+                out.append(expression[index])
+                index += 1
+        index += 1
+    return "".join(out)
+
+
 def javascript_shell_pipeline(snapshot: Snapshot, finding: FindingSnapshot) -> bool:
-    return bool(_JS_SHELL_RE.search(_window(snapshot, finding, 3, 3)))
+    """Whether a shell-mode process call near the finding needs semantics an argv list lacks.
+
+    Running through a shell is not itself the problem. `spawn('tar -czf out.tgz ' + name,
+    { shell: true })` is a command name and its arguments with a shell wrapped around them, and
+    dropping the option while splitting the string into argv is the same rewrite `execFile`
+    gets. What an argv list cannot express is shell syntax: a pipeline, a redirection, a
+    separator, a substitution, or a background job. So the refusal is narrowed to a command
+    whose own literal text carries one of those, where a rewrite would change what runs.
+    """
+    for line in _window(snapshot, finding, 3, 3).splitlines():
+        call = _JS_SHELL_CALL_RE.search(line)
+        if call and _SHELL_METACHARACTER_RE.search(js_literal_command_text(line[call.end():])):
+            return True
+    return False
 
 
 def python_shell_pipeline(snapshot: Snapshot, finding: FindingSnapshot) -> bool:
