@@ -1,0 +1,225 @@
+{
+  "description": "Labelled precision set for the tier 1 regex pass. Every false-positive case is a line a human read during the September 2026 real-repository replay and judged wrong; see docs/validation/real-repo-replay-2026-09.md on feat/real-repo-replay. Every true-positive case is drawn from services/analysis-service/src/tests/test_security_rules.py. The gate is services/analysis-service/src/tests/test_tier1_precision_benchmark.py.",
+  "provenance": {
+    "replay_report": "docs/validation/real-repo-replay-2026-09.md",
+    "hand_read_findings": 30,
+    "hand_read_lines_quoted_in_the_report": 18,
+    "note": "The replay read 30 findings by hand and found 29 wrong. Its raw results are not committed (scripts/replay/.gitignore ignores results/), so only the lines the report quotes can be reproduced as cases. The other 12 lines are unavailable; this set is every one that is."
+  },
+  "suppressed_by_values": {
+    "quarantine": "The rule is quarantined, so nothing it produces is posted.",
+    "word_boundary": "The rule's own pattern no longer matches after the pattern fix.",
+    "exclusion": "The pattern matches, and the relocated exclusion drops it.",
+    "comment_stripping": "The line is a comment, so the rule never sees it.",
+    "prose_path_scope": "The file is prose, and a rule that recognizes the shape of executable code does not run there."
+  },
+  "false_positives": [
+    {
+      "id": "fp.null.method-chain.sequelize-oracle",
+      "language": "typescript",
+      "path": "packages/oracle/src/connection-manager.ts",
+      "snippet": ["connection.removeAllListeners('error').on('error', handleConnectionError);"],
+      "rule_id": "null.pointer.deref",
+      "expected": "no_finding",
+      "suppressed_by": "quarantine",
+      "evidence": "Replay observation 1. Both Node methods return `this` by contract; the chain cannot be null."
+    },
+    {
+      "id": "fp.null.jest-idiom.nextjs",
+      "language": "typescript",
+      "path": "test/e2e/app-dir/app/index.test.ts",
+      "snippet": ["  await expect(next.start()).rejects.toThrow()"],
+      "rule_id": "null.pointer.deref",
+      "expected": "no_finding",
+      "suppressed_by": "quarantine",
+      "evidence": "Replay observation 1. This one Jest idiom produced 27 of the 142 baseline findings."
+    },
+    {
+      "id": "fp.null.rust-await.nextjs",
+      "language": "rust",
+      "path": "turbopack/crates/turbopack-ecmascript/src/references/esm/export.rs",
+      "snippet": ["    let references = chunking_context.unused_references().await?;"],
+      "rule_id": "null.pointer.deref",
+      "expected": "no_finding",
+      "suppressed_by": "quarantine",
+      "evidence": "Replay observation 1. Rust, whose remediation advice (optional chaining) does not exist in the language."
+    },
+    {
+      "id": "fp.null.guarded-on-the-same-line.got",
+      "language": "typescript",
+      "path": "source/core/index.ts",
+      "snippet": ["  if (encoding === undefined || encoding.toLowerCase().replace('-', '') === 'utf8') {"],
+      "rule_id": "null.pointer.deref",
+      "expected": "no_finding",
+      "suppressed_by": "exclusion",
+      "evidence": "Replay observation 1. The rule's exclusion list was meant to catch exactly this and could not, because a lookahead after a greedy quantifier can always be satisfied."
+    },
+    {
+      "id": "fp.integer.unique-constraint.drf",
+      "language": "markdown",
+      "path": "docs/api-guide/validators.md",
+      "snippet": ["            models.UniqueConstraint(fields=['category', 'slug'], name='unique_slug')"],
+      "rule_id": "integer.overflow",
+      "expected": "no_finding",
+      "suppressed_by": "word_boundary",
+      "evidence": "Replay observation 2. `int(` had no word boundary."
+    },
+    {
+      "id": "fp.integer.fingerprint.nextjs",
+      "language": "typescript",
+      "path": ".github/actions/pr-stack-ci-gate/src/fingerprint.ts",
+      "snippet": ["function fingerprint(snapshot: Snapshot): string {"],
+      "rule_id": "integer.overflow",
+      "expected": "no_finding",
+      "suppressed_by": "word_boundary",
+      "evidence": "Replay observation 2. `fingerprint(` ends in `int(`."
+    },
+    {
+      "id": "fp.ratelimit.redirect-fixture.got",
+      "language": "typescript",
+      "path": "test/redirects.ts",
+      "snippet": ["\tresponse.writeHead(302, { location: '/login' });"],
+      "rule_id": "rate_limit.missing",
+      "expected": "no_finding",
+      "suppressed_by": "quarantine",
+      "evidence": "Replay observation 2. A redirect target in a test fixture is not a route declaration."
+    },
+    {
+      "id": "fp.ratelimit.jsdoc-example.express",
+      "language": "javascript",
+      "path": "lib/response.js",
+      "snippet": [" *    res.location('../login');"],
+      "rule_id": "rate_limit.missing",
+      "expected": "no_finding",
+      "suppressed_by": "comment_stripping",
+      "evidence": "Replay observations 2 and 3. A usage example inside a JSDoc block."
+    },
+    {
+      "id": "fp.ratelimit.licence-text.nextjs",
+      "language": "text",
+      "path": ".github/actions/pr-stack-ci-gate/dist/licenses.txt",
+      "snippet": ["@octokit/auth-token"],
+      "rule_id": "rate_limit.missing",
+      "expected": "no_finding",
+      "suppressed_by": "quarantine",
+      "evidence": "Replay observations 2 and 3. A package name in a vendored licence file, in a nested `dist/` the github-service prefix filter does not catch."
+    },
+    {
+      "id": "fp.authz.stream-teardown.got",
+      "language": "typescript",
+      "path": "source/core/index.ts",
+      "snippet": ["    result.destroy();"],
+      "rule_id": "authz.missing_function_level",
+      "expected": "no_finding",
+      "suppressed_by": "quarantine",
+      "evidence": "Replay observation 2. Stream teardown, not an authorization boundary."
+    },
+    {
+      "id": "fp.authz.session-teardown",
+      "language": "typescript",
+      "path": "packages/core/src/session.ts",
+      "snippet": ["      session.destroy();"],
+      "rule_id": "authz.missing_function_level",
+      "expected": "no_finding",
+      "suppressed_by": "quarantine",
+      "evidence": "Replay observation 2."
+    },
+    {
+      "id": "fp.authz.pool-teardown.sequelize",
+      "language": "typescript",
+      "path": "packages/core/src/abstract-dialect/connection-manager.ts",
+      "snippet": ["    void this.sequelize.pool.destroy(connection);"],
+      "rule_id": "authz.missing_function_level",
+      "expected": "no_finding",
+      "suppressed_by": "quarantine",
+      "evidence": "Replay observation 2. 13 of this rule's 19 findings were raised at `high`."
+    },
+    {
+      "id": "fp.authz.jsdoc-pool-destroy.sequelize",
+      "language": "typescript",
+      "path": "packages/core/src/abstract-dialect/connection-manager.ts",
+      "snippet": [
+        "  /**",
+        "   * Calling `pool.destroy()` on the connection from here does not throw, but it does not",
+        "   * release it either.",
+        "   */"
+      ],
+      "rule_id": "authz.missing_function_level",
+      "expected": "no_finding",
+      "suppressed_by": "comment_stripping",
+      "evidence": "Replay observation 3, severity high. The finding was raised on documentation explaining why the call is there."
+    },
+    {
+      "id": "fp.concurrency.global-agent-comment.got",
+      "language": "typescript",
+      "path": "source/core/index.ts",
+      "snippet": ["// If agent.http2 is unset, use the global agent for connection pooling."],
+      "rule_id": "concurrency.shared_state",
+      "expected": "no_finding",
+      "suppressed_by": "comment_stripping",
+      "evidence": "Replay observation 2. `global\\s+\\w+` matches English."
+    },
+    {
+      "id": "fp.concurrency.sequelize-global-option-comment",
+      "language": "typescript",
+      "path": "packages/mariadb/src/connection-manager.ts",
+      "snippet": ["    // Replaced by Sequelize's global option"],
+      "rule_id": "concurrency.shared_state",
+      "expected": "no_finding",
+      "suppressed_by": "comment_stripping",
+      "evidence": "Replay observation 3."
+    },
+    {
+      "id": "fp.concurrency.changelog-global-leak.express",
+      "language": "markdown",
+      "path": "History.md",
+      "snippet": ["  * Fix a global leak when multiple subnets are trusted"],
+      "rule_id": "concurrency.shared_state",
+      "expected": "no_finding",
+      "suppressed_by": "quarantine",
+      "evidence": "Replay observation 2. A 2010 changelog entry."
+    },
+    {
+      "id": "fp.authz.changelog-route-example.express",
+      "language": "markdown",
+      "path": "History.md",
+      "snippet": ["  * Added `app.get('/user/:id').remove();` style routing"],
+      "rule_id": "authz.missing_function_level",
+      "expected": "no_finding",
+      "suppressed_by": "quarantine",
+      "evidence": "Replay observation 3, severity high. A changelog entry is not a route."
+    },
+    {
+      "id": "fp.authbypass.changelog-route-example.express",
+      "language": "markdown",
+      "path": "History.md",
+      "snippet": ["  * Added `app.get('/user/:id').remove();` style routing"],
+      "rule_id": "auth.bypass.missing_check",
+      "expected": "no_finding",
+      "suppressed_by": "prose_path_scope",
+      "evidence": "Replay observation 3, severity high. Prose-path scoping (PR 440) landed alongside the rule re-anchoring (PR 441), so the gap this case recorded is closed: `History.md` is prose and `auth.bypass.missing_check` does not run there."
+    }
+  ],
+  "true_positives": [
+    {"id": "tp.auth.bypass", "language": "javascript", "path": "src/routes/admin.js", "snippet": ["app.get('/admin/users', handler)"], "rule_id": "auth.bypass.missing_check", "expected": "finding"},
+    {"id": "tp.path.traversal", "language": "python", "path": "src/files.py", "snippet": ["    data = open(\"/data/\" + filename)"], "rule_id": "path.traversal.user_path", "expected": "finding"},
+    {"id": "tp.cors", "language": "python", "path": "src/main.py", "snippet": ["allow_origins=[\"*\"]"], "rule_id": "cors.overly_permissive", "expected": "finding"},
+    {"id": "tp.csrf", "language": "python", "path": "src/views.py", "snippet": ["@csrf_exempt"], "rule_id": "csrf.missing_protection", "expected": "finding"},
+    {"id": "tp.crypto.weak_hash", "language": "python", "path": "src/hashing.py", "snippet": ["digest = hashlib.md5(data)"], "rule_id": "crypto.weak.hash", "expected": "finding"},
+    {"id": "tp.crypto.entropy", "language": "javascript", "path": "src/token.js", "snippet": ["const token = Math.random().toString(36)"], "rule_id": "crypto.insufficient_entropy", "expected": "finding"},
+    {"id": "tp.crypto.hardcoded_iv", "language": "python", "path": "src/crypto.py", "snippet": ["iv = \"0123456789abcdef0123456789abcdef\""], "rule_id": "crypto.hardcoded_iv", "expected": "finding"},
+    {"id": "tp.sql.injection", "language": "python", "path": "src/db.py", "snippet": ["query = f\"SELECT * FROM users WHERE id = {user_id}\""], "rule_id": "sql.injection.raw_query", "expected": "finding"},
+    {"id": "tp.cmd.injection", "language": "python", "path": "src/runner.py", "snippet": ["subprocess.run(cmd, shell=True)"], "rule_id": "cmd.injection.shell_true", "expected": "finding"},
+    {"id": "tp.code.injection", "language": "python", "path": "src/evaluate.py", "snippet": ["result = eval(user_input)"], "rule_id": "code.injection.eval", "expected": "finding"},
+    {"id": "tp.xss", "language": "javascript", "path": "src/render.js", "snippet": ["element.innerHTML = data"], "rule_id": "xss.unsafe_html_render", "expected": "finding"},
+    {"id": "tp.nosql.injection", "language": "javascript", "path": "src/users.js", "snippet": ["db.users.find(req.body)"], "rule_id": "nosql.injection", "expected": "finding"},
+    {"id": "tp.ldap.injection", "language": "python", "path": "src/directory.py", "snippet": ["ldap.search(\"ou=users,dc=example\" + user_input)"], "rule_id": "ldap.injection", "expected": "finding"},
+    {"id": "tp.template.injection", "language": "python", "path": "src/views.py", "snippet": ["render_template_string(req.form['template'])"], "rule_id": "template.injection", "expected": "finding"},
+    {"id": "tp.config.debug", "language": "python", "path": "src/settings.py", "snippet": ["DEBUG = True"], "rule_id": "config.debug_enabled", "expected": "finding"},
+    {"id": "tp.upload.unsafe", "language": "javascript", "path": "src/upload.js", "snippet": ["upload(file.originalname, req.body.path)"], "rule_id": "upload.unsafefile", "expected": "finding"},
+    {"id": "tp.config.tls", "language": "python", "path": "src/client.py", "snippet": ["requests.get(url, verify=False)"], "rule_id": "config.tls_disabled", "expected": "finding"},
+    {"id": "tp.config.verbose_errors", "language": "javascript", "path": "src/errors.js", "snippet": ["res.json({ error: err.message, stack: err.stack })"], "rule_id": "config.verbose_errors", "expected": "finding"},
+    {"id": "tp.secret.credential", "language": "python", "path": "src/config.py", "snippet": ["api_key = \"sk_live_abc123def456\""], "rule_id": "secret.hardcoded.credential", "expected": "finding"},
+    {"id": "tp.auth.weak_hash", "language": "python", "path": "src/auth.py", "snippet": ["password_hash = md5(password)"], "rule_id": "auth.weak_password_hash", "expected": "finding"}
+  ]
+}

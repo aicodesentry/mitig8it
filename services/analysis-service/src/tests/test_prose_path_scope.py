@@ -24,6 +24,15 @@ SECRET_IN_DOCS_PATCH = (
     "@@ -1,1 +1,2 @@\n"
     "+Set `api_key = \"sk_live_4eC39HqLyjWDarjtT1zdp7dc\"` in your configuration.\n"
 )
+# A real unguarded route, not a changelog quotation of one. PR 441 re-anchored
+# `auth.bypass.missing_check` so the truncated example in CHANGELOG_PATCH no longer
+# matches anywhere, in prose or in source. The path scope still has to be a path scope
+# rather than a blanket suppression, so the source-file half of that claim is made with
+# a route the re-anchored rule does match.
+ROUTE_PATCH = (
+    "@@ -1,1 +1,2 @@\n"
+    "+app.get('/user/:id', (req, res) => { res.send(db.users[req.params.id]); });\n"
+)
 
 
 class TestProseClassification:
@@ -51,9 +60,13 @@ class TestCodeShapeRulesSkipProse:
         findings = pattern_findings([ChangedFile(path="History.md", patch=CHANGELOG_PATCH)])
         assert findings == []
 
-    def test_the_same_text_in_a_source_file_still_raises(self):
-        findings = pattern_findings([ChangedFile(path="lib/routes.js", patch=CHANGELOG_PATCH)])
-        assert {finding["rule_id"] for finding in findings}
+    def test_a_route_in_a_source_file_still_raises(self):
+        findings = pattern_findings([ChangedFile(path="lib/routes.js", patch=ROUTE_PATCH)])
+        assert "auth.bypass.missing_check" in {finding["rule_id"] for finding in findings}
+
+    def test_the_same_route_quoted_in_prose_raises_nothing(self):
+        findings = pattern_findings([ChangedFile(path="History.md", patch=ROUTE_PATCH)])
+        assert findings == []
 
     def test_a_secret_in_documentation_is_still_reported(self):
         findings = pattern_findings([ChangedFile(path="README.md", patch=SECRET_IN_DOCS_PATCH)])
