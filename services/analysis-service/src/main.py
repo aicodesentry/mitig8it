@@ -18,7 +18,7 @@ from finding_quality import (
     pattern_matches_reviewable_content,
 )
 from security_rules import DEPENDENCY_RISK_PATTERNS, SECURITY_RULES, likely_llm_repo
-from opengrep_runner import run_opengrep
+from opengrep_runner import run_opengrep, run_opengrep_with_limitations
 from llm_client import redact
 from llm_triage import triage_findings
 from remediation_patches import build_remediation_patch
@@ -318,7 +318,7 @@ def run_tiers_concurrently(
         try:
             tier2_findings = tier2_future.result()
         except Exception as e:
-            raise RuntimeError("Required OpenGrep analysis failed") from e
+            raise RuntimeError(f"Required OpenGrep analysis failed: {redact(e)}") from e
     return [*tier1_findings, *tier2_findings]
 
 
@@ -328,9 +328,16 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
 
     scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
     opengrep_files = [{"path": f.path, "patch": f.patch} for f in scannable_files]
+    limitations: List[Dict[str, Any]] = []
+
+    def tier2() -> List[Dict[str, Any]]:
+        tier2_findings, tier2_limitations = run_opengrep_with_limitations(opengrep_files)
+        limitations.extend(tier2_limitations)
+        return tier2_findings
+
     findings = run_tiers_concurrently(
         lambda: pattern_findings(scannable_files),
-        lambda: run_opengrep(opengrep_files),
+        tier2,
     )
 
     try:
@@ -351,6 +358,7 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         "files_analyzed": len(payload.files),
         "test_files_analyzed": count_test_code_files(f.path for f in scannable_files),
         "findings": normalized,
+        "analysis_limitations": limitations,
     }
 
 
@@ -378,6 +386,7 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         raise ValueError("Too many files in PR payload")
 
     findings: List[Dict[str, Any]] = []
+    limitations: List[Dict[str, Any]] = []
     scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
     try:
         opengrep_files = [
@@ -389,9 +398,9 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
             }
             for f in scannable_files
         ]
-        findings = run_opengrep(opengrep_files)
+        findings, limitations = run_opengrep_with_limitations(opengrep_files)
     except Exception as e:
-        raise RuntimeError("Required OpenGrep analysis failed") from e
+        raise RuntimeError(f"Required OpenGrep analysis failed: {redact(e)}") from e
 
     normalized = cluster_findings(classify_findings(findings))
     return {
@@ -402,6 +411,7 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         "test_files_analyzed": count_test_code_files(f.path for f in scannable_files),
         "tier": 2,
         "findings": normalized,
+        "analysis_limitations": limitations,
     }
 
 
