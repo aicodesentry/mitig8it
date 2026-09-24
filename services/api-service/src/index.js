@@ -7,6 +7,8 @@ const logger = require('./utils/logger');
 const { startTelemetry, shutdownTelemetry } = require('./utils/telemetry');
 const { createApp } = require('./app');
 const { ensureDatabaseSchema } = require('./services/schemaBootstrap');
+const { startMetricsServer } = require('./metricsServer');
+const { warmUp } = require('./services/warmup');
 
 const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET'];
 if (process.env.NODE_ENV === 'production') {
@@ -30,6 +32,16 @@ async function start() {
   const server = app.listen(PORT, () => {
     logger.info('API service started', { port: PORT });
   });
+
+  // The managed Prometheus sidecar scrapes this loopback listener; the public
+  // /metrics route stays gated by the internal secret.
+  const metricsServer = startMetricsServer();
+
+  // Deliberately not awaited: readiness must not wait on a peer service, and the
+  // warm-up is an optimisation, not a precondition for serving.
+  if (process.env.NODE_ENV !== 'test') {
+    warmUp().catch((error) => logger.warn('Warm-up failed', { error: error.message }));
+  }
 
   // Start background profile worker (processes one repo per minute)
   if (process.env.NODE_ENV !== 'test') {
@@ -58,6 +70,7 @@ async function start() {
       }
       stopRemediationWorker = null;
     }
+    if (metricsServer) metricsServer.close();
     server.close(async () => {
       await shutdownTelemetry();
       await pool.end();
