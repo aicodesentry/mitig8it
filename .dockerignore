@@ -1,0 +1,26 @@
+# The action's image is built from the repository root, because it bundles several services.
+# Without this file the build context carries every node_modules tree and the whole git history,
+# which is hundreds of megabytes the image never uses.
+#
+# The per-service Dockerfiles build from their own directories and are unaffected by this file.
+
+.git
+.github
+.claude
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.venv
+**/venv
+frontend
+benchmarks
+infrastructure
+docs
+scripts
+proto
+.firebase
+*.md
+!action/README.md
+docker-compose.yml
+firebase.json
