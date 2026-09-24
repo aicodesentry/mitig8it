@@ -95,12 +95,15 @@ an escaping path depends on what the site can promise its caller.
 | Site | Refusal |
 | --- | --- |
 | Express route handler | `return res.status(400).end()` |
+| A route handler the module exports but never registers with Express | `return res.status(400).end()`, the same: it owns a response either way, and its second parameter is it |
 | Flask view | `abort(400)` |
-| Any other JavaScript function or method | `throw new Error('path escapes base directory')` |
-| Any other Python function or method | `raise ValueError('path escapes base directory')` |
+| A JavaScript function that takes a callback | `return callback(new Error('path escapes base directory'))` |
+| Any other JavaScript function, method, or module-scope code | `throw new Error('path escapes base directory')` |
+| Any other Python function, method, or module-scope code | `raise ValueError('path escapes base directory')` |
 
-A handler owns the response, so it answers. A plain function has no response to write and no
-declared failure value, and a returned sentinel is the one outcome a caller can mistake for a
+A handler owns the response, so it answers, and a function that takes a continuation reports
+through it, because that is how it already reports every other failure. A plain function has
+neither a response to write nor a declared failure value, and a returned sentinel is the one outcome a caller can mistake for a
 path: `null` reaching `fs.readFile` is a crash at a distance, and `''` resolves to the base
 directory itself. Raising is the only refusal a caller cannot read as success. A caller that does
 not catch turns a file disclosure into a 500, which is the trade this family is for; a caller that

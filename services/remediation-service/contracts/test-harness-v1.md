@@ -91,6 +91,8 @@ Fakes and their recorders:
 
 `h.call(fn, ...args)` calls a plain exported function and never throws: it returns `{ ok, value, error }`, so one test can send a payload that is meant to be rejected and a document that must still be read.
 
+`h.res()`: a recording Express response, for a route handler the module exports but never registers with Express, where there is no route for `h.invoke` to find. It records the same methods `h.invoke`'s response does, and `res.out` is `{ status, body, headers, redirect }` as the handler left it. The proof builds the request itself: `h.call(m.handler, { params: { name: payload } }, h.res())`.
+
 Assertions (each throws a `HarnessAssertion` with the message on failure):
 
 - `h.assert(condition, message)`

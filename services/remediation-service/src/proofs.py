@@ -591,7 +591,12 @@ def _js_credential_drive(source: str, line: int) -> list[str]:
     parameters a call cannot line up with, is left to the import, and the proof then fails
     honestly rather than claiming a repair the test never reached.
     """
-    site = js_site_for_line(source, line)
+    try:
+        site = js_site_for_line(source, line)
+    except SiteError:
+        # A scope this module cannot describe is not a reason to refuse the credential proof,
+        # which needed no scope at all before: the import is what it falls back to.
+        return []
     if not isinstance(site, JsFunction) or site.kind != "function" or not js_module_exports_name(source, site.name):
         return []
     return [f"  h.call(m.{site.name}{''.join(', {}' for _ in site.parameters)});"]
