@@ -126,9 +126,11 @@ async def test_engine_abstains_for_shell_pipeline(request_payload):
 
 
 @pytest.mark.asyncio
-async def test_agent_reserves_provider_budget_before_tool_execution(request_payload):
-    request_payload["policy"]["max_total_tokens"] = 1_000
-    request = RepairRequest.model_validate(request_payload)
+async def test_agent_reserves_provider_budget_before_tool_execution(model_only_payload):
+    # A finding the template repairs never reaches the provider, so there is no reservation to
+    # deny: this is the model path, over the source `conftest` keeps for it.
+    model_only_payload["policy"]["max_total_tokens"] = 1_000
+    request = RepairRequest.model_validate(model_only_payload)
     action = ProviderAction("abstain", {"reason_code": "x", "explanation": "x"}, input_tokens=1_001)
     agent = RepairAgent(ScriptedProvider([action]), Verifier(PassingBroker()))
     response = await RepairEngine(lambda ignored: agent).repair(request)
@@ -170,7 +172,8 @@ async def test_engine_reports_honest_limitations_for_checks_that_did_not_run(req
     assert response.evidence["verification_level"] == "independent_sandbox"
     joined = " ".join(response.evidence["limitations"])
     assert "original test suite was not run" in joined
-    assert "no type check or build was run" in joined
+    # `src/db.ts` derives a TypeScript parse check, so the typecheck kind ran.
+    assert "no type check or build was run" not in joined
     assert "no scanner baseline/candidate finding comparison" in joined
 
 
@@ -194,10 +197,48 @@ async def test_engine_labels_an_explicitly_allowed_development_candidate(request
     assert any("development local sandbox" in item for item in candidate_evidence["limitations"])
 
 
-SQL_SOURCE = "export function loadUser(db, id) {\n  return db.query(`SELECT * FROM users WHERE id = ${id}`);\n}\n"
-SQL_REPAIRED = "export function loadUser(db, id) {\n  return db.query('SELECT * FROM users WHERE id = $1', [id]);\n}\n"
-CMD_SOURCE = "export function archive(exec, name) {\n  return exec(`tar -czf ${name}.tgz ${name}`);\n}\n"
-CMD_REPAIRED = "export function archive(exec, name) {\n  return exec('tar', ['-czf', name + '.tgz', name]);\n}\n"
+# Both sinks are one hop from their input: the text is built by another function, so the
+# deterministic template refuses them (`query_variable_not_assigned_in_scope`) exactly as
+# `conftest.MODEL_ONLY_SOURCE` does. These tests are about what the engine does around the
+# *model*, and a finding the template repairs first never reaches the model at all.
+SQL_SOURCE = (
+    "function buildLookup(id) {\n"
+    "  return \"SELECT * FROM users WHERE id = '\" + id + \"'\";\n"
+    "}\n"
+    "export function loadUser(db, id) {\n"
+    "  const sql = buildLookup(id);\n"
+    "  return db.query(sql);\n"
+    "}\n"
+)
+SQL_REPAIRED = (
+    "function buildLookup() {\n"
+    "  return 'SELECT * FROM users WHERE id = $1';\n"
+    "}\n"
+    "export function loadUser(db, id) {\n"
+    "  const sql = buildLookup();\n"
+    "  return db.query(sql, [id]);\n"
+    "}\n"
+)
+CMD_SOURCE = (
+    "function buildCommand(name) {\n"
+    "  return `tar -czf ${name}.tgz ${name}`;\n"
+    "}\n"
+    "export function archive(exec, name) {\n"
+    "  const command = buildCommand(name);\n"
+    "  return exec(command);\n"
+    "}\n"
+)
+CMD_REPAIRED = (
+    "function buildCommand(name) {\n"
+    "  return ['-czf', name + '.tgz', name];\n"
+    "}\n"
+    "export function archive(exec, name) {\n"
+    "  const command = buildCommand(name);\n"
+    "  return exec('tar', command);\n"
+    "}\n"
+)
+# The line each rule reports: the sink, not the builder above it.
+SINK_LINE = 6
 MANIFEST = '{"dependencies":{"pg":"8.13.0"}}\n'
 
 
@@ -219,8 +260,8 @@ def _two_file_payload(request_payload):
         {"path": "package.json", "content": MANIFEST, "sha": git_blob(MANIFEST)},
     ]
     payload["findings"] = [
-        {"snapshot_id": "finding-sql", "rule_id": "js.sql-injection", "cwe_id": "CWE-89", "file_path": "src/db.ts", "line_start": 2, "line_end": 2},
-        {"snapshot_id": "finding-cmd", "rule_id": "js.command-injection", "cwe_id": "CWE-78", "file_path": "src/cmd.ts", "line_start": 2, "line_end": 2},
+        {"snapshot_id": "finding-sql", "rule_id": "js.sql-injection", "cwe_id": "CWE-89", "file_path": "src/db.ts", "line_start": SINK_LINE, "line_end": SINK_LINE},
+        {"snapshot_id": "finding-cmd", "rule_id": "js.command-injection", "cwe_id": "CWE-78", "file_path": "src/cmd.ts", "line_start": SINK_LINE, "line_end": SINK_LINE},
     ]
     return payload
 
@@ -237,7 +278,7 @@ def _propose(path, original, replacement, hypothesis, finding_ids=None):
             "hypothesis": hypothesis,
             "intended_behavior": "Preserve the documented behavior for legitimate input.",
             "assumptions": ["the snapshot proves the required dependency"],
-            "citations": [{"path": path, "line_start": 1, "line_end": 3}],
+            "citations": [{"path": path, "line_start": 1, "line_end": 7}],
             "changes": [whole_file_change(path, original, replacement)],
             "regression_tests": [
                 regression_test_spec(path=f".mitig8it/regression/{finding_id}.test.js", finding_id=finding_id)
@@ -286,8 +327,8 @@ async def test_two_findings_in_the_same_file_are_one_group_with_one_candidate_pe
         "rule_id": "js.sql-injection",
         "cwe_id": "CWE-89",
         "file_path": "src/db.ts",
-        "line_start": 2,
-        "line_end": 2,
+        "line_start": SINK_LINE,
+        "line_end": SINK_LINE,
     }
     scripts = {
         "src/db.ts": [
@@ -316,7 +357,11 @@ async def test_two_findings_in_the_same_file_are_one_group_with_one_candidate_pe
 
 @pytest.mark.asyncio
 async def test_a_finding_without_its_own_regression_test_is_dropped_from_the_candidate_and_reported(request_payload):
-    """Two findings in one group, one reproducer: the candidate claims only the finding it proved."""
+    """Two findings in one group, one reproducer: the candidate claims only the finding it proved.
+
+    The second finding sits in the builder above the sink, where the service writes no proof of
+    its own (`sql_sink_not_in_scope`), so the model's single test is the only evidence there is.
+    """
     payload = _two_file_payload(request_payload)
     payload["findings"][1] = {
         "snapshot_id": "finding-sql-2",

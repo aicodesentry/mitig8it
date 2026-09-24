@@ -60,6 +60,17 @@ Before any agent runs, a finding may also be reported in `skipped` as `rule_fami
 
 For every supported finding the service attempts both halves of the repair before any model call. It derives the enclosing site (the request handler that encloses the finding, on either language, else the function or method that does), generates one harness regression test from that site, and attempts a deterministic template hunk for the family. Template hunks are combined per group, bundled with the service proofs, and verified exactly like a model proposal; a pass that ships from this path records `{"input_tokens": 0, "output_tokens": 0, "provider_request_ids": []}` and never reaches a provider. The model is asked only for findings the template pass did not prove, and it receives the same service-written proof plus the failure tail of a template that failed. A finding still unproven after the group pass gets one focused single-finding run unless the model deliberately abstained. `evidence.groups[].reason_evidence` records which path produced what.
 
+#### Why a service proof is refused
+
+A proof the service cannot write is reported in `reason_evidence.proofs` as `model:<reason>`, and the same code appears in `templates` as `not_attempted:<reason>` because a template without a proof is never attempted. The reasons that turn on the file rather than on the site:
+
+| Reason | Meaning |
+| --- | --- |
+| `module_not_loadable_by_node` | The affected file's suffix is not one the sandbox's Node can run: `.js`, `.cjs`, `.mjs`, `.ts`, `.cts`, and `.mts` are, and `.jsx` and `.tsx` are not, because strip-only mode deletes type syntax and does not transform JSX. |
+| `typescript_syntax_not_strippable:<construct>` | The TypeScript file carries an `enum`, a `namespace`, or a constructor parameter property. Each has to be compiled into code rather than deleted, so Node's strip-only mode refuses the whole file with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. |
+
+TypeScript is loaded by Node's own type stripper rather than by a toolchain: the sandbox still installs nothing and compiles nothing. One shape is not detectable in advance and so is not refused: an interface imported as an ordinary value binding (`import { Settings, settings } from './config'` rather than `import type`) survives stripping and names an export the stripped module does not have. That module fails to load, so its proof fails; it is never a false pass.
+
 #### What `path_containment` repairs a site to do
 
 The containment check is the same wherever the `path.join` is: resolve the base, resolve the

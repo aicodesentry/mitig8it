@@ -119,6 +119,20 @@ def with_source(payload: dict[str, Any], text: str, line: int | None = None) -> 
     return updated
 
 
+def renamed_payload(payload: dict[str, Any], old: str, new: str) -> dict[str, Any]:
+    """`payload` with one snapshot path renamed, for the cases that turn on a file's suffix."""
+    updated = {key: list(value) if isinstance(value, list) else value for key, value in payload.items()}
+    entries = [
+        GitTreeEntry(path=new if entry["path"] == old else entry["path"], mode=entry["mode"], type=entry["type"], sha=entry["sha"])
+        for entry in payload["tree_entries"]
+    ]
+    updated["tree_entries"] = [entry.model_dump() for entry in entries]
+    updated["head_tree_oid"] = compute_tree_oid(entries)
+    updated["files"] = [{**item, "path": new} if item["path"] == old else dict(item) for item in payload["files"]]
+    updated["findings"] = [{**item, "file_path": new} if item.get("file_path") == old else dict(item) for item in payload["findings"]]
+    return updated
+
+
 @pytest.fixture
 def request_payload(source: str) -> dict[str, Any]:
     entries = [

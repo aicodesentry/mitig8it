@@ -219,15 +219,32 @@ def _js_function_call(function: JsFunction, arguments: str) -> list[str]:
     ]
 
 
-# The suffixes plain `node` can `require`. The sandbox has no TypeScript toolchain and nothing
-# is installed there, so a proof that loads a `.ts` module could never run.
-NODE_LOADABLE_SUFFIXES = (".js", ".cjs", ".mjs", ".jsx")
+# The suffixes the sandbox's `node` can run. Plain JavaScript runs as written; TypeScript runs
+# through Node's own type stripper, which the verifier turns on for every generated test
+# (`verification.checks.NODE_TYPESCRIPT_FLAGS`). Nothing is installed in the sandbox and nothing
+# compiles there, so `.jsx` and `.tsx` stay out: strip-only mode deletes type syntax and does not
+# transform JSX, and a proof that cannot parse its own module proves nothing.
+NODE_LOADABLE_SUFFIXES = (".js", ".cjs", ".mjs")
+TYPESCRIPT_SUFFIXES = (".ts", ".cts", ".mts")
+# What strip-only mode refuses outright, because each one has to emit code rather than delete
+# text. Node reports these as ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX; matching them here turns that
+# into a refusal with a reason instead of a sandbox run that was never going to load.
+_TS_UNSTRIPPABLE = (
+    (re.compile(r"^[ \t]*(?:export[ \t]+)?(?:declare[ \t]+)?(?:const[ \t]+)?enum[ \t]+[\w$]+", re.M), "enum"),
+    (re.compile(r"^[ \t]*(?:export[ \t]+)?(?:declare[ \t]+)?(?:namespace|module)[ \t]+[\w$.]+[ \t]*\{", re.M), "namespace"),
+    (re.compile(r"constructor\s*\([^)]*(?<![\w$])(?:public|private|protected|readonly)\s+[\w$]+"), "parameter_property"),
+)
 
 
-def _js_loadable(path: str) -> None:
-    """Raises unless plain `node` can `require` the module a generated proof has to load."""
-    if not path.endswith(NODE_LOADABLE_SUFFIXES):
+def _js_loadable(path: str, source: str) -> None:
+    """Raises unless the sandbox's `node` can load the module a generated proof has to load."""
+    if path.endswith(NODE_LOADABLE_SUFFIXES):
+        return
+    if not path.endswith(TYPESCRIPT_SUFFIXES):
         raise SiteError("module_not_loadable_by_node")
+    for pattern, construct in _TS_UNSTRIPPABLE:
+        if pattern.search(source):
+            raise SiteError(f"typescript_syntax_not_strippable:{construct}")
 
 
 # The calls the harness records for each family. A generated proof asserts on those recorders, so
@@ -834,13 +851,14 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
     path = finding.affected_path
     try:
         if language == JAVASCRIPT:
-            # A secret literal is not inside any function, and neither is a parser a route
-            # calls, so both are proven without an enclosing scope.
+            # Every JavaScript proof loads the module, so loadability is decided once, before the
+            # families that need no enclosing scope: a secret literal is not inside any function,
+            # and neither is a parser a route calls.
+            _js_loadable(path, snapshot.full_content(path))
             if family == HARDCODED_CREDENTIAL:
                 return _js_credential_proof(snapshot, finding)
             if family == CODE_INJECTION_EVAL:
                 return _js_eval_proof(snapshot, finding)
-            _js_loadable(path)
             site = js_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _js_sql_proof(snapshot, finding, site)

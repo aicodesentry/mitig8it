@@ -49,8 +49,24 @@ NODE_BUILTIN_MODULES = frozenset(
 )
 
 NODE_SYNTAX_SUFFIXES = {".js", ".cjs", ".mjs"}
+# TypeScript parses with the type stripper rather than `node --check`, which reads every file
+# as JavaScript and so rejects the first annotation it meets.
+TYPESCRIPT_SYNTAX_SUFFIXES = {".ts", ".cts", ".mts"}
+# How this service runs TypeScript, in one place, because the in-process candidate check here and
+# the sandbox checks in `verification.checks` have to agree. `--experimental-strip-types` is a
+# no-op from Node 22.18, where stripping became the default, and is passed anyway so the flag set
+# does not depend on the patch version the image happens to carry. The warning is disabled
+# because every check's output tail is evidence, and an unconditional experimental notice is not.
+NODE_TYPESCRIPT_FLAGS = ("--experimental-strip-types", "--disable-warning=ExperimentalWarning")
+# `node --check` parses as JavaScript and never strips, so it rejects every annotated file.
+# `stripTypeScriptTypes` is the parse-only equivalent: it fails on a syntax error and on the
+# constructs strip-only mode cannot handle, and it runs nothing.
+TYPESCRIPT_SYNTAX_PROGRAM = (
+    "require('node:module').stripTypeScriptTypes("
+    "require('node:fs').readFileSync(process.argv[1], 'utf8'), { mode: 'strip' })"
+)
 PYTHON_SYNTAX_SUFFIXES = {".py"}
-SYNTAX_CHECKED_SUFFIXES = NODE_SYNTAX_SUFFIXES | PYTHON_SYNTAX_SUFFIXES
+SYNTAX_CHECKED_SUFFIXES = NODE_SYNTAX_SUFFIXES | TYPESCRIPT_SYNTAX_SUFFIXES | PYTHON_SYNTAX_SUFFIXES
 APPLICATION_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".py"}
 
 # Agent-generated regression tests live in a dedicated directory that no repository file may
@@ -378,14 +394,20 @@ def _syntax_check(path: str, replacement: str) -> str | None:
     suffix = PurePosixPath(path).suffix.lower()
     if suffix in PYTHON_SYNTAX_SUFFIXES:
         return _python_syntax_check(path, replacement)
-    if suffix not in NODE_SYNTAX_SUFFIXES:
-        return f"syntax check skipped for {path}: only .js, .cjs, .mjs, and .py are parsed"
+    typescript = suffix in TYPESCRIPT_SYNTAX_SUFFIXES
+    if suffix not in NODE_SYNTAX_SUFFIXES and not typescript:
+        return f"syntax check skipped for {path}: only .js, .cjs, .mjs, .ts, .cts, .mts, and .py are parsed"
     with tempfile.TemporaryDirectory(prefix="mitig8it-syntax-") as directory:
         target = Path(directory) / f"candidate{suffix}"
         target.write_text(replacement, encoding="utf-8")
+        argv = (
+            ["node", *NODE_TYPESCRIPT_FLAGS, "-e", TYPESCRIPT_SYNTAX_PROGRAM, str(target)]
+            if typescript
+            else ["node", "--check", str(target)]
+        )
         try:
             completed = subprocess.run(  # noqa: S603 - fixed argv, no shell, temporary file only.
-                ["node", "--check", str(target)],
+                argv,
                 cwd=directory,
                 env={"PATH": __import__("os").environ.get("PATH", ""), "NO_COLOR": "1"},
                 stdin=subprocess.DEVNULL,
@@ -405,7 +427,9 @@ def _syntax_check(path: str, replacement: str) -> str | None:
             )
             raise PatchPolicyError(
                 f"candidate_syntax_invalid:{path}",
-                f"The patched {path} does not parse under `node --check`. Node reports:\n"
+                f"The patched {path} does not parse under "
+                + ("Node's TypeScript type stripper" if typescript else "`node --check`")
+                + ". Node reports:\n"
                 f"{diagnostic.strip()[:MAX_SYNTAX_DIAGNOSTIC_CHARS]}\n"
                 "The line number is in the patched file. Re-read that range and send hunks whose "
                 "replacement_lines leave the file balanced.",

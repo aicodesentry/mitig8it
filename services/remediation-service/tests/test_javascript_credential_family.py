@@ -209,6 +209,40 @@ class TestGeneratedProof:
         assert 'h.assert.envRead("CLIENT_SECRET")' in proof.content
         assert "h.assert.equal(m." not in proof.content
 
+    def test_a_typescript_module_gets_a_proof_because_node_strips_its_types(self, request_payload):
+        """`.ts` used to refuse every family with `module_not_loadable_by_node`.
+
+        The sandbox still installs nothing and compiles nothing: what changed is that its Node
+        deletes type-only syntax on load, so the module the proof has to require now loads.
+        """
+        snapshot, finding = _snapshot(
+            request_payload, "src/config.ts", 'const apiKey: string = "sk-live-abc123def456";\nexport { apiKey };\n'
+        )
+        proof = generate_proof(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
+        assert not isinstance(proof, ProofFallback), getattr(proof, "reason", None)
+        assert 'h.load("src/config.ts"' in proof.content
+
+    @pytest.mark.parametrize(
+        ("source", "construct"),
+        [
+            ('enum Tier { Free, Paid }\nconst apiKey = "sk-live-abc123def456";\n', "enum"),
+            ('namespace Config {\n  export const x = 1;\n}\nconst apiKey = "sk-live-abc123def456";\n', "namespace"),
+            ('class C {\n  constructor(private key: string) {}\n}\nconst apiKey = "sk-live-abc123def456";\n', "parameter_property"),
+        ],
+    )
+    def test_syntax_the_stripper_refuses_is_refused_with_the_construct_named(self, request_payload, source, construct):
+        snapshot, finding = _snapshot(request_payload, "src/config.ts", source)
+        finding = finding.model_copy(update={"line_start": len(source.splitlines()), "line_end": len(source.splitlines())})
+        proof = generate_proof(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
+        assert isinstance(proof, ProofFallback)
+        assert proof.reason == f"typescript_syntax_not_strippable:{construct}"
+
+    def test_jsx_is_still_not_loadable_by_node(self, request_payload):
+        snapshot, finding = _snapshot(request_payload, "src/config.jsx", 'const apiKey = "sk-live-abc123def456";\n')
+        proof = generate_proof(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
+        assert isinstance(proof, ProofFallback)
+        assert proof.reason == "module_not_loadable_by_node"
+
     def test_the_proof_needs_no_route(self, request_payload):
         """Every other JavaScript family derives an Express route first. A secret literal is
         not inside a handler, so requiring one would fail every real finding."""

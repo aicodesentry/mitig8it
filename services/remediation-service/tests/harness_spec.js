@@ -325,3 +325,93 @@ h.run(async () => {
   assert.equal(repaired.status, 0, repaired.stderr);
   assert.equal(repaired.stdout.trim(), 'harness: ok');
 });
+
+// --- TypeScript -------------------------------------------------------------------------------
+// The sandbox has no TypeScript toolchain and never gets one: what follows is what plain node
+// does with the type stripper the service turns on, over the three shapes the corpus writes.
+const TS_FLAGS = ['--experimental-strip-types', '--disable-warning=ExperimentalWarning'];
+const runTest = (name) => cp.spawnSync(process.execPath, [...TS_FLAGS, pathReal.join('.mitig8it', 'regression', name)], { cwd: root, encoding: 'utf8' });
+
+write('services/config.ts', `export interface Settings { token: string; retries: number }
+export const TOKEN: string = process.env.API_TOKEN as string;
+export function settings(retries: number = 1): Settings { return { token: TOKEN, retries }; }
+`);
+write('services/tokens.ts', `const KEY: string = 'sk-live-not-a-real-key';
+type Grant = { key: string };
+function grant(): Grant { return { key: KEY }; }
+module.exports = { grant, KEY };
+`);
+
+test('a TypeScript module with type annotations loads and its types are stripped', () => {
+  write('.mitig8it/regression/ts-types.test.js', `const h = require('../harness');
+h.run(async () => {
+  const m = h.load('services/tokens.ts');
+  h.assert.equal(m.grant().key, 'sk-live-not-a-real-key');
+  h.assert.notInSource(m, 'type Grant');
+});
+`);
+  // The module ran, so the annotation was stripped; notInSource reads the file back, where the
+  // annotation still is, so the test's failure is what proves both halves at once.
+  const result = runTest('ts-types.test.js');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /the source still contains "type Grant"/);
+  write('.mitig8it/regression/ts-ok.test.js', `const h = require('../harness');
+h.run(async () => {
+  const m = h.load('services/tokens.ts');
+  h.assert.equal(m.grant().key, m.KEY);
+});
+`);
+  const passing = runTest('ts-ok.test.js');
+  assert.equal(passing.status, 0, passing.stderr);
+  assert.equal(passing.stdout.trim(), 'harness: ok');
+});
+
+test('a TypeScript module resolves an interface import written without an extension and as .js', () => {
+  // Node resolves neither specifier on its own: `./config` has no extension, and `./config.js`
+  // names a file that does not exist, which is how a TypeScript project under NodeNext writes
+  // an import of `config.ts`.
+  write('services/session.ts', `import type { Settings } from './config';
+import { settings } from './config';
+import { TOKEN } from './config.js';
+export function describe(): string { const s: Settings = settings(2); return s.token + ':' + s.retries + ':' + TOKEN; }
+`);
+  write('.mitig8it/regression/ts-import.test.js', `const h = require('../harness');
+h.run(async () => {
+  const m = h.load('services/session', { env: { API_TOKEN: 'from-env' } });
+  h.assert.envRead('API_TOKEN');
+  h.assert.equal(m.describe(), 'from-env:2:from-env');
+});
+`);
+  const result = runTest('ts-import.test.js');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'harness: ok');
+});
+
+test('an interface imported as a value binding is a shape strip-only mode cannot load', () => {
+  // Strip-only mode deletes an interface but cannot tell that `Settings` in a mixed import list
+  // was one, so the import survives and names an export the stripped module does not have. It is
+  // the `isolatedModules` rule TypeScript itself enforces with `verbatimModuleSyntax`. Nothing
+  // detects it lexically, so the proof is written anyway and fails honestly rather than passing.
+  write('services/mixed.ts', `import { Settings, settings } from './config';
+export function retries(): number { const s: Settings = settings(3); return s.retries; }
+`);
+  write('.mitig8it/regression/ts-mixed.test.js', `const h = require('../harness');
+h.run(async () => { h.load('services/mixed.ts'); });
+`);
+  const result = runTest('ts-mixed.test.js');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /does not provide an export named 'Settings'/);
+});
+
+test('an enum is refused by the stripper, naming the syntax it cannot handle', () => {
+  write('services/levels.ts', `enum Level { Low, High }
+module.exports = { Level };
+`);
+  write('.mitig8it/regression/ts-enum.test.js', `const h = require('../harness');
+h.run(async () => { h.load('services/levels.ts'); });
+`);
+  const result = runTest('ts-enum.test.js');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX/);
+  assert.match(result.stderr, /enum is not supported in strip-only mode/);
+});

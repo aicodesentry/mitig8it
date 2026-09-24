@@ -7,7 +7,36 @@ file, `.mitig8it/harness.js`, next to the generated tests in both the baseline a
 workspace. It is evidence infrastructure, not part of the repair: it is never a patch, never a
 manifest entry, and a proposal that writes to it is rejected as `harness_path_protected`.
 
-Source: `services/remediation-service/src/sandbox/harness.js` (Node 20, built-ins only, under 16 KB).
+Source: `services/remediation-service/src/sandbox/harness.js` (Node 22 LTS, built-ins only, under 28 KB).
+
+## TypeScript
+
+The sandbox has no TypeScript toolchain and gets none. What it has is Node's own type stripper,
+which the service turns on for every generated test and every derived syntax check with
+`--experimental-strip-types --disable-warning=ExperimentalWarning` (`patches.NODE_TYPESCRIPT_FLAGS`).
+Stripping deletes type-only syntax and emits nothing, so a `.ts`, `.cts`, or `.mts` module loads
+as the JavaScript it already is.
+
+Three constructs cannot be deleted, only compiled, and Node refuses the whole file for each with
+`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`: an `enum`, a `namespace` (or the `module X {}` form), and a
+constructor parameter property (`constructor(private x: number)`). The service refuses such a
+finding before it runs anything, with `typescript_syntax_not_strippable:<construct>`. `.jsx` and
+`.tsx` are refused as `module_not_loadable_by_node`: strip-only mode does not transform JSX.
+
+Stripping does not resolve imports, and Node's resolver never tries a `.ts` suffix, so `h.load`
+and the harness's require hook do: an extension-less relative specifier, a directory's
+`index.ts`, and the `.js` specifier a TypeScript project writes for a `.ts` source (`./config.js`
+for `config.ts`, `.cjs` for `.cts`, `.mjs` for `.mts`) all resolve to the TypeScript file. A
+module written with `import`/`export` is loaded by the ES module loader, which does not consult
+the require hook, so its imports resolve through `module.registerHooks` instead; the built-in
+fakes reach a CommonJS module only, and an ES module that imports `express` or `pg` fails to
+load rather than running against the real package, which is not installed.
+
+One shape loads under `tsc` and not here: an interface imported as an ordinary value binding
+(`import { Settings, settings } from './config'`). Strip-only mode cannot tell which name was a
+type, so the import survives and names an export the stripped module does not have. It is the
+`isolatedModules` rule TypeScript enforces with `verbatimModuleSyntax`, nothing detects it
+lexically, and the module simply fails to load, so a proof over it fails rather than passing.
 
 ## Shape of a test
 

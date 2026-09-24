@@ -27,8 +27,8 @@ SCANNER = [
 def development_payload(request_payload, checks, *, allow=True, source=None, replacement=REPAIRED, regression_test=None):
     """A policy-checked request: the fixture's exploit and behavior argv are the evidence.
 
-    The snapshot is TypeScript, which node cannot load, so a generated behavior test cannot run
-    here; policy therefore does not require one unless a test is passed in explicitly.
+    Policy does not require a generated behavior test here unless one is passed in explicitly,
+    so these cases stay about the driver rather than about what a reproducer proved.
     """
     request_payload["policy"]["sandbox_image_digest"] = None
     request_payload["policy"]["allow_development_verification"] = allow
@@ -98,7 +98,9 @@ async def test_limitations_name_every_check_kind_that_did_not_run(request_payloa
     result = await Verifier(InProcessSandboxBroker(LocalSubprocessDriver())).verify(request, snapshot, bundle)
     joined = " ".join(result.limitations)
     assert "original test suite was not run" in joined
-    assert "no type check or build was run" in joined
+    # The candidate patches `src/db.ts`, and a TypeScript file now derives its own parse check,
+    # so the typecheck kind ran and is not among the limitations.
+    assert "no type check or build was run" not in joined
     assert "no scanner baseline/candidate finding comparison" in joined
 
 

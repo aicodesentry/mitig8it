@@ -11,13 +11,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     REMEDIATION_DATA_DIR=${REMEDIATION_DATA_DIR}
 WORKDIR /app
 
-# A pinned Node 20 LTS runtime. The development-only local subprocess sandbox driver runs a
+# A pinned Node 22 LTS runtime. The development-only local subprocess sandbox driver runs a
 # repository's own checks (`node tests/verify.js`, `node --check`) as subprocesses inside this
-# container, so the interpreter has to be present. The official tarball is verified against a
+# container, so the interpreter has to be present. It is 22 rather than 20 because the generated
+# proofs load TypeScript modules through Node's own type stripper, which arrived in 22.6, and
+# resolve their imports through `module.registerHooks`, which arrived in 22.15; `node --version`
+# below is what fails the build if either is missing. The official tarball is verified against a
 # pinned SHA-256 per architecture; the build tools are removed in the same layer.
-ARG NODE_VERSION=20.20.2
-ARG NODE_SHA256_X64=df770b2a6f130ed8627c9782c988fda9669fa23898329a61a871e32f965e007d
-ARG NODE_SHA256_ARM64=73093db209e4e9e09dd7d15a47aeaab1b74833830df03efa5f942a1122c5fa71
+ARG NODE_VERSION=22.23.3
+ARG NODE_SHA256_X64=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
+ARG NODE_SHA256_ARM64=a44aeb94849a299b22df10b9e622ec2f605c2183501bc40590705131de7c740f
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl xz-utils; \
@@ -36,7 +39,9 @@ RUN set -eux; \
     apt-get purge -y --auto-remove curl xz-utils; \
     rm -rf /var/lib/apt/lists/*; \
     node --version; \
-    npm --version
+    npm --version; \
+    node --experimental-strip-types --disable-warning=ExperimentalWarning \
+        -e "const m = require('node:module'); m.stripTypeScriptTypes('const x: number = 1;'); if (typeof m.registerHooks !== 'function') { throw new Error('this Node cannot resolve TypeScript imports for the sandbox harness'); }"
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \

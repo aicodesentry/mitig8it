@@ -116,9 +116,10 @@ class SelectiveBroker(PassingBroker):
         self.runs.append([check["check_id"] for check in evidence["checks"]])
         for check in evidence["checks"]:
             argv = check["argv"]
-            if not (check["kind"] == "exploit" and argv[0] == "node" and argv[1].startswith(".mitig8it/regression/")):
+            # The test path is the last argument: `node` takes the type-stripping flags first.
+            if not (check["kind"] == "exploit" and argv[0] == "node" and argv[-1].startswith(".mitig8it/regression/")):
                 continue
-            finding_id = argv[1].rsplit("/", 1)[-1].removesuffix(".test.js")
+            finding_id = argv[-1].rsplit("/", 1)[-1].removesuffix(".test.js")
             if finding_id in self.still_failing:
                 check["baseline"] = {"completed": True, "status": "failed", "output_tail": CANDIDATE_TAIL}
                 check["candidate"] = {"completed": True, "status": "failed", "output_tail": CANDIDATE_TAIL}

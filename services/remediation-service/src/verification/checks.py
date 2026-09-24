@@ -17,7 +17,12 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from ..models import RepairRequest, VerificationCheck
-from ..patches import PatchBundle
+from ..patches import (
+    NODE_TYPESCRIPT_FLAGS,
+    TYPESCRIPT_SYNTAX_PROGRAM,
+    TYPESCRIPT_SYNTAX_SUFFIXES as TYPESCRIPT_SUFFIXES,
+    PatchBundle,
+)
 from ..retrieval import Snapshot
 from ..sandbox.harness import (
     HARNESS_OCCUPIED_LIMITATION,
@@ -133,7 +138,7 @@ def build_effective_checks(request: RepairRequest, snapshot: Snapshot, bundle: P
             argv = [PYTHON_EXECUTABLE, PYTHON_HARNESS_PATH, test.path]
         else:
             node_tests = True
-            argv = ["node", test.path]
+            argv = ["node", *NODE_TYPESCRIPT_FLAGS, test.path]
         checks.append(
             VerificationCheck(
                 check_id=check_id,
@@ -165,6 +170,9 @@ def build_effective_checks(request: RepairRequest, snapshot: Snapshot, bundle: P
         suffix = PurePosixPath(patch.path).suffix.lower()
         if suffix in SYNTAX_CHECKED_SUFFIXES:
             check_id, argv = _unique(SYNTAX_CHECK_PREFIX, used), ["node", "--check", patch.path]
+        elif suffix in TYPESCRIPT_SUFFIXES:
+            check_id = _unique(SYNTAX_CHECK_PREFIX, used)
+            argv = ["node", *NODE_TYPESCRIPT_FLAGS, "-e", TYPESCRIPT_SYNTAX_PROGRAM, patch.path]
         elif suffix in PYTHON_SUFFIXES:
             check_id, argv = _unique(PYTHON_SYNTAX_CHECK_PREFIX, used), [PYTHON_EXECUTABLE, "-m", "py_compile", patch.path]
         else:

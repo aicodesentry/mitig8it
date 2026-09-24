@@ -225,9 +225,11 @@ async def test_denied_reservation_reports_the_numbers_as_evidence(request_payloa
 
 
 @pytest.mark.asyncio
-async def test_engine_response_carries_the_denied_reservation_numbers(request_payload):
-    request_payload["policy"]["max_total_tokens"] = 1_000
-    request = RepairRequest.model_validate(request_payload)
+async def test_engine_response_carries_the_denied_reservation_numbers(model_only_payload):
+    # The model path: a finding the deterministic template repairs never reaches the provider,
+    # so there is no reservation for the budget to deny.
+    model_only_payload["policy"]["max_total_tokens"] = 1_000
+    request = RepairRequest.model_validate(model_only_payload)
     provider = RecordingProvider([_abstain()], reported_input_tokens=10)
     agent = RepairAgent(provider, Verifier(_NullBroker()))
     response = await RepairEngine(lambda ignored: agent).repair(request)

@@ -8,6 +8,28 @@ const { Readable } = require('node:stream');
 const realFs = require('node:fs');
 
 const ROOT = path.resolve(__dirname, '..');
+
+// TypeScript modules run through Node's own type stripper (Node 22.6 and later), which deletes
+// type-only syntax and refuses enums, namespaces, and parameter properties. Stripping is what
+// compiles the file; what Node still does not do is find it. Its resolver never tries a `.ts`
+// suffix, so an extension-less relative import and the `.js` specifier a TypeScript project
+// writes for a `.ts` source both fail to resolve. Both are resolved here instead, for the
+// module a test loads and for every relative import that module makes.
+const TS_SUFFIXES = ['.ts', '.mts', '.cts'];
+const isFile = (target) => { try { return realFs.statSync(target).isFile(); } catch { return false; } };
+const withSuffix = (base) => TS_SUFFIXES.map((suffix) => base + suffix).find(isFile) || null;
+// The `.ts` source an absolute specifier names, or null when none exists: the file itself, the
+// TypeScript source a `.js`/`.cjs`/`.mjs` specifier stands for, an extension-less path, or a
+// directory's `index.ts`.
+function tsSource(absolute) {
+  const written = /\.([cm]?)js$/.exec(absolute);
+  if (written) {
+    const base = absolute.slice(0, -written[0].length);
+    return (isFile(`${base}.${written[1]}ts`) ? `${base}.${written[1]}ts` : null) || withSuffix(base) || withSuffix(absolute);
+  }
+  return withSuffix(absolute) || withSuffix(path.join(absolute, 'index'));
+}
+const isRelative = (request) => request.startsWith('.') || path.isAbsolute(request);
 const state = { express: { routes: [] }, pg: { queries: [] }, child_process: { calls: [] }, fs: { reads: [] }, env: { reads: [] }, code: { calls: [] } };
 let config = {};
 let fakes = {};
@@ -199,9 +221,39 @@ const vm = {
 const builtinFakes = { express, pg, child_process, fs, 'fs/promises': fs.promises, vm };
 const originalLoad = Module._load;
 Module._load = function load(request, parent, isMain) {
-  const name = String(request).replace(/^node:/, '');
-  return Object.prototype.hasOwnProperty.call(fakes, name) ? fakes[name] : originalLoad.call(this, request, parent, isMain);
+  const written = String(request);
+  const name = written.replace(/^node:/, '');
+  if (Object.prototype.hasOwnProperty.call(fakes, name)) return fakes[name];
+  try {
+    return originalLoad.call(this, request, parent, isMain);
+  } catch (error) {
+    // Only a relative or absolute specifier Node could not find is retried as TypeScript: a
+    // missing package is still a missing package, and the patch policy refuses a test that asks
+    // for one.
+    if (error.code !== 'MODULE_NOT_FOUND' || !isRelative(written)) throw error;
+    const from = parent && parent.filename ? path.dirname(parent.filename) : ROOT;
+    const found = tsSource(path.resolve(from, written));
+    if (!found) throw error;
+    return originalLoad.call(this, found, parent, isMain);
+  }
 };
+// A TypeScript module written with `import`/`export` is loaded by the ES module loader, which
+// never consults `Module._load`, so its imports are resolved through the synchronous hooks Node
+// 22.15 and later expose. The hook only redirects a relative specifier to the `.ts` source it
+// names; everything else falls through to the real resolver.
+if (typeof Module.registerHooks === 'function') {
+  Module.registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (isRelative(String(specifier))) {
+        let from = ROOT;
+        try { from = path.dirname(new URL(context.parentURL).pathname); } catch { from = ROOT; }
+        const found = tsSource(path.resolve(from, String(specifier)));
+        if (found) return { url: new URL(`file://${found}`).href, shortCircuit: true };
+      }
+      return nextResolve(specifier, context);
+    },
+  });
+}
 
 // process.env is replaced once, by a proxy that records every name the module under test reads:
 // a hardcoded-credential repair is proven by the read happening at all, so the read has to be
@@ -228,7 +280,14 @@ function load(target, options = {}) {
   fakes = { ...builtinFakes, ...obj(config.stubs) };
   for (const name of list(config.real)) delete fakes[name];
   const from = target.startsWith('.') ? path.dirname(require.main ? require.main.filename : __filename) : ROOT;
-  const resolved = require.resolve(path.resolve(from, target));
+  const absolute = path.resolve(from, target);
+  let resolved;
+  try {
+    resolved = require.resolve(absolute);
+  } catch (error) {
+    resolved = tsSource(absolute);
+    if (!resolved) throw error;
+  }
   delete require.cache[resolved];
   loadedFile = resolved;
   return require(resolved);
