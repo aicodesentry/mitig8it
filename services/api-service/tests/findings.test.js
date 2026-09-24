@@ -129,10 +129,55 @@ describe('PATCH /api/findings/:id/status', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.finding.status).toBe('dismissed');
+    // The legacy phrasing maps onto the enum the outcome log records.
     expect(findingsDb.updateStatus).toHaveBeenCalledWith(
       'finding-1',
       'user-uuid-1',
-      expect.objectContaining({ status: 'dismissed', dismissalReason: 'False positive' })
+      expect.objectContaining({ status: 'dismissed', dismissalReason: 'not_exploitable' })
+    );
+  });
+
+  test('accepts each of the four dismissal reasons unchanged', async () => {
+    for (const reason of ['not_exploitable', 'test_or_sample_code', 'wrong_rule_match', 'other']) {
+      findingsDb.updateStatus.mockResolvedValueOnce({ ...MOCK_FINDING, status: 'dismissed' });
+      const res = await request(createApp())
+        .patch('/api/findings/finding-1/status')
+        .set('Authorization', `Bearer ${authToken()}`)
+        .send({ status: 'dismissed', dismissal_reason: reason });
+
+      expect(res.status).toBe(200);
+      expect(findingsDb.updateStatus).toHaveBeenLastCalledWith(
+        'finding-1',
+        'user-uuid-1',
+        expect.objectContaining({ status: 'dismissed', dismissalReason: reason })
+      );
+    }
+  });
+
+  test('refuses a dismissal reason outside the enum', async () => {
+    findingsDb.updateStatus.mockClear();
+    const res = await request(createApp())
+      .patch('/api/findings/finding-1/status')
+      .set('Authorization', `Bearer ${authToken()}`)
+      .send({ status: 'dismissed', dismissal_reason: 'because I said so' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Invalid dismissal_reason');
+    expect(findingsDb.updateStatus).not.toHaveBeenCalled();
+  });
+
+  test('records an omitted dismissal reason as other', async () => {
+    findingsDb.updateStatus.mockResolvedValueOnce({ ...MOCK_FINDING, status: 'dismissed' });
+    const res = await request(createApp())
+      .patch('/api/findings/finding-1/status')
+      .set('Authorization', `Bearer ${authToken()}`)
+      .send({ status: 'dismissed' });
+
+    expect(res.status).toBe(200);
+    expect(findingsDb.updateStatus).toHaveBeenCalledWith(
+      'finding-1',
+      'user-uuid-1',
+      expect.objectContaining({ status: 'dismissed', dismissalReason: 'other' })
     );
   });
 

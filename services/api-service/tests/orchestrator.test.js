@@ -1022,12 +1022,12 @@ describe('PR Analysis Orchestrator — pipeline', () => {
       { pattern: '/comments/inline', data: { comment_id: 11, success: true } },
       { pattern: '/check-runs', data: { check_run_id: 2 } },
     ]);
-    // DB mocks: countCompleted, upsert (select), upsert (insert), markFixed, suppressions
+    // DB mocks: countCompleted, upsert (select), upsert (insert), suppressions.
+    // markFixed runs on its own transaction, which the database mock does not execute.
     pool.query
       .mockResolvedValueOnce({ rows: [{ count: 1 }] })  // countCompleted
       .mockResolvedValueOnce({ rows: [] })                // findByFingerprint
       .mockResolvedValueOnce({ rows: [PERSISTED_FINDING] }) // insert finding
-      .mockResolvedValueOnce({ rowCount: 0 })             // markFixed
       .mockResolvedValueOnce({ rows: [] })                // suppressions
       .mockResolvedValue({ rowCount: 1, rows: [{ count: 1 }] }); // remaining
 
@@ -1181,7 +1181,6 @@ describe('PR Analysis Orchestrator — pipeline', () => {
       .mockResolvedValueOnce({ rows: [{ count: 1 }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: 'finding-1', status: 'open', is_baseline: false, ...tier1Finding }] })
-      .mockResolvedValueOnce({ rowCount: 0 })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValue({ rowCount: 1, rows: [{ count: 1 }] });
 
@@ -1352,7 +1351,6 @@ describe('PR Analysis Orchestrator — pipeline', () => {
       .mockResolvedValueOnce({ rows: [{ count: 1 }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ status: 'open', is_baseline: false, ...tier2Finding }] })
-      .mockResolvedValueOnce({ rowCount: 0 })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValue({ rowCount: 1, rows: [{ count: 1 }] });
 

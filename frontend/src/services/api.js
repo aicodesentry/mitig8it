@@ -155,6 +155,15 @@ export const remediationAPI = {
   feedback: async (id, payload) => (await api.post(`/api/remediations/${id}/feedback`, payload)).data,
 }
 
+// The four reasons the API accepts for a dismissal or a suppression. They are the same
+// list the outcome log validates against, so the workspace never sends free text.
+export const DISMISSAL_REASONS = [
+  { value: 'not_exploitable', label: 'Not exploitable here' },
+  { value: 'test_or_sample_code', label: 'Test or sample code' },
+  { value: 'wrong_rule_match', label: 'Wrong rule match' },
+  { value: 'other', label: 'Other' },
+]
+
 export const findingAPI = {
   listByPR: async (pullRequestId, params = {}) => {
     const q = new URLSearchParams(params).toString()

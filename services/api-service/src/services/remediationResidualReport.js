@@ -1,4 +1,6 @@
 const remediationDb = require('../db/remediation');
+const findingsDb = require('../db/findings');
+const findingOutcomes = require('../db/findingOutcomes');
 const logger = require('../utils/logger');
 const { GitHubRemediationClient } = require('./githubRemediationClient');
 
@@ -69,6 +71,26 @@ async function reportForAction(action) {
   return { analysis, applied, unsupported, text: buildReport({ action, analysis, applied, unsupported }) };
 }
 
+// The findings the published report lists as still open and blocking. They are the
+// residue of the apply: the commit landed and these survived it. Keyed on the action,
+// so a re-published report records them once.
+async function recordResidualOutcomes(action, report) {
+  const open = Array.isArray(report?.analysis?.open) ? report.analysis.open : [];
+  const blocking = open.filter((finding) => !finding.informational);
+  if (!blocking.length) return 0;
+  const rows = await findingsDb.listByIds(blocking.map((finding) => finding.id));
+  const recorded = await findingOutcomes.recordOutcomesForFindings(null, rows, {
+    outcome: 'residual_after_apply',
+    source: 'remediation',
+    actorLogin: action.actor_login || null,
+    actionId: action.id,
+    jobId: action.job_id || null,
+    commitSha: action.verification_head_sha || action.observed_commit_sha || null,
+    externalId: action.id,
+  });
+  return recorded.length;
+}
+
 // Published once the action is completed, that is once the fresh analysis of the
 // applied head finished. One comment per action: the adapter updates it in place when
 // it already exists, so a retry never leaves a second copy.
@@ -94,6 +116,9 @@ async function publishResidualComment(actionId, options = {}) {
       return { published: false, reason: result?.reason || 'not_published' };
     }
     await remediationDb.recordResidualComment(action, { commentId: result.comment_id, headSha });
+    try { await recordResidualOutcomes(action, report); } catch (error) {
+      logger.error('Residual outcomes could not be recorded', { action_id: action.id, error: error.message });
+    }
     return { published: true, comment_id: result.comment_id, updated: Boolean(result.updated), text: report.text };
   } catch (error) {
     logger.error('Remediation residual comment could not be published', { action_id: action.id, error: error.message });
@@ -111,4 +136,7 @@ async function publishPendingResidualComments(options = {}) {
   return { attempted: ids.length, published };
 }
 
-module.exports = { buildReport, reportForAction, publishResidualComment, publishPendingResidualComments };
+module.exports = {
+  buildReport, reportForAction, publishResidualComment, publishPendingResidualComments,
+  recordResidualOutcomes,
+};

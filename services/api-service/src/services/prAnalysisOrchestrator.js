@@ -815,7 +815,9 @@ async function persistAndFilter({ findings, files, runId, pullRequestId, reposit
   }
 
   const activeFingerprints = persisted.map((f) => f.fingerprint);
-  await findingsDb.markFixed({ repositoryId, pullRequestId, activeFingerprints });
+  await findingsDb.markFixed({
+    repositoryId, pullRequestId, activeFingerprints, analysisRunId: runId, commitSha,
+  });
 
   const postSuppression = await applySuppressions(persisted, repositoryId);
   await persistSurfaceDecisions(buildSurfaceDecisions({ files, findings: postSuppression }));

@@ -9,12 +9,18 @@ Repository permissions:
 - Checks: Read & write
 - Metadata: Read-only
 
-Webhook permissions:
-- Pull requests
-- Pull request reviews
+## Subscribe to events
+- Pull request
+- Pull request review
+- Pull request review thread. Required: resolving or unresolving the app's own review thread is how a reviewer accepts or reopens a finding without ever opening the workspace. Without it those decisions are never recorded.
+- Pull request review comment. Required: a reply of `not an issue`, `false positive` or `/mitig8it dismiss` under the app's finding comment dismisses the finding. Without it those replies are never seen.
 - Push
 - Installation
 - Installation repositories
+
+Both new subscriptions feed the outcome log described in
+[finding outcomes](../architecture/finding-outcomes.md); the quality metrics are computed
+from it, so an installation missing them will under-report its dismiss rate.
 
 ## Webhook URL
 Set to:

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
-import { findingAPI, suppressionAPI } from '../services/api'
+import { findingAPI, suppressionAPI, DISMISSAL_REASONS } from '../services/api'
 import RemediationPanel from '../components/RemediationPanel'
 import { getPrivateCacheEpoch } from '../services/privateCache'
 
@@ -25,6 +25,9 @@ export default function PullRequestFindingsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [headSha, setHeadSha] = useState(null)
+  // The finding whose suppression reason is being chosen, and the reason chosen for it.
+  const [suppressingId, setSuppressingId] = useState(null)
+  const [suppressReason, setSuppressReason] = useState(DISMISSAL_REASONS[0].value)
   const requestVersion = useRef(0)
 
   const load = useCallback(async () => {
@@ -60,14 +63,15 @@ export default function PullRequestFindingsPage() {
     })
   }, [findings])
 
-  const suppress = async (finding) => {
+  const suppress = async (finding, reason) => {
     try {
       await suppressionAPI.create({
-      finding_id: finding.id,
-      repository_id: finding.repository_id,
-      reason: 'false_positive',
-      notes: 'Suppressed from PR findings page'
+        finding_id: finding.id,
+        repository_id: finding.repository_id,
+        reason,
+        notes: 'Suppressed from PR findings page'
       })
+      setSuppressingId(null)
       await load()
     } catch (_failure) {
       setError('Could not suppress this finding. Refresh and check your access before retrying.')
@@ -120,13 +124,47 @@ export default function PullRequestFindingsPage() {
                 Details
               </Link>
               <button
-                onClick={() => suppress(finding)}
+                onClick={() => {
+                  setSuppressReason(DISMISSAL_REASONS[0].value)
+                  setSuppressingId(suppressingId === finding.id ? null : finding.id)
+                }}
+                aria-expanded={suppressingId === finding.id}
                 className="rounded-lg border border-neutral-300 px-3 py-2 text-xs font-semibold text-neutral-700"
               >
                 Suppress
               </button>
             </div>
           </div>
+
+          {suppressingId === finding.id && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2">
+              <label htmlFor={`suppress-reason-${finding.id}`} className="text-xs font-semibold text-neutral-700">
+                Reason
+              </label>
+              <select
+                id={`suppress-reason-${finding.id}`}
+                value={suppressReason}
+                onChange={(event) => setSuppressReason(event.target.value)}
+                className="rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs text-neutral-800"
+              >
+                {DISMISSAL_REASONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <button
+                onClick={() => suppress(finding, suppressReason)}
+                className="rounded-lg border border-neutral-300 px-3 py-1 text-xs font-semibold text-neutral-700"
+              >
+                Confirm suppress
+              </button>
+              <button
+                onClick={() => setSuppressingId(null)}
+                className="text-xs font-medium text-neutral-500"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
           <pre className="mt-4 overflow-x-auto rounded-lg bg-neutral-900 p-3 text-xs text-neutral-100">{finding.code_snippet || 'No snippet'}</pre>
           <p className="mt-3 text-sm text-neutral-700">{finding.evidence}</p>
           {finding.remediation && (
