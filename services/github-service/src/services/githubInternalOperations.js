@@ -1,5 +1,7 @@
 const axios = require('axios');
-const githubAppAuth = require('./githubAppAuth');
+// Authentication and self-recognition go through the identity provider, which defaults to the
+// GitHub App. See githubIdentity.js for what a different provider may change.
+const githubIdentity = require('./githubIdentity');
 
 class OperationError extends Error {
   constructor(message, statusCode = 500, detail = null) {
@@ -151,7 +153,7 @@ async function fetchPullRequestFiles({ repository_full_name, pull_request_number
   const [owner, repo] = validateRepositoryFullName(repository_full_name);
 
   try {
-    const token = await githubAppAuth.getInstallationToken(installation_id);
+    const token = await githubIdentity.token(installation_id);
     if (!commit_sha) throw badRequest('commit_sha is required for immutable analysis');
     const assertHead = async () => {
       const pull = await githubRequest('get', `https://api.github.com/repos/${owner}/${repo}/pulls/${pull_request_number}`, token);
@@ -201,7 +203,7 @@ async function fetchFileContents({ repository_full_name, installation_id, ref, p
   const [owner, repo] = validateRepositoryFullName(repository_full_name);
 
   try {
-    const token = await githubAppAuth.getInstallationToken(installation_id);
+    const token = await githubIdentity.token(installation_id);
     const files = [];
 
     for (const path of paths.slice(0, 200)) {
@@ -234,7 +236,7 @@ async function submitPullRequestReview({ owner, repo, pr_number, installation_id
   validateOwnerRepo(owner, repo);
 
   try {
-    const token = await githubAppAuth.getInstallationToken(installation_id);
+    const token = await githubIdentity.token(installation_id);
     const pull = await githubRequest('get', `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}`, token);
     if (pull.data.head?.sha !== commit_sha) throw new OperationError('Analysis run superseded by another PR head', 409);
     const reviews = [];
@@ -244,7 +246,7 @@ async function submitPullRequestReview({ owner, repo, pr_number, installation_id
       reviews.push(...response.data);
       if (response.data.length < 100) break;
     }
-    const botLogin = await githubAppAuth.getAppBotLogin();
+    const botLogin = await githubIdentity.botLogin();
     const owned = reviews.filter(review => review.user?.login === botLogin && review.body?.includes('<!-- mitig8it-review -->'));
     const expectedState = event === 'REQUEST_CHANGES' ? 'CHANGES_REQUESTED' : 'COMMENTED';
     const existing = owned.find(review => review.commit_id === commit_sha && review.body === body && review.state === expectedState);
@@ -293,13 +295,13 @@ async function postInlineComment({ owner, repo, pr_number, installation_id, comm
   validateOwnerRepo(owner, repo);
 
   try {
-    const token = await githubAppAuth.getInstallationToken(installation_id);
+    const token = await githubIdentity.token(installation_id);
     // Stable finding markers make retries and later tiers reconcile the same thread.
     const marker = body.match(/<!-- mitig8it-finding:[^>]+ -->/)?.[0];
     if (marker) {
       const pull = await githubRequest('get', `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}`, token);
       if (pull.data.head?.sha !== commit_sha) throw new OperationError('Analysis run superseded by another PR head', 409);
-      const botLogin = await githubAppAuth.getAppBotLogin();
+      const botLogin = await githubIdentity.botLogin();
       for (let page = 1; ; page += 1) {
         const existing = await githubRequest('get',
           `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/comments?per_page=100&page=${page}`, token);
@@ -371,7 +373,7 @@ async function createCheckRun({ owner, repo, installation_id, head_sha, conclusi
   }
 
   try {
-    const token = await githubAppAuth.getInstallationToken(installation_id);
+    const token = await githubIdentity.token(installation_id);
     let existing = null;
     for (let page = 1; ; page += 1) {
       const response = await githubRequest('get',
@@ -379,7 +381,7 @@ async function createCheckRun({ owner, repo, installation_id, head_sha, conclusi
       const checks = response.data.check_runs;
       if (!Array.isArray(checks)) throw new OperationError('Invalid check run response', 502);
       existing = checks.find(check => check.head_sha === head_sha && check.name === 'Mitig8it Security Review'
-        && String(check.app?.id) === String(process.env.GITHUB_APP_ID));
+        && githubIdentity.ownsCheckRun(check));
       if (existing || checks.length < 100) break;
     }
     const response = await githubAnalysisWrite(
@@ -497,32 +499,15 @@ function validateFileChanges(changes) {
   return additions;
 }
 
+// Prove the caller may write to the repository it named, and that the actor it named may too.
+// Both proofs depend on what the code is authenticated as, so both live on the identity
+// provider; the App's implementations are unchanged and remain the default.
 async function assertInstallationRepositoryAndActor(envelope, requireActorWritePermission = true) {
-  const token = await githubAppAuth.getInstallationToken(envelope.installation_id);
-  const repository = await githubRequest('get', `https://api.github.com/repos/${envelope.owner}/${envelope.repo}`, token);
-  if (repository.data?.full_name?.toLowerCase() !== envelope.repository_full_name.toLowerCase()) {
-    throw new OperationError('Repository is not accessible through this installation', 403);
-  }
-  // The installation token is scoped to the claimed installation. Enumerating its
-  // accessible repositories protects against a caller mixing repository IDs across
-  // installations, including selected-repository installations.
-  let repositoryFound = false;
-  for (let page = 1; page <= 10; page += 1) {
-    const response = await githubRequest('get',
-      `https://api.github.com/installation/repositories?per_page=100&page=${page}`, token);
-    const repositories = response.data?.repositories;
-    if (!Array.isArray(repositories)) throw new OperationError('Invalid installation repository response', 502);
-    repositoryFound = repositories.some((candidate) => candidate.full_name?.toLowerCase() === envelope.repository_full_name.toLowerCase());
-    if (repositoryFound || repositories.length < 100) break;
-  }
-  if (!repositoryFound) throw new OperationError('Repository is not enabled for this installation', 403);
-
+  const token = await githubIdentity.token(envelope.installation_id);
+  const context = { envelope, token, githubRequest, OperationError };
+  await githubIdentity.assertRepositoryAccess(context);
   if (requireActorWritePermission) {
-    const permission = await githubRequest('get',
-      `https://api.github.com/repos/${envelope.owner}/${envelope.repo}/collaborators/${encodeURIComponent(envelope.actor_login)}/permission`, token);
-    if (!['write', 'admin'].includes(permission.data?.permission)) {
-      throw new OperationError('Actor does not currently have write permission for this repository', 403);
-    }
+    await githubIdentity.assertActorWritePermission(context);
   }
   return token;
 }
@@ -955,7 +940,7 @@ async function evaluateMergeCapability(envelope, pull, token, verificationCheckN
     if (reviews.data.length < 100) break;
   }
   if (reviewsComplete) {
-    const appBotLogin = await githubAppAuth.getAppBotLogin();
+    const appBotLogin = await githubIdentity.botLogin();
     const approvals = [...latestReviewByActor.entries()]
       .filter(([login, state]) => login !== appBotLogin && state === 'APPROVED').length;
     report.reviews.approvals = approvals;
@@ -1096,7 +1081,7 @@ async function createRemediationCheckRun(payload) {
       // Only this app's own run for this external id may be updated; a same-named run
       // owned by another app belongs to that app.
       existing = checks.find(check => check.head_sha === headSha && check.name === name
-        && String(check.app?.id) === String(process.env.GITHUB_APP_ID)
+        && githubIdentity.ownsCheckRun(check)
         && check.external_id === externalId) || null;
       if (existing || checks.length < 100) break;
     }
@@ -1146,7 +1131,7 @@ async function publishRemediationComment(payload) {
     // Publishing the report is system initiated, after verification completes, so actor
     // write permission is not required; the app writes only its own comment.
     const token = await assertInstallationRepositoryAndActor(envelope, false);
-    const botLogin = await githubAppAuth.getAppBotLogin();
+    const botLogin = await githubIdentity.botLogin();
     let existing = null;
     for (let page = 1; page <= 10; page += 1) {
       const comments = await commentService.listSummaryComments(envelope.owner, envelope.repo, envelope.pr_number, token, page);
@@ -1464,7 +1449,7 @@ async function publishFindingFixSections(payload) {
     if ((pull.data?.head?.sha || '').toLowerCase() !== envelope.head_sha.toLowerCase()) {
       return { state: 'stale', operation_id: envelope.action_id, results: [], reason: 'head_moved' };
     }
-    const botLogin = await githubAppAuth.getAppBotLogin();
+    const botLogin = await githubIdentity.botLogin();
     const comments = [];
     for (let page = 1; page <= 10; page += 1) {
       const response = await githubRequest('get',
@@ -1664,7 +1649,7 @@ async function cancelScheduledMerge(payload) {
       return { state: 'not_scheduled', operation_id: envelope.action_id, head_sha: observedHead, merged: false,
         reason: 'auto_merge_not_enabled' };
     }
-    const appBotLogin = await githubAppAuth.getAppBotLogin();
+    const appBotLogin = await githubIdentity.botLogin();
     if (pull.autoMergeRequest.enabledBy?.login !== appBotLogin) {
       // Another account scheduled this merge. Disabling it is not this app's decision and
       // reporting it as cancelled would be untrue.
