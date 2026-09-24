@@ -13,42 +13,10 @@ import {
 import { useAuth } from '../contexts/AuthContext'
 import Header from './Header'
 import Footer from './Footer'
+import CtaPair from './CtaPair'
+import FixPipeline from './FixPipeline'
 import ProductSurface from './ProductSurface'
 import PullRequestReviewPreview from './PullRequestReviewPreview'
-
-const GitHubIcon = () => (
-  <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-    <path
-      fillRule="evenodd"
-      d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
-      clipRule="evenodd"
-    />
-  </svg>
-)
-
-const primaryAction =
-  'inline-flex items-center justify-center gap-2 rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-neutral-950 transition hover:bg-neutral-200'
-const secondaryAction =
-  'inline-flex items-center justify-center gap-2 rounded-lg border border-neutral-800 px-5 py-2.5 text-sm font-medium text-neutral-300 transition hover:border-neutral-600 hover:text-white'
-
-const CtaPair = ({ user, onLogin }) => (
-  <div className="flex flex-col justify-center gap-3 sm:flex-row">
-    {user ? (
-      <Link to="/dashboard" className={primaryAction}>
-        Open workspace
-        <ArrowRight className="h-4 w-4" />
-      </Link>
-    ) : (
-      <button onClick={onLogin} className={primaryAction}>
-        <GitHubIcon />
-        Start with GitHub
-      </button>
-    )}
-    <Link to="/examples" className={secondaryAction}>
-      See sample review
-    </Link>
-  </div>
-)
 
 const heroBullets = [
   'Inline on the risky line',
@@ -75,14 +43,6 @@ const steps = [
     title: 'Apply the verified fix',
     line: 'One click on the suggestion. You stay in control of merge.',
   },
-]
-
-const pipeline = [
-  { node: 'Detect', label: 'Rules, AST scan, model triage' },
-  { node: 'Generate', label: 'Template first, model when needed' },
-  { node: 'Prove', label: 'Regression test in a sandbox' },
-  { node: 'Publish', label: 'Suggestion block under the finding' },
-  { node: 'You apply', label: 'Commit it, merge stays yours' },
 ]
 
 const liveSurface = [
@@ -195,38 +155,7 @@ const HomePage = () => {
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
             <h2 className={sectionHeading}>How a fix earns its place</h2>
 
-            <ol className="relative mt-10 grid gap-8 sm:grid-cols-5 sm:gap-4">
-              <span
-                className="pointer-events-none absolute left-[11px] top-3 bottom-3 w-px bg-neutral-800 sm:hidden"
-                aria-hidden="true"
-              />
-              <span
-                className="pointer-events-none absolute left-[10%] right-[10%] top-3 hidden h-px bg-neutral-800 sm:block"
-                aria-hidden="true"
-              />
-
-              {pipeline.map((item, index) => (
-                <li
-                  key={item.node}
-                  className="relative flex gap-4 sm:flex-col sm:items-center sm:gap-0 sm:text-center"
-                >
-                  <span
-                    className={`relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border bg-neutral-950 ${
-                      index === pipeline.length - 1
-                        ? 'border-emerald-400 bg-emerald-400/15'
-                        : 'border-emerald-400/40'
-                    }`}
-                    aria-hidden="true"
-                  >
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                  </span>
-                  <div className="min-w-0 sm:mt-4">
-                    <p className="text-sm font-semibold text-white">{item.node}</p>
-                    <p className="mt-1 text-sm leading-6 text-neutral-500">{item.label}</p>
-                  </div>
-                </li>
-              ))}
-            </ol>
+            <FixPipeline className="mt-10" />
           </div>
         </section>
 
