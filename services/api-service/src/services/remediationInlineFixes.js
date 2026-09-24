@@ -195,8 +195,95 @@ function emptySection(finding) {
   return {
     candidate_id: '', finding_fingerprint: finding.fingerprint, path: finding.file_path || '', finding_line: Number(finding.line_start) || 0,
     hunk: null, extra_hunks: [], unified_diff: '', not_suggestable_reason: '', stated_intent: '', proof: '', evidence: [], limitations: [],
-    skipped_reason: '', verification_level: '', finding_body: '', finding_ids: [String(finding.id)], covered_by: '',
+    skipped_reason: '', verification_level: '', finding_body: '', finding_ids: [String(finding.id)], covered_by: '', superseded_by: '',
   };
+}
+
+// How much a fix is trusted, and how bad the finding is: the two orderings that decide
+// which of several candidates on the same lines keeps the suggestion.
+const VERIFICATION_RANK = { independent_sandbox: 2, development_unverified: 1 };
+const SEVERITY_RANK = { critical: 5, high: 4, medium: 3, low: 2, informational: 1 };
+
+function verificationRank(level) { return VERIFICATION_RANK[String(level || '').toLowerCase()] || 0; }
+function severityRank(severity) { return SEVERITY_RANK[String(severity || '').toLowerCase()] || 0; }
+
+function hunkRange(hunk) {
+  return { start: Number(hunk?.start_line) || 0, end: Number(hunk?.end_line) || Number(hunk?.start_line) || 0 };
+}
+
+// What a hunk would write, as one comparable string: the lines it replaces and the text
+// it replaces them with. Two candidates that agree on both are the same fix published twice.
+function replacementText(hunk) {
+  const range = hunkRange(hunk);
+  return `${range.start}-${range.end}\n${(hunk?.replacement_lines || []).join('\n')}`;
+}
+
+// Entries whose line ranges touch, as groups, by a sweep over the sorted starts. Overlap
+// is transitive here: a hunk that bridges two others puts all three in one group, because
+// GitHub could not apply any two of them anyway.
+function groupByOverlap(entries) {
+  const sorted = [...entries].sort((a, b) => a.range.start - b.range.start || a.range.end - b.range.end);
+  const groups = [];
+  for (const entry of sorted) {
+    const last = groups[groups.length - 1];
+    if (last && entry.range.start <= last.end) {
+      last.items.push(entry);
+      last.end = Math.max(last.end, entry.range.end);
+      continue;
+    }
+    groups.push({ start: entry.range.start, end: entry.range.end, items: [entry] });
+  }
+  return groups;
+}
+
+// The one section of a group that keeps its suggestion: the candidate whose hunk covers
+// the whole group's lines, then the more trusted verification, then the worse finding,
+// then the lower candidate id and fingerprint so the choice never moves between runs.
+function preferredEntry(group) {
+  const covers = (entry) => (entry.range.start <= group.start && entry.range.end >= group.end ? 1 : 0);
+  return [...group.items].sort((a, b) => covers(b) - covers(a)
+    || verificationRank(b.section.verification_level) - verificationRank(a.section.verification_level)
+    || severityRank(b.finding.severity) - severityRank(a.finding.severity)
+    || String(a.section.candidate_id).localeCompare(String(b.section.candidate_id))
+    || String(a.section.finding_fingerprint).localeCompare(String(b.section.finding_fingerprint)))[0];
+}
+
+// Two independently proven candidates can change the same lines of the same file: two
+// rules for one flaw, or one candidate proving two findings. GitHub applies one suggestion
+// per line, so exactly one section in such a group keeps its suggestion and the rest are
+// rewritten as covered by it, the same shape the unproven fold below already publishes.
+// A loser whose fix would have written different text records which finding superseded it.
+// Returns the sections that were folded away.
+function foldSameLineProven(proven) {
+  const byPath = new Map();
+  for (const item of proven) {
+    if (!item.section.hunk) continue;
+    const list = byPath.get(item.section.path) || [];
+    list.push({ ...item, range: hunkRange(item.section.hunk) });
+    byPath.set(item.section.path, list);
+  }
+  const folded = new Set();
+  for (const entries of byPath.values()) {
+    for (const group of groupByOverlap(entries)) {
+      if (group.items.length < 2) continue;
+      const winner = preferredEntry(group);
+      const winnerText = replacementText(winner.section.hunk);
+      const label = findingLabel(winner.finding);
+      for (const loser of group.items) {
+        if (loser === winner) continue;
+        const differs = replacementText(loser.section.hunk) !== winnerText;
+        winner.section.finding_ids.push(String(loser.finding.id));
+        Object.assign(loser.section, emptySection(loser.finding), {
+          candidate_id: winner.section.candidate_id,
+          covered_by: label,
+          finding_ids: [String(winner.finding.id), String(loser.finding.id)],
+          superseded_by: differs ? `${label}: its verified fix replaces the same lines with different text, and GitHub accepts one suggestion per line.` : '',
+        });
+        folded.add(loser.section);
+      }
+    }
+  }
+  return folded;
 }
 
 // The region a finding's comment carries: the one on the finding's line, else the nearest.
@@ -261,12 +348,22 @@ function buildSections({ job, candidates = [], findings = [] }) {
       proven.push({ finding, section });
     }
   }
+  // Several proven candidates on the same lines publish one suggestion between them.
+  const folded = foldSameLineProven(proven);
+  if (folded.size) {
+    logger.info('Verified fixes on the same lines were folded into one suggestion', {
+      job_id: job?.id || null,
+      folded: folded.size,
+      superseded: [...folded].filter((section) => section.superseded_by).length,
+    });
+  }
+  const carrying = proven.filter((item) => !folded.has(item.section));
   const covered = new Set(sections.map((section) => section.finding_fingerprint));
   // A finding on the same lines as a proven one is fixed by that finding's candidate: the
   // fix is published once, under the proven finding, and this finding's section says so.
   for (const finding of findings) {
     if (!finding?.fingerprint || covered.has(finding.fingerprint)) continue;
-    const match = proven.find((item) => sameLines(item.finding, finding));
+    const match = carrying.find((item) => sameLines(item.finding, finding));
     if (!match) continue;
     covered.add(finding.fingerprint);
     match.section.finding_ids.push(String(finding.id));
@@ -404,5 +501,5 @@ async function recordPublishedFixOutcomes(context, sections) {
 
 module.exports = {
   publishInlineFixes, buildSections, attachFindingBodies, computeHunk, computeRegions,
-  evidenceLines, countHunks, proofLine, sameLines, publishedFixOutcomes,
+  evidenceLines, countHunks, proofLine, sameLines, groupByOverlap, publishedFixOutcomes,
 };

@@ -140,6 +140,8 @@ Suite counts reported on that pull request, each run locally: analysis-service 3
 
 A follow-up, PR 422 (`b9d2e796`), quieted the lease reclaim alert after a day of deliberate failure testing: the rule now needs more than three reclaims in thirty minutes, and the rules file header states that the rules must be imported with no data handled as NoData or OK, because the pending group queries metrics no service emits.
 
+Test-only PR 133 showed two inline comments and two GitHub suggestions on one line for one vulnerability, which GitHub cannot apply. Both causes are fixed on `fix/same-line-finding-dedup`: the analysis taxonomy now derives one internal type per vulnerability from the CWE instead of taking an opengrep check id as the type, so the two tiers cluster into one finding; and `buildSections` folds proven candidates whose hunks overlap on one path into a single section that carries the suggestion, with the rest published as covered by it.
+
 
 Deployment note: codesentry-api and codesentry-remediation run with CPU always allocated (Cloud Run `--no-cpu-throttling`). Their background workers (analysis queue, remediation dispatch, reconciler, in-process repair worker) starve when CPU is only allocated during requests; that starvation caused the stalled runs of 2026-09-19. The setting was first applied by hand and is now declared in the deploy workflows. Instances still scale to zero when idle.
 
