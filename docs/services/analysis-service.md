@@ -64,3 +64,69 @@ Analysis requests and metrics require `x-internal-secret`. The expected value is
 - `OPENGREP_BATCH_MAX_FILES` / `OPENGREP_BATCH_MAX_BYTES` batch bounds for tier 2
 
 For the full env contract, see [environment.md](../getting-started/environment.md).
+
+## Tier 2: the rule set and the posting policy
+
+The AST rules live in `src/opengrep_rules/*.yml`. JavaScript, TypeScript and Python are covered
+by 116 rules: 25 that predate the coverage work, and 91 in `javascript_coverage.yml` and
+`python_coverage.yml`.
+
+### Where the rules come from
+
+Every rule is written in this repository. No rule is copied or adapted from a public rule
+library, because the two obvious ones cannot be used in a paid service: `opengrep-rules` is
+LGPL-2.1 **plus the Commons Clause**, which removes the right to sell a service whose value
+derives substantially from the rules, and `semgrep-rules` is under the Semgrep Rules License
+v1.0, which permits internal business use only and forbids making the rules available as a
+service. The reading, with the licence text, is in
+[third-party-rules.md](../legal/third-party-rules.md), along with the four steps to follow
+before importing a rule from anywhere.
+
+### What a rule must declare
+
+`tests/test_tier2_rule_metadata.py` enforces this on every rule in the two coverage files:
+
+- `cwe`, a `severity` the scanner understands, a `confidence`, and at least one language.
+- `internal_type`, from `taxonomy.CANONICAL_INTERNAL_TYPES`. This is what the product groups,
+  deduplicates and reports on, so a rule that passes its own check id makes a category of one
+  that nothing else can join. Adding a value to that set is a deliberate product decision.
+- `family`, when the finding is repairable, and only when the rule's CWE is the one the
+  remediation service derives that family from. The engine reads the CWE, not this key, so a
+  rule that declared a family its CWE does not produce would be handed to the engine as
+  something else.
+- `posting`, which is `post` or `quarantine`.
+
+### The posting policy
+
+A rule posts only on evidence. It may post when its labelled precision on a real corpus is at
+least 0.8 over at least three labelled findings, or when it produced no findings on the corpus
+**and** its pattern is a sink-only match with a clear taxonomy that makes no data-flow
+assumption. Everything else is quarantined, and a quarantined rule must carry
+`posting_evidence` saying what was measured, because that is what lets the next person
+re-enable it.
+
+A quarantined rule still runs and its findings are still counted, in the response's
+`quarantined_findings` map and in `codesentry_analysis_quarantined_findings_total`. What it
+does not do is reach a reviewer. The removal happens in exactly one place,
+`main.partition_by_posting_policy`, which both tiers go through, so the api-service needs no
+knowledge of the policy: the findings simply do not arrive, nothing is posted to GitHub,
+nothing is counted in the check summary, and nothing is handed to remediation.
+
+Four rules are quarantined today; the measurement behind each is in
+[tier2-coverage-2026-09.md](../validation/tier2-coverage-2026-09.md).
+
+### Re-enabling a quarantined rule
+
+1. Narrow the pattern so the shape it was wrong about no longer matches.
+2. Add that exact line to `benchmarks/tier2-precision/cases.json` as a no-finding case, with
+   the repository and pull request it came from, and keep the rule's true-positive fixture.
+3. Re-run the replay and label what it now produces.
+4. Change `posting` to `post` and replace `posting_evidence` with the new measurement.
+
+### Rule ids are resolved, not taken as given
+
+Pointed at a directory, the scanner names a rule after the path it loaded it from relative to
+the working directory, so the same rule arrives as `opengrep_rules.<id>` from one caller and
+`services.analysis-service.src.opengrep_rules.<id>` from another. `canonical_check_id` resolves
+the id back to the one the rule file declares. Without it a rule id could not key the posting
+policy, a suppression, or a fingerprint.
