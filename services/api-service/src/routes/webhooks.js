@@ -239,10 +239,10 @@ router.post('/github', async (req, res) => {
           if (repoResult.rows[0].is_active) {
             const run = await client.query(
               `INSERT INTO analysis_runs
-                (repository_id, pull_request_id, pr_number, commit_sha, status, triggered_by)
-               VALUES ($1, $2, $3, $4, 'pending', 'webhook')
+                (repository_id, pull_request_id, pr_number, commit_sha, status, triggered_by, delivery_id)
+               VALUES ($1, $2, $3, $4, 'pending', 'webhook', $5)
                RETURNING id`,
-              [repoId, prResult.rows[0].id, pr.number, pr.head.sha]
+              [repoId, prResult.rows[0].id, pr.number, pr.head.sha, deliveryId]
             );
 
             analysisPayload = {

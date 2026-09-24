@@ -38,8 +38,8 @@ function stubGrpcClient(method, response, error = null) {
   const calls = [];
   const client = new GitHubGrpcClient('localhost:50051');
   client.client = {
-    [method]: (request, options, callback) => {
-      calls.push({ request, options });
+    [method]: (request, metadata, options, callback) => {
+      calls.push({ request, metadata, options });
       callback(error, response);
     },
   };
