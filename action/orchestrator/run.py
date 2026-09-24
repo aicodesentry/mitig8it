@@ -10,6 +10,7 @@ fetch the content the scanner needs, scan, repair, publish, then decide the exit
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -180,6 +181,98 @@ def fail_conclusion(fail_on: str, counts: Dict[str, int]) -> str:
     return "success"
 
 
+# --- the publish envelope --------------------------------------------------------------------
+
+# github-service validates every envelope that carries fixes, and `manifest_digest` has to be a
+# bare 64-character SHA-256 in hex: `validateActionEnvelope` in
+# services/github-service/src/services/githubInternalOperations.js takes it through
+# `requireString(..., 64)` and then `/^[0-9a-f]{64}$/i`. No `sha256:` prefix survives that, and
+# neither does a 40-character Git object ID, which is what the action used to send: a run with
+# fixes died at `publishing failed: publish error: fixes: manifest_digest must be a SHA-256
+# digest`, after the review and the check had already been posted.
+def section_artifact_digest(section: Dict[str, Any]) -> str:
+    """One published section's content, as a digest. The manifest binds these, not the prose."""
+    body = json.dumps(
+        {"path": str(section.get("path") or ""), "unified_diff": str(section.get("unified_diff") or "")},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def manifest_digest(action_id: str, head_sha: str, base_sha: str, sections: Sequence[Dict[str, Any]]) -> str:
+    """The envelope's digest, computed the way the app computes it.
+
+    `manifestDigestFor` in services/api-service/src/db/remediation.js builds
+    `{job, head, base, candidates: [{id, artifact_digest}]}` and hands it to `hash`, which is
+    `crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')`. `JSON.stringify`
+    emits keys in insertion order with no whitespace, so the manifest is assembled here in that
+    same order and dumped with the same separators. `sort_keys=True` would hash a different
+    string for the same manifest and quietly stop being the app's function.
+
+    The action has no job row, so `action_id` names the run the app would name by job id, and
+    the candidates are the ordered sections this publish carries. The digest therefore binds the
+    exact ordered set of fixes: reorder them, or change one diff, and it changes.
+
+    A run with no fixes still gets a well-formed digest. github-service only validates the
+    envelope when sections are sent, but a payload that could not be validated is not one worth
+    building, and the app's own fallback does the same thing rather than sending nothing.
+    """
+    manifest = {
+        "job": action_id,
+        "head": head_sha,
+        "base": base_sha,
+        "candidates": [
+            {"id": str(section.get("candidate_id") or ""), "artifact_digest": section_artifact_digest(section)}
+            for section in sections
+        ],
+    }
+    body = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def build_publish_request(
+    *,
+    token: str,
+    repository: str,
+    pr_number: int,
+    head_sha: str,
+    base_sha: str,
+    installation_id: int,
+    actor_login: str,
+    counts: Dict[str, int],
+    findings: int,
+    fix_sections: Sequence[Dict[str, Any]],
+    inline_comments: Sequence[Dict[str, Any]],
+    model_configured: bool,
+    conclusion: str,
+    action_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Everything the Node publisher needs, in one place the tests can build without a network."""
+    action_id = action_id or f"action-{uuid.uuid4().hex[:16]}"
+    base_sha = base_sha or head_sha
+    return {
+        "token": token,
+        "repository_full_name": repository,
+        "pr_number": pr_number,
+        "head_sha": head_sha,
+        "base_sha": base_sha,
+        "installation_id": installation_id,
+        "actor_login": actor_login,
+        "bot_login": "github-actions[bot]",
+        "action_id": action_id,
+        "idempotency_key": f"{repository}:{pr_number}:{head_sha}",
+        "manifest_digest": manifest_digest(action_id, head_sha, base_sha, fix_sections),
+        "counts": counts,
+        "findings": findings,
+        "fixes": len(fix_sections),
+        "modelConfigured": model_configured,
+        "failConclusion": conclusion,
+        "inline_comments": list(inline_comments),
+        "fix_sections": list(fix_sections),
+    }
+
+
 def write_summary(text: str) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
@@ -319,26 +412,21 @@ def _run() -> int:
     inline_comments = build_inline_comments(findings, patches_by_path)
 
     conclusion = fail_conclusion(fail_on, counts)
-    request = {
-        "token": token,
-        "repository_full_name": repository,
-        "pr_number": pr_number,
-        "head_sha": head_sha,
-        "base_sha": base_sha or head_sha,
-        "installation_id": int(((event.get("repository") or {}).get("id")) or 1),
-        "actor_login": os.environ.get("GITHUB_ACTOR", "github-actions") or "github-actions",
-        "bot_login": "github-actions[bot]",
-        "action_id": f"action-{uuid.uuid4().hex[:16]}",
-        "idempotency_key": f"{repository}:{pr_number}:{head_sha}",
-        "manifest_digest": head_sha,
-        "counts": counts,
-        "findings": len(findings),
-        "fixes": len(fix_sections),
-        "modelConfigured": model_configured,
-        "failConclusion": conclusion,
-        "inline_comments": inline_comments,
-        "fix_sections": fix_sections,
-    }
+    request = build_publish_request(
+        token=token,
+        repository=repository,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        base_sha=base_sha or head_sha,
+        installation_id=int(((event.get("repository") or {}).get("id")) or 1),
+        actor_login=os.environ.get("GITHUB_ACTOR", "github-actions") or "github-actions",
+        counts=counts,
+        findings=len(findings),
+        fix_sections=fix_sections,
+        inline_comments=inline_comments,
+        model_configured=model_configured,
+        conclusion=conclusion,
+    )
 
     log("Publishing.")
     results = run_publisher(request)
