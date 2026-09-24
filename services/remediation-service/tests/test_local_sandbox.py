@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sys
 
 import pytest
@@ -9,6 +10,7 @@ from src.models import RepairRequest
 from src.patches import build_patch_bundle
 from src.retrieval import Snapshot
 from src.sandbox import InProcessSandboxBroker, LocalSubprocessDriver
+from src.sandbox import local_driver
 from src.verification import Verifier
 from tests.conftest import whole_file_change
 
@@ -141,3 +143,68 @@ async def test_a_missing_workspace_root_is_inconclusive_evidence_not_a_raised_er
     result = await Verifier(InProcessSandboxBroker(driver)).verify(request, snapshot, bundle)
     assert result.status == "inconclusive"
     assert any("did not complete" in limitation for limitation in result.limitations)
+
+
+def test_an_older_node_names_the_missing_harness_features_instead_of_failing_the_candidate(monkeypatch):
+    """Node 20 in CI: the harness flags were rejected and every Node check failed on both trees.
+
+    The pipeline read that as a repair that could not prove itself, which is the one thing it
+    was not. A check the runtime could not start is inconclusive, and it says which feature is
+    missing, so the next reader looks at the toolchain rather than at the candidate.
+    """
+    report = local_driver.NodeRuntimeReport("v20.19.5", ("module.stripTypeScriptTypes", "module.registerHooks"))
+    monkeypatch.setattr(local_driver, "node_runtime_report", lambda: report)
+    driver = LocalSubprocessDriver()
+
+    record = driver._run_variant(  # noqa: SLF001 - the variant record is what the evidence carries.
+        {"execution_policy": {"image_digest": None}},
+        "candidate",
+        {"check_id": "generated_regression_test", "kind": "generated_test", "argv": ["node", "--check", "a.ts"], "timeout_seconds": 5},
+        5.0,
+    )
+
+    assert record["completed"] is False
+    assert record["status"] == "inconclusive"
+    assert record["reason_code"].startswith("node_runtime_missing_features:")
+    assert "module.stripTypeScriptTypes" in record["reason_code"]
+    assert "module.registerHooks" in record["reason_code"]
+    assert "v20.19.5" in record["output_tail"]
+    assert "ARG NODE_VERSION" in record["output_tail"]
+
+
+def test_a_python_check_is_never_blocked_by_the_node_probe(monkeypatch):
+    """The gate is per interpreter: a Python check on a host with no usable Node still runs."""
+    report = local_driver.NodeRuntimeReport("v20.19.5", ("module.registerHooks",))
+    monkeypatch.setattr(local_driver, "node_runtime_report", lambda: report)
+    driver = LocalSubprocessDriver()
+
+    record = driver._run_variant(  # noqa: SLF001
+        {"execution_policy": {"image_digest": None}, "snapshot": [], "patches": []},
+        "candidate",
+        {"check_id": "python", "kind": "behavior", "argv": [sys.executable, "-c", "pass"], "timeout_seconds": 10},
+        10.0,
+    )
+
+    assert record["completed"] is True
+    assert record["status"] == "passed"
+
+
+def test_the_probe_reports_this_host_honestly_on_any_node():
+    """The probe itself, against whatever `node` is on this host.
+
+    Asserted without naming a version so the suite stays runnable on an older toolchain: what
+    is pinned is that the report names the runtime it found and that every gap it lists also
+    reaches the sentence a human reads. CI runs the version the Dockerfile pins, where the
+    gap list is empty.
+    """
+    if shutil.which("node") is None:
+        pytest.skip("no node toolchain on this host")
+    local_driver.node_runtime_report.cache_clear()
+    try:
+        report = local_driver.node_runtime_report()
+        assert report.version and report.version.startswith("v")
+        assert set(report.missing) <= {*local_driver.REQUIRED_NODE_FEATURES, *local_driver.typescript_flags()}
+        for feature in report.missing:
+            assert feature in report.detail()
+    finally:
+        local_driver.node_runtime_report.cache_clear()
