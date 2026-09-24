@@ -14,6 +14,8 @@ from benchmarks.remediation.evaluate import (
     SCRIPTED_PROVIDER_KIND,
     FixtureError,
     RemediationServiceClient,
+    known_failure_for,
+    load_known_failures,
     assert_no_repository_leakage,
     engine_adapter,
     engine_local_adapter,
@@ -55,8 +57,8 @@ class RemediationHarnessTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
-        self.assertEqual(report["summary"]["eligible_supported_cases"], 7)
-        self.assertEqual(report["summary"]["negative_adversarial_cases"], 4)
+        self.assertEqual(report["summary"]["eligible_supported_cases"], 27)
+        self.assertEqual(report["summary"]["negative_adversarial_cases"], 15)
         self.assertEqual(report["summary"]["failures"], [])
 
     def test_reference_candidate_must_match_the_expected_patch_not_only_claim_ready(self):
@@ -76,6 +78,31 @@ class RemediationHarnessTests(unittest.TestCase):
         self.assertFalse(report["release_gate"]["passed"])
         self.assertTrue(any(reason.startswith("minimum_cases_not_met") for reason in report["release_gate"]["reasons"]))
         self.assertIn("external_review_signatures_missing", report["release_gate"]["reasons"])
+
+    def test_every_supported_family_is_covered_in_both_toolchains_or_recorded_as_an_abstention(self):
+        fixtures = [fixture for _, fixture in load_fixtures()]
+        supported = {(fixture["family"], fixture["source"].rsplit(".", 1)[-1]) for fixture in fixtures if fixture["kind"] == "supported"}
+        # Python proves all five families; the Node harness records no environment reads and
+        # stubs no eval, so those two families are covered by JavaScript abstention fixtures.
+        for family in ("sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval"):
+            self.assertIn((family, "py"), supported, family)
+        for family in ("sql_parameterization", "command_arguments", "path_containment"):
+            self.assertIn((family, "js"), supported, family)
+        abstaining = {(fixture["family"], fixture["source"].rsplit(".", 1)[-1]) for fixture in fixtures if fixture["kind"] != "supported"}
+        for family in ("hardcoded_credential", "code_injection_eval"):
+            self.assertIn((family, "js"), abstaining, family)
+        self.assertGreaterEqual(sum(1 for fixture in fixtures if fixture["kind"] == "negative"), 6)
+        self.assertGreaterEqual(sum(1 for fixture in fixtures if fixture["kind"] == "adversarial"), 4)
+
+    def test_a_recorded_known_failure_names_a_defect_and_never_becomes_a_pass(self):
+        entries = load_known_failures()
+        fixture_ids = {fixture["id"] for _, fixture in load_fixtures()}
+        for entry in entries:
+            self.assertIn(entry["fixture_id"], fixture_ids)
+            # Every entry cites the defect's file and line, so it cannot silence a regression.
+            self.assertRegex(entry["bug"], r"^[\w./-]+\.py:\d+$")
+            self.assertNotIn("reference", entry["adapters"])
+        self.assertIsNone(known_failure_for(entries, "sql-parameterized-001", "engine-local", "anything"))
 
     def test_empty_metrics_have_explicit_unknown_intervals(self):
         summary = summarize([])

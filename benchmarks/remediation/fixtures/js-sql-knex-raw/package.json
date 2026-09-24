@@ -1,0 +1,10 @@
+{
+  "name": "fixture-js-ledger-v",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Benchmark fixture package manifest; it declares the dependencies a repair may rely on.",
+  "dependencies": {
+    "knex": "3.1.0",
+    "pg": "8.13.0"
+  }
+}

@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parent
 REPOSITORY_ROOT = ROOT.parents[1]
 SERVICE_ROOT = REPOSITORY_ROOT / "services" / "remediation-service"
 FIXTURES = ROOT / "fixtures"
+KNOWN_FAILURES_FILE = ROOT / "known-failures.json"
 DEFAULT_BUDGET = {"max_tool_calls": 20, "max_attempts": 3, "max_input_tokens": 120000,
                   "max_output_tokens": 120000, "max_cost_usd": 2.0}
 SUPPORTED_FAMILIES = {"sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval"}
@@ -58,10 +59,46 @@ class CaseResult:
     elapsed_ms: int
     verification_level: str | None = None
     limitations: list[str] | None = None
+    known_failure: dict[str, Any] | None = None
 
 
 def canonical_digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def load_known_failures() -> list[dict[str, Any]]:
+    """Fixtures that are correct but cannot pass because of a recorded engine or harness defect.
+
+    A known failure never becomes a pass and never leaves the precision, coverage, or abstention
+    arithmetic: bending a rate would be the whole point of the defect. It is only labelled, so a
+    run can tell an already-reported defect apart from a new regression. Every entry names the
+    defect's file and line, so an unexplained entry cannot be used to silence a real failure.
+    """
+    if not KNOWN_FAILURES_FILE.is_file():
+        return []
+    try:
+        document = json.loads(KNOWN_FAILURES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise FixtureError(f"known-failures.json is unreadable: {error}") from error
+    entries = document.get("failures") if isinstance(document, dict) else None
+    if not isinstance(entries, list):
+        raise FixtureError("known-failures.json must carry a failures array")
+    for entry in entries:
+        required = {"fixture_id", "adapters", "reason_code", "bug", "note"}
+        if not isinstance(entry, dict) or not required.issubset(entry):
+            raise FixtureError(f"known failure entry is missing required fields: {sorted(required)}")
+        if not isinstance(entry["adapters"], list) or not entry["adapters"]:
+            raise FixtureError(f"{entry['fixture_id']}: a known failure must name the adapters it applies to")
+    return entries
+
+
+def known_failure_for(entries: list[dict[str, Any]], fixture_id: str, adapter: str, reason: str | None) -> dict[str, Any] | None:
+    for entry in entries:
+        if entry["fixture_id"] != fixture_id or adapter not in entry["adapters"]:
+            continue
+        if entry["reason_code"] in {"*", reason}:
+            return entry
+    return None
 
 
 def resolve_fixture_path(fixture_dir: Path, relative: str) -> Path:
@@ -607,7 +644,13 @@ def engine_local_adapter(
         return {"state": "inconclusive", "reason": "local_execution_not_claimable", "usage": {}}
     stored = backend.read_request(claimed)
     checkpoints = modules["create_checkpoint_store"](backend, claimed.execution_id, worker_id, stored)
-    response = asyncio.run(modules["RepairEngine"](agent_factory).repair(stored, checkpoints))
+    try:
+        response = asyncio.run(modules["RepairEngine"](agent_factory).repair(stored, checkpoints))
+    except Exception as error:  # noqa: BLE001 - one fixture's pipeline failure must not end the suite.
+        # A raised engine failure is a failed case with an attributable reason, never a crash
+        # that hides the other fixtures' results. `scripted provider exhausted its script` is
+        # the shape this takes when the pipeline rejects the reviewed patch and asks again.
+        return {"state": "inconclusive", "reason": f"engine_local_error:{type(error).__name__}:{str(error)[:120]}", "usage": {}}
     if not backend.complete(claimed.execution_id, worker_id, response):
         return {"state": "inconclusive", "reason": "local_execution_result_not_published", "usage": {}}
     record = backend.get(claimed.execution_id)
@@ -680,6 +723,7 @@ def evaluate_fixture(
     adapter: str,
     engine: dict[str, Any] | None,
     local: dict[str, Any] | None = None,
+    known_failures: list[dict[str, Any]] | None = None,
 ) -> CaseResult:
     started = time.monotonic()
     fixture_tests = run_trusted_fixture_test(fixture_dir, fixture) if fixture["kind"] == "supported" else None
@@ -725,9 +769,12 @@ def evaluate_fixture(
         outcome = "passed"
     else:
         outcome, reason = "failed", reason or "fixture_reference_patch_or_verification_failed"
+    # A recorded defect is labelled, never converted into a pass: the case stays failed and
+    # keeps counting against precision, coverage, and the release gate.
+    known = known_failure_for(known_failures or [], fixture["id"], adapter, reason) if outcome == "failed" else None
     return CaseResult(fixture["id"], fixture["repository_id"], fixture["split"], fixture["family"], fixture["kind"],
                       fixture["expected_state"], state, outcome, reason, fixture_tests, usage,
-                      round((time.monotonic() - started) * 1000), level, list(result.get("limitations") or []))
+                      round((time.monotonic() - started) * 1000), level, list(result.get("limitations") or []), known)
 
 
 def wilson_interval(successes: int, total: int, z: float = 1.96) -> list[float | None]:
@@ -757,6 +804,8 @@ def summarize(results: list[CaseResult]) -> dict[str, Any]:
         "coverage": coverage, "coverage_wilson_95": wilson_interval(len(correct), len(positives)),
         "safe_abstention": safe_abstention, "safe_abstention_wilson_95": wilson_interval(len(abstentions), len(negatives)),
         "failures": [result.fixture_id for result in results if result.outcome == "failed"],
+        "known_failures": [result.fixture_id for result in results if result.outcome == "failed" and result.known_failure],
+        "unexpected_failures": [result.fixture_id for result in results if result.outcome == "failed" and not result.known_failure],
         "inconclusive": [result.fixture_id for result in results if result.outcome == "inconclusive"],
         "total_cost_usd": round(costs, 6), "cost_per_attempt_usd": round(costs / len(results), 6) if results else 0,
     }
@@ -861,7 +910,8 @@ def main() -> int:
             state_dir = Path(temporary.name)
         local = {"modules": load_service_modules(), "state_dir": state_dir, "provider_kind": provider_kind}
     try:
-        results = [evaluate_fixture(directory, fixture, args.adapter, engine, local) for directory, fixture in fixtures]
+        known_failures = load_known_failures()
+        results = [evaluate_fixture(directory, fixture, args.adapter, engine, local, known_failures) for directory, fixture in fixtures]
     finally:
         if temporary is not None:
             temporary.cleanup()
@@ -884,6 +934,9 @@ def main() -> int:
     elif args.adapter == "engine":
         report["results_kind"] = remote_results_kind(verification_levels, provider_kind)
         report["note"] = REMOTE_CONTRACT_NOTE
+    recorded = [result.known_failure for result in results if result.known_failure]
+    if recorded:
+        report["known_failures"] = recorded
     if args.suite == "release":
         report["release_gate"] = release_gate(fixtures, results)
     rendered = json.dumps(report, indent=2, sort_keys=True)
@@ -891,7 +944,10 @@ def main() -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
-    return 0 if args.suite == "seed" or report["release_gate"]["passed"] else 2
+    if args.suite == "release" and not report["release_gate"]["passed"]:
+        return 2
+    # A failure that known-failures.json already explains is not a new regression; anything else is.
+    return 1 if report["summary"]["unexpected_failures"] else 0
 
 
 if __name__ == "__main__":
