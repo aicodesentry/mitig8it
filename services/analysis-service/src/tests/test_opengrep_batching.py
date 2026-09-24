@@ -92,7 +92,7 @@ class TestBatchFailureFailsClosed:
             calls["count"] += 1
             if calls["count"] == 2:
                 raise RuntimeError("OpenGrep failed with exit code 2")
-            return {"results": [], "errors": []}
+            return {"results": [], "errors": []}, []
 
         monkeypatch.setattr(opengrep_runner, "_run_semgrep", fake_run_semgrep)
 

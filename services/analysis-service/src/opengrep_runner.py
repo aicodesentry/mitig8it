@@ -485,8 +485,58 @@ def build_scan_batches(
     return batches
 
 
-def _run_semgrep(target_dir: str) -> Dict[str, Any]:
-    """Run one scanner process over one batch directory and return its output."""
+# Scanner errors that describe one target rather than the run. The scanner reports these at
+# warning level with the file they happened on, finishes the batch, and its `results` cover
+# every other target. A syntax error in a changed file, a dialect the parser does not know, or
+# a per-file rule timeout is therefore recorded as a coverage gap for that file instead of
+# failing the whole tier closed.
+RECOVERABLE_SCAN_ERROR_LEVELS = {"warn", "warning"}
+
+
+def _scan_error_code(error: Dict[str, Any]) -> str:
+    kind = error.get("type")
+    if isinstance(kind, list) and kind:
+        kind = kind[0]
+    return str(kind or "ScanError")
+
+
+def partition_scan_errors(
+    errors: Any, target_dir: str
+) -> tuple[List[Dict[str, str]], List[Any]]:
+    """Split scanner errors into per-target coverage gaps and failures that void the scan.
+
+    A rule-configuration failure, an engine crash or anything raised at error level has no
+    single target to blame and leaves the results untrustworthy, so it still fails closed.
+    """
+    recoverable: List[Dict[str, str]] = []
+    fatal: List[Any] = []
+    root = target_dir.rstrip("/") + "/"
+
+    for error in errors or []:
+        if not isinstance(error, dict):
+            fatal.append(error)
+            continue
+        level = str(error.get("level") or "").strip().lower()
+        path = str(error.get("path") or "")
+        if level in RECOVERABLE_SCAN_ERROR_LEVELS and path.startswith(root):
+            recoverable.append(
+                {
+                    "path": path[len(root):],
+                    "code": _scan_error_code(error),
+                    "detail": str(error.get("message") or "")[:300],
+                }
+            )
+        else:
+            fatal.append(error)
+
+    return recoverable, fatal
+
+
+def _run_semgrep(target_dir: str) -> tuple[Dict[str, Any], List[Dict[str, str]]]:
+    """Run one scanner process over one batch directory and return its output.
+
+    Returns the parsed output and the per-target coverage gaps the scanner reported.
+    """
     try:
         result = subprocess.run(
             [
@@ -519,10 +569,12 @@ def _run_semgrep(target_dir: str) -> Dict[str, Any]:
 
     if not isinstance(output, dict) or not isinstance(output.get("results"), list):
         raise RuntimeError("OpenGrep returned an incomplete result")
-    if output.get("errors"):
+
+    unscanned, fatal = partition_scan_errors(output.get("errors"), target_dir)
+    if fatal:
         raise RuntimeError("OpenGrep reported incomplete analysis")
 
-    return output
+    return output, unscanned
 
 
 def _build_finding(
@@ -629,8 +681,14 @@ def contained_scan_path(root: Path, relative_path: str) -> Path:
     return root / relative_path
 
 
-def _scan_batch(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Scan one batch. Any failure raises, so the tier fails closed."""
+def _scan_batch(
+    batch: List[Dict[str, Any]], unscanned: List[Dict[str, str]]
+) -> List[Dict[str, Any]]:
+    """Scan one batch. A failure that voids the batch raises, so the tier fails closed.
+
+    Files the scanner could not parse or finish are appended to `unscanned` as coverage
+    gaps; the rest of the batch is still reported.
+    """
     findings: List[Dict[str, Any]] = []
 
     with tempfile.TemporaryDirectory(prefix="mitig8it_") as tmpdir:
@@ -641,7 +699,8 @@ def _scan_batch(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             extracted_content_by_path[entry["path"]] = entry["content"]
             file_path.write_text(entry["content"], encoding="utf-8")
 
-        output = _run_semgrep(tmpdir)
+        output, batch_unscanned = _run_semgrep(tmpdir)
+        unscanned.extend(batch_unscanned)
 
         for match in output.get("results", []):
             findings.append(_build_finding(match, tmpdir, extracted_content_by_path))
@@ -649,20 +708,26 @@ def _scan_batch(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return findings
 
 
-def run_opengrep(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def run_opengrep(
+    files: List[Dict[str, Any]], unscanned: Optional[List[Dict[str, str]]] = None
+) -> List[Dict[str, Any]]:
     """
     Run OpenGrep on PR files and return findings.
 
-    Files are scanned in bounded batches and the results are merged. If any
-    batch fails the whole tier fails closed; partial results are never returned
-    as if they were complete.
+    Files are scanned in bounded batches and the results are merged. A batch failure
+    that voids the scan fails the whole tier closed; partial results are never returned
+    as if they were complete. A single file the scanner cannot parse or cannot finish
+    is a coverage gap for that file, not a failed scan: it is recorded and the remaining
+    files are still reported.
 
     Args:
         files: List of {path, patch, additions, ...} from the PR diff.
+        unscanned: Optional list that collects `{path, code, detail}` coverage gaps.
 
     Returns:
         List of finding dicts matching Tier 1 format.
     """
+    gaps: List[Dict[str, str]] = unscanned if unscanned is not None else []
     if not RULES_DIR.exists() or not any(RULES_DIR.glob("*.yml")):
         raise RuntimeError("OpenGrep rules are unavailable")
 
@@ -704,6 +769,14 @@ def run_opengrep(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             f"OpenGrep batch {index}/{len(batches)}: files={len(batch)} bytes={batch_bytes}",
             flush=True,
         )
-        findings.extend(_scan_batch(batch))
+        findings.extend(_scan_batch(batch, gaps))
+
+    if gaps:
+        print(
+            "OpenGrep coverage gaps: "
+            f"count={len(gaps)} paths={sorted({gap['path'] for gap in gaps})[:25]} "
+            f"codes={sorted({gap['code'] for gap in gaps})}",
+            flush=True,
+        )
 
     return classify_findings(findings)
