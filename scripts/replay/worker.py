@@ -49,6 +49,14 @@ def _stage(name: str, fn) -> dict[str, Any]:
 def run_analysis(payload: dict[str, Any]) -> dict[str, Any]:
     import main as analysis_main  # noqa: PLC0415 - imported inside the child process only.
 
+    if os.environ.get("REPLAY_INCLUDE_QUARANTINED") == "1":
+        # A quarantined rule is withheld from a reviewer, not from a measurement. The
+        # service drops its findings before returning, so a corpus run that is trying to
+        # decide whether a quarantined rule has earned its way back would never see them.
+        # The policy is emptied here, in the harness, and `score.py` re-applies it from the
+        # rule files, so quarantined findings are reported separately rather than mixed in.
+        analysis_main.QUARANTINED_RULE_IDS = frozenset()
+
     tier1_request = analysis_main.AnalyzePRRequest(
         repository_full_name=payload["repo"],
         pull_request_number=payload["number"],
