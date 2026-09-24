@@ -145,6 +145,8 @@ Deployment note: codesentry-api and codesentry-remediation run with CPU always a
 
 Resolved observation: the second residual report on test-only PR 127 said "Remaining open findings: 0" while listing four unrepaired findings. Cause: the app's verification analysis run was re-pointed by the duplicate webhook run for the same commit, so the count came from the wrong run. Fixed in PR 402 by scoping the count to the immutable analysis snapshot; reports published after that PR are correct.
 
+Every decision about a finding, in the workspace or on GitHub, is now appended to `finding_outcomes` and rolled up daily into the apply, dismiss and residual rates described in [finding outcomes](finding-outcomes.md); the rates are exported and shown, but no live installation has yet produced enough of them to read.
+
 ## Not done, as of 2026-09-22
 
 | Item | Where it stands |

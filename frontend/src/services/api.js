@@ -217,8 +217,19 @@ export const reportsAPI = {
   getSummary: async () => {
     const { data } = await api.get('/api/reports/summary')
     return data
+  },
+  getQuality: async ({ window = 30, repositoryId = null } = {}) => {
+    const params = new URLSearchParams({ window: String(window) })
+    if (repositoryId) params.set('repository_id', repositoryId)
+    const { data } = await api.get(`/api/reports/quality?${params.toString()}`)
+    return data
   }
 }
+
+// A rate is null when its denominator is zero, which is not the same as zero. Rendering
+// it as "n/a" is the only honest answer; a "0%" would read as a measured result.
+export const formatRate = (rate) =>
+  (typeof rate === 'number' && Number.isFinite(rate) ? `${Math.round(rate * 100)}%` : 'n/a')
 
 export const analysisAPI = {
   healthCheck: async () => {

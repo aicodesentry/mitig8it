@@ -73,3 +73,57 @@ Two GitHub App event subscriptions are required for this and are listed in
 [the GitHub App setup guide](../getting-started/github-app.md): **Pull request review
 thread** and **Pull request review comment**.
 
+## The daily roll-up
+
+`quality_metrics_daily` holds counts of distinct findings per day, at four grains
+distinguished by which key columns are NULL: the installation total, the installation per
+rule, one repository's total, and one repository per rule. A finding belongs to one
+repository and carries one rule, so the coarser grains are exact sums of the base grain.
+
+`applied_in_app` and `applied_on_github` are disjoint by construction: a finding counted
+as applied in the app on a day is not counted again under `applied_on_github` that day, so
+their sum is an exact count of distinct findings applied.
+
+`thread_resolved_without_fix` is the subset of `thread_resolved` for findings that were
+never applied and never re-analysed away. The reviewer closed the thread and nothing was
+fixed, which is a rejection.
+
+The SQL is in `services/api-service/src/db/qualityMetrics.js`. One statement rebuilds all
+four grains through `GROUPING SETS` and upserts on the unique index; a second statement
+prunes any window row the pass did not touch. Running it twice changes nothing.
+
+### The three rates
+
+Pure functions in `services/api-service/src/services/qualityMetrics.js`:
+
+- **apply rate** = distinct findings applied (in the app or on GitHub) / distinct findings
+  a fix was published for.
+- **dismiss rate** = (dismissed + suppressed + threads resolved without a fix) / findings
+  raised.
+- **residual rate** = findings still blocking after an apply / distinct findings applied.
+
+A rate is `null`, never zero, when its denominator is zero. Zero would read as "nobody
+applied our fixes"; null reads as "we published nothing to apply". The frontend renders
+null as `n/a`.
+
+Rates are computed from the sum of a window's rows, never averaged across days.
+
+### Where it runs and where it is read
+
+The `quality_metrics` step of `services/api-service/src/services/remediationReconciler.js`
+recomputes a trailing 35 days per installation and republishes the gauges. It runs at most
+once per `QUALITY_METRICS_INTERVAL_MS` (default 3600000), whatever the reconciler's own
+period is. One failing installation does not stop the rest.
+
+Gauges, labelled `installation_id` and `window`: `mitig8it_quality_apply_rate`,
+`mitig8it_quality_dismiss_rate`, `mitig8it_quality_residual_rate`. A rate with no
+denominator is removed rather than set, so a dashboard shows a gap instead of a confident
+and wrong number.
+
+`GET /api/reports/quality?window=7|30&repository_id=` returns `overall` and `by_rule` (the
+top 20 rules by dismiss rate, then by how often the rule fired), scoped to the
+installations the caller can reach. The route reads rows and sums them; it never touches
+the raw log, so a large log cannot make the dashboard slow. A repository the caller cannot
+reach is refused with 404 rather than answered with an empty roll-up.
+
+The dashboard shows the three rates over 30 days; the reports page shows the rule table.

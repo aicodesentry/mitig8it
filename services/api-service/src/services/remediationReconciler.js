@@ -1,4 +1,6 @@
 const remediationDb = require('../db/remediation');
+const qualityMetricsDb = require('../db/qualityMetrics');
+const quality = require('./qualityMetrics');
 const { GitHubRemediationClient } = require('./githubRemediationClient');
 const mergeController = require('./mergeController');
 const residualReport = require('./remediationResidualReport');
@@ -7,10 +9,23 @@ const metrics = require('./remediationMetrics');
 const logger = require('../utils/logger');
 
 const DEFAULT_INTERVAL_MS = 60000;
+// The roll-up reads the whole outcome log for an installation, so it runs on its own,
+// much slower clock rather than on every reconciliation pass.
+const DEFAULT_QUALITY_METRICS_INTERVAL_MS = 3600000;
+// A finding dismissed today can be re-opened next week, so a day stays recomputable for
+// longer than the longest window the report offers.
+const QUALITY_METRICS_WINDOW_DAYS = 35;
+// The windows the gauges are exported for; the report route offers the same two.
+const QUALITY_METRICS_GAUGE_WINDOWS = [7, 30];
 
 function intervalMs() {
   const configured = Number(process.env.REMEDIATION_RECONCILE_INTERVAL_MS);
   return Number.isFinite(configured) && configured >= 1000 ? configured : DEFAULT_INTERVAL_MS;
+}
+
+function qualityMetricsIntervalMs() {
+  const configured = Number(process.env.QUALITY_METRICS_INTERVAL_MS);
+  return Number.isFinite(configured) && configured >= 0 ? configured : DEFAULT_QUALITY_METRICS_INTERVAL_MS;
 }
 
 // Every step is bounded and independent. One failing row or step never stops the rest.
@@ -150,6 +165,64 @@ async function expireIntents(limit) {
   return { expired: expired.length };
 }
 
+// The last pass that actually recomputed, so the step can be called on every
+// reconciliation pass and still do its work at most once an hour.
+let lastQualityMetricsAt = 0;
+
+function resetQualityMetricsClock() {
+  lastQualityMetricsAt = 0;
+}
+
+// A rate with no denominator is not a zero. The gauge is removed rather than set, so a
+// dashboard shows a gap instead of a confident and wrong number.
+function publishQualityGauges(installationId, windowDays, summary) {
+  const labels = { installation_id: String(installationId), window: `${windowDays}d` };
+  const pairs = [
+    [metrics.qualityApplyRate, summary.apply_rate],
+    [metrics.qualityDismissRate, summary.dismiss_rate],
+    [metrics.qualityResidualRate, summary.residual_rate],
+  ];
+  for (const [gauge, value] of pairs) {
+    if (value == null) gauge.remove(labels);
+    else gauge.set(labels, value);
+  }
+}
+
+/**
+ * Recompute the daily quality roll-up for every active installation and republish the
+ * gauges from it. Bounded by the installation list and by its own interval; a failure on
+ * one installation never stops the rest.
+ */
+async function refreshQualityMetrics({ now = Date.now(), force = false, days = QUALITY_METRICS_WINDOW_DAYS } = {}) {
+  const period = qualityMetricsIntervalMs();
+  if (!force && lastQualityMetricsAt && now - lastQualityMetricsAt < period) {
+    return { skipped: true, next_in_ms: period - (now - lastQualityMetricsAt) };
+  }
+  lastQualityMetricsAt = now;
+
+  const installations = await qualityMetricsDb.installationsWithActivity({ days });
+  let recomputed = 0;
+  const failed = [];
+  for (const installationId of installations) {
+    try {
+      await qualityMetricsDb.recomputeInstallation(installationId, { days });
+      recomputed += 1;
+      for (const windowDays of QUALITY_METRICS_GAUGE_WINDOWS) {
+        const rows = await qualityMetricsDb.readWindow({
+          installationIds: [installationId], days: windowDays, repositoryId: null, byRule: false,
+        });
+        publishQualityGauges(installationId, windowDays, quality.summarize(rows));
+      }
+    } catch (error) {
+      failed.push(installationId);
+      logger.error('Quality metrics could not be recomputed for an installation', {
+        installation_id: installationId, error: error.message,
+      });
+    }
+  }
+  return { installations: installations.length, recomputed, failed: failed.length };
+}
+
 async function runReconciliation(options = {}) {
   const { leaseLimit = 50, outboxStuckSeconds = 300, outboxLimit = 100, actionStaleSeconds = 300, actionLimit = 20,
     jobLimit = 50, intentLimit = 100, mergeSweepLimit = 25, mergeSweepStaleSeconds = null, usageLimit = 200 } = options;
@@ -166,6 +239,10 @@ async function runReconciliation(options = {}) {
   await step('merge_controller', () => sweepMergeIntents({
     limit: mergeSweepLimit,
     ...(mergeSweepStaleSeconds == null ? {} : { staleSeconds: mergeSweepStaleSeconds }),
+  }), summary);
+  await step('quality_metrics', () => refreshQualityMetrics({
+    ...(options.qualityMetricsDays == null ? {} : { days: options.qualityMetricsDays }),
+    ...(options.forceQualityMetrics ? { force: true } : {}),
   }), summary);
   return summary;
 }
@@ -188,4 +265,6 @@ function startReconciler(options = {}) {
 module.exports = {
   runReconciliation, startReconciler, intervalMs, reconcileActions, completeVerifiedActions, releaseStrandedUsage,
   sweepMergeIntents, publishVerificationChecks, publishResidualComments,
+  refreshQualityMetrics, qualityMetricsIntervalMs, resetQualityMetricsClock,
+  QUALITY_METRICS_WINDOW_DAYS, QUALITY_METRICS_GAUGE_WINDOWS,
 };
