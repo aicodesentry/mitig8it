@@ -1,6 +1,8 @@
 const { pool } = require('../config/database');
 const axios = require('axios');
 const logger = require('../utils/logger');
+const requestContext = require('../utils/requestContext');
+const analysisMetrics = require('./analysisMetrics');
 const { AnalysisGrpcClient } = require('../clients/analysisGrpcClient');
 const { GitHubGrpcClient } = require('../clients/githubGrpcClient');
 const { calculateFingerprint, normalizeFinding } = require('./findingUtils');
@@ -595,7 +597,7 @@ async function githubServiceRequest(path, payload) {
 
   const requestConfig = {
     timeout: 45000,
-    headers: { 'x-internal-secret': internalSecret },
+    headers: { 'x-internal-secret': internalSecret, ...requestContext.toHeaders() },
   };
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -712,6 +714,7 @@ function analysisServiceHeaders() {
 
   return {
     'x-internal-secret': internalSecret,
+    ...requestContext.toHeaders(),
   };
 }
 
@@ -968,6 +971,34 @@ function transientRetryDelayMs(priorRetries) {
   return Math.min(RETRY_BACKOFF_CAP_MS, RETRY_BACKOFF_STEP_MS * (priorRetries + 1));
 }
 
+// A metric label must come from a closed set. `triggered_by` is written by our own
+// inserts today, but a future value must degrade to one extra series, not to one
+// series per value anyone ever writes.
+const KNOWN_TRIGGERS = new Set(['webhook', 'auto_retry', 'manual', 'api']);
+
+function triggerLabel(payload) {
+  const trigger = String(payload?.triggered_by || 'unknown');
+  return KNOWN_TRIGGERS.has(trigger) ? trigger : 'other';
+}
+
+// The reason an operator acts on, not the message they would have to read. Each value
+// points at a different owner: our analysis tiers, GitHub, the network, or a bug.
+function failureReason(error, { analysisResultProduced }) {
+  const message = String(error?.message || '');
+  if (message.startsWith('Incomplete analysis response')) return 'analysis_incomplete';
+  if (message.startsWith('Invalid GitHub file response')) return 'github_files_invalid';
+  if (message.startsWith('Inline finding publication incomplete')) return 'publication_incomplete';
+  if (isTransientInfrastructureError(error)) return 'infrastructure';
+  return analysisResultProduced ? 'publication_failed' : 'unhandled';
+}
+
+function observeFindingsPosted(counts = {}) {
+  for (const severity of ['critical', 'high', 'medium', 'low', 'info']) {
+    const count = Number(counts[severity] || 0);
+    if (count > 0) analysisMetrics.findingsPosted.labels(severity).inc(count);
+  }
+}
+
 async function runAnalysisJob(payload) {
   const {
     analysis_run_id: runId,
@@ -981,6 +1012,9 @@ async function runAnalysisJob(payload) {
   } = payload;
   const [owner, repo] = repositoryFullName.split('/');
   const analysisPayload = { repository_full_name: repositoryFullName, pull_request_number: prNumber, commit_sha: commitSha };
+  const startedAt = process.hrtime.bigint();
+  const elapsedSeconds = () => Number(process.hrtime.bigint() - startedAt) / 1e9;
+  analysisMetrics.runsStarted.labels(triggerLabel(payload)).inc();
 
   let allFindings = [];
   let files = [];
@@ -1090,6 +1124,10 @@ async function runAnalysisJob(payload) {
       reviewId: reviewResp.review_id,
     });
 
+    analysisMetrics.runsCompleted.inc();
+    analysisMetrics.runDuration.labels('completed').observe(elapsedSeconds());
+    observeFindingsPosted(lastCounts);
+
     if (shouldMarkBaselineSet) {
       await analysisRunsDb.markBaselineSet(repositoryId);
     }
@@ -1129,6 +1167,11 @@ async function runAnalysisJob(payload) {
           attempt: priorRetries + 1, maxRetries: MAX_AUTOMATIC_ANALYSIS_RETRIES,
           delayMs, retryRunId: requeued?.id || null,
         });
+        // Counted apart from a terminal failure. The review has not failed for the
+        // author yet, and the failure-ratio alert must not fire on work that is
+        // still on its way to succeeding.
+        analysisMetrics.runsFailed.labels('transient_retried').inc();
+        analysisMetrics.runDuration.labels('retried').observe(elapsedSeconds());
         // The queue poller picks the retry up once not_before elapses.
         return;
       } catch (requeueError) {
@@ -1138,8 +1181,11 @@ async function runAnalysisJob(payload) {
       }
     }
 
+    const reason = failureReason(error, { analysisResultProduced });
+    analysisMetrics.runsFailed.labels(reason).inc();
+    analysisMetrics.runDuration.labels('failed').observe(elapsedSeconds());
     logger.error('PR analysis orchestration failed', {
-      runId, repositoryId, error: error.message, automaticRetries: priorRetries,
+      runId, repositoryId, reason, error: error.message, automaticRetries: priorRetries,
     });
     await analysisRunsDb.markFailed(runId, error.message);
     try {
@@ -1155,6 +1201,7 @@ async function runAnalysisJob(payload) {
 }
 
 let analysisQueueTimer = null;
+let analysisQueueGaugeTimer = null;
 let analysisQueueDrainScheduled = false;
 let activeAnalysisWorkers = 0;
 
@@ -1178,17 +1225,36 @@ async function processQueuedAnalysisRun() {
     return { processed: false };
   }
 
-  logger.info('Claimed queued analysis run', {
-    runId: payload.analysis_run_id,
-    repositoryId: payload.repository_id,
-    prNumber: payload.pull_request_number,
-  });
+  // The queue breaks the request scope: the process that claims a run is usually not
+  // the one that took the webhook. Re-establishing the context from the row is what
+  // keeps a review's logs joined to the delivery that asked for it.
+  return requestContext.runWith(
+    { delivery_id: payload.delivery_id, analysis_run_id: payload.analysis_run_id },
+    async () => {
+      logger.info('Claimed queued analysis run', {
+        runId: payload.analysis_run_id,
+        repositoryId: payload.repository_id,
+        prNumber: payload.pull_request_number,
+      });
 
+      try {
+        await runAnalysisJob(payload);
+        return { processed: true, runId: payload.analysis_run_id };
+      } finally {
+        await payload.releaseLease?.();
+      }
+    }
+  );
+}
+
+// The queue gauges the stall alert reads. Observed on its own slow cadence rather than
+// on the poll interval: one extra aggregate query a minute, not one every five seconds.
+async function observeAnalysisQueue() {
   try {
-    await runAnalysisJob(payload);
-    return { processed: true, runId: payload.analysis_run_id };
-  } finally {
-    await payload.releaseLease?.();
+    analysisMetrics.observeQueue(await analysisRunsDb.getQueueStats());
+  } catch (error) {
+    // A gauge that cannot be refreshed goes stale; it must never stop the workers.
+    logger.warn('Analysis queue gauge refresh failed', { error: error.message });
   }
 }
 
@@ -1237,12 +1303,24 @@ function startAnalysisQueueWorker(intervalMs = Number(process.env.ANALYSIS_QUEUE
 
   notifyAnalysisQueued();
   analysisQueueTimer = setInterval(notifyAnalysisQueued, safeIntervalMs);
+
+  observeAnalysisQueue();
+  const gaugeIntervalMs = Number(process.env.ANALYSIS_QUEUE_GAUGE_INTERVAL_MS || 60000);
+  analysisQueueGaugeTimer = setInterval(
+    observeAnalysisQueue,
+    Number.isFinite(gaugeIntervalMs) && gaugeIntervalMs > 0 ? gaugeIntervalMs : 60000
+  );
+  if (typeof analysisQueueGaugeTimer.unref === 'function') analysisQueueGaugeTimer.unref();
+
   return analysisQueueTimer;
 }
 
 function triggerAnalysisJob(payload) {
+  // The context is captured here, where the caller's is still in scope, so the
+  // background run logs under the delivery that triggered it.
+  const inherited = { delivery_id: payload.delivery_id, analysis_run_id: payload.analysis_run_id };
   setImmediate(() => {
-    runAnalysisJob(payload).catch((error) => {
+    requestContext.runWith(inherited, () => runAnalysisJob(payload)).catch((error) => {
       logger.error('Unhandled analysis background failure', {
         runId: payload.analysis_run_id,
         error: error.message,
@@ -1255,9 +1333,13 @@ module.exports = {
   callAnalysisTier,
   triggerAnalysisJob,
   notifyAnalysisQueued,
+  observeAnalysisQueue,
   processQueuedAnalysisRun,
   startAnalysisQueueWorker,
   __private: {
+    failureReason,
+    observeFindingsPosted,
+    triggerLabel,
     buildReviewBody,
     buildReviewComment,
     buildTier2FilePayload,

@@ -4,6 +4,8 @@ const mergeController = require('./mergeController');
 const residualReport = require('./remediationResidualReport');
 
 const metrics = require('./remediationMetrics');
+const analysisMetrics = require('./analysisMetrics');
+const analysisRunsDb = require('../db/analysisRuns');
 const logger = require('../utils/logger');
 
 const DEFAULT_INTERVAL_MS = 60000;
@@ -126,8 +128,29 @@ async function publishResidualComments(limit) {
 
 async function quarantineJobs(limit) {
   const quarantined = await remediationDb.quarantineExhaustedJobs(limit);
-  if (quarantined.length) logger.error('Quarantined remediation jobs into dead_letter', { count: quarantined.length });
+  if (quarantined.length) {
+    // Quarantine moves rows with one statement rather than through `completeStage`,
+    // so this is the only place the terminal counter can learn about a dead letter.
+    metrics.jobTerminalStates.labels('dead_letter').inc(quarantined.length);
+    logger.error('Quarantined remediation jobs into dead_letter', { count: quarantined.length });
+  }
   return { quarantined: quarantined.length };
+}
+
+// The analysis queue gauges are refreshed here as well as in the queue worker, so the
+// stall alert has data in both topologies: API alone, and API plus a worker process
+// where the reconciler is the loop that is always running.
+async function observeAnalysisQueue() {
+  const stats = await analysisRunsDb.getQueueStats();
+  const stalled = analysisMetrics.observeQueue(stats);
+  if (stalled) {
+    logger.error('Analysis queue is stalled: pending work and no run started', {
+      pending: stats.pending,
+      oldest_pending_seconds: stats.oldest_pending_seconds,
+      seconds_since_last_start: stats.seconds_since_last_start,
+    });
+  }
+  return { pending: stats.pending, stalled };
 }
 
 // Reservations held by jobs that have already ended can never be spent. Releasing them is
@@ -163,6 +186,7 @@ async function runReconciliation(options = {}) {
   await step('usage', () => releaseStrandedUsage(usageLimit), summary);
   await step('verification_checks', () => publishVerificationChecks(actionLimit), summary);
   await step('residual_comments', () => publishResidualComments(actionLimit), summary);
+  await step('analysis_queue', () => observeAnalysisQueue(), summary);
   await step('merge_controller', () => sweepMergeIntents({
     limit: mergeSweepLimit,
     ...(mergeSweepStaleSeconds == null ? {} : { staleSeconds: mergeSweepStaleSeconds }),
@@ -186,6 +210,6 @@ function startReconciler(options = {}) {
 }
 
 module.exports = {
-  runReconciliation, startReconciler, intervalMs, reconcileActions, completeVerifiedActions, releaseStrandedUsage,
+  runReconciliation, startReconciler, intervalMs, reconcileActions, completeVerifiedActions, releaseStrandedUsage, observeAnalysisQueue,
   sweepMergeIntents, publishVerificationChecks, publishResidualComments,
 };
