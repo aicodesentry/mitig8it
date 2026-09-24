@@ -50,6 +50,7 @@ const timeline = [
     summary: 'Security depends on scoped permissions, authenticated service boundaries, and explicit review controls.',
     bullets: [
       'GitHub App installations and repository permissions limit which repos Mitig8it can access.',
+      'Or run it as a GitHub Action in your own CI; nothing leaves your runner.',
       'Authentication, session handling, and request validation protect dashboard and review flows.',
       'Internal services communicate through authenticated boundaries rather than open, unauthenticated hops.',
     ],
