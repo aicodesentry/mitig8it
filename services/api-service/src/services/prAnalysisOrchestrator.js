@@ -177,6 +177,70 @@ function didTier3MeaningfullyChangeFindings(previousFindings, nextFindings) {
   return false;
 }
 
+// The scanner reports a file it could only parse partially, or gave up on after
+// a timeout, as a limitation rather than as a failed scan. Everything else in
+// the pull request was analysed normally, so the run says which files were not
+// and carries on. A limitation never turns the check run red on its own.
+const LIMITATION_LABELS = {
+  partial_parse: 'partially analysed',
+  not_analyzed: 'not fully analysed',
+};
+
+function normalizeLimitations(limitations) {
+  if (!Array.isArray(limitations)) return [];
+  const byKey = new Map();
+  for (const limitation of limitations) {
+    if (!limitation || typeof limitation !== 'object') continue;
+    const path = typeof limitation.path === 'string' ? limitation.path : '';
+    if (!path) continue;
+    const kind = LIMITATION_LABELS[limitation.kind] ? limitation.kind : 'not_analyzed';
+    const key = `${path}::${kind}`;
+    if (byKey.has(key)) continue;
+    const line = Number(limitation.line);
+    byKey.set(key, {
+      path,
+      kind,
+      type: typeof limitation.type === 'string' ? limitation.type : '',
+      message: typeof limitation.message === 'string' ? limitation.message.slice(0, 200) : '',
+      line: Number.isFinite(line) && line > 0 ? line : null,
+    });
+  }
+  return [...byKey.values()];
+}
+
+// "cwe-vul.py (lexical error at line 127)" - enough for a reader to open the
+// file and see why the scanner stopped there.
+function describeLimitation(limitation) {
+  const name = limitation.path.split('/').pop() || limitation.path;
+  const reason = (limitation.type || LIMITATION_LABELS[limitation.kind]).toLowerCase();
+  const detail = [reason, limitation.line ? `at line ${limitation.line}` : '']
+    .filter(Boolean)
+    .join(' ');
+  return detail ? `${name} (${detail})` : name;
+}
+
+function buildLimitationSummaryLine(limitations) {
+  const normalized = normalizeLimitations(limitations);
+  if (normalized.length === 0) return '';
+
+  const partial = normalized.filter((limitation) => limitation.kind === 'partial_parse');
+  const skipped = normalized.filter((limitation) => limitation.kind !== 'partial_parse');
+  const clauses = [];
+  if (partial.length > 0) {
+    clauses.push(
+      `${partial.length} file${partial.length === 1 ? '' : 's'} partially analysed: `
+      + partial.map(describeLimitation).join(', ')
+    );
+  }
+  if (skipped.length > 0) {
+    clauses.push(
+      `${skipped.length} file${skipped.length === 1 ? '' : 's'} not fully analysed: `
+      + skipped.map(describeLimitation).join(', ')
+    );
+  }
+  return `${clauses.join('; ')}.`;
+}
+
 function buildTestCodeSummaryLines({ testFilesScanned, infoFindings, infoCommentsOmitted }) {
   const lines = [];
   if (testFilesScanned <= 0 && infoFindings <= 0) return lines;
@@ -209,6 +273,8 @@ function buildReviewBody(findings, runId, options = {}) {
     infoFindings: infoFindings.length,
     infoCommentsOmitted: Number(options.infoCommentsOmitted || 0),
   });
+  const limitationLine = buildLimitationSummaryLine(options.limitations);
+  const limitationLines = limitationLine ? [`${severityIcon('info')} ${limitationLine}`, ''] : [];
 
   if (total === 0) {
     return [
@@ -218,6 +284,7 @@ function buildReviewBody(findings, runId, options = {}) {
       'This PR passed all security checks.',
       '',
       ...testCodeLines,
+      ...limitationLines,
       `<sub>Run \`${runId.slice(0, 8)}\`</sub>`,
     ].join('\n');
   }
@@ -235,6 +302,7 @@ function buildReviewBody(findings, runId, options = {}) {
     `| **${counts.critical || 0}** | **${counts.high || 0}** | **${counts.medium || 0}** | **${counts.low || 0}** |`,
     '',
     ...testCodeLines,
+    ...limitationLines,
     placement.sentence,
     '',
     `<sub>Analyzed by <strong>Mitig8it</strong> · Run \`${runId.slice(0, 8)}\` · ${placement.short}</sub>`,
@@ -824,7 +892,7 @@ async function persistAndFilter({ findings, files, runId, pullRequestId, reposit
   return { actionable, shouldMarkBaselineSet, findingRows: postSuppression };
 }
 
-async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, installationId, commitSha, runId, tierLabel, repoProfile }) {
+async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, installationId, commitSha, runId, tierLabel, repoProfile, limitations }) {
   const counts = summarizeFindings(actionable).counts;
   const highOrCritical = blockingCount(counts);
   const testFilesScanned = countTestCodeFiles(files);
@@ -903,6 +971,7 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
       testFilesScanned,
       infoCommentsOmitted: inlinePlan.infoOmitted,
       inlineCount: inlinePlan.comments.filter((comment) => !isInfoComment(comment)).length,
+      limitations,
     });
 
     reviewResp = await submitReviewWithFallback({
@@ -988,6 +1057,7 @@ async function runAnalysisJob(payload) {
   let lastCounts = {};
   let lastHighOrCritical = 0;
   let testFilesScanned = 0;
+  let limitations = [];
   let reviewResp = {};
   let checkRunResp = {};
   let shouldMarkBaselineSet = false;
@@ -1021,6 +1091,15 @@ async function runAnalysisJob(payload) {
     const tier1 = await requiredTier('/analyze/pr/tier1', { ...analysisPayload, files }, 30000);
     const tier2 = await requiredTier('/analyze/pr/tier2', { ...analysisPayload, files: tier2Files }, 60000);
     allFindings = [...tier1.findings, ...tier2.findings];
+    // A file the scanner could only parse partially is a gap in coverage, not a
+    // failed scan. The run reports it instead of implying complete analysis.
+    limitations = normalizeLimitations([
+      ...(tier1.analysis_limitations || []),
+      ...(tier2.analysis_limitations || []),
+    ]);
+    if (limitations.length > 0) {
+      logger.warn('Analysis reported coverage limitations', { runId, prNumber, limitations });
+    }
     let repoProfile = {};
     try {
       const profile = await repositoriesDb.getProfile(repositoryId);
@@ -1045,7 +1124,7 @@ async function runAnalysisJob(payload) {
     await findingsDb.snapshotRun(runId, final.findingRows);
     const result = await postReviewToGitHub({
       actionable: final.actionable, files, owner, repo, prNumber, installationId, commitSha, runId,
-      tierLabel: 'Tier 3', repoProfile,
+      tierLabel: 'Tier 3', repoProfile, limitations,
     });
     reviewResp = result.reviewResp;
     lastCounts = result.counts;
@@ -1071,6 +1150,9 @@ async function runAnalysisJob(payload) {
           + '(never blocking).'
         );
       }
+      // A limitation is a coverage note, never a reason to fail the check.
+      const limitationLine = buildLimitationSummaryLine(limitations);
+      if (limitationLine) summaryLines.push(limitationLine);
       checkRunResp = await githubServiceRequest('/internal/github/check-runs', {
         owner, repo, installation_id: installationId, head_sha: commitSha,
         // Informational findings never contribute to the conclusion.
@@ -1088,6 +1170,7 @@ async function runAnalysisJob(payload) {
       filesAnalyzed: files.length,
       checkRunId: checkRunResp.check_run_id,
       reviewId: reviewResp.review_id,
+      limitations,
     });
 
     if (shouldMarkBaselineSet) {
@@ -1258,6 +1341,7 @@ module.exports = {
   processQueuedAnalysisRun,
   startAnalysisQueueWorker,
   __private: {
+    buildLimitationSummaryLine,
     buildReviewBody,
     buildReviewComment,
     buildTier2FilePayload,
@@ -1275,6 +1359,7 @@ module.exports = {
     explainInlineCommentDecision,
     isInfoFinding,
     isTestCodePath,
+    normalizeLimitations,
     normalizeSuggestionPatch,
     planInlineComments,
     prioritizeReviewComments,

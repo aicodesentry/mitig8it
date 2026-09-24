@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 import common_pb2 as common__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0e\x61nalysis.proto\x12\x14mitig8it.analysis.v1\x1a\x0c\x63ommon.proto\"\x9a\x01\n\x19\x41nalyzePullRequestRequest\x12\x1c\n\x14repository_full_name\x18\x01 \x01(\t\x12\x1b\n\x13pull_request_number\x18\x02 \x01(\x05\x12\x12\n\ncommit_sha\x18\x03 \x01(\t\x12.\n\x05\x66iles\x18\x04 \x03(\x0b\x32\x1f.mitig8it.common.v1.ChangedFile\"\xc0\x01\n\x1a\x41nalyzePullRequestResponse\x12\x1c\n\x14repository_full_name\x18\x01 \x01(\t\x12\x1b\n\x13pull_request_number\x18\x02 \x01(\x05\x12\x12\n\ncommit_sha\x18\x03 \x01(\t\x12\x16\n\x0e\x66iles_analyzed\x18\x04 \x01(\x05\x12\x0c\n\x04tier\x18\x05 \x01(\x05\x12-\n\x08\x66indings\x18\x06 \x03(\x0b\x32\x1b.mitig8it.common.v1.Finding\"\xd4\x02\n\x15TriageFindingsRequest\x12\x1c\n\x14repository_full_name\x18\x01 \x01(\t\x12\x1b\n\x13pull_request_number\x18\x02 \x01(\x05\x12\x12\n\ncommit_sha\x18\x03 \x01(\t\x12-\n\x08\x66indings\x18\x04 \x03(\x0b\x32\x1b.mitig8it.common.v1.Finding\x12R\n\x0c\x66ile_patches\x18\x05 \x03(\x0b\x32<.mitig8it.analysis.v1.TriageFindingsRequest.FilePatchesEntry\x12\x35\n\x0crepo_profile\x18\x06 \x01(\x0b\x32\x1f.mitig8it.common.v1.RepoProfile\x1a\x32\n\x10\x46ilePatchesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\xbc\x01\n\x16TriageFindingsResponse\x12\x1c\n\x14repository_full_name\x18\x01 \x01(\t\x12\x1b\n\x13pull_request_number\x18\x02 \x01(\x05\x12\x12\n\ncommit_sha\x18\x03 \x01(\t\x12\x0c\n\x04tier\x18\x04 \x01(\x05\x12-\n\x08\x66indings\x18\x05 \x03(\x0b\x32\x1b.mitig8it.common.v1.Finding\x12\x16\n\x0e\x66iltered_count\x18\x06 \x01(\x05\x32\xbd\x04\n\x0f\x41nalysisService\x12w\n\x12\x41nalyzePullRequest\x12/.mitig8it.analysis.v1.AnalyzePullRequestRequest\x1a\x30.mitig8it.analysis.v1.AnalyzePullRequestResponse\x12q\n\x0c\x41nalyzeTier1\x12/.mitig8it.analysis.v1.AnalyzePullRequestRequest\x1a\x30.mitig8it.analysis.v1.AnalyzePullRequestResponse\x12q\n\x0c\x41nalyzeTier2\x12/.mitig8it.analysis.v1.AnalyzePullRequestRequest\x1a\x30.mitig8it.analysis.v1.AnalyzePullRequestResponse\x12k\n\x0eTriageFindings\x12+.mitig8it.analysis.v1.TriageFindingsRequest\x1a,.mitig8it.analysis.v1.TriageFindingsResponse\x12^\n\x0bHealthCheck\x12&.mitig8it.common.v1.HealthCheckRequest\x1a\'.mitig8it.common.v1.HealthCheckResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0e\x61nalysis.proto\x12\x14mitig8it.analysis.v1\x1a\x0c\x63ommon.proto\"\x9a\x01\n\x19\x41nalyzePullRequestRequest\x12\x1c\n\x14repository_full_name\x18\x01 \x01(\t\x12\x1b\n\x13pull_request_number\x18\x02 \x01(\x05\x12\x12\n\ncommit_sha\x18\x03 \x01(\t\x12.\n\x05\x66iles\x18\x04 \x03(\x0b\x32\x1f.mitig8it.common.v1.ChangedFile\"\x86\x02\n\x1a\x41nalyzePullRequestResponse\x12\x1c\n\x14repository_full_name\x18\x01 \x01(\t\x12\x1b\n\x13pull_request_number\x18\x02 \x01(\x05\x12\x12\n\ncommit_sha\x18\x03 \x01(\t\x12\x16\n\x0e\x66iles_analyzed\x18\x04 \x01(\x05\x12\x0c\n\x04tier\x18\x05 \x01(\x05\x12-\n\x08\x66indings\x18\x06 \x03(\x0b\x32\x1b.mitig8it.common.v1.Finding\x12\x44\n\x14\x61nalysis_limitations\x18\x07 \x03(\x0b\x32&.mitig8it.common.v1.AnalysisLimitation\"\xd4\x02\n\x15TriageFindingsRequest\x12\x1c\n\x14repository_full_name\x18\x01 \x01(\t\x12\x1b\n\x13pull_request_number\x18\x02 \x01(\x05\x12\x12\n\ncommit_sha\x18\x03 \x01(\t\x12-\n\x08\x66indings\x18\x04 \x03(\x0b\x32\x1b.mitig8it.common.v1.Finding\x12R\n\x0c\x66ile_patches\x18\x05 \x03(\x0b\x32<.mitig8it.analysis.v1.TriageFindingsRequest.FilePatchesEntry\x12\x35\n\x0crepo_profile\x18\x06 \x01(\x0b\x32\x1f.mitig8it.common.v1.RepoProfile\x1a\x32\n\x10\x46ilePatchesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\xbc\x01\n\x16TriageFindingsResponse\x12\x1c\n\x14repository_full_name\x18\x01 \x01(\t\x12\x1b\n\x13pull_request_number\x18\x02 \x01(\x05\x12\x12\n\ncommit_sha\x18\x03 \x01(\t\x12\x0c\n\x04tier\x18\x04 \x01(\x05\x12-\n\x08\x66indings\x18\x05 \x03(\x0b\x32\x1b.mitig8it.common.v1.Finding\x12\x16\n\x0e\x66iltered_count\x18\x06 \x01(\x05\x32\xbd\x04\n\x0f\x41nalysisService\x12w\n\x12\x41nalyzePullRequest\x12/.mitig8it.analysis.v1.AnalyzePullRequestRequest\x1a\x30.mitig8it.analysis.v1.AnalyzePullRequestResponse\x12q\n\x0c\x41nalyzeTier1\x12/.mitig8it.analysis.v1.AnalyzePullRequestRequest\x1a\x30.mitig8it.analysis.v1.AnalyzePullRequestResponse\x12q\n\x0c\x41nalyzeTier2\x12/.mitig8it.analysis.v1.AnalyzePullRequestRequest\x1a\x30.mitig8it.analysis.v1.AnalyzePullRequestResponse\x12k\n\x0eTriageFindings\x12+.mitig8it.analysis.v1.TriageFindingsRequest\x1a,.mitig8it.analysis.v1.TriageFindingsResponse\x12^\n\x0bHealthCheck\x12&.mitig8it.common.v1.HealthCheckRequest\x1a\'.mitig8it.common.v1.HealthCheckResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -37,13 +37,13 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_ANALYZEPULLREQUESTREQUEST']._serialized_start=55
   _globals['_ANALYZEPULLREQUESTREQUEST']._serialized_end=209
   _globals['_ANALYZEPULLREQUESTRESPONSE']._serialized_start=212
-  _globals['_ANALYZEPULLREQUESTRESPONSE']._serialized_end=404
-  _globals['_TRIAGEFINDINGSREQUEST']._serialized_start=407
-  _globals['_TRIAGEFINDINGSREQUEST']._serialized_end=747
-  _globals['_TRIAGEFINDINGSREQUEST_FILEPATCHESENTRY']._serialized_start=697
-  _globals['_TRIAGEFINDINGSREQUEST_FILEPATCHESENTRY']._serialized_end=747
-  _globals['_TRIAGEFINDINGSRESPONSE']._serialized_start=750
-  _globals['_TRIAGEFINDINGSRESPONSE']._serialized_end=938
-  _globals['_ANALYSISSERVICE']._serialized_start=941
-  _globals['_ANALYSISSERVICE']._serialized_end=1514
+  _globals['_ANALYZEPULLREQUESTRESPONSE']._serialized_end=474
+  _globals['_TRIAGEFINDINGSREQUEST']._serialized_start=477
+  _globals['_TRIAGEFINDINGSREQUEST']._serialized_end=817
+  _globals['_TRIAGEFINDINGSREQUEST_FILEPATCHESENTRY']._serialized_start=767
+  _globals['_TRIAGEFINDINGSREQUEST_FILEPATCHESENTRY']._serialized_end=817
+  _globals['_TRIAGEFINDINGSRESPONSE']._serialized_start=820
+  _globals['_TRIAGEFINDINGSRESPONSE']._serialized_end=1008
+  _globals['_ANALYSISSERVICE']._serialized_start=1011
+  _globals['_ANALYSISSERVICE']._serialized_end=1584
 # @@protoc_insertion_point(module_scope)

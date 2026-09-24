@@ -367,7 +367,7 @@ proto.mitig8it.analysis.v1.AnalyzePullRequestRequest.prototype.clearFilesList = 
  * @private {!Array<number>}
  * @const
  */
-proto.mitig8it.analysis.v1.AnalyzePullRequestResponse.repeatedFields_ = [6];
+proto.mitig8it.analysis.v1.AnalyzePullRequestResponse.repeatedFields_ = [6,7];
 
 
 
@@ -406,7 +406,9 @@ proto.mitig8it.analysis.v1.AnalyzePullRequestResponse.toObject = function(includ
     filesAnalyzed: jspb.Message.getFieldWithDefault(msg, 4, 0),
     tier: jspb.Message.getFieldWithDefault(msg, 5, 0),
     findingsList: jspb.Message.toObjectList(msg.getFindingsList(),
-    common_pb.Finding.toObject, includeInstance)
+    common_pb.Finding.toObject, includeInstance),
+    analysisLimitationsList: jspb.Message.toObjectList(msg.getAnalysisLimitationsList(),
+    common_pb.AnalysisLimitation.toObject, includeInstance)
   };
 
   if (includeInstance) {
@@ -467,6 +469,11 @@ proto.mitig8it.analysis.v1.AnalyzePullRequestResponse.deserializeBinaryFromReade
       var value = new common_pb.Finding;
       reader.readMessage(value,common_pb.Finding.deserializeBinaryFromReader);
       msg.addFindings(value);
+      break;
+    case 7:
+      var value = new common_pb.AnalysisLimitation;
+      reader.readMessage(value,common_pb.AnalysisLimitation.deserializeBinaryFromReader);
+      msg.addAnalysisLimitations(value);
       break;
     default:
       reader.skipField();
@@ -538,6 +545,14 @@ proto.mitig8it.analysis.v1.AnalyzePullRequestResponse.serializeBinaryToWriter = 
       6,
       f,
       common_pb.Finding.serializeBinaryToWriter
+    );
+  }
+  f = message.getAnalysisLimitationsList();
+  if (f.length > 0) {
+    writer.writeRepeatedMessage(
+      7,
+      f,
+      common_pb.AnalysisLimitation.serializeBinaryToWriter
     );
   }
 };
@@ -668,6 +683,44 @@ proto.mitig8it.analysis.v1.AnalyzePullRequestResponse.prototype.addFindings = fu
  */
 proto.mitig8it.analysis.v1.AnalyzePullRequestResponse.prototype.clearFindingsList = function() {
   return this.setFindingsList([]);
+};
+
+
+/**
+ * repeated mitig8it.common.v1.AnalysisLimitation analysis_limitations = 7;
+ * @return {!Array<!proto.mitig8it.common.v1.AnalysisLimitation>}
+ */
+proto.mitig8it.analysis.v1.AnalyzePullRequestResponse.prototype.getAnalysisLimitationsList = function() {
+  return /** @type{!Array<!proto.mitig8it.common.v1.AnalysisLimitation>} */ (
+    jspb.Message.getRepeatedWrapperField(this, common_pb.AnalysisLimitation, 7));
+};
+
+
+/**
+ * @param {!Array<!proto.mitig8it.common.v1.AnalysisLimitation>} value
+ * @return {!proto.mitig8it.analysis.v1.AnalyzePullRequestResponse} returns this
+*/
+proto.mitig8it.analysis.v1.AnalyzePullRequestResponse.prototype.setAnalysisLimitationsList = function(value) {
+  return jspb.Message.setRepeatedWrapperField(this, 7, value);
+};
+
+
+/**
+ * @param {!proto.mitig8it.common.v1.AnalysisLimitation=} opt_value
+ * @param {number=} opt_index
+ * @return {!proto.mitig8it.common.v1.AnalysisLimitation}
+ */
+proto.mitig8it.analysis.v1.AnalyzePullRequestResponse.prototype.addAnalysisLimitations = function(opt_value, opt_index) {
+  return jspb.Message.addToRepeatedWrapperField(this, 7, opt_value, proto.mitig8it.common.v1.AnalysisLimitation, opt_index);
+};
+
+
+/**
+ * Clears the list making it empty but non-null.
+ * @return {!proto.mitig8it.analysis.v1.AnalyzePullRequestResponse} returns this
+ */
+proto.mitig8it.analysis.v1.AnalyzePullRequestResponse.prototype.clearAnalysisLimitationsList = function() {
+  return this.setAnalysisLimitationsList([]);
 };
 
 

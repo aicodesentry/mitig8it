@@ -485,8 +485,180 @@ def build_scan_batches(
     return batches
 
 
+# Scanner error classification.
+#
+# semgrep's JSON `errors` entries follow the cli_error schema of
+# semgrep_output_v1 (fields: code, level, type, rule_id, message, path,
+# long_msg, short_msg, spans, help). `level` is one of "error", "warn",
+# "info". `type` is either a string tag ("Lexical error", "Syntax error",
+# "Timeout", "Out of memory", "Too many matches", "Fatal error", ...) or, for
+# the parameterised variants, a two element list such as
+# ["PartialParsing", [<locations>]] or ["PatternParseError", [...]].
+#
+# A per-file parse problem means one file was read partially. It must not
+# discard the findings semgrep produced for every other file in the batch, so
+# those entries become recorded limitations instead of a failed scan.
+PARTIAL_PARSE_ERROR_TYPES = {
+    "Lexical error",
+    "Syntax error",
+    "Other syntax error",
+    "Parsing error",
+    "AST builder error",
+    "Partial parsing",
+    "PartialParsing",
+}
+
+# The scanner gave up on one file because it hit a resource ceiling. Whatever
+# it did produce for the other files is still sound.
+RESOURCE_LIMIT_ERROR_TYPES = {
+    "Timeout",
+    "Out of memory",
+    "Too many matches",
+    "Fixpoint timeout",
+    "Stack overflow",
+    "Timeout during interfile analysis",
+    "OOM during interfile analysis",
+}
+
+LIMITATION_PARTIAL_PARSE = "partial_parse"
+LIMITATION_NOT_ANALYZED = "not_analyzed"
+
+_ERROR_LINE_PATTERN = re.compile(r"at line [^\s:]*:(\d+)")
+
+
+# The parameterised variants carry an OCaml style constructor name rather than
+# the readable tag the string variants use. These end up in a check run summary,
+# so they get the same shape as the rest.
+ERROR_TYPE_DISPLAY = {
+    "PartialParsing": "Partial parsing",
+    "PatternParseError": "Pattern parse error",
+    "IncompatibleRule": "Incompatible rule",
+    "DependencyResolutionError": "Dependency resolution error",
+}
+
+
+def _scanner_error_type(entry: Dict[str, Any]) -> str:
+    """Return the error tag, flattening the ["Tag", payload] parameterised form."""
+    raw = entry.get("type")
+    if isinstance(raw, str):
+        return ERROR_TYPE_DISPLAY.get(raw, raw)
+    if isinstance(raw, list) and raw and isinstance(raw[0], str):
+        return ERROR_TYPE_DISPLAY.get(raw[0], raw[0])
+    return "Unknown"
+
+
+def _scanner_error_line(entry: Dict[str, Any]) -> Optional[int]:
+    """Best-effort line number for a scanner error.
+
+    semgrep puts the location in `spans` when it has one, in the payload of a
+    parameterised type otherwise, and always repeats it inside the message.
+    """
+    spans = entry.get("spans")
+    if isinstance(spans, list):
+        for span in spans:
+            line = _normalize_trace_line((span or {}).get("start", {}).get("line"))
+            if line is not None:
+                return line
+
+    raw_type = entry.get("type")
+    if isinstance(raw_type, list) and len(raw_type) == 2 and isinstance(raw_type[1], list):
+        for location in raw_type[1]:
+            if not isinstance(location, dict):
+                continue
+            line = _normalize_trace_line((location.get("start") or {}).get("line"))
+            if line is not None:
+                return line
+
+    match = _ERROR_LINE_PATTERN.search(str(entry.get("message") or ""))
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _scanner_error_path(entry: Dict[str, Any]) -> str:
+    path = entry.get("path")
+    return path if isinstance(path, str) and path else ""
+
+
+def _describe_scanner_error(entry: Dict[str, Any]) -> str:
+    message = str(entry.get("message") or "")[:200]
+    return (
+        f"type={_scanner_error_type(entry)} level={entry.get('level')} "
+        f"path={_scanner_error_path(entry) or '<none>'} message={message}"
+    )
+
+
+def _classify_scanner_errors(
+    errors: List[Any],
+    stderr_tail: str,
+) -> List[Dict[str, Any]]:
+    """Split scanner errors into tolerable per-file limitations and fatal failures.
+
+    Every entry is logged. File scoped parse problems and resource ceilings
+    become limitations and the batch results are kept. Anything else - invalid
+    rules, config errors, a fatal error, an error level entry with no file to
+    attribute it to - still fails the tier closed, now with the error details
+    in the raised message so the next failure is diagnosable from the logs.
+    """
+    limitations: List[Dict[str, Any]] = []
+    fatal: List[Dict[str, Any]] = []
+
+    for raw in errors:
+        if not isinstance(raw, dict):
+            fatal.append({"type": "Unknown", "level": "error", "message": str(raw)})
+            print(f"OpenGrep scanner error: type=Unknown level=error path=<none> message={str(raw)[:200]}", flush=True)
+            continue
+
+        print(f"OpenGrep scanner error: {_describe_scanner_error(raw)}", flush=True)
+
+        error_type = _scanner_error_type(raw)
+        level = raw.get("level")
+        path = _scanner_error_path(raw)
+        message = str(raw.get("message") or "")
+
+        if path and error_type in RESOURCE_LIMIT_ERROR_TYPES:
+            limitations.append({
+                "path": path,
+                "kind": LIMITATION_NOT_ANALYZED,
+                "type": error_type,
+                "message": message[:200],
+                "line": _scanner_error_line(raw),
+            })
+            continue
+
+        if path and error_type in PARTIAL_PARSE_ERROR_TYPES and level in ("warn", "info"):
+            limitations.append({
+                "path": path,
+                "kind": LIMITATION_PARTIAL_PARSE,
+                "type": error_type,
+                "message": message[:200],
+                "line": _scanner_error_line(raw),
+            })
+            continue
+
+        if level == "info":
+            # Informational entries say nothing is wrong.
+            continue
+
+        fatal.append(raw)
+
+    if fatal:
+        details = "; ".join(_describe_scanner_error(entry) for entry in fatal)
+        tail = (stderr_tail or "").strip()[-500:]
+        raise RuntimeError(
+            f"OpenGrep reported incomplete analysis: {details}"
+            + (f" | stderr: {tail}" if tail else "")
+        )
+
+    return limitations
+
+
 def _run_semgrep(target_dir: str) -> Dict[str, Any]:
-    """Run one scanner process over one batch directory and return its output."""
+    """Run one scanner process over one batch directory and return its output.
+
+    Tolerable per-file scanner errors are attached to the returned output under
+    `analysis_limitations`; fatal ones raise.
+    """
     try:
         result = subprocess.run(
             [
@@ -510,7 +682,11 @@ def _run_semgrep(target_dir: str) -> Dict[str, Any]:
 
     if result.returncode not in (0, 1):
         # returncode 1 = findings found, 0 = no findings
-        raise RuntimeError(f"OpenGrep failed with exit code {result.returncode}")
+        stderr_tail = (result.stderr or "").strip()[-500:]
+        raise RuntimeError(
+            f"OpenGrep failed with exit code {result.returncode}"
+            + (f" | stderr: {stderr_tail}" if stderr_tail else "")
+        )
 
     try:
         output = json.loads(result.stdout)
@@ -519,8 +695,12 @@ def _run_semgrep(target_dir: str) -> Dict[str, Any]:
 
     if not isinstance(output, dict) or not isinstance(output.get("results"), list):
         raise RuntimeError("OpenGrep returned an incomplete result")
-    if output.get("errors"):
-        raise RuntimeError("OpenGrep reported incomplete analysis")
+
+    errors = output.get("errors")
+    if errors:
+        if not isinstance(errors, list):
+            raise RuntimeError(f"OpenGrep reported incomplete analysis: errors={str(errors)[:200]}")
+        output["analysis_limitations"] = _classify_scanner_errors(errors, result.stderr or "")
 
     return output
 
@@ -629,8 +809,23 @@ def contained_scan_path(root: Path, relative_path: str) -> Path:
     return root / relative_path
 
 
-def _scan_batch(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Scan one batch. Any failure raises, so the tier fails closed."""
+def _repo_relative_scan_path(scan_path: str, tmpdir: str, known_paths: List[str]) -> str:
+    """Map a scanner reported path back to the repository path it came from."""
+    relative = scan_path.replace(tmpdir + "/", "")
+    if relative in known_paths:
+        return relative
+    for candidate in known_paths:
+        if relative.endswith("/" + candidate) or relative == candidate:
+            return candidate
+    return relative
+
+
+def _scan_batch(batch: List[Dict[str, Any]]) -> tuple:
+    """Scan one batch and return (findings, limitations).
+
+    A fatal scanner failure still raises, so the tier fails closed. Per-file
+    limitations are reported alongside the findings the batch did produce.
+    """
     findings: List[Dict[str, Any]] = []
 
     with tempfile.TemporaryDirectory(prefix="mitig8it_") as tmpdir:
@@ -646,22 +841,45 @@ def _scan_batch(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         for match in output.get("results", []):
             findings.append(_build_finding(match, tmpdir, extracted_content_by_path))
 
-    return findings
+        # The scanner reports the temp directory it was pointed at. Both the
+        # path and the message go into a check run summary and the database, so
+        # they are mapped back to the repository path they came from.
+        known_paths = [entry["path"] for entry in batch]
+        limitations = [
+            {
+                **limitation,
+                "path": _repo_relative_scan_path(limitation["path"], tmpdir, known_paths),
+                "message": str(limitation.get("message") or "").replace(tmpdir + "/", ""),
+            }
+            for limitation in output.get("analysis_limitations", [])
+        ]
+
+    return findings, limitations
 
 
 def run_opengrep(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Run OpenGrep on PR files and return findings.
+    """Run OpenGrep on PR files and return findings, discarding any limitations."""
+    findings, _ = run_opengrep_with_limitations(files)
+    return findings
 
-    Files are scanned in bounded batches and the results are merged. If any
-    batch fails the whole tier fails closed; partial results are never returned
-    as if they were complete.
+
+def run_opengrep_with_limitations(files: List[Dict[str, Any]]) -> tuple:
+    """
+    Run OpenGrep on PR files and return (findings, limitations).
+
+    Files are scanned in bounded batches and the results are merged. A batch
+    that fails outright still fails the whole tier closed; partial results are
+    never returned as if they were complete. A per-file scanner limitation - a
+    lexical or syntax error that truncated one file, a per-file timeout or an
+    out of memory - keeps the findings from every other file and is reported as
+    a limitation instead.
 
     Args:
         files: List of {path, patch, additions, ...} from the PR diff.
 
     Returns:
-        List of finding dicts matching Tier 1 format.
+        (findings, limitations) where findings match the Tier 1 format and each
+        limitation is {path, kind, type, message, line}.
     """
     if not RULES_DIR.exists() or not any(RULES_DIR.glob("*.yml")):
         raise RuntimeError("OpenGrep rules are unavailable")
@@ -676,7 +894,7 @@ def run_opengrep(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
     if not scannable:
-        return []
+        return [], []
 
     prepared: List[Dict[str, Any]] = []
     for file_info in scannable:
@@ -698,12 +916,28 @@ def run_opengrep(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     )
 
     findings: List[Dict[str, Any]] = []
+    limitations: List[Dict[str, Any]] = []
     for index, batch in enumerate(batches, start=1):
         batch_bytes = sum(entry["size"] for entry in batch)
         print(
             f"OpenGrep batch {index}/{len(batches)}: files={len(batch)} bytes={batch_bytes}",
             flush=True,
         )
-        findings.extend(_scan_batch(batch))
+        batch_findings, batch_limitations = _scan_batch(batch)
+        findings.extend(batch_findings)
+        limitations.extend(batch_limitations)
 
-    return classify_findings(findings)
+    return classify_findings(findings), _dedupe_limitations(limitations)
+
+
+def _dedupe_limitations(limitations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One entry per (path, kind); the same file can trip the same limit twice."""
+    seen = set()
+    deduped: List[Dict[str, Any]] = []
+    for limitation in limitations:
+        key = (limitation.get("path"), limitation.get("kind"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(limitation)
+    return deduped
