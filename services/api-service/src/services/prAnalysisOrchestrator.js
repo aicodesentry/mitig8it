@@ -1055,6 +1055,10 @@ async function runAnalysisJob(payload) {
 
   let allFindings = [];
   let files = [];
+  // Limitations the run must state rather than hide. Today the only one is `file_cap`:
+  // a pull request over the adapter's cap is reviewed as far as the cap allows, and the
+  // check summary says how many of how many files that was.
+  let analysisLimitations = [];
   let tier2Files = [];
   let lastCounts = {};
   let lastHighOrCritical = 0;
@@ -1077,6 +1081,12 @@ async function runAnalysisJob(payload) {
     });
     if (!Array.isArray(filesResp?.files)) throw new Error('Invalid GitHub file response');
     files = filesResp.files;
+    if (filesResp.limitation?.message) {
+      analysisLimitations = [filesResp.limitation];
+      logger.warn('Analysis run is limited', {
+        runId, kind: filesResp.limitation.kind, message: filesResp.limitation.message,
+      });
+    }
     tier2Files = await enrichFilesForTier2({
       files,
       repositoryFullName,
@@ -1152,7 +1162,14 @@ async function runAnalysisJob(payload) {
           + '(never blocking).'
         );
       }
-      // A limitation is a coverage note, never a reason to fail the check.
+      // A limitation is a coverage note, never a reason to fail the check. Two disjoint
+      // sources reach the summary. `analysisLimitations` is run-scoped and carries no
+      // path: a pull request over the adapter's file cap is reviewed as far as the cap
+      // allows, and the summary says how many of how many files that was. `limitations`
+      // is per file: the scanner could not fully read one file, or hit a ceiling on it.
+      // A partial review says so on the check itself, because reporting a clean result
+      // on a pull request the run only partly read would be the dishonest outcome.
+      for (const limitation of analysisLimitations) summaryLines.push(`${limitation.message}.`);
       const limitationLine = buildLimitationSummaryLine(limitations);
       if (limitationLine) summaryLines.push(limitationLine);
       checkRunResp = await githubServiceRequest('/internal/github/check-runs', {

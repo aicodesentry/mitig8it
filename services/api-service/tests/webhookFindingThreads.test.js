@@ -7,11 +7,14 @@ jest.mock('../src/db/installations', () => ({ upsertInstallation: jest.fn() }));
 jest.mock('../src/db/remediation', () => ({
   supersedeForBranchPush: jest.fn(async () => ({})),
   supersedeForHeadChange: jest.fn(async () => ({ jobs: [], candidates: [], mergeIntents: [] })),
-  recordMergeReevaluationHint: jest.fn(async () => ({})),
+  // The same push scan that records the outcome also records the observed apply
+  // action (PR 442); the handler walks the pushed commits once and feeds both.
+  recordObservedApply: jest.fn(async () => ([])),
 }));
 jest.mock('../src/utils/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 
 const { transaction } = require('../src/config/database');
+const remediationDb = require('../src/db/remediation');
 const { createApp } = require('../src/app');
 
 const SECRET = 'webhook-test-secret';
@@ -302,6 +305,7 @@ describe('push carrying a Commit suggestion', () => {
 
   test('records applied_on_github for a published fix the reviewer committed', async () => {
     const state = createDatabase();
+    remediationDb.recordObservedApply.mockClear();
     const res = await deliver(
       'push',
       pushPayload('Update services/orders.js\n\nCo-authored-by: mitig8it[bot] <1234+mitig8it[bot]@users.noreply.github.com>'),
@@ -317,6 +321,14 @@ describe('push carrying a Commit suggestion', () => {
       commit_sha: 'f'.repeat(40),
       external_id: 'f'.repeat(40),
     });
+    // One scan of the pushed commits, two records: the outcome above and the observed
+    // apply action the residual report and the verification check hang off.
+    expect(remediationDb.recordObservedApply).toHaveBeenCalledTimes(1);
+    expect(remediationDb.recordObservedApply).toHaveBeenCalledWith(expect.objectContaining({
+      repositoryGithubId: REPOSITORY.id,
+      branch: 'feature/orders',
+      commitSha: 'f'.repeat(40),
+    }));
   });
 
   test('uses the configured app slug rather than a literal bot name', async () => {

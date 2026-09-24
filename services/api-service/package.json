@@ -11,6 +11,7 @@
     "test:integration:access": "NODE_ENV=test node --test tests/integration/access.integration.js",
     "test:integration:lifecycle": "NODE_ENV=test node --test tests/integration/lifecycle.integration.js",
     "test:integration:remediation": "NODE_ENV=test node --test tests/integration/remediation.integration.js",
+    "test:integration:purge": "NODE_ENV=test node --test tests/integration/installation-purge.integration.js",
     "test:integration:transport": "NODE_ENV=test node --test tests/integration/analysis-transport.integration.js",
     "db:migrate": "node src/scripts/runMigrations.js",
     "db:verify": "node src/scripts/verifyMigrations.js"

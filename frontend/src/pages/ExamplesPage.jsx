@@ -26,7 +26,7 @@ const capabilities = [
   {
     title: 'One-click apply',
     status: 'live',
-    description: 'GitHub suggestion or per-finding Apply in the workspace.',
+    description: "GitHub's Commit suggestion button, under your identity.",
   },
 ]
 

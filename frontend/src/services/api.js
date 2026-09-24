@@ -148,10 +148,8 @@ export const remediationAPI = {
   generate: async (pullRequestId, payload) => (await api.post(`/api/pull-requests/${pullRequestId}/remediations`, payload)).data,
   get: async (id) => (await api.get(`/api/remediations/${id}`)).data,
   preview: async (id) => (await api.get(`/api/remediations/${id}/preview`)).data,
-  apply: async (id, payload) => (await api.post(`/api/remediations/${id}/apply`, payload)).data,
   cancel: async (id) => (await api.post(`/api/remediations/${id}/cancel`, {})).data,
   action: async (id) => (await api.get(`/api/remediation-actions/${id}`)).data,
-  cancelMerge: async (id) => (await api.post(`/api/remediation-actions/${id}/cancel-merge`, {})).data,
   feedback: async (id, payload) => (await api.post(`/api/remediations/${id}/feedback`, payload)).data,
 }
 

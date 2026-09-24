@@ -67,7 +67,6 @@ describe('internal GitHub routes', () => {
 describe('internal remediation routes', () => {
   const head = 'a'.repeat(40);
   const base = 'b'.repeat(40);
-  const tree = 'c'.repeat(40);
   const digest = 'd'.repeat(64);
 
   function envelope(extra = {}) {
@@ -86,24 +85,10 @@ describe('internal remediation routes', () => {
   }
 
   // Every remediation endpoint, with a body that passes payload validation so the
-  // request reaches the authorization checks inside the operation.
+  // request reaches the authorization checks inside the operation. None of them writes
+  // to repository contents: the App holds no write access to code.
   const remediationRequests = {
-    '/github/remediation/prepare': envelope(),
     '/github/remediation/snapshot': envelope({ finding_paths: [] }),
-    '/github/remediation/commit': envelope({
-      branch: 'repair-branch',
-      expected_head_oid: head,
-      verified_tree_oid: tree,
-      commit_message: 'Apply verified remediation',
-      changes: [{ path: 'src/app.js', contents_base64: Buffer.from('const safe = true;\n').toString('base64') }],
-    }),
-    '/github/remediation/reconcile': envelope({ verified_tree_oid: tree }),
-    '/github/remediation/merge': envelope({
-      expected_head_sha: head,
-      expected_base_sha: base,
-      merge_method: 'squash',
-      verification_check_name: 'Mitig8it Remediation Verification',
-    }),
     '/github/remediation/check-run': envelope({
       external_id: 'verification-0001',
       conclusion: 'success',
@@ -111,9 +96,6 @@ describe('internal remediation routes', () => {
       summary: 'Independent verification succeeded.',
     }),
     '/github/remediation/comment': envelope({ external_id: 'report-0001', body: 'Applied 1 fix. Remaining open findings: 0.' }),
-    '/github/remediation/cancel-merge': envelope({ pull_number: 9, expected_head_sha: head }),
-    '/github/remediation/merge-eligibility': envelope({ pull_number: 9, expected_head_sha: head }),
-    '/github/remediation/pull-head': envelope({ pull_number: 9 }),
   };
 
   const remediationPaths = Object.keys(remediationRequests);
@@ -133,11 +115,27 @@ describe('internal remediation routes', () => {
     return internalRouter.stack.find((entry) => !entry.route).handle;
   }
 
-  test('the ten remediation operations are each reachable over HTTP', () => {
-    expect(remediationPaths).toHaveLength(10);
+  test('the three remediation operations are each reachable over HTTP', () => {
+    expect(remediationPaths).toHaveLength(3);
     for (const path of remediationPaths) {
       expect(typeof findRouteHandler(path)).toBe('function');
     }
+  });
+
+  // The App cannot commit to a branch or merge a pull request, so the endpoints that
+  // used to do either must not exist at all.
+  test.each([
+    '/github/remediation/prepare',
+    '/github/remediation/commit',
+    '/github/remediation/reconcile',
+    '/github/remediation/merge',
+    '/github/remediation/cancel-merge',
+    '/github/remediation/merge-eligibility',
+    '/github/remediation/pull-head',
+    '/github/remediation/authorize',
+  ])('the removed code-writing endpoint %s is not routed', (path) => {
+    const layer = internalRouter.stack.find((entry) => entry.route && entry.route.path === path);
+    expect(layer).toBeUndefined();
   });
 
   test.each([

@@ -207,8 +207,10 @@ async function handleReviewComment(client, payload) {
  * published fixes applies that fix outside the workspace. It is recorded as applied on
  * GitHub, never as fixed: the re-analysis of the new head is what establishes that.
  */
-async function handleCommitSuggestions(client, payload, { botLogin = appBotLogin() } = {}) {
-  const commits = commitSuggestionCommits(payload, botLogin);
+// `commits` lets the caller pass the scan it already did, so the push handler walks the
+// pushed commits once and feeds both this outcome log and the observed-apply actions.
+async function handleCommitSuggestions(client, payload, { botLogin = appBotLogin(), commits: scanned = null } = {}) {
+  const commits = scanned || commitSuggestionCommits(payload, botLogin);
   if (!commits.length) return { handled: false, reason: 'no_suggestion_commits' };
 
   const repository = await resolveRepository(client, payload?.repository?.id);

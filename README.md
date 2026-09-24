@@ -1,6 +1,6 @@
 # Mitig8it
 
-Mitig8it is a GitHub-native security reviewer for pull requests. It receives GitHub App webhooks, analyzes the changed files of a pull request with a three-tier detection pipeline, stores findings in PostgreSQL, and posts inline comments and a check run back to GitHub. When remediation is enabled it also generates repairs for the findings it supports, verifies each one against a generated regression test that must fail on the original code and pass on the patched code, and publishes the verified fix under its finding as a GitHub suggestion block. Applying a fix and merging a pull request are human actions; the product path contains no automatic merge.
+Mitig8it is a GitHub-native security reviewer for pull requests. It receives GitHub App webhooks, analyzes the changed files of a pull request with a three-tier detection pipeline, stores findings in PostgreSQL, and posts inline comments and a check run back to GitHub. When remediation is enabled it also generates repairs for the findings it supports, verifies each one against a generated regression test that must fail on the original code and pass on the patched code, and publishes the verified fix under its finding as a GitHub suggestion block. Applying a fix and merging a pull request are human actions on GitHub: the App holds no write access to repository contents, so it cannot commit to a branch or merge a pull request.
 
 The repository is still named `codesentry` and some environment variables, package names, metrics, and Cloud Run resources still use the CodeSentry name. Treat Mitig8it as the product name and CodeSentry as the current infrastructure and code namespace.
 
@@ -25,14 +25,14 @@ Local wiring lives in [docker-compose.yml](docker-compose.yml). Deployment wirin
 ## The Pull Request Flow
 
 1. GitHub sends `pull_request`, `installation`, or `installation_repositories` events to `POST /webhooks/github` on the API service. The API verifies the signature with `GITHUB_WEBHOOK_SECRET` and deduplicates deliveries by `webhook_deliveries.delivery_id`.
-2. The API persists repository and pull request state, creates an `analysis_runs` row, and starts orchestration. It calls the GitHub service to fetch the changed files at the queued commit SHA, and the analysis service to analyze them.
+2. The API persists repository and pull request state, creates an `analysis_runs` row, and starts orchestration. It calls the GitHub service to fetch the changed files at the queued commit SHA, and the analysis service to analyze them. A pull request with more than 200 analysable changed files is reviewed to that cap, taking the first 200 in path order so the same pull request always yields the same selection, and the check run states `Reviewed 200 of N changed files`. A large change is never refused outright.
 3. Findings are normalized, clustered, fingerprinted, stored in PostgreSQL, and filtered by suppressions and baseline state. Findings in test code keep their original severity in evidence but are recorded as `info` and do not fail the check run.
 4. Inline comments and a check run are published through the GitHub service.
 5. If the `auto_generate` capability is on, the API queues one remediation job for that head's open, non-informational findings as soon as the analysis is published. At most one automatic job exists per head, the job is bounded by the policy file limit and the installation budget, and a queue failure never delays or fails the analysis.
 6. The repair service returns one candidate per finding it proved. Each verified fix is published under its own finding's inline comment: a GitHub suggestion block when the change is one contiguous region the comment can carry, otherwise the unified diff with the reason it could not be a suggestion; then a `Verified:` line stating that the regression test failed on the original code and passed with the change, then a collapsed `Details` block with the stated intent, the proof, the evidence, the limitations, and the human-in-the-loop sentence. A finding the repair service skipped gets one `No automatic fix: <reason>` line. Sections are keyed by candidate and updated in place, so a redelivery or a regeneration rewrites them rather than adding a second copy.
-7. A human applies a fix. Either GitHub's own "Apply suggestion", which is an ordinary push, or the per-finding "Apply this fix" button in the app, which writes one commit against the exact verified tree with an expected-head check. Several fixes are committed together only as the batch the repair service verified; any other combination is refused with `subset_not_verified`.
-8. The applied commit is analyzed afresh. One residual report comment per apply, updated in place, lists what was applied, what is still open by file and severity, and what was not repaired and why. The app's verification check is published; it is green only when no blocking finding remains in the changed files.
-9. Merging is a human action on GitHub. The product never requests a merge and the panel offers no merge button.
+7. A human applies a fix with GitHub's own "Commit suggestion" button, which commits the suggestion under the developer's identity. Mitig8it cannot push to the repository: the App does not hold write access to code, and there is no in-app apply.
+8. The push webhook sees the resulting commit, which GitHub co-authors to the app, and records it as an observed apply. The commit is analyzed afresh. One residual report comment per observed apply, updated in place, lists what was applied, what is still open by file and severity, and what was not repaired and why. The app's verification check is published; it is green only when no blocking finding remains in the changed files.
+9. Merging is a human action on GitHub. The product cannot request a merge and the panel offers no merge button.
 
 ## Detection Pipeline
 
@@ -104,9 +104,7 @@ All are read on the API service, all are false unless the value is exactly `true
 | `REMEDIATION_ENABLED` | Global kill switch. Every capability below stays off while it is false. |
 | `REMEDIATION_GENERATE_ENABLED` | Generate repair candidates. The `generate` capability also requires `REMEDIATION_SERVICE_URL`, `REMEDIATION_SERVICE_INTERNAL_SECRET`, `GITHUB_SERVICE_URL`, `GITHUB_SERVICE_INTERNAL_SECRET`, `REMEDIATION_SANDBOX_IMAGE_DIGEST`, both token price variables, and parseable checks and family JSON. Defaults to true in the local compose stack. |
 | `REMEDIATION_PUBLISH_ENABLED` | Show candidates and evidence in the app, and publish each verified fix under its finding's inline review comment on GitHub. |
-| `REMEDIATION_APPLY_ENABLED` | Allow apply through an expected-head write, one finding at a time or the whole verified batch, by explicit human request. |
-| `REMEDIATION_MERGE_ENABLED` | Operator-only experimental setting, off by default. The merge controller exists but the product path never uses it: the panel offers no merge button, and while the flag is off the apply route rejects `merge_when_ready: true` with 400 `merge_not_available`. |
-| `REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION` | Permit `development_unverified` candidates to be presented and applied. Required by any stack using the local sandbox driver. |
+| `REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION` | Permit `development_unverified` candidates to be presented. Required by any stack using the local sandbox driver. |
 | `REMEDIATION_DISPATCH_MODE` | `inprocess` (outbox polling) or `cloud_tasks`. The Cloud Tasks control-plane endpoints are not implemented. |
 | `REMEDIATION_WORKER_ENABLED` | Guards the standalone `node src/workers/index.js` process. Set it on `api-worker`, not on `api-service`. |
 | `REMEDIATION_WORKER_INPROCESS` | Runs the control-plane loop inside the API process. It is the API's own switch and does not read `REMEDIATION_WORKER_ENABLED`. |
@@ -144,7 +142,7 @@ docker compose build remediation-service remediation-worker sandbox-broker
 docker compose up api-service api-worker remediation-service remediation-worker sandbox-broker otel-collector
 ```
 
-The compose defaults set `REMEDIATION_GENERATE_ENABLED=true` and leave publish, apply, and merge false, and `REMEDIATION_ENABLED` is false, so every capability stays off until a developer opts in. The stack runs without a gVisor runtime class, without NetworkPolicy, without CMEK artifact storage, and with both sandbox attestation gates false. `SANDBOX_NETWORK_POLICY_ATTESTED` and `SANDBOX_NODE_LIMITS_ATTESTED` must not be set to true based on anything it reports. Provider credentials pass through from the host environment and are unset by default, so the repair loop abstains rather than calling a model.
+The compose defaults set `REMEDIATION_GENERATE_ENABLED=true` and leave publish false, and `REMEDIATION_ENABLED` is false, so every capability stays off until a developer opts in. The stack runs without a gVisor runtime class, without NetworkPolicy, without CMEK artifact storage, and with both sandbox attestation gates false. `SANDBOX_NETWORK_POLICY_ATTESTED` and `SANDBOX_NODE_LIMITS_ATTESTED` must not be set to true based on anything it reports. Provider credentials pass through from the host environment and are unset by default, so the repair loop abstains rather than calling a model.
 
 For standalone service runs, environment variables, and the GitHub App setup, see [docs/getting-started/](docs/getting-started/local-dev.md).
 
@@ -216,6 +214,7 @@ Production-grade today:
 - The three-tier detection pipeline, finding persistence, clustering, fingerprinting, suppressions, and baseline state.
 - Inline comment, review, and check run publication, including reuse of the app's own existing threads.
 - Repository access derived from the intersection of the user's GitHub access and the app installation, with revocation on membership removal or suspension.
+- Least privilege on GitHub: the App asks for Contents read, Pull requests read and write, Checks read and write, and Metadata read. It cannot commit to a branch or merge a pull request, and no code path exists that would.
 - Explicit migrations run from the release image, with startup refusing to mutate the schema.
 - The GitHub reader and writer split: reads retry with jittered backoff and honour `Retry-After`; writes are sent once and an ambiguous outcome is settled by reading authoritative history, never by writing again.
 
@@ -223,7 +222,6 @@ Development-grade today:
 
 - All repair verification. `development_unverified` is the only level produced so far, on the local subprocess driver with no isolation.
 - The single-instance deployment: one instance, one concurrent request, per-instance SQLite state on ephemeral storage.
-- The merge controller. It exists behind `REMEDIATION_MERGE_ENABLED`, is off by default, is documented as experimental, and is not part of the product path.
 - The evaluation corpus: 11 authored fixtures against the release manifest's requirement of 120 externally reviewed cases.
 - Observability. Traces, metrics, and alert rules are written and redacted, but no collector endpoint, scrape target, or alert rule is wired to a backend in any deploy workflow.
 - Retention, deletion, and restore procedures, which are documented but have never been exercised.

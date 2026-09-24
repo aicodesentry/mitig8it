@@ -160,8 +160,10 @@ jobs:
         run: |
           psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_access_test'
           psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_lifecycle_test'
+          psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_purge_test'
           DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_access_test npm run test:integration:access
           DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_lifecycle_test npm run test:integration:lifecycle
+          DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_purge_test npm run test:integration:purge
       - name: Migration pipeline check
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres

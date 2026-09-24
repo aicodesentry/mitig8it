@@ -9,7 +9,6 @@ const { pool } = require('../config/database');
 const remediationDb = require('../db/remediation');
 const outbox = require('../services/remediationOutbox');
 const { executeClaimedJob } = require('../services/remediationWorkflow');
-const { executeClaimedAction } = require('../services/remediationActionWorker');
 const { startReconciler } = require('../services/remediationReconciler');
 const logger = require('../utils/logger');
 
@@ -31,11 +30,6 @@ async function tick(dispatcher, workerId, stopped) {
     if (!job) break;
     await executeClaimedJob(job);
   }
-  while (!stopped()) {
-    const action = await remediationDb.claimNextAction(workerId);
-    if (!action) break;
-    await executeClaimedAction(action);
-  }
 }
 
 // Starts the remediation control-plane loop and returns a stop function. The standalone
@@ -50,7 +44,7 @@ function startRemediationWorker(options = {}) {
   // Dispatch hands each event to the registered in-process handler. The handler claims
   // the aggregate with the same compare-and-swap the polling loops below use, so an
   // event and the polling backup can never execute the same work twice.
-  outbox.registerDefaultHandlers({ executeClaimedJob, executeClaimedAction, workerId });
+  outbox.registerDefaultHandlers({ executeClaimedJob, workerId });
   // Resolved once at startup so an unimplemented dispatch mode fails loudly here
   // instead of silently dropping events later.
   const dispatcher = outbox.createDispatcher();

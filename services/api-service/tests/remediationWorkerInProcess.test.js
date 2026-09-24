@@ -1,7 +1,6 @@
 jest.mock('../src/config/database', () => ({ pool: { connect: jest.fn(), query: jest.fn(), end: jest.fn() } }));
-jest.mock('../src/db/remediation', () => ({ claimNextJob: jest.fn(), claimNextAction: jest.fn() }));
+jest.mock('../src/db/remediation', () => ({ claimNextJob: jest.fn() }));
 jest.mock('../src/services/remediationWorkflow', () => ({ executeClaimedJob: jest.fn() }));
-jest.mock('../src/services/remediationActionWorker', () => ({ executeClaimedAction: jest.fn() }));
 jest.mock('../src/services/remediationOutbox', () => ({
   registerDefaultHandlers: jest.fn(),
   createDispatcher: jest.fn(() => 'dispatcher'),
@@ -20,7 +19,6 @@ beforeEach(() => {
   jest.clearAllMocks();
   jest.useFakeTimers();
   remediationDb.claimNextJob.mockResolvedValue(null);
-  remediationDb.claimNextAction.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -33,19 +31,19 @@ test('start registers the outbox handlers, resolves one dispatcher, and starts t
   expect(outbox.registerDefaultHandlers).toHaveBeenCalledTimes(1);
   expect(outbox.registerDefaultHandlers.mock.calls[0][0]).toMatchObject({ workerId: 'worker-1' });
   expect(typeof outbox.registerDefaultHandlers.mock.calls[0][0].executeClaimedJob).toBe('function');
-  expect(typeof outbox.registerDefaultHandlers.mock.calls[0][0].executeClaimedAction).toBe('function');
+  // There is no action worker: the App never applies a fix, so no action is ever executed.
+  expect(outbox.registerDefaultHandlers.mock.calls[0][0].executeClaimedAction).toBeUndefined();
   expect(outbox.createDispatcher).toHaveBeenCalledTimes(1);
   expect(startReconciler).toHaveBeenCalledTimes(1);
   stop();
 });
 
-test('the loop polls the outbox and both claim queues on every interval', async () => {
+test('the loop polls the outbox and the job claim queue on every interval', async () => {
   const stop = startRemediationWorker({ workerId: 'worker-2', intervalMs: 5000 });
   jest.advanceTimersByTime(0);
   await flush();
   expect(outbox.processPending).toHaveBeenCalledWith({ limit: 20, dispatcher: 'dispatcher' });
   expect(remediationDb.claimNextJob).toHaveBeenCalledWith('worker-2');
-  expect(remediationDb.claimNextAction).toHaveBeenCalledWith('worker-2');
 
   jest.advanceTimersByTime(5000);
   await flush();

@@ -34,6 +34,7 @@ const writes = [
   'Review comments on the changed lines.',
   'Suggestion blocks under each finding.',
   'A residual report after a human applies a fix.',
+  'Nothing to your code: the App holds no write access to repository contents.',
 ]
 
 const modelCalls = [
@@ -48,13 +49,14 @@ const dataKept = [
   'Remediation jobs, attempts and actions.',
   'Verification runs and evidence digests.',
   'Run history and audit logs.',
+  'Uninstalling the App deletes all of it for that installation within 24 hours.',
 ]
 
 const access = [
-  'Contents, pull requests and checks read/write. Metadata read-only.',
+  'Contents read-only. Pull requests and checks read/write. Metadata read-only.',
   'Write actions require an actor with repository write access.',
   'Services authenticate to each other with a shared constant-time secret.',
-  'Merge is off by default behind REMEDIATION_MERGE_ENABLED.',
+  "A fix reaches the branch only through GitHub's Commit suggestion button, under your identity.",
 ]
 
 const sectionHeading = 'text-2xl font-semibold tracking-tight text-white sm:text-3xl'

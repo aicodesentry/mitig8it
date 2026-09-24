@@ -32,11 +32,17 @@ async function start() {
   });
 
   // Start background profile worker (processes one repo per minute)
+  let stopPurgeLoop = null;
   if (process.env.NODE_ENV !== 'test') {
     const { startWorkerLoop } = require('./services/profileWorker');
     const { startAnalysisQueueWorker } = require('./services/prAnalysisOrchestrator');
+    const { startPurgeLoop } = require('./services/installationPurge');
     startWorkerLoop(60000);
     startAnalysisQueueWorker();
+    // Deleting the data of an uninstalled installation must not depend on the
+    // remediation control plane being enabled, so this runs whether or not the
+    // reconciler does. Both call the same locked, idempotent purge.
+    stopPurgeLoop = startPurgeLoop();
   }
 
   // Single-instance deployments run the remediation control-plane loop inside the API
@@ -50,6 +56,12 @@ async function start() {
 
   const shutdown = async () => {
     logger.info('API service shutting down');
+    if (stopPurgeLoop) {
+      try { stopPurgeLoop(); } catch (error) {
+        logger.error('Installation purge loop stop failed', { error: error.message });
+      }
+      stopPurgeLoop = null;
+    }
     if (stopRemediationWorker) {
       try {
         stopRemediationWorker();

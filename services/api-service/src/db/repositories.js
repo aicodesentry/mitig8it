@@ -281,6 +281,8 @@ async function claimNextProfileJob() {
        SELECT id FROM repositories
        WHERE profile_status IN ('queued', 'stale', 'urgent')
          AND installation_id IS NOT NULL
+         -- An uninstalled installation's data is being deleted; never profile for it.
+         AND installation_id IN (SELECT id FROM installations WHERE deleted_at IS NULL)
        ORDER BY profile_priority DESC, profile_queued_at ASC
        LIMIT 1
        FOR UPDATE SKIP LOCKED
