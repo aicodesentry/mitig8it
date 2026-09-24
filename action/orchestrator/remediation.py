@@ -64,7 +64,7 @@ def _modules():
     from src.agent.provider import ProviderAction  # noqa: PLC0415
     from src.digests import git_blob_sha1  # noqa: PLC0415
     from src.engine import RepairEngine  # noqa: PLC0415
-    from src.models import RepairRequest  # noqa: PLC0415
+    from src.models import GitTreeEntry, RepairRequest  # noqa: PLC0415
     from src.sandbox import InProcessSandboxBroker, LocalSubprocessDriver  # noqa: PLC0415
     from src.verification import Verifier  # noqa: PLC0415
 
@@ -76,6 +76,7 @@ def _modules():
         "ProviderAction": ProviderAction,
         "RepairEngine": RepairEngine,
         "RepairRequest": RepairRequest,
+        "GitTreeEntry": GitTreeEntry,
         "InProcessSandboxBroker": InProcessSandboxBroker,
         "LocalSubprocessDriver": LocalSubprocessDriver,
         "Verifier": Verifier,
@@ -181,20 +182,28 @@ def build_request(
     git_blob_sha1 = modules["git_blob_sha1"]
     compute_tree_oid = modules["git_tree"].compute_tree_oid
 
+    # git_blob_sha1 hashes the bytes git would store, so the text is encoded first. The engine
+    # checks each of these against the commit's tree entry and refuses the request if one
+    # differs, which is what stops a repair being built against content the commit never had.
     snapshot_files = [
-        {"path": path, "content": content, "sha": git_blob_sha1(content)}
+        {"path": path, "content": content, "sha": git_blob_sha1(content.encode("utf-8"))}
         for path, content in sorted(files.items())
     ]
     if not snapshot_files:
         raise ValueError("a repair request needs at least one file")
 
+    # compute_tree_oid reads the entries as models, so they are validated here rather than
+    # passed through as the dicts the REST API returned.
+    entry_model = modules["GitTreeEntry"]
     entries = [
-        {
-            "path": str(entry.get("path") or ""),
-            "mode": str(entry.get("mode") or ""),
-            "type": str(entry.get("type") or ""),
-            "sha": str(entry.get("sha") or ""),
-        }
+        entry_model.model_validate(
+            {
+                "path": str(entry.get("path") or ""),
+                "mode": str(entry.get("mode") or ""),
+                "type": str(entry.get("type") or ""),
+                "sha": str(entry.get("sha") or ""),
+            }
+        )
         for entry in tree_entries
     ]
 
@@ -228,7 +237,7 @@ def build_request(
         "base_sha": base_sha,
         "findings": snapshots,
         "files": snapshot_files,
-        "tree_entries": entries,
+        "tree_entries": [entry.model_dump() for entry in entries],
         "head_tree_oid": compute_tree_oid(entries),
         "tree_truncated": bool(tree_truncated),
         "versions": {"orchestrator": "action-v1"},

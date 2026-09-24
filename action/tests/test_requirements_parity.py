@@ -18,7 +18,16 @@ REMEDIATION_REQUIREMENTS = REPO_ROOT / "services/remediation-service/requirement
 
 # Deliberately not installed. Each backs a production backend the action does not have, and none
 # is imported by the code paths the action runs. See the note in action/requirements.txt.
-EXCLUDED = {"google-cloud-storage", "kubernetes", "psycopg"}
+EXCLUDED = {
+    "google-cloud-storage",
+    "kubernetes",
+    "psycopg",
+    # Unpinnable alongside semgrep, and a no-op without an OTLP endpoint. See the note in
+    # action/requirements.txt.
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-http",
+}
 
 PIN = re.compile(r"^([A-Za-z0-9._-]+)(?:\[[^\]]+\])?==(.+)$")
 
