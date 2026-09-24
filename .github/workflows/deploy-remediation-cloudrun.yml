@@ -56,12 +56,24 @@ on:
       - 'services/remediation-service/**'
       - '.github/workflows/deploy-remediation-cloudrun.yml'
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Which environment to deploy'
+        type: choice
+        options: [production, staging]
+        default: production
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        default: production
 
 permissions:
   contents: read
 
 concurrency:
-  group: cloudrun-deploy-${{ github.workflow }}
+  # Staging and production are separate services and must not queue behind each other.
+  group: cloudrun-deploy-${{ github.workflow }}-${{ inputs.environment || 'production' }}
   cancel-in-progress: false
 
 jobs:
@@ -72,6 +84,24 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      # Everything downstream reads $SERVICE and $SECRET_SUFFIX, so the difference
+      # between production and staging lives in exactly one step.
+      - name: Resolve environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENVIRONMENT="${{ inputs.environment || 'production' }}"
+          case "$ENVIRONMENT" in
+            production) SUFFIX="" ;;
+            staging) SUFFIX="-staging" ;;
+            *) echo "Unknown environment: $ENVIRONMENT" >&2; exit 1 ;;
+          esac
+          {
+            echo "ENVIRONMENT=$ENVIRONMENT"
+            echo "SECRET_SUFFIX=$SUFFIX"
+            echo "SERVICE=codesentry-remediation${SUFFIX}"
+          } >> "$GITHUB_ENV"
 
       - name: Authenticate to Google Cloud (Workload Identity)
         if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
@@ -122,7 +152,7 @@ jobs:
       # SQLite file and the local sandbox driver runs checks on this container's CPU.
       - name: Deploy repair service
         run: |
-          gcloud run deploy codesentry-remediation \
+          gcloud run deploy "$SERVICE" \
             --image "$IMAGE" \
             --region '${{ vars.GCP_REGION }}' \
             --no-cpu-throttling \
@@ -144,12 +174,13 @@ jobs:
               SANDBOX_LOCAL_WORKSPACE_ROOT=/tmp/sandbox,\
               SANDBOX_NETWORK_POLICY_ATTESTED=false,\
               SANDBOX_NODE_LIMITS_ATTESTED=false,\
+              DEPLOY_ENVIRONMENT=${ENVIRONMENT},\
               OTEL_SERVICE_NAME=remediation-service" \
             --set-secrets "\
-              REMEDIATION_SERVICE_INTERNAL_SECRET=codesentry-remediation-internal-secret:latest,\
-              REPAIR_LLM_BASE_URL=codesentry-repair-llm-base-url:latest,\
-              REPAIR_LLM_API_KEY=codesentry-repair-llm-api-key:latest,\
-              REPAIR_LLM_MODEL=codesentry-repair-llm-model:latest" \
+              REMEDIATION_SERVICE_INTERNAL_SECRET=codesentry-remediation-internal-secret${SECRET_SUFFIX}:latest,\
+              REPAIR_LLM_BASE_URL=codesentry-repair-llm-base-url${SECRET_SUFFIX}:latest,\
+              REPAIR_LLM_API_KEY=codesentry-repair-llm-api-key${SECRET_SUFFIX}:latest,\
+              REPAIR_LLM_MODEL=codesentry-repair-llm-model${SECRET_SUFFIX}:latest" \
             --port 8002 \
             --no-allow-unauthenticated
 
@@ -157,7 +188,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          URL=$(gcloud run services describe codesentry-remediation \
+          URL=$(gcloud run services describe "$SERVICE" \
             --region '${{ vars.GCP_REGION }}' \
             --project '${{ vars.GCP_PROJECT_ID }}' \
             --format='value(status.url)')

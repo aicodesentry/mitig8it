@@ -83,9 +83,13 @@ If the report is missing, check that the action reached `completed`; `publishRes
 
 ## Alert rules
 
-The rules in `infrastructure/remediation/grafana/alerts/remediation-rules.yaml` are files. Nothing in this repository provisions them, and no deploy workflow points a collector or a scrape target at a deployed service, so importing them is a manual step and the metrics they query are not being collected today.
+The API's metrics now reach Cloud Monitoring through a managed Prometheus sidecar, so the counters below are collected rather than only defined. [runbooks/observability.md](observability.md) has the whole path from counter to page, the Grafana data source setup, and the one-time owner steps.
 
-Import them with "No data" handled as NoData or OK, never as Alerting. The `mitig8it-remediation-pending` group deliberately queries metric names that no service emits yet; the names are fixed in advance so instrumentation does not rename them later. A rule with no series must read as no data. A silent pending rule is not evidence of a healthy system, and while the counters do not exist, use the job and action tables and the audit log instead.
+The rules file `infrastructure/remediation/grafana/alerts/remediation-rules.yaml` now holds one remediation rule: `Mitig8itRemediationLeaseReclaim`, a warning. The six rules that queried metric names nothing emitted have been deleted rather than left to read as no data forever, and the remediation-internal rules that nobody was paged for went with them. The paging rules that remain are about reviews, not remediation, and are documented in the observability runbook.
+
+If you connect Grafana, it queries the same Managed Prometheus series through the Cloud Monitoring data source, and its rules are an alternative to the Cloud Monitoring policies in `infrastructure/monitoring/`, not an addition: running both pages twice for one incident.
+
+Remediation health that no longer has an alert is still visible in the metrics. `mitig8it_remediation_jobs_terminal_total{state=...}` is the count that answers "how many repairs failed today", and the job and action tables and the audit log remain the authority for anything a counter cannot settle.
 
 ## Queue, scheduler, and telemetry incidents
 

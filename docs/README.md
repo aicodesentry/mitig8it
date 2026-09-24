@@ -18,12 +18,14 @@ All project Markdown documentation, except the root [README](../README.md), live
 
 ## Runbooks
 
+- [Observability](runbooks/observability.md)
 - [Remediation Operations](runbooks/remediation.md)
 
 ## Deployment
 
 - [CI/CD Pipeline](deployment/ci-cd-pipeline.md)
 - [Cloud Run and Firebase](deployment/cloud-run-firebase.md)
+- [Staging Environment](deployment/staging.md)
 - [P0 Rollout](deployment/p0-rollout.md)
 - [P1 Rollout](deployment/p1-rollout.md)
 

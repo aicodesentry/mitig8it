@@ -6,13 +6,28 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Which environment to deploy'
+        type: choice
+        options: [production, staging]
+        default: production
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        default: production
 
 permissions:
   contents: read
 
+concurrency:
+  group: firebase-deploy-${{ inputs.environment || 'production' }}
+  cancel-in-progress: false
+
 jobs:
   filter:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
       deploy: ${{ steps.decide.outputs.deploy }}
@@ -26,7 +41,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # Only a CI-triggered deploy is filtered by path. A manual run and a staging
+          # run are explicit requests and always deploy.
+          if [ "${{ github.event_name }}" != "workflow_run" ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -57,6 +74,44 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # firebase.json declares one hosting config per target, each rewriting /api to
+      # that environment's Cloud Run service. The target is bound to a site here rather
+      # than in a committed .firebaserc, so the mapping is visible in the deploy log.
+      - name: Resolve environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENVIRONMENT="${{ inputs.environment || 'production' }}"
+          case "$ENVIRONMENT" in
+            production)
+              # The site firebase.json named before it grew a second target. Keeping it
+              # as the default means this change needs no new repository variable to
+              # keep deploying production exactly where it already deploys.
+              SITE='${{ vars.FIREBASE_HOSTING_SITE }}'
+              SITE="${SITE:-codesentry-260311-9f2b}"
+              SMOKE_URL='${{ vars.CODESENTRY_FRONTEND_URL }}'
+              ;;
+            staging)
+              SITE='${{ vars.FIREBASE_HOSTING_SITE_STAGING }}'
+              SMOKE_URL='${{ vars.CODESENTRY_FRONTEND_URL_STAGING }}'
+              ;;
+            *)
+              echo "Unknown environment: $ENVIRONMENT" >&2
+              exit 1
+              ;;
+          esac
+          # A staging deploy that fell back to the production site would overwrite the
+          # live frontend. Refuse instead.
+          if [ -z "$SITE" ]; then
+            echo "Missing Firebase hosting site variable for the $ENVIRONMENT environment" >&2
+            exit 1
+          fi
+          {
+            echo "ENVIRONMENT=$ENVIRONMENT"
+            echo "FIREBASE_SITE=$SITE"
+            echo "SMOKE_URL=$SMOKE_URL"
+          } >> "$GITHUB_ENV"
+
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
@@ -68,11 +123,17 @@ jobs:
       - name: Deploy to Firebase Hosting
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
-        run: |
-          npx firebase-tools@13 deploy --only hosting --project '${{ vars.FIREBASE_PROJECT_ID }}' --token "$FIREBASE_TOKEN"
-
-      - name: Smoke (public site)
-        if: vars.CODESENTRY_FRONTEND_URL != ''
+        shell: bash
         run: |
           set -euo pipefail
-          curl -sfS --connect-timeout 15 --max-time 45 -o /dev/null "${{ vars.CODESENTRY_FRONTEND_URL }}/"
+          npx firebase-tools@13 target:apply hosting "$ENVIRONMENT" "$FIREBASE_SITE" \
+            --project '${{ vars.FIREBASE_PROJECT_ID }}' --token "$FIREBASE_TOKEN"
+          npx firebase-tools@13 deploy --only "hosting:${ENVIRONMENT}" \
+            --project '${{ vars.FIREBASE_PROJECT_ID }}' --token "$FIREBASE_TOKEN"
+
+      - name: Smoke (public site)
+        if: env.SMOKE_URL != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sfS --connect-timeout 15 --max-time 45 -o /dev/null "${SMOKE_URL}/"
