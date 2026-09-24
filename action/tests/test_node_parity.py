@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator import pr_scope
+from orchestrator import analysis, pr_scope, run
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GITHUB_OPERATIONS = (
@@ -136,6 +136,63 @@ def test_scanner_extension_set_matches_the_analysis_service():
         frozenset(re.findall(r'"([^"]+)"', template.group(1)))
         == pr_scope.TIER2_TEMPLATE_EXTENSIONS
     )
+
+
+def test_the_test_code_policy_is_the_same_in_all_three_copies():
+    """`TEST_CODE_PATH_PATTERNS` is written out three times and nothing compared them.
+
+    The analysis service downgrades a finding in test code to `info`, the App decides how to
+    render and cap it, and the action decides whether it blocks. All three carry their own copy
+    of the path patterns, and `prAnalysisOrchestrator.js` says "Mirrors
+    services/analysis-service/src/test_code_scope.py" in a comment that nothing enforced. A
+    drift here means a file is test code to one of them and runtime source to another, which is
+    the difference between a blocking finding and an informational one.
+    """
+    scope = read(REPO_ROOT / "services/analysis-service/src/test_code_scope.py")
+    python_patterns = re.search(r"TEST_CODE_PATH_PATTERNS = \[(.*?)\]", scope, re.DOTALL)
+    assert python_patterns, "TEST_CODE_PATH_PATTERNS is no longer a list literal"
+    expected = re.findall(r're\.compile\(r"(.*?)"\)', python_patterns.group(1))
+    assert len(expected) == 4, expected
+
+    orchestrator = read(API_ORCHESTRATOR)
+    js_patterns = re.search(r"TEST_CODE_PATH_PATTERNS = \[(.*?)\];", orchestrator, re.DOTALL)
+    assert js_patterns, "the App no longer declares TEST_CODE_PATH_PATTERNS as an array"
+    # A JS regex literal must escape a forward slash; a Python raw string must not. That is the
+    # one difference the two spellings are allowed to have.
+    found = [pattern.replace("\\/", "/") for pattern in re.findall(r"/(.*?)/,", js_patterns.group(1))]
+    assert found == expected, f"the App's patterns {found} differ from the service's {expected}"
+
+    # The informational severity itself, which is what the action reads off a finding.
+    assert re.search(r'INFORMATIONAL_SEVERITY = "info"', scope)
+    assert re.search(r"INFORMATIONAL_SEVERITY = 'info'", orchestrator)
+    assert analysis.is_informational({"severity": "info"}) is True
+    assert analysis.is_informational({"severity": "high"}) is False
+    assert analysis.is_informational({"severity": "high", "in_test_code": True}) is True
+    assert analysis.is_informational(
+        {"severity": "high", "evidence_details": {"extra": {"in_test_code": True}}}
+    ) is True
+
+
+def test_the_action_states_the_informational_case_the_way_the_app_does():
+    """A reader of a comment on a test helper has to be told it does not block."""
+    body = run.render_finding_comment(
+        {
+            "fingerprint": "fp",
+            "severity": "info",
+            "title": "SQL injection",
+            "file_path": "services/api-service/tests/a.test.js",
+            "original_severity": "high",
+        }
+    )
+    assert "INFORMATIONAL - TEST CODE" in body
+    assert "does not block this pull request" in body
+    assert "scanner severity high" in body
+
+    runtime = run.render_finding_comment(
+        {"fingerprint": "fp", "severity": "high", "title": "SQL injection", "file_path": "src/a.js"}
+    )
+    assert "INFORMATIONAL" not in runtime
+    assert "does not block" not in runtime
 
 
 # The patches below are run through the Node implementation and the Python port in

@@ -38,6 +38,23 @@ PROSE_STEMS = {
     "readme", "license", "licence", "notice", "copying", "codeowners",
 }
 
+# Data: serialized documents, lock files and recorded fixtures. A JSON document declares no
+# route, holds no handler and evaluates nothing, so the argument that keeps tier 1's code-shape
+# regexes out of a changelog applies to it unchanged.
+#
+# This is the case the default got wrong. `is_prose_path` deliberately treats an unrecognized
+# extension as code so the classification only ever narrows, and `.json` was unrecognized, so
+# every tier 1 regex ran over every JSON file. `benchmarks/tier1-precision/cases.json`, a file
+# whose entire content is labelled vulnerable snippets, drew 16 posted findings on this
+# repository's own pull request: `auth.bypass.missing_check`, `csrf.missing_protection`,
+# `code.injection.eval` and a dozen more, none of which can be true of a JSON document.
+#
+# `.yml`, `.yaml`, `.tf`, `.sh` and `.sql` are deliberately absent: those are executed or applied,
+# and a rule like `config.tls_disabled` has real true positives in them.
+DATA_EXTENSIONS = {
+    ".json", ".jsonl", ".ndjson", ".lock", ".csv", ".tsv", ".snap", ".map",
+}
+
 # The extensions tier 2 scans. Two sets, because the scanner reaches them by different
 # means: a code extension has a real parser and carries the bulk of the rule set, a
 # template extension is read in `generic` mode by `opengrep_rules/template_coverage.yml`.
@@ -99,6 +116,16 @@ def is_prose_path(path: Any) -> bool:
     return not stem and name in PROSE_STEMS
 
 
+def is_data_path(path: Any) -> bool:
+    """True for a serialized data document: `.json`, `.lock`, `.csv` and the rest of the set."""
+    normalized = _normalize_path(path)
+    if not normalized:
+        return False
+    name = normalized.rsplit("/", 1)[-1]
+    _, dot, extension = name.rpartition(".")
+    return bool(dot) and f".{extension}" in DATA_EXTENSIONS
+
+
 def is_template_path(path: Any) -> bool:
     """True for a template file: `.html`, `.ejs`, `.vue` and the rest of the set."""
     normalized = _normalize_path(path)
@@ -110,7 +137,7 @@ def is_template_path(path: Any) -> bool:
 
 
 def is_non_code_text_path(path: Any) -> bool:
-    """Prose and templates: text a rule that recognizes the shape of executable code
+    """Prose, templates and data: text a rule that recognizes the shape of executable code
     cannot have a true positive in.
 
     The argument that keeps tier 1's code-shape rules out of a changelog keeps them out of
@@ -124,10 +151,15 @@ def is_non_code_text_path(path: Any) -> bool:
     files and they are keyed to the constructs that appear in them. It is about the tier 1
     regexes, which are written for whole-language source.
 
+    A serialized data document is the same argument again, and it is the one this function
+    used to get wrong: `.json` fell through to "unrecognized, therefore code" and took all 35
+    tier 1 regexes with it.
+
     Rules that recognize committed *data* rather than code shapes set `scans_prose` and
-    keep scanning both: a credential literal in a template is as real as one anywhere else.
+    keep scanning all three: a credential literal in a template, or in a JSON config, is as
+    real as one anywhere else.
     """
-    return is_prose_path(path) or is_template_path(path)
+    return is_prose_path(path) or is_template_path(path) or is_data_path(path)
 
 
 def is_runtime_scannable_path(path: Any) -> bool:

@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List
@@ -230,9 +231,19 @@ def _deterministic_fix_metadata(rule, finding: Dict[str, Any], context: Dict[str
 
 def rule_scan_options(rule, file_path: str) -> Dict[str, Any]:
     """How a rule reads a patch: which file it is, what it must not see, what it may."""
+    exclusion = getattr(rule, "exclusion", None)
+    prose_exclusion = getattr(rule, "non_code_text_exclusion", None)
+    if prose_exclusion is not None and is_non_code_text_path(file_path):
+        # Both conditions have to hold, and `find_pattern_match_entry` takes one pattern, so
+        # they are combined into a single alternation rather than threaded through as a list.
+        exclusion = (
+            re.compile(f"(?:{exclusion.pattern})|(?:{prose_exclusion.pattern})")
+            if exclusion is not None
+            else prose_exclusion
+        )
     return {
         "path": file_path,
-        "exclusion": getattr(rule, "exclusion", None),
+        "exclusion": exclusion,
         "blank_strings": not getattr(rule, "reads_string_literals", True),
     }
 

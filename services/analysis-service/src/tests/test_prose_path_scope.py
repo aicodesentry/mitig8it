@@ -13,7 +13,7 @@ import pytest
 import main
 from main import AnalyzePRRequest, ChangedFile, pattern_findings
 from security_rules import SECURITY_RULES
-from test_code_scope import is_non_code_text_path, is_prose_path, is_template_path
+from test_code_scope import is_data_path, is_non_code_text_path, is_prose_path, is_template_path
 
 CHANGELOG_PATCH = (
     "@@ -3034,2 +3034,3 @@\n"
@@ -156,3 +156,105 @@ class TestEndToEnd:
             files=[ChangedFile(path="History.md", patch=CHANGELOG_PATCH)],
         )
         assert main.analyze_tier1_payload(payload)["findings"] == []
+
+
+# --- data documents ---------------------------------------------------------------------------
+
+DATA_WITH_CODE_SHAPES_PATCH = (
+    "@@ -1,1 +1,6 @@\n"
+    "+{\n"
+    "+  \"case\": \"sqli\",\n"
+    "+  \"code\": \"app.get('/user/:id', (req, res) => db.query('SELECT * FROM u WHERE id=' + req.params.id))\",\n"
+    "+  \"other\": \"eval(req.body.expr); md5(password); DEBUG = True\",\n"
+    "+  \"label\": \"vulnerable\"\n"
+    "+}\n"
+)
+
+# The shape the rule recognises: `key: 'value'`, here inside a JSON string holding a config
+# snippet. That is how the real corpus carries one, and it is the case that must keep reporting.
+DATA_WITH_A_SECRET_PATCH = (
+    "@@ -1,1 +1,3 @@\n"
+    "+{\n"
+    "+  \"code\": \"clientSecret: 'MFyZ2h0LWNsaWVudC1zZWNyZXQ'\"\n"
+    "+}\n"
+)
+
+
+class TestDataDocumentsAreNotCode:
+    """`benchmarks/tier1-precision/cases.json` drew 16 posted findings on our own pull request.
+
+    `is_prose_path` treats an unrecognized extension as code on purpose, so the classification
+    only ever narrows, and `.json` was unrecognized: every tier 1 regex ran over every JSON file
+    in every pull request. A file of labelled vulnerable snippets is the worst case, but any
+    JSON that quotes code at all had the same problem.
+    """
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "benchmarks/tier1-precision/cases.json",
+            "package-lock.json",
+            "yarn.lock",
+            "data/rows.csv",
+            "data/rows.tsv",
+            "events.ndjson",
+            "__snapshots__/a.snap",
+            "dist/bundle.js.map",
+        ],
+    )
+    def test_data_paths(self, path):
+        assert is_data_path(path) is True
+        assert is_non_code_text_path(path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        ["src/app.py", "deploy.yml", "main.tf", "run.sh", "schema.sql", "config.yaml"],
+    )
+    def test_executed_and_applied_files_keep_being_scanned(self, path):
+        """`.yml`, `.tf`, `.sh` and `.sql` are applied, so `config.tls_disabled` can be true."""
+        assert is_data_path(path) is False
+
+    def test_a_json_document_quoting_code_raises_nothing(self):
+        findings = pattern_findings(
+            [ChangedFile(path="benchmarks/tier1-precision/cases.json", patch=DATA_WITH_CODE_SHAPES_PATCH)]
+        )
+        assert findings == []
+
+    def test_a_json_document_is_still_read_for_committed_secrets(self):
+        """A credential in a data file is as real as one anywhere else: `scans_prose` rules are
+        the ones that look for committed data, and data documents are exactly where it lands."""
+        findings = pattern_findings([ChangedFile(path="config/app.json", patch=DATA_WITH_A_SECRET_PATCH)])
+        assert [finding["rule_id"] for finding in findings] == ["secret.hardcoded.credential"]
+
+
+# --- quoted credentials in prose ----------------------------------------------------------------
+
+QUOTED_CREDENTIAL_PATCH = (
+    "@@ -1,1 +1,2 @@\n"
+    "+Both are `password: 'old-password'` in got test files (`test/hooks.ts:893`,\n"
+)
+
+
+class TestProseQuotesRatherThanCommits:
+    """`docs/validation/*.md` drew a critical finding each for a sentence about someone else's
+    test fixture. A write-up of a measurement quotes the snippets it measured, and the rule
+    cannot tell a quotation from a commit by shape alone, so in prose it asks for a value that
+    looks like a secret rather than like a word."""
+
+    def test_a_quoted_placeholder_in_documentation_is_not_a_leaked_secret(self):
+        findings = pattern_findings(
+            [ChangedFile(path="docs/validation/tier2-coverage-2026-09.md", patch=QUOTED_CREDENTIAL_PATCH)]
+        )
+        assert findings == []
+
+    def test_a_real_secret_in_documentation_is_still_reported(self):
+        """The guard is about entropy, not about being in a document."""
+        findings = pattern_findings([ChangedFile(path="README.md", patch=SECRET_IN_DOCS_PATCH)])
+        assert [finding["rule_id"] for finding in findings] == ["secret.hardcoded.credential"]
+
+    def test_the_same_low_entropy_line_in_source_still_reports(self):
+        """Only prose, templates and data relax. Source is unchanged."""
+        findings = pattern_findings(
+            [ChangedFile(path="src/config.py", patch="@@ -1,1 +1,2 @@\n+password = 'old-password'\n")]
+        )
+        assert [finding["rule_id"] for finding in findings] == ["secret.hardcoded.credential"]

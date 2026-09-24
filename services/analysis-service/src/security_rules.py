@@ -47,6 +47,11 @@ class SecurityRule:
     # so it excludes nothing (see `find_ineffective_lookaheads` below). `exclusion` is a
     # second pass over the same line: a match is dropped when this pattern also matches.
     exclusion: Optional[re.Pattern] = None
+    # A second exclusion that applies only on prose, template and data paths. A `scans_prose`
+    # rule is there to catch a committed secret, but documentation about secrets quotes them,
+    # and the quoted example is the common case in a repository that writes any down. This lets
+    # a rule be strict where the text is prose without being strict everywhere.
+    non_code_text_exclusion: Optional[re.Pattern] = None
     # False blanks the body of every string literal before matching, for rules whose
     # signal is code shape rather than committed text.
     reads_string_literals: bool = True
@@ -480,6 +485,13 @@ SECURITY_RULES: List[SecurityRule] = [
         remediation="Move secrets to secure secret management and rotate leaked values.",
         # A secret pasted into a README or a changelog is still a leaked secret.
         scans_prose=True,
+        # In prose the same line is far more often quoting a credential than committing one.
+        # `docs/validation/*.md` drew a critical finding each for the sentence
+        # "`password: 'old-password'` in got test files", which is a write-up citing someone
+        # else's fixture. A value made only of lowercase letters and hyphens is a word, not a
+        # secret; anything with a digit, a capital, or an underscore still reports, so
+        # `api_key = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"` in a README is untouched.
+        non_code_text_exclusion=re.compile(r"""[:=]\s*['"][a-z][a-z-]*['"]"""),
     ),
     SecurityRule(
         rule_id="auth.weak_password_hash",

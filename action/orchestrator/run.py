@@ -168,12 +168,28 @@ def render_finding_comment(finding: Dict[str, Any]) -> str:
     fingerprint = comment_fingerprint(finding)
     severity = str(finding.get("severity") or "unknown").lower()
     title = str(finding.get("title") or finding.get("rule_id") or "Security finding")
+    # Test-code findings are downgraded to `info` by the analysis service, which the action calls
+    # in process, so the action already inherits the policy: they never count towards the check
+    # conclusion and never reach fix generation. What was missing was saying so on the comment.
+    # A reader looking at a finding on a test helper could not tell it was non-blocking, which
+    # the App's own comment states outright.
+    informational = analysis.is_informational(finding)
+    scanner_severity = str(
+        finding.get("original_severity")
+        or ((finding.get("evidence_details") or {}).get("extra") or {}).get("original_severity")
+        or ""
+    ).lower()
     lines = [
         f"<!-- mitig8it-finding:{fingerprint} -->",
-        f"**{title}**",
+        f"**INFORMATIONAL - TEST CODE** - {title}" if informational else f"**{title}**",
         "",
         f"Severity: {severity}",
     ]
+    if informational:
+        lines.append(
+            f"In test code{f'; scanner severity {scanner_severity}' if scanner_severity else ''}. "
+            "Informational only, it does not block this pull request."
+        )
     cwe = str(finding.get("cwe_id") or "")
     if cwe:
         lines.append(f"Weakness: {cwe}")
