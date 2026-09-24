@@ -1,0 +1,54 @@
+{
+  "schema_version": "v1",
+  "id": "js-command-spawn-shell-001",
+  "repository_id": "fixture-js-backup-ab",
+  "split": "holdout",
+  "family": "command_arguments",
+  "kind": "negative",
+  "expected_state": "unsupported",
+  "source": "app.js",
+  "finding": {
+    "id": "js-command-spawn-shell-1",
+    "rule_id": "cwe-78.child-process-exec",
+    "cwe_id": "CWE-78",
+    "category": "command injection",
+    "message": "The backup target is concatenated into a command string run in shell mode.",
+    "path": "app.js",
+    "line_start": 4,
+    "line_end": 4
+  },
+  "reason": "The call runs in shell mode, whose quoting and globbing semantics an argv list cannot reproduce, so the engine skips the finding as shell_pipeline_unsupported.",
+  "budget": {
+    "max_tool_calls": 20,
+    "max_attempts": 3,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 120000,
+    "max_cost_usd": 2.0
+  },
+  "verification_checks": [
+    {
+      "check_id": "exploit",
+      "kind": "exploit",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--exploit"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "failed",
+      "expected_candidate": "passed"
+    },
+    {
+      "check_id": "behavior",
+      "kind": "behavior",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--behavior"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    }
+  ]
+}
