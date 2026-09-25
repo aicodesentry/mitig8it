@@ -1116,7 +1116,7 @@ def js_path_site_in_scope(
     Three shapes are repair sites: a `path.join`/`path.resolve` call, a concatenation of a base
     directory and a value, and a template literal that interpolates one. The vulnerable corpus
     carries all three, and before this the second and third were reported as a missing
-    `path.join` — which said the template could not find something the code never wrote.
+    `path.join`, which said the template could not find something the code never wrote.
 
     What is left refuses by what the sink actually does, because those refusals are correct and
     a reader needs to tell them apart from a gap:
