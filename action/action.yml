@@ -20,13 +20,16 @@ inputs:
   fail-on:
     description: >-
       Which findings fail the job: none, high, or critical. The default reports without failing,
-      so adding the action never breaks a merge on the day you install it.
+      so adding the action never breaks a merge on the day you install it. With none the check
+      concludes neutral when there is something to report and success when there is not.
     required: false
     default: 'none'
   post-fixes:
     description: >-
-      Whether to attach fix suggestions under findings. Fixes are posted as GitHub suggestion
-      blocks, which apply only when a human clicks Commit suggestion.
+      Whether to attach fix suggestions under findings. A fix whose change is one contiguous
+      region of one file is posted as a GitHub suggestion block, which applies only when a human
+      clicks Commit suggestion; a fix that changes several files, or a region the pull request
+      does not touch, is shown as a diff with a line saying why it cannot be a suggestion.
     required: false
     default: 'true'
   model-api-key:
@@ -54,7 +57,7 @@ inputs:
 
 outputs:
   findings:
-    description: 'Total findings reported.'
+    description: 'Total findings reported, including the informational ones in test code.'
     value: ${{ steps.review.outputs.findings }}
   critical:
     description: 'Critical findings.'
@@ -66,7 +69,9 @@ outputs:
     description: 'Fix suggestions attached.'
     value: ${{ steps.review.outputs.fixes }}
   conclusion:
-    description: 'The check run conclusion: success, neutral or failure.'
+    description: >-
+      The check run conclusion. success when nothing was found or nothing met fail-on, neutral
+      when there is something to report and fail-on is none, failure when fail-on is met.
     value: ${{ steps.review.outputs.conclusion }}
 
 # A composite action rather than a container action, for one reason: GitHub builds a container

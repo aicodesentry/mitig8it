@@ -82,9 +82,23 @@ exclude:
 ```
 
 An excluded path is never analysed: it is dropped before any content is fetched, so no finding,
-comment or fix suggestion can come from it, and it is not counted towards `max-files`. The check
-summary says how many files were excluded. The App reads the same file and applies it the same
-way, so the two agree on what a pull request's review covers.
+comment or fix suggestion can come from it, and it is not counted towards `max-files`. The App
+reads the same file and applies it the same way, so the two agree on what a pull request's review
+covers.
+
+## What the check summary says it looked at
+
+Every run states four numbers, so a directory with no finding on it is never ambiguous:
+
+> 10 files analysed, 2 read as a patch only (the scanner has no deep rules for those file types),
+> 1 excluded by .mitig8it.yml, 1 skipped as build output or a vendored dependency.
+
+**Analysed** is the files the semgrep tier reads whole. **Read as a patch only** is the rest of
+the change: a workflow YAML, a README, a lockfile. Those are not unreviewed, and the sentence
+deliberately does not say they are; the regex tier still reads their diff, and the
+committed-secret rule is the one that most often fires there. What it does say is that no
+language-aware rule ran on them, which is what a reader needs in order to know what a clean
+result is worth.
 
 Full syntax and limits: [Repository Configuration](../docs/getting-started/configuration.md).
 
@@ -94,8 +108,8 @@ Full syntax and limits: [Repository Configuration](../docs/getting-started/confi
 
 ## How fixes are applied
 
-A fix arrives as a GitHub suggestion block under the finding it repairs, with a line stating what
-was verified:
+A fix whose change is one contiguous region of one file arrives as a GitHub suggestion block
+under the finding it repairs, with a line stating what was verified:
 
 > Verified: regression test failed on the original code and passed with this change (development
 > sandbox).
@@ -107,15 +121,55 @@ is a real test result and it is **not** an isolated sandbox, which is why the li
 development sandbox rather than isolated sandbox. Nothing is applied until you click **Commit
 suggestion**.
 
-Five repair families are supported: `sql_parameterization`, `command_arguments` and
-`path_containment` on JavaScript and Python, plus `hardcoded_credential` and `code_injection_eval`
-on Python. A finding outside those is reported without a fix.
+A fix that changes more than one region gets a suggestion for the region on the finding's line
+and a second comment for each other region the pull request touches; an added import outside the
+diff becomes a note rather than a comment. A fix that changes several files, or a region the pull
+request does not touch at all, is shown as a diff with one line saying why it cannot be a
+suggestion, because a suggestion covering part of a verified change is not the change that was
+verified.
+
+Five repair families are supported, all of them on both JavaScript and Python:
+`sql_parameterization`, `command_arguments`, `path_containment`, `hardcoded_credential` and
+`code_injection_eval` (`LANGUAGE_FAMILIES` in `services/remediation-service/src/families.py` is
+the list this sentence describes). A finding outside those is reported without a fix.
+
+Verifying a JavaScript repair needs the Node the image pins, which is the one
+`services/remediation-service/Dockerfile` pins; the two are compared by a test, because when they
+drifted apart every JavaScript verification refused to run and the only trace was one line in a
+job log.
+
+## What the review looks like
+
+One review per run. The summary body and every new inline comment are submitted together as a
+single GitHub review with one COMMENT event, so the pull request timeline gets one entry per run
+rather than one per finding.
+
+A finding on a line the pull request did not change gets no inline comment, because GitHub will
+not accept one there and a comment on the nearest changed line would point at the wrong code.
+Those findings are listed in the review body instead, under **Findings on lines this pull request
+did not change**, with their severity, rule, path and line and a permalink to the commit that was
+reviewed. They are counted separately in the check summary. The App does the same, in the same
+words.
+
+The check title, the check summary and the review body state one total, computed once, with the
+breakdown beside it.
 
 ## Re-running
 
 Every comment the action posts carries a marker. A second run on the same head finds its own
-previous comment and edits it rather than posting beside it, and a run that changes nothing
-writes nothing. Pushing a new commit produces a review of that commit.
+previous comment and edits it rather than posting beside it; a comment whose text has not changed
+is left untouched, so a run that has nothing new to say makes no write at all. Pushing a new
+commit produces a review of that commit.
+
+A finding that has gone away has its thread closed. The action resolves the thread when the token
+may, and otherwise deletes its own comment, which removes the conversation rather than folding it
+away: a minimized thread still counts as unresolved, so a repository that requires every
+conversation resolved would stay blocked by a finding its author had already fixed. A comment
+carrying a published fix is kept either way. Every run logs one line saying what it saw and what
+it did:
+
+> Review threads: 8 seen, 8 with our marker, 0 resolved, 1 retired, 0 kept for a published fix,
+> 0 failed.
 
 ## What this is not
 
@@ -184,7 +238,10 @@ cd .. && docker build --file action/Dockerfile --tag mitig8it-action:dev .
 ```
 
 The suite runs without the services' own dependencies installed; the tests that need the scanner
-or the repair engine skip in that case and run inside the image in CI.
+or the repair engine skip in that case and run inside the image in CI. Node is needed for the
+tests that run the publisher or compare a port against its Node original, and it has to be the
+major the image pins, because `test_node_runtime.py` asks the interpreter on PATH for the
+features the repair engine's sandbox harness needs.
 
 Tests marked `repo_definition` read the workflow files and the services' own requirement lists,
 which the image has no reason to carry. They assert things about the repository rather than
@@ -195,11 +252,15 @@ pytest tests -q -m "not repo_definition"   # what CI runs inside the image
 pytest tests -q                            # what CI runs on the host
 ```
 
-Two families of test exist to stop specific mistakes recurring:
+Several families of test exist to stop specific mistakes recurring:
 
 - `test_node_parity.py` reads the Node sources the scope rules were ported from and fails when
   the two drift, so a change to the api-service's file filters or the github-service's caps
   fails here until `orchestrator/pr_scope.py` is updated to match.
+- `test_inline_fix_parity.py` goes further and executes the Node it was ported from.
+  `orchestrator/inline_fixes.py` is the api-service's suggestion geometry in Python, and an
+  algorithm copied into another language drifts in ways a literal comparison cannot see, so both
+  implementations are run over the same inputs and compared.
 - `test_action_definition.py` reads `action.yml` and the workflows. It asserts the action stays
   composite, that every `COPY` source in the Dockerfile exists relative to the repository root,
   and that both workflows parse. An unparsable workflow is worth a test of its own: GitHub
