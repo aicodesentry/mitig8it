@@ -767,6 +767,14 @@ _JS_IMPORT_STATEMENT_RE = re.compile(
 )
 
 
+def _js_uses_semicolons(blanked_lines: list[str]) -> bool:
+    """Whether the file's own import statements end in a semicolon, so an inserted one matches."""
+    statements = [text.rstrip() for text in blanked_lines if _JS_IMPORT_STATEMENT_RE.match(text)]
+    if not statements:
+        return False
+    return sum(text.endswith(";") for text in statements) * 2 >= len(statements)
+
+
 def js_module_style(source: str) -> str:
     """Whether a file is written with `import`/`export` or with `require`."""
     return "esm" if _JS_ESM_MARKER_RE.search(js_strip_strings(source)) else "commonjs"
@@ -871,6 +879,8 @@ def js_module_binding(source: str, module: str, preferred: str) -> JsModuleBindi
     statement = (
         f"import {preferred} from 'node:{module}'" if style == "esm" else f"const {preferred} = require('node:{module}')"
     )
+    if _js_uses_semicolons(blanked):
+        statement += ";"
     return JsModuleBinding(
         preferred, False, style, frozenset(members), statement, js_import_anchor(source)
     )
