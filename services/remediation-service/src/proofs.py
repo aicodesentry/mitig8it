@@ -314,6 +314,29 @@ _JS_LOAD_TIME_REQUIRE_RE = re.compile(r"""^(?=\S)[^\n]*?\brequire\(\s*['"]([^'"]
 # A proof's module graph is walked once; a repository with a cycle or a very wide import fan-out
 # still costs a bounded number of reads.
 MAX_WALKED_MODULES = 200
+MANIFEST_FILENAME = "package.json"
+
+
+def _js_install_populates_node_modules(snapshot: Snapshot) -> bool:
+    """Whether an install will put a `node_modules` in this workspace.
+
+    A manifest is the whole question, and deliberately not which names it lists. `npm ci`
+    installs the lockfile's **resolved closure**, so the packages that reach the workspace are
+    far more than the ones a manifest names directly: `body-parser` arrives behind `express`,
+    and a monorepo's `@scope/*` workspaces arrive because they are workspaces. Refusing on the
+    declared names measured exactly zero of the 81 findings
+    `docs/validation/pairs-2026-09.md` counts, because not one of them imports a package its
+    root manifest happens to name.
+
+    What this gives up is refusing in advance a module that imports something the repository
+    never resolved at all. That case is not lost, only moved: the load then fails identically on
+    both trees, the pair is recorded unverified, and the install log in the evidence says what
+    the workspace actually received. A tree with no manifest anywhere is still refused, because
+    there is nothing for an install to read.
+    """
+    if not snapshot.request.policy.install_dependencies:
+        return False
+    return any(path == MANIFEST_FILENAME or path.endswith("/" + MANIFEST_FILENAME) for path in snapshot.paths)
 
 
 def _js_specifiers(source: str) -> list[str]:
@@ -356,6 +379,7 @@ def _js_loadable(snapshot: Snapshot, path: str) -> None:
     named. A relative import the snapshot does not carry is not inspected and not refused: the
     snapshot is a budgeted slice of the tree, so absence there says nothing about the repository.
     """
+    installed = _js_install_populates_node_modules(snapshot)
     pending = [path]
     seen: set[str] = set()
     while pending and len(seen) < MAX_WALKED_MODULES:
@@ -377,6 +401,11 @@ def _js_loadable(snapshot: Snapshot, path: str) -> None:
                 continue
             name = specifier[5:] if specifier.startswith("node:") else specifier
             if name in NODE_BUILTIN_MODULES or name in HARNESS_FAKED_MODULES:
+                continue
+            if installed:
+                # The workspace will carry an installed `node_modules`. If this package is not
+                # in it, the load fails identically on both trees and the pair is recorded
+                # unverified, with the install log saying why, rather than refused here.
                 continue
             raise SiteError(f"dependency_not_available_in_sandbox:{name.split('/')[0]}")
 

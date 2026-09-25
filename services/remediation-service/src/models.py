@@ -151,6 +151,17 @@ class RepairPolicy(StrictModel):
     # one exists. Off by default: the sandbox has no network, so most repositories cannot
     # install their dependencies and the run would be a recorded limitation instead.
     run_repository_tests: bool = False
+    # Installs the repository's declared dependencies into the verification workspace while the
+    # snapshot is materialized, before any check runs. Off by default, because it is the one
+    # place in the pipeline that reaches a package registry: with it on, the workspace has
+    # network for the install step and for nothing else, install scripts are disabled, and the
+    # install is bounded by `dependency_install_timeout_seconds` and
+    # `max_dependency_install_bytes`. The checks themselves still run on a denied network, and
+    # the verification level is unchanged: what the evidence gains is `dependencies_installed`
+    # and the digest of the lockfiles the install resolved.
+    install_dependencies: bool = False
+    dependency_install_timeout_seconds: int = Field(default=600, ge=30, le=1800)
+    max_dependency_install_bytes: int = Field(default=2_000_000_000, ge=1_000_000, le=20_000_000_000)
     verification_checks: list[VerificationCheck] = Field(default_factory=list, max_length=20)
     forbidden_path_prefixes: list[str] = Field(
         default_factory=lambda: [

@@ -305,6 +305,13 @@
           "title": "Allowed Rule Families",
           "type": "array"
         },
+        "dependency_install_timeout_seconds": {
+          "default": 600,
+          "maximum": 1800,
+          "minimum": 30,
+          "title": "Dependency Install Timeout Seconds",
+          "type": "integer"
+        },
         "forbidden_filenames": {
           "items": {
             "type": "string"
@@ -326,6 +333,11 @@
           "title": "Input Usd Per Million Tokens",
           "type": "number"
         },
+        "install_dependencies": {
+          "default": false,
+          "title": "Install Dependencies",
+          "type": "boolean"
+        },
         "max_attempts": {
           "default": 3,
           "maximum": 5,
@@ -345,6 +357,13 @@
           "maximum": 1000000,
           "minimum": 1000,
           "title": "Max Context Chars",
+          "type": "integer"
+        },
+        "max_dependency_install_bytes": {
+          "default": 2000000000,
+          "maximum": 20000000000,
+          "minimum": 1000000,
+          "title": "Max Dependency Install Bytes",
           "type": "integer"
         },
         "max_file_bytes": {

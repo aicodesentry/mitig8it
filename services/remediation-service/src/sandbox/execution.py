@@ -87,4 +87,8 @@ def build_evidence(payload: dict[str, Any], result: dict[str, Any], runner: dict
         "runner": {"broker_id": os.getenv("SANDBOX_BROKER_ID", "unconfigured"), **runner},
         "checks": result.get("checks", []),
         "coverage_gaps": result.get("coverage_gaps", []),
+        # Present on every run, so a reader never has to tell "installed nothing" apart from
+        # "came from a driver that does not know about installing". `dependencies_installed`
+        # false with no reason code is the ordinary dependency-free run.
+        "dependencies": result.get("dependencies") or {"dependencies_installed": False},
     }
