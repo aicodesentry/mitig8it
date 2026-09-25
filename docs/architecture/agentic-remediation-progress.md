@@ -188,6 +188,8 @@ Path containment now reaches the shapes real code writes: the `node:path` bindin
 
 Measuring each complete pair on both trees ([pairs-2026-09.md](../validation/pairs-2026-09.md)) then showed that 17 of the 18 that did not verify never reached the proof's first assertion, so a file policy will not change and a module whose import closure the sandbox cannot supply are both refused before either half is written: the corpus pair count is 8 instead of 26 and all 8 verify, and the constraint the corpus now names is that a dependency-free sandbox can only load a dependency-free module.
 
+Installing the corpus repositories' own dependencies into the verification workspace was then measured before being built ([pairs-2026-09.md](../validation/pairs-2026-09.md), "With dependencies installed"): 80 of the 81 refused modules became loadable, 7 produced a complete pair, 0 verified, and the eight that already verified still verify with real packages beside the harness fakes, so the production install was not built and `policy.install_dependencies` stays a development-driver flag the measurement uses.
+
 The same engine now also runs inside a GitHub Action, in the customer's own runner with the workflow's own token and no database, producing the same `development_unverified` candidates through the same local subprocess driver; see [GitHub Action](../getting-started/github-action.md).
 
 Full specification: [implementation plan](agentic-remediation-implementation-plan.md).

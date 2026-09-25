@@ -185,6 +185,30 @@ snapshot's site-packages into it, with the checks still on a network they cannot
 larger than anything in that round, both carry a real supply-chain question, and neither should
 start before someone measures what share of the 84 a dependency install would actually reach.
 
+**Measured, and decided against.** The "With dependencies installed" section of
+`docs/validation/pairs-2026-09.md` installed them and re-ran the pairs. On a fresh set of scans
+the same refusal stood at 81. The install reached 17 of the 23 repositories and 1.7 GB of disk,
+**80 of the 81 modules became loadable**, 7 of them produced a complete pair, and **0 verified**:
+the count of verified pairs stayed at 8. The bar set before the measurement was 20. What the
+install converts is the refusal reason and not the outcome, so the 81 become 73 findings that
+name a site a proof cannot drive, 7 pairs that still fail at load for other reasons, and 1 with
+no template. A production install would be the one step of a verification run that reaches a
+package registry, over a tree chosen by whoever opened the pull request; that is not worth buying
+for nothing, so it was not built. `policy.install_dependencies` exists, defaults false, and is
+implemented for the development-only local driver that the measurement runs on;
+`services/remediation-service/contracts/repair-v1.md` says so under "Installed dependencies".
+
+**The constraint this leaves is the proof, not the sandbox.** With loadability removed, the
+largest single reason a finding gets no proof is `module_scope_source_not_controllable` at 40 of
+the 81, 29 of them in dicebear alone: a secret at module scope in a file the proof cannot make
+the module read differently. Three smaller things the same measurement named, each with a row in
+that page's table of the seven pairs: the harness's own `global.Function` recorder breaks a real
+package that builds a wrapper with `new Function` at import (`depd`, under `express` and
+`body-parser`); the harness's `registerHooks` resolver redirects a relative specifier to its
+TypeScript source but does not answer for the entry module, so a `.ts` subject loaded through the
+ES module loader raises `ERR_MODULE_NOT_FOUND` on itself; and an installed `@angular` puts files
+in the closure that Node's strip-only mode cannot parse.
+
 **Three rules the corpus could not decide.** `xss.unsafe_html_render` (16 findings, 2
 adjudicated, 0.50), `auth.bypass.missing_check` (8 findings, 1 adjudicated, 0.00) and
 `opengrep.cwe-798.hardcoded-secret-js` (5 findings, 2 adjudicated, 0.50) are all below the
