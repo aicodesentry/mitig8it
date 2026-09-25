@@ -3,9 +3,11 @@ const policy = require('./remediationPolicy');
 const logger = require('../utils/logger');
 
 // Automatic generation runs after an analysis has been published and never blocks or
-// fails it: a refusal here is logged and the analysis stays completed. Which findings
-// the repair service can fix is its decision, reported per finding in the job's
-// skipped list; nothing here hardcodes a language or a rule family.
+// fails it: a refusal here is logged and the analysis stays completed. Which rule family
+// the repair service can fix is its decision, reported per finding in the job's skipped
+// list; nothing here hardcodes a family. The one thing the selection does decide is
+// language, because a file no toolchain can check cannot be snapshotted either, so taking
+// one into the job used to lose the supported findings of the same pull request with it.
 async function enqueueForCompletedAnalysis({ pullRequestId, analysisRunId }) {
   const capabilities = policy.capabilities();
   if (!capabilities.auto_generate) {
@@ -13,13 +15,20 @@ async function enqueueForCompletedAnalysis({ pullRequestId, analysisRunId }) {
   }
   try {
     const created = await remediationDb.createAutomaticJob({ pullRequestId, analysisRunId, policy: policy.getPolicy() });
+    const skipped = created.skipped?.length || 0;
     if (created.kind === 'ok') {
       logger.info('Automatic remediation job queued after analysis', {
         pull_request_id: pullRequestId, analysis_run_id: analysisRunId, job_id: created.job.id, findings: created.selected.length,
+        skipped_unsupported_language: skipped,
       });
-      return { enqueued: true, job_id: created.job.id, findings: created.selected.length };
+      return { enqueued: true, job_id: created.job.id, findings: created.selected.length, skipped };
     }
-    return { enqueued: false, reason: created.reason || created.kind, job_id: created.job?.id || null };
+    if (created.reason === 'no_supported_findings') {
+      logger.info('No automatic remediation job queued after analysis: every open finding is in a language no repair toolchain can check', {
+        pull_request_id: pullRequestId, analysis_run_id: analysisRunId, skipped_unsupported_language: skipped,
+      });
+    }
+    return { enqueued: false, reason: created.reason || created.kind, job_id: created.job?.id || null, skipped };
   } catch (error) {
     logger.error('Automatic remediation job could not be queued', {
       pull_request_id: pullRequestId, analysis_run_id: analysisRunId, error: error.message,
