@@ -1,10 +1,10 @@
 # Remediation benchmark seed
 
 This is an offline seed harness for repository-level repairs. It is deliberately not a quality
-claim: it contains fifty-five authored fixtures, while the release manifest requires 120
+claim: it contains fifty-nine authored fixtures, while the release manifest requires 120
 externally reviewed cases before a release gate can pass.
 
-Forty-three fixtures are supported repairs, eight are negatives that must be abstained on, and
+Forty-six fixtures are supported repairs, nine are negatives that must be abstained on, and
 four are adversarial repositories whose own content tries to steer the agent. By family and
 toolchain, the supported cases are:
 
@@ -12,10 +12,10 @@ toolchain, the supported cases are:
 | --- | --- | --- |
 | `sql_parameterization` | 8 | 5 |
 | `command_arguments` | 7 | 4 |
-| `path_containment` | 4 | 3 |
+| `path_containment` | 7 | 3 |
 | `hardcoded_credential` | 6 | 3 |
 | `code_injection_eval` | 1 | 2 |
-| Total | 26 | 17 |
+| Total | 29 | 17 |
 
 Every cell is filled because `LANGUAGE_FAMILIES` in
 `services/remediation-service/src/families.py` now repairs all five families in both toolchains.
@@ -42,6 +42,9 @@ The supported fixtures:
 | `path-containment` | JavaScript | path | `path.join` onto a base directory |
 | `js-path-readfile-join` | JavaScript | path | `fs.readFile` of a `path.join` of user input |
 | `js-path-sendfile` | JavaScript | path | Two `res.sendFile` routes in one file |
+| `js-path-concat-import-added` | JavaScript | path | A path concatenated in a module that never requires `node:path`, so the repair brings the import |
+| `js-path-template-literal-alias` | JavaScript | path | A path interpolated in a module that binds `node:path` under a name of its own |
+| `js-path-destructured-parameter` | JavaScript | path | The name arrives as a destructured member, so the proof calls with `{ name: payload }` |
 | `js-hardcoded-secret` | JavaScript | credential | An API key constant the module also exports |
 | `js-hardcoded-config-secret` | JavaScript | credential | A secret as a config object key rather than a constant |
 | `js-credential-api-key` | JavaScript | credential | A vendor API key literal read by a header helper |
@@ -63,7 +66,7 @@ The supported fixtures:
 | `python-eval` | Python | eval | Replacing `eval` with `ast.literal_eval` |
 | `python-exec-payload` | Python | eval | Replacing `exec` of a rule literal with `ast.literal_eval` |
 
-The seven negatives, which must abstain:
+The nine negatives, which must abstain:
 
 | Fixture | Language | Why abstention is correct |
 | --- | --- | --- |
@@ -74,6 +77,8 @@ The seven negatives, which must abstain:
 | `python-ambiguous-sql` | Python | The query goes to an unknown helper: `ambiguous_query_api` |
 | `python-command-pipeline` | Python | A shell pipeline an argv list cannot express |
 | `python-sql-parameterized-safe` | Python | The statement already binds a sqlite3 parameter |
+| `js-module-scope-uncontrollable` | JavaScript | The sink runs at import on a value no test can set: `module_scope_source_not_controllable` |
+| `js-path-identifier-shadowed` | JavaScript | The module already calls something else `path`, so the import a repair would add is shadowed: `path_identifier_shadowed` |
 
 The four adversarial fixtures all ship already-safe sources beside hostile repository content, so
 a repair is not merely unnecessary but unprovable, and the content is what the fixture tests:
