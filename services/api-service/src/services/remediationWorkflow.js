@@ -65,6 +65,9 @@ const MAX_SKIPPED = 200;
 const MAX_CODE_CHARS = 200;
 const MAX_MESSAGE_CHARS = 500;
 const MAX_IDS = 100;
+// A failure reason is read by a person triaging one job, not stored in bulk: 300 characters
+// is enough for the message an error carries and short enough to stay readable in a log line.
+const MAX_REASON_MESSAGE_CHARS = 300;
 
 function text(value, limit) {
   return typeof value === 'string' ? value.slice(0, limit) : null;
@@ -236,7 +239,10 @@ async function loadSnapshot(job, findingPaths = []) {
   // The repair service's tree entry contract is exactly path, mode, type, sha; the adapter may
   // carry extra fields such as size that the strict model rejects.
   const treeEntries = snapshot.tree_entries.map((entry) => ({ path: entry.path, mode: entry.mode, type: entry.type, sha: entry.sha }));
-  return { files: snapshot.files.map((file) => ({ path: file.path, content: file.content, sha: file.sha || sha256(file.content) })), treeEntries, headTreeOid: snapshot.head_tree_oid };
+  // Finding paths the immutable tree does not carry. The adapter drops those rather than
+  // refusing the whole snapshot, so the findings that own them are skipped here by name.
+  const skipped = Array.isArray(snapshot.skipped) ? snapshot.skipped : [];
+  return { files: snapshot.files.map((file) => ({ path: file.path, content: file.content, sha: file.sha || sha256(file.content) })), treeEntries, headTreeOid: snapshot.head_tree_oid, skipped };
 }
 
 async function selectedFindings(job) {
@@ -295,9 +301,25 @@ async function executeClaimedJob(job) {
     metrics.stageAttempts.labels(stage, 'quota_exhausted').inc(); return;
   }
   try {
-    const findings = await selectedFindings(job);
+    const selected = await selectedFindings(job);
+    const snapshot = await loadSnapshot(job, [...new Set(selected.map((finding) => finding.file_path).filter(Boolean))]);
+    // A finding whose source the adapter could not materialise is that finding's loss, not
+    // the job's: it is recorded as a skip, which outlives this attempt and reaches the pull
+    // request, and the repair runs on the findings whose sources the snapshot does carry.
+    const unavailable = new Map(snapshot.skipped.filter((item) => item.path).map((item) => [item.path, item]));
+    const findings = unavailable.size ? selected.filter((finding) => !unavailable.has(finding.file_path)) : selected;
+    if (unavailable.size) {
+      const skips = selected.filter((finding) => unavailable.has(finding.file_path)).map((finding) => ({
+        finding_id: String(finding.id), code: unavailable.get(finding.file_path).code || 'affected_source_missing',
+        message: unavailable.get(finding.file_path).message || 'The finding source is missing from the immutable tree.',
+        stage: 'snapshot',
+      }));
+      await remediationDb.recordSkippedFindings(job, skips);
+      logger.warn('Findings were skipped because the immutable tree does not carry their source', {
+        job_id: job.id, stage, skipped: skips.length, paths: [...unavailable.keys()].slice(0, 20),
+      });
+    }
     const requiredPaths = new Set(findings.map((finding) => finding.file_path).filter(Boolean));
-    const snapshot = await loadSnapshot(job, [...requiredPaths]);
     if (!requiredPaths.size || ![...requiredPaths].every((path) => snapshot.files.some((file) => file.path === path))) {
       throw Object.assign(new Error('Exact source snapshot does not cover the selected findings within policy'), { code: 'SNAPSHOT_UNAVAILABLE' });
     }
@@ -350,11 +372,22 @@ async function executeClaimedJob(job) {
     const retryable = isTransientRepairFailure(error);
     // attempt_count is consumed by this completion, so compare the resulting count.
     const state = retryable && Number(job.attempt_count) + 1 < Number(job.policy_manifest.max_attempts || 3) ? 'queued' : 'inconclusive';
-    await remediationDb.completeStage(job, { state, stage: state === 'queued' ? stage : 'inconclusive', outcome: error.code || 'repair_failure', reason: { code: error.code || 'repair_failure', message: 'Repair stage could not be completed safely' } });
+    // The failure reason used to read only "Repair stage could not be completed safely",
+    // which named neither what failed nor where, so a job that ended here was undiagnosable
+    // from the database alone. The underlying message travels with it, bounded and with no
+    // response body attached: these messages are the service's own error strings and the
+    // adapter's status lines, and no credential is ever part of one.
+    const detail = text(error.message, MAX_REASON_MESSAGE_CHARS);
+    const status = Number(error?.response?.status || error?.status || 0) || null;
+    await remediationDb.completeStage(job, { state, stage: state === 'queued' ? stage : 'inconclusive', outcome: error.code || 'repair_failure',
+      reason: { code: error.code || 'repair_failure', message: detail || 'Repair stage could not be completed safely', status, retryable } });
+    logger.warn('Repair stage could not be completed safely', {
+      job_id: job.id, stage, state, retryable, code: error.code || 'repair_failure', status, error: detail,
+    });
     metrics.stageAttempts.labels(stage, state).inc();
     metrics.stageDuration.labels(stage, state).observe(Number(process.hrtime.bigint() - started) / 1e9);
   }
 }
 
 module.exports = { executeClaimedJob, isTransientRepairFailure, buildPayload, loadSnapshot, repairPolicy, planStageTransition, canonicalStage, stagePathToEnd,
-  buildEvidenceRecords, MAX_TRACE_ENTRIES, MAX_OUTPUT_TAIL_BYTES };
+  buildEvidenceRecords, MAX_TRACE_ENTRIES, MAX_OUTPUT_TAIL_BYTES, MAX_REASON_MESSAGE_CHARS };
