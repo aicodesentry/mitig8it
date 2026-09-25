@@ -104,14 +104,22 @@ def build_inline_comments(
     findings: Sequence[Dict[str, Any]],
     patches_by_path: Dict[str, str],
 ) -> List[Dict[str, Any]]:
-    """One comment per finding that can be anchored to a line the author touched.
+    """One comment per runtime finding that can be anchored to a line the author touched.
 
     A finding on a line the pull request did not change has nowhere to go: GitHub rejects the
     comment, and posting it against the nearest changed line would point the reader at code that
     is not the problem. Those findings stay in the summary count and out of the diff.
+
+    An informational finding never gets one either. It is a finding in test code, downgraded
+    upstream, that cannot block the check and that the author is not being asked to fix. The
+    self-review posted eighteen of them across `services/*/tests` and they buried the runtime
+    findings the review existed to show. They are counted in the check summary and in the review
+    body instead, which says they were not posted.
     """
     comments: List[Dict[str, Any]] = []
     for finding in findings:
+        if analysis.is_informational(finding):
+            continue
         path = str(finding.get("file_path") or "")
         line = int(finding.get("line_start") or 0)
         if not path or line <= 0:
@@ -129,7 +137,9 @@ def build_inline_comments(
         )
 
     def rank(comment: Dict[str, Any]) -> tuple:
-        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        # No `info` key: an informational finding never reaches this list. An unknown severity
+        # still sorts last rather than first, so a malformed finding cannot displace a critical.
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
         return (
             severity_order.get(comment["severity"], 5),
             comment["path"],
@@ -138,6 +148,53 @@ def build_inline_comments(
 
     comments.sort(key=rank)
     return comments[: pr_scope.INLINE_COMMENT_CAP]
+
+
+def active_fingerprints(findings: Sequence[Dict[str, Any]]) -> List[str]:
+    """The findings whose threads this run wants kept open.
+
+    Every runtime finding the run reported, anchored or not: one that exists but had nowhere to
+    comment must not have its thread resolved as though it had gone away.
+
+    Informational findings are deliberately absent. The action no longer posts them inline, so a
+    thread that an earlier version opened for one is now stale by definition and the same
+    reconciliation that closes a fixed finding closes it too. That is the only thing that retires
+    the eighteen test-code threads already sitting open on the self-review.
+    """
+    return [
+        comment_fingerprint(finding)
+        for finding in findings
+        if not analysis.is_informational(finding)
+    ]
+
+
+def thread_summary_line(threads: Optional[Dict[str, Any]]) -> str:
+    """What the reconciliation did, in one line, on every run.
+
+    The resolver matched nothing for weeks and nobody could tell, because it logged only when it
+    acted: a run that resolved zero threads read exactly like a run with nothing to resolve. So
+    the line is unconditional and states the denominator too. `seen` is every review thread on
+    the pull request and `ours` is how many carried our marker; the two being far apart is the
+    symptom that a matching bug produces, and it is now visible in the log.
+    """
+    if not isinstance(threads, dict):
+        return "Review threads: the publisher reported no reconciliation."
+    numbers = {
+        key: int(threads.get(key) or 0)
+        for key in ("seen", "ours", "resolved", "minimized", "failed")
+    }
+    line = (
+        f"Review threads: {numbers['seen']} seen, {numbers['ours']} with our marker, "
+        f"{numbers['resolved']} resolved, {numbers['minimized']} minimized, "
+        f"{numbers['failed']} failed."
+    )
+    unavailable = str(threads.get("unavailable") or "")
+    if unavailable:
+        return f"{line} The GraphQL API could not be reached: {unavailable}"
+    errors = [str(error) for error in (threads.get("errors") or []) if str(error)]
+    if errors:
+        return f"{line} First failure: {errors[0]}"
+    return line
 
 
 def comment_fingerprint(finding: Dict[str, Any]) -> str:
@@ -170,9 +227,12 @@ def render_finding_comment(finding: Dict[str, Any]) -> str:
     title = str(finding.get("title") or finding.get("rule_id") or "Security finding")
     # Test-code findings are downgraded to `info` by the analysis service, which the action calls
     # in process, so the action already inherits the policy: they never count towards the check
-    # conclusion and never reach fix generation. What was missing was saying so on the comment.
-    # A reader looking at a finding on a test helper could not tell it was non-blocking, which
-    # the App's own comment states outright.
+    # conclusion and never reach fix generation.
+    #
+    # `build_inline_comments` no longer sends one of these to be rendered, so the branch below is
+    # not reached from the publishing path today. It is kept because it is the wording the App
+    # puts on the same finding, and because a renderer that silently mislabelled an informational
+    # finding as blocking would be a worse thing to leave behind than an unused branch.
     informational = analysis.is_informational(finding)
     scanner_severity = str(
         finding.get("original_severity")
@@ -479,7 +539,7 @@ def _run() -> int:
         model_configured=model_configured,
         conclusion=conclusion,
         excluded_files=excluded_files,
-        active_fingerprints=[comment_fingerprint(finding) for finding in findings],
+        active_fingerprints=active_fingerprints(findings),
         # Asked of the token rather than assumed. `github-actions[bot]` is right only for the
         # default workflow token; a repository that passes an App installation token or a PAT
         # posts under a different login, and github-service recognises its own comment by that
@@ -492,6 +552,16 @@ def _run() -> int:
     errors = results.get("errors") or []
     for error in errors:
         annotate("warning", f"publish: {error}")
+
+    # Exactly one line about the threads, whatever happened, and a warning rather than a log line
+    # when some of them could not be closed. Never more than one: a token that may not resolve
+    # cannot resolve any of them, and ninety identical annotations would say nothing extra.
+    threads = results.get("threads")
+    summary_line = thread_summary_line(threads)
+    if isinstance(threads, dict) and (int(threads.get("failed") or 0) > 0 or threads.get("unavailable")):
+        annotate("warning", summary_line)
+    else:
+        log(summary_line)
 
     write_outputs(
         {

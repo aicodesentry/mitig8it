@@ -56,8 +56,12 @@ function buildReviewBody(request) {
     : '### Mitig8it - no security issues found');
   lines.push(severityTable(counts));
 
+  // Counted, never annotated. An informational finding is a finding in test code: worth knowing
+  // about, not worth a comment on the diff, because eighteen of them buried the three runtime
+  // findings on the self-review. The summary is where they live, and it says they were not posted
+  // so a reader is not left wondering why a count has no comments behind it.
   if (counts.info > 0) {
-    lines.push(`${counts.info} finding${counts.info === 1 ? '' : 's'} in test code are reported as informational and do not affect the check.`);
+    lines.push(`${counts.info} informational finding${counts.info === 1 ? '' : 's'} in test code, not posted.`);
   }
 
   if (request.modelConfigured) {
@@ -80,7 +84,7 @@ function checkRunSummary(request) {
     `Mitig8it found ${SEVERITY_ORDER.reduce((t, k) => t + (counts[k] || 0), 0)} runtime findings `
     + `(${counts.critical || 0} critical, ${counts.high || 0} high, ${counts.medium || 0} medium, ${counts.low || 0} low).`,
   ];
-  if (counts.info > 0) parts.push(`${counts.info} informational findings in test code.`);
+  if (counts.info > 0) parts.push(`${counts.info} informational finding${counts.info === 1 ? '' : 's'} in test code, not posted.`);
   // What the repository asked not to be reviewed is part of what the check reports: a reader
   // who sees no finding on a directory is entitled to know whether it was clean or skipped.
   const excluded = Number(request.excludedFiles || 0);
@@ -156,17 +160,33 @@ function createGraphQLClient({ token, url = GRAPHQL_URL, fetchImpl }) {
   };
 }
 
-// The fingerprint a thread was opened for, or null when the thread is not one of ours. The
-// author check is what keeps this from ever touching a human's thread: only the first comment
-// counts, because a reply from a reviewer must not make their thread look like ours.
-function threadFingerprint(thread, botLogin) {
-  const first = thread?.comments?.nodes?.[0];
-  if (!first || first.author?.login !== botLogin) return null;
-  const match = FINDING_MARKER.exec(String(first.body || ''));
-  return match ? match[1] : null;
+// REST and GraphQL do not spell a bot's login the same way. `user.login` on a review comment is
+// `github-actions[bot]`; `Bot.login` in GraphQL is `github-actions`, with no suffix. Matching the
+// REST spelling against the GraphQL one found zero threads on every run, and because nothing was
+// logged it looked exactly like having nothing to do: 94 threads open, 0 resolved, silence.
+//
+// So the marker is the identity now. Only this action writes `mitig8it-finding:<fingerprint>`,
+// and only the first comment of a thread is read, because a reviewer quoting the marker in a
+// reply must not make their thread look like ours. The author is a secondary guard: a login that
+// is present and is clearly somebody else's still rejects the thread, compared with the suffix
+// removed from both sides so the two spellings agree.
+function normalizeLogin(login) {
+  return String(login || '').toLowerCase().replace(/\[bot\]$/, '');
 }
 
-async function ourReviewThreads({ graphql, owner, repo, prNumber, botLogin }) {
+function threadFingerprint(thread, botLogin) {
+  const first = thread?.comments?.nodes?.[0];
+  if (!first) return null;
+  const match = FINDING_MARKER.exec(String(first.body || ''));
+  if (!match) return null;
+  const author = normalizeLogin(first.author?.login);
+  const expected = normalizeLogin(botLogin);
+  // An absent author (a deleted account) is not evidence against us; a different one is.
+  if (author && expected && author !== expected) return null;
+  return match[1];
+}
+
+async function ourReviewThreads({ graphql, owner, repo, prNumber, botLogin, counters }) {
   const threads = [];
   let cursor = null;
   for (let page = 0; page < 20; page += 1) {
@@ -174,6 +194,7 @@ async function ourReviewThreads({ graphql, owner, repo, prNumber, botLogin }) {
     const connection = data?.repository?.pullRequest?.reviewThreads;
     if (!connection) break;
     for (const node of connection.nodes || []) {
+      if (counters) counters.seen += 1;
       const fingerprint = threadFingerprint(node, botLogin);
       if (!fingerprint) continue;
       threads.push({
@@ -199,20 +220,28 @@ function selectStaleThreads(threads, activeFingerprints) {
 
 async function reconcileReviewThreads(request, { graphql }) {
   const [owner, repo] = request.repository_full_name.split('/');
-  const outcome = { resolved: 0, minimized: 0, errors: [] };
+  // Every number the run needs to explain itself: how many threads the pull request has, how
+  // many carry our marker, and what became of the stale ones. A reconciliation that matches
+  // nothing now says so out loud instead of looking like a run with nothing to do.
+  const outcome = { seen: 0, ours: 0, stale: 0, resolved: 0, minimized: 0, failed: 0, errors: [] };
   const threads = await ourReviewThreads({
     graphql,
     owner,
     repo,
     prNumber: request.pr_number,
     botLogin: request.bot_login,
+    counters: outcome,
   });
-  for (const thread of selectStaleThreads(threads, request.active_fingerprints)) {
+  outcome.ours = threads.length;
+  const stale = selectStaleThreads(threads, request.active_fingerprints);
+  outcome.stale = stale.length;
+  for (const thread of stale) {
     try {
       await graphql(RESOLVE_MUTATION, { id: thread.id });
       outcome.resolved += 1;
     } catch (error) {
       if (!thread.commentId) {
+        outcome.failed += 1;
         outcome.errors.push(`thread ${thread.fingerprint}: ${error.message}`);
         continue;
       }
@@ -220,6 +249,7 @@ async function reconcileReviewThreads(request, { graphql }) {
         await graphql(MINIMIZE_MUTATION, { id: thread.commentId });
         outcome.minimized += 1;
       } catch (fallbackError) {
+        outcome.failed += 1;
         outcome.errors.push(`thread ${thread.fingerprint}: ${error.message}; ${fallbackError.message}`);
       }
     }
@@ -282,12 +312,20 @@ async function publish(request, { fetchImpl, graphql } = {}) {
   // fingerprint carries the line number, so any push that shifts a line retires every marker at
   // once and the whole previous run is orphaned. Failing here is reported and never fatal: a
   // review that published is worth more than a tidy thread list.
+  //
+  // A reconciliation failure stays out of `results.errors`, which is what decides this process's
+  // exit code and therefore whether the whole action run fails. Tidying threads is housekeeping
+  // and a token is not guaranteed to be allowed to do it; failing the job over it would throw
+  // away a review that published perfectly. The counters below carry the failure instead, and
+  // the orchestrator states it on the one summary line it logs.
   try {
     const client = graphql || createGraphQLClient({ token: request.token, fetchImpl });
     results.threads = await reconcileReviewThreads(request, { graphql: client });
-    for (const error of results.threads.errors) results.errors.push(`thread: ${error}`);
   } catch (error) {
-    results.errors.push(`threads: ${error.message}`);
+    results.threads = {
+      seen: 0, ours: 0, stale: 0, resolved: 0, minimized: 0, failed: 0, errors: [],
+      unavailable: error.message,
+    };
   }
 
   // 3. Suggestion blocks under the finding comments, rendered by the service's own builder so
@@ -357,6 +395,7 @@ module.exports = {
   buildReviewBody,
   checkRunSummary,
   createGraphQLClient,
+  normalizeLogin,
   reconcileReviewThreads,
   selectStaleThreads,
   threadFingerprint,

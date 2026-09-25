@@ -174,7 +174,12 @@ def test_the_test_code_policy_is_the_same_in_all_three_copies():
 
 
 def test_the_action_states_the_informational_case_the_way_the_app_does():
-    """A reader of a comment on a test helper has to be told it does not block."""
+    """The renderer labels an informational finding the way the App labels it.
+
+    Nothing posts one any more: the action leaves informational findings out of the inline set
+    entirely. The rendering is pinned anyway, because a renderer that dressed a test-code finding
+    up as a blocking one would be a worse thing to leave lying around than an unused branch.
+    """
     body = run.render_finding_comment(
         {
             "fingerprint": "fp",
@@ -193,6 +198,64 @@ def test_the_action_states_the_informational_case_the_way_the_app_does():
     )
     assert "INFORMATIONAL" not in runtime
     assert "does not block" not in runtime
+
+
+def test_the_action_reads_the_app_s_rule_for_which_findings_are_informational():
+    """`isInfoFinding` in the App and `is_informational` in the action are one rule, twice.
+
+    Read out of the App rather than restated here, so widening the App's predicate fails this
+    test instead of quietly leaving the action treating a finding as runtime that the App treats
+    as informational. Which side of that line a finding falls on decides whether it blocks the
+    check, whether a fix is generated for it, and whether it is annotated on the diff.
+    """
+    source = read(API_ORCHESTRATOR)
+    constant = re.search(r"const INFORMATIONAL_SEVERITY = '([^']+)';", source)
+    assert constant, "INFORMATIONAL_SEVERITY is no longer a string constant"
+    predicate = re.search(r"function isInfoFinding\(finding\) \{(.*?)\n\}", source, re.DOTALL)
+    assert predicate, "isInfoFinding is no longer a plain function"
+    body = predicate.group(1)
+    assert "=== INFORMATIONAL_SEVERITY" in body, "the severity clause of isInfoFinding changed shape"
+    assert "extra.in_test_code" in body, "the scanner-marker clause of isInfoFinding changed shape"
+
+    severity = constant.group(1)
+    assert analysis.is_informational({"severity": severity}) is True
+    assert analysis.is_informational(
+        {"severity": "critical", "evidence_details": {"extra": {"in_test_code": True}}}
+    ) is True
+    assert analysis.is_informational({"severity": "critical"}) is False
+
+
+def test_an_informational_finding_never_takes_an_inline_slot_from_a_runtime_one():
+    """The App's predicate decides which findings the action may annotate, and it annotates none.
+
+    The two products differ in what they do with an informational finding, and the difference is
+    deliberate. The App posts it inline behind every runtime comment and drops it first when the
+    cap bites (`compareReviewComments` and `planInlineComments` in prAnalysisOrchestrator.js).
+    The action posts none at all: one self-review put eighteen `INFORMATIONAL - TEST CODE`
+    comments across `services/*/tests`, and on a pull request whose point was three runtime
+    findings they were the noise the reader had to dig through. They are reported as a count in
+    the check summary and the review body instead.
+
+    What both sides must agree on, and what this pins, is which findings are informational and
+    that an informational one can never displace a runtime one inside INLINE_COMMENT_CAP.
+    """
+    patch = "@@ -1,1 +1,80 @@\n" + "".join(f"+line {i}\n" for i in range(1, 80))
+    runtime = [
+        {"fingerprint": f"fp-runtime-{i}", "file_path": "src/a.py", "line_start": i + 1,
+         "severity": "medium"}
+        for i in range(pr_scope.INLINE_COMMENT_CAP)
+    ]
+    informational = [
+        {"fingerprint": f"fp-info-{i}", "file_path": "src/a.py", "line_start": i + 1,
+         "severity": "critical", "evidence_details": {"extra": {"in_test_code": True}}}
+        for i in range(10)
+    ]
+
+    comments = run.build_inline_comments(informational + runtime, {"src/a.py": patch})
+
+    assert len(comments) == pr_scope.INLINE_COMMENT_CAP
+    assert {comment["fingerprint"] for comment in comments} == {f["fingerprint"] for f in runtime}
+    assert run.build_inline_comments(informational, {"src/a.py": patch}) == []
 
 
 # The patches below are run through the Node implementation and the Python port in

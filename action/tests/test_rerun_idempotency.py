@@ -19,6 +19,8 @@ why the publisher is given every finding's fingerprint and not only the commente
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from orchestrator import run
@@ -59,7 +61,7 @@ def a_request(findings, *, bot_login="github-actions[bot]"):
         inline_comments=comments,
         model_configured=False,
         conclusion="failure",
-        active_fingerprints=[run.comment_fingerprint(f) for f in findings],
+        active_fingerprints=run.active_fingerprints(findings),
         bot_login=bot_login,
     )
 
@@ -193,12 +195,22 @@ def test_minimize_is_the_fallback_when_a_token_may_not_resolve(tmp_path):
         assert completed.returncode == 0, completed.stderr
         assert any(call.startswith("minimize:") for call in server.calls)
         assert server.threads[0].is_minimized is True
+        threads = json.loads(completed.stdout)["threads"]
+        assert run.thread_summary_line(threads) == (
+            "Review threads: 1 seen, 1 with our marker, 0 resolved, 1 minimized, 0 failed."
+        )
     finally:
         server.stop()
 
 
 def test_a_thread_that_can_be_neither_resolved_nor_minimized_is_reported(tmp_path):
-    """Reported as an annotation, never fatal: the review itself published."""
+    """Reported on the summary line, never fatal: the review itself published.
+
+    This used to exit 1, which the orchestrator turns into `publishing failed` and a failed job.
+    Housekeeping a thread list is not worth failing a run that reviewed the pull request
+    correctly, and a token that may not resolve may not resolve any of them, so the failure would
+    have been permanent for that repository.
+    """
     if not publisher_harness.node_available():
         pytest.skip("node is not on PATH")
     server = fake_graphql.FakeGraphQL(resolve_fails=True, minimize_fails=True).start()
@@ -208,12 +220,84 @@ def test_a_thread_that_can_be_neither_resolved_nor_minimized_is_reported(tmp_pat
 
         completed = publisher.run(a_request([finding("fp-new")]))
 
-        assert completed.returncode == 1
-        assert "fp-old" in completed.stderr
+        assert completed.returncode == 0, completed.stderr
+        results = json.loads(completed.stdout)
+        assert results["errors"] == [], "a thread failure must not reach the publish error list"
+        line = run.thread_summary_line(results["threads"])
+        assert line.startswith(
+            "Review threads: 1 seen, 1 with our marker, 0 resolved, 0 minimized, 1 failed."
+        )
+        assert "First failure: thread fp-old:" in line
         # The review and the check still published.
         assert [call["name"] for call in publisher.calls()] == ["review", "create", "check"]
     finally:
         server.stop()
+
+
+
+def test_the_graphql_spelling_of_the_bot_login_still_matches(publisher, graphql):
+    """The whole reason the resolver matched nothing: two APIs spell one account two ways.
+
+    A review comment's author over REST is `github-actions[bot]`; the same account over GraphQL
+    is `github-actions`. The publish request carries the REST spelling, because that is what the
+    viewer endpoint returns and what github-service matches its own comments by. Comparing the
+    two directly rejected every thread, so the run resolved nothing and said nothing.
+    """
+    thread = graphql.add_thread(marker("fp-old") + "\nold finding", login="github-actions[bot]")
+    served = thread.node()["comments"]["nodes"][0]["author"]["login"]
+    assert served == "github-actions", "the fake must reproduce GraphQL's spelling, not REST's"
+
+    completed = publisher.run(a_request([finding("fp-new")], bot_login="github-actions[bot]"))
+
+    assert completed.returncode == 0, completed.stderr
+    assert graphql.resolved_bodies() == [thread.body]
+
+
+def test_a_thread_whose_author_is_gone_is_still_ours_if_it_carries_our_marker(publisher, graphql):
+    """A deleted account returns a null author. The marker is the identity; the login only guards."""
+    thread = graphql.add_thread(marker("fp-old") + "\nold finding", login="")
+
+    completed = publisher.run(a_request([finding("fp-new")]))
+
+    assert completed.returncode == 0, completed.stderr
+    assert graphql.resolved_bodies() == [thread.body]
+
+
+def test_the_run_reports_the_threads_it_saw_even_when_none_were_ours(publisher, graphql):
+    """The line that would have caught this bug on the first run: a denominator beside the zero."""
+    graphql.add_thread("please rename this variable", login="a-reviewer")
+    graphql.add_thread(marker("fp-old") + "\nold finding")
+
+    completed = publisher.run(a_request([finding("fp-new")]))
+
+    assert completed.returncode == 0, completed.stderr
+    threads = json.loads(completed.stdout)["threads"]
+    assert run.thread_summary_line(threads) == (
+        "Review threads: 2 seen, 1 with our marker, 1 resolved, 0 minimized, 0 failed."
+    )
+
+
+def test_a_thread_left_by_an_informational_finding_is_resolved(publisher, graphql):
+    """The action no longer posts informational findings, so the ones already posted are stale.
+
+    Eighteen `INFORMATIONAL - TEST CODE` threads are open on the self-review from the runs that
+    did post them. Leaving the informational fingerprint out of `active_fingerprints` is what
+    retires them: the same reconciliation that closes a fixed finding closes these.
+    """
+    informational = dict(finding("fp-info", line=12, title="Hardcoded credential"), severity="info")
+    graphql.add_thread(marker("fp-info") + "\n**INFORMATIONAL - TEST CODE** - Hardcoded credential")
+
+    request = a_request([informational, finding("fp-runtime", line=13)])
+    assert [c["fingerprint"] for c in request["inline_comments"]] == ["fp-runtime"]
+    assert request["active_fingerprints"] == ["fp-runtime"]
+
+    completed = publisher.run(request)
+
+    assert completed.returncode == 0, completed.stderr
+    resolved = graphql.resolved_bodies()
+    assert len(resolved) == 1 and marker("fp-info") in resolved[0]
+    created = [call["marker"] for call in publisher.calls() if call["name"] == "create"]
+    assert created == [marker("fp-runtime")], "no comment is created for an informational finding"
 
 
 # --- the pieces, without a subprocess ----------------------------------------------------------
@@ -234,3 +318,31 @@ def test_a_finding_without_a_fingerprint_still_gets_a_matchable_marker():
 
 def test_the_scanner_fingerprint_is_preferred_when_there_is_one():
     assert run.comment_fingerprint({"fingerprint": "abc123", "rule_id": "r"}) == "abc123"
+
+
+# --- the one line the run logs about the threads -------------------------------------------------
+
+def test_the_summary_line_is_produced_even_when_the_api_was_unreachable():
+    line = run.thread_summary_line(
+        {"seen": 0, "ours": 0, "resolved": 0, "minimized": 0, "failed": 0, "errors": [],
+         "unavailable": "GraphQL HTTP 403"}
+    )
+    assert line == (
+        "Review threads: 0 seen, 0 with our marker, 0 resolved, 0 minimized, 0 failed."
+        " The GraphQL API could not be reached: GraphQL HTTP 403"
+    )
+
+
+def test_the_summary_line_survives_a_publisher_that_reported_nothing():
+    assert run.thread_summary_line(None) == "Review threads: the publisher reported no reconciliation."
+
+
+def test_the_summary_line_names_only_the_first_failure():
+    line = run.thread_summary_line(
+        {"seen": 9, "ours": 3, "resolved": 1, "minimized": 0, "failed": 2,
+         "errors": ["thread fp-a: denied", "thread fp-b: denied"]}
+    )
+    assert line == (
+        "Review threads: 9 seen, 3 with our marker, 1 resolved, 0 minimized, 2 failed."
+        " First failure: thread fp-a: denied"
+    )

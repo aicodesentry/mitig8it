@@ -329,6 +329,85 @@ def test_fail_on_none_never_blocks():
 
 # --- informational findings -------------------------------------------------------------------
 
+def test_an_informational_finding_gets_no_inline_comment():
+    """Eighteen of these landed on `services/*/tests` in one self-review and buried the rest.
+
+    A test-code finding cannot block the check and is not something the author is being asked to
+    fix in this pull request. It is worth a number in the summary, not a comment on the diff.
+    """
+    findings = [
+        {"fingerprint": "fp-runtime", "file_path": "src/reports.py", "line_start": 3, "severity": "high"},
+        {"fingerprint": "fp-info", "file_path": "src/reports.py", "line_start": 4, "severity": "info"},
+    ]
+    comments = run.build_inline_comments(findings, {"src/reports.py": PATCH})
+    assert [comment["fingerprint"] for comment in comments] == ["fp-runtime"]
+
+
+def test_the_scanner_s_test_code_marker_is_enough_to_keep_a_finding_out_of_the_diff():
+    """The severity is not the only spelling: a finding can carry `in_test_code` and keep its own.
+
+    Both spellings are what `is_informational` accepts, and both are what the App's own
+    `isInfoFinding` accepts, so the action must not post either of them.
+    """
+    findings = [
+        {
+            "fingerprint": "fp-marked",
+            "file_path": "src/reports.py",
+            "line_start": 3,
+            "severity": "critical",
+            "evidence_details": {"extra": {"in_test_code": True}},
+        },
+        {"fingerprint": "fp-flag", "file_path": "src/reports.py", "line_start": 4,
+         "severity": "critical", "in_test_code": True},
+    ]
+    assert run.build_inline_comments(findings, {"src/reports.py": PATCH}) == []
+
+
+def test_an_informational_finding_is_not_kept_alive_for_the_resolver():
+    """What is not posted has no thread to keep open, and any thread it left is now stale."""
+    findings = [
+        {"fingerprint": "fp-runtime", "file_path": "src/a.py", "line_start": 1, "severity": "high"},
+        {"fingerprint": "fp-info", "file_path": "tests/test_a.py", "line_start": 1, "severity": "info"},
+    ]
+    assert run.active_fingerprints(findings) == ["fp-runtime"]
+
+
+def test_an_unanchored_runtime_finding_is_still_kept_alive():
+    """The reason the list is built from findings and not from comments."""
+    findings = [{"fingerprint": "fp-far", "file_path": "src/a.py", "line_start": 900, "severity": "high"}]
+    assert run.build_inline_comments(findings, {"src/a.py": PATCH}) == []
+    assert run.active_fingerprints(findings) == ["fp-far"]
+
+
+def test_the_summary_and_the_review_body_say_the_informational_findings_were_not_posted():
+    """A count with no comments behind it has to explain itself, on both surfaces."""
+    publisher = Path(__file__).resolve().parents[1] / "publisher/publish.js"
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is not on PATH")
+    script = (
+        f"const p = require({json.dumps(str(publisher))});"
+        "const request = {counts:{critical:1,high:0,medium:0,low:0,info:18},findings:19,fixes:0,"
+        " modelConfigured:false, failConclusion:'failure'};"
+        "console.log(JSON.stringify({"
+        "  body: p.buildReviewBody(request),"
+        "  summary: p.checkRunSummary(request).summary,"
+        "  one: p.checkRunSummary({...request, counts:{...request.counts, info:1}}).summary,"
+        "  none: p.checkRunSummary({...request, counts:{...request.counts, info:0}}).summary,"
+        "}));"
+    )
+    result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    rendered = json.loads(result.stdout)
+
+    assert "18 informational findings in test code, not posted." in rendered["body"]
+    assert "18 informational findings in test code, not posted." in rendered["summary"]
+    assert "1 informational finding in test code, not posted." in rendered["one"]
+    assert "informational" not in rendered["none"], "a run with none says nothing about them"
+
+
 def test_test_code_findings_are_counted_apart_from_runtime_ones():
     findings = [
         {"severity": "critical", "file_path": "src/a.py"},

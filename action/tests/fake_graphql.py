@@ -20,15 +20,32 @@ class Thread:
         self.id = thread_id
         self.comment_id = comment_id
         self.body = body
+        # The login as REST spells it, which is how a caller naturally writes it and how the
+        # publish request carries it. `graphql_login` is what this server actually serves.
         self.login = login
         self.is_resolved = False
         self.is_minimized = False
+
+    @property
+    def graphql_login(self) -> str:
+        """The login GraphQL returns, which is not the one REST returns.
+
+        A review comment's `user.login` over REST is `github-actions[bot]`. The same account's
+        `Bot.login` over GraphQL is `github-actions`, with no suffix: the suffix is a REST-only
+        spelling. An author check that compared the two found zero threads on every run of the
+        self-review, so the fake reproduces the difference rather than papering over it.
+        """
+        return self.login[: -len("[bot]")] if self.login.endswith("[bot]") else self.login
 
     def node(self) -> Dict[str, Any]:
         return {
             "id": self.id,
             "isResolved": self.is_resolved,
-            "comments": {"nodes": [{"id": self.comment_id, "body": self.body, "author": {"login": self.login}}]},
+            "comments": {
+                "nodes": [
+                    {"id": self.comment_id, "body": self.body, "author": {"login": self.graphql_login}}
+                ]
+            },
         }
 
 
