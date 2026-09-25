@@ -74,6 +74,8 @@ Staging repository: nebullii/test-only. Deployment: Cloud Run, single instance p
 
 Not yet exercised live: merge-when-ready (flag off; the installation lacks push and pull request review event subscriptions), and coverage of more than one finding per run.
 
+The 16 informational comments in the PR 124 row would not be posted today: informational test-code findings are counted in the summary and never annotated, and the comments earlier runs left for them are retired on the next analysis.
+
 ## Live evidence 2026-09-21 to 2026-09-22
 
 Same deployment. Repositories: nebullii/test-only and nebullii/Indoor-Plants, both owned by the operator. Every candidate below is `development_unverified`. Counts are taken from the review comments and report comments the app published, which are still on those pull requests.

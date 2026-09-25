@@ -210,13 +210,6 @@ export default function PullRequestReviewPreview({ animate = true }) {
             >
               Commit suggestion
             </button>
-            <button
-              type="button"
-              className="inline-flex items-center rounded-md border px-3 py-1.5 text-[12px] font-medium"
-              style={{ borderColor: GH.border, color: GH.text }}
-            >
-              Apply in Mitig8it
-            </button>
           </div>
         </div>
       </div>

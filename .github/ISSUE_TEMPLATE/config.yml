@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability in Mitig8it itself
+    url: https://github.com/aicodesentry/mitig8it/blob/main/SECURITY.md
+    about: Do not open an issue. Email support@mitig8it.com.
+  - name: How to run the tests and the benchmarks
+    url: https://github.com/aicodesentry/mitig8it/blob/main/CONTRIBUTING.md
+    about: make deps, make test, make bench, and what a rule or a fixture has to carry.
+  - name: What the numbers mean
+    url: https://github.com/aicodesentry/mitig8it/blob/main/docs/validation/README.md
+    about: Every measurement, with the run that produced it.

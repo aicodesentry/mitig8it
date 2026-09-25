@@ -1,0 +1,67 @@
+name: Bug
+description: Something does not work the way it is documented to work.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a rule that fires on correct code, use the false positive form instead: it asks for
+        the fields the adjudication step needs.
+
+        For a vulnerability in Mitig8it itself, do not open an issue. See SECURITY.md.
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options:
+        - GitHub App
+        - GitHub Action
+        - Web dashboard
+        - Local development or docker compose
+        - Tests or benchmarks
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: >
+        The smallest sequence that shows it. A link to a public pull request, a check run, or a
+        failing command is ideal. If it happened on a private repository, say so and describe it
+        instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: >
+        Log output, the check summary, the review body, or the failing test. Redact anything from
+        your own code that you do not want public; we do not need it to understand a defect.
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >
+        The action ref you used (for example aicodesentry/mitig8it/action@main), or the commit you
+        are running locally. For the App, the date and time of the review.
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Python version, Node version, if it is a local failure.
