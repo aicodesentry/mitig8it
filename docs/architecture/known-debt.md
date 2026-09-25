@@ -147,11 +147,27 @@ function requirement this entry used to describe are both gone: `sites.js_site_f
 back from the enclosing route to the enclosing function, method or `exports.name` binding, and
 then to module scope, where the proof drives the sink by setting what the module reads and
 importing it. `enclosing_route_not_found` and `enclosing_function_not_found` are both 0 on the
-corpus. TypeScript loads too, through Node's type stripper. What is left is narrower and
-per-shape: `path_module_not_required`, `function_parameters_not_plain_names`,
-`path_join_not_found_in_scope`, `command_name_not_literal`, and the two new honest refusals,
-`module_scope_source_not_controllable` and `typescript_syntax_not_strippable`.
+corpus. TypeScript loads too, through Node's type stripper. Three more per-shape refusals have
+since gone the same way: `path_module_not_required` and `function_parameters_not_plain_names`
+are both 0, and `path_join_not_found_in_scope` is down by a third, because the path binding is
+read in every style a file can write it, a path built by concatenation or interpolation is a
+repair site, and a parameter list is modelled rather than required to be a row of plain names.
+
+What is left is narrower again and is mostly correct refusal rather than gap.
+`module_scope_source_not_controllable` (59), `path_argument_is_constant`,
+`path_argument_not_composed_in_scope` and `path_identifier_shadowed` all name code a generated
+test could not fail on before a repair. The remaining gaps are `command_name_not_literal`,
+`eval_argument_not_an_identifier`, `string_literal_assignment_not_found`, `sink_not_recognized`
+and `method_receiver_not_supported`, the last of which grew because a site the scan can now
+reach turns out to hang off a receiver the proof cannot construct.
 `docs/validation/vulnerable-corpus-2026-09.md` has the full before and after.
+
+**The reach still does not convert.** Three consecutive rounds of removing the binding
+constraint have moved the template count from 25 to 82 and the end-to-end verified count not at
+all. Both halves land together for 26 of 249 findings, and the gap between 82 patches and 26
+pairs is the proof side: a patch with no test that fails before it is never shipped, by design.
+The next thing worth measuring is not another refusal but why a pair that exists does not
+verify.
 
 **Three rules the corpus could not decide.** `xss.unsafe_html_render` (16 findings, 2
 adjudicated, 0.50), `auth.bypass.missing_check` (8 findings, 1 adjudicated, 0.00) and

@@ -33,6 +33,7 @@ from .retrieval import Snapshot
 from .sites import (
     JS_CALLBACK_PARAMETERS,
     JsFunction,
+    JsParameter,
     JsRoute,
     ModuleScope,
     PyFunction,
@@ -41,8 +42,10 @@ from .sites import (
     js_eval_site,
     js_literal_assignment,
     js_literal_assignment_in_span,
+    js_module_binding,
     js_module_constant,
     js_module_exports_name,
+    js_path_site_in_scope,
     js_site_for_line,
     module_directory,
     python_flask_app_name,
@@ -171,9 +174,10 @@ def _js_untrusted_parameter(function: JsFunction, lines: list[str], sink_line: i
     which argument carries it. The one named on the sink line, or on the assignment feeding it,
     is that argument; a function whose only parameters are a connection and a callback has none.
     """
+    rest = {name for parameter in function.parameter_model if parameter.rest for name in parameter.bound_names}
     candidates = [
         name for name in function.parameters
-        if name not in JS_CONNECTION_PARAMETERS and name not in JS_IGNORED_PARAMETERS
+        if name not in JS_CONNECTION_PARAMETERS and name not in JS_IGNORED_PARAMETERS and name not in rest
     ]
     if not candidates:
         return None
@@ -194,14 +198,26 @@ def _js_call_arguments_for(function: JsFunction, untrusted: str, needs_connectio
     """
     setup: list[str] = []
     arguments: list[str] = []
-    for parameter in function.parameters:
-        if parameter == untrusted:
+    for parameter in function.parameter_model or tuple(JsParameter(name, name) for name in function.parameters):
+        if parameter.rest:
+            # A rest element takes whatever arguments are left, so the call passes it none: an
+            # extra argument would change the array the function sees.
+            continue
+        if parameter.members:
+            # A destructured parameter binds no name, so the payload goes in the member the body
+            # reads. `{ id }` from a request becomes `{ id: payload }`.
+            fields = ", ".join(
+                f"{member}: " + ("payload" if member == untrusted else _js(BENIGN_VALUE))
+                for member in parameter.members
+            )
+            arguments.append("{ " + fields + " }")
+        elif parameter.name == untrusted:
             arguments.append("payload")
-        elif parameter in JS_CONNECTION_PARAMETERS and needs_connection:
+        elif parameter.name in JS_CONNECTION_PARAMETERS and needs_connection:
             # `h.db()`, not `require('pg')`: nothing is installed in the sandbox and the patch
             # policy refuses a regression test that asks for a package.
             arguments.append("h.db()")
-        elif parameter in ("cb", "callback", "done", "next"):
+        elif parameter.name in ("cb", "callback", "done", "next"):
             arguments.append("() => {}")
         else:
             arguments.append("{}")
@@ -237,7 +253,7 @@ def _js_handler_drive(function: JsFunction, untrusted: str, payload: str) -> lis
     the same thing `h.invoke` would have resolved.
     """
     request = _js_handler_request(function, untrusted, payload)
-    extra = "".join(", {}" for _ in function.parameters[2:])
+    extra = "".join(", {}" for _ in (function.parameter_model or function.parameters)[2:])
     return [
         "  const res = h.res();",
         f"  const called = h.call(m.{function.name}, {request}, res{extra});",
@@ -542,14 +558,9 @@ def _js_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRo
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
-    join = None
-    for number in scope_lines_near(site.start_line, site.end_line, line):
-        found = re.search(r"path\.(?:join|resolve)\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)", lines[number - 1])
-        if found:
-            join = (number, found.group("base"), found.group("input"))
-            break
-    if join is None:
-        raise SiteError("path_join_not_found_in_scope")
+    binding = js_module_binding(source, "path", "path")
+    found = js_path_site_in_scope(lines, site.start_line, site.end_line, line, (binding.name, "path"))
+    join = (found.line, found.base, found.user_input)
     base = _js_base_expression(source, path, join[1])
     if isinstance(site, JsFunction) and site.kind == "handler":
         return _js_traversal_handler_proof(snapshot, finding, site, join, base)
@@ -599,7 +610,7 @@ def _js_credential_drive(source: str, line: int) -> list[str]:
         return []
     if not isinstance(site, JsFunction) or site.kind != "function" or not js_module_exports_name(source, site.name):
         return []
-    return [f"  h.call(m.{site.name}{''.join(', {}' for _ in site.parameters)});"]
+    return [f"  h.call(m.{site.name}{''.join(', {}' for _ in (site.parameter_model or site.parameters))});"]
 
 
 def _js_credential_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedProof:
@@ -649,15 +660,24 @@ def _js_call_arguments(function: JsFunction, untrusted: str, members: tuple[str,
     Every other parameter gets an empty object: the eval families take a row or a context there,
     and a value the function never reads cannot change what the assertion observes.
     """
+    placed = value
+    for part in reversed(members):
+        placed = "{ " + _js(part) + ": " + placed + " }"
     arguments = []
-    for parameter in function.parameters:
-        if parameter != untrusted:
-            arguments.append("{}")
+    for parameter in function.parameter_model or tuple(JsParameter(name, name) for name in function.parameters):
+        if parameter.rest:
             continue
-        placed = value
-        for part in reversed(members):
-            placed = "{ " + _js(part) + ": " + placed + " }"
-        arguments.append(placed)
+        if parameter.members:
+            # The parameter is destructured at the signature, so the value goes under the member
+            # the body reads rather than in the parameter's own position.
+            fields = ", ".join(
+                f"{member}: " + (placed if member == untrusted else "{}") for member in parameter.members
+            )
+            arguments.append("{ " + fields + " }")
+        elif parameter.name == untrusted:
+            arguments.append(placed)
+        else:
+            arguments.append("{}")
     return ", ".join(arguments)
 
 
@@ -807,15 +827,9 @@ def _js_module_scope_proof(snapshot: Snapshot, finding: FindingSnapshot, scope: 
         _js_sink_in_scope(lines, scope, _JS_COMMAND_SINK_RE, "command_sink_not_in_scope")
         return _js_module_proof(snapshot, finding, scope, family, COMMAND_PAYLOAD, _JS_ARGV_ASSERTIONS[:-2])
     if family == PATH_CONTAINMENT:
-        join = None
-        for number in scope_lines_near(scope.start_line, scope.end_line, _finding_line(finding)):
-            found = re.search(r"path\.(?:join|resolve)\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)", lines[number - 1])
-            if found:
-                join = found
-                break
-        if join is None:
-            raise SiteError("path_join_not_found_in_scope")
-        return _js_module_traversal_proof(snapshot, finding, scope, _js_base_expression(source, path, join.group("base")))
+        binding = js_module_binding(source, "path", "path")
+        join = js_path_site_in_scope(lines, scope.start_line, scope.end_line, _finding_line(finding), (binding.name, "path"))
+        return _js_module_traversal_proof(snapshot, finding, scope, _js_base_expression(source, path, join.base))
     raise SiteError("family_not_generated_at_module_scope")
 
 

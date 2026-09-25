@@ -10,6 +10,7 @@ const OPERATION_NAMES = [
   'postInlineComment',
   'publishFindingFixSections',
   'publishRemediationComment',
+  'retireInlineComments',
   'submitPullRequestReview',
 ];
 
@@ -31,8 +32,8 @@ jest.mock('../services/githubInternalOperations', () => {
   for (const name of [
     'createCheckRun', 'createRemediationCheckRun',
     'fetchFileContents', 'fetchPullRequestFiles', 'fetchRemediationSnapshot',
-    'postInlineComment', 'submitPullRequestReview', 'publishRemediationComment',
-    'publishFindingFixSections',
+    'postInlineComment', 'retireInlineComments', 'submitPullRequestReview',
+    'publishRemediationComment', 'publishFindingFixSections',
   ]) {
     operations[name] = jest.fn();
   }
@@ -343,4 +344,29 @@ test.each(cases)('$name maps an operation refusal to a transport-specific failur
     code: 9,
     message: 'Remediation action is superseded',
   });
+});
+
+// Retiring an inline comment is an analysis operation, not a remediation one, so it carries
+// no consent envelope and has no place in the cases above. It is driven over both transports
+// for the same reason they are: production speaks gRPC, and an operation that worked only
+// over HTTP would be an operation that never ran.
+test('retiring inline comments reaches the same operation with the same payload over HTTP and gRPC', async () => {
+  operations.retireInlineComments.mockResolvedValue({ retired: 2, kept: 1 });
+  const body = { owner: 'owner', repo: 'repo', pr_number: 9, installation_id: 41, fingerprints: ['fp-one', 'fp-two'] };
+
+  const res = createRes();
+  await findRouteHandler('/github/comments/retire')({ body }, res);
+
+  const request = new githubPb.RetireInlineCommentsRequest();
+  request.setOwner('owner');
+  request.setRepo('repo');
+  request.setPrNumber(9);
+  request.setInstallationId(41);
+  request.setFingerprintsList(['fp-one', 'fp-two']);
+  const grpcResponse = await callGrpc('retireInlineComments', request);
+
+  const [httpPayload, grpcPayload] = operations.retireInlineComments.mock.calls.map(([payload]) => payload);
+  expect(grpcPayload).toEqual(httpPayload);
+  expect(res.body).toEqual({ retired: 2, kept: 1 });
+  expect({ retired: grpcResponse.getRetired(), kept: grpcResponse.getKept() }).toEqual(res.body);
 });

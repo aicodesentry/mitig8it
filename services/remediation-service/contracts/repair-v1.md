@@ -74,6 +74,24 @@ Code with no enclosing callable runs once, when the module is imported. The temp
 
 A `path_containment` repair at module scope throws or raises during the import, because there is no caller to answer, so its proof asserts that the import itself is refused for every traversal payload and still succeeds for a legitimate name.
 
+#### How a generated proof lines a call up with a parameter list
+
+A proof of a helper calls it, so it has to build an argument list the signature accepts. Each
+JavaScript parameter is read as one of four forms, and the payload is placed accordingly:
+
+| Form | Example | What the call passes |
+| --- | --- | --- |
+| a plain name | `name` | the payload, or an inert value |
+| a name with a default | `options = {}` | the same, positionally |
+| a rest element | `...rest` | nothing, because an extra argument changes the array the function sees, and it never carries the payload |
+| a destructuring | `{ name }` | an object literal, with the payload under the member the body reads |
+
+A destructured parameter binds its members rather than itself, so the member is what the taint
+lookup and the template find; anything positional, such as the response a handler answers
+through, is read from the parameter list's own order instead. `function_parameters_not_plain_names`
+is now only a list a call cannot be built for without guessing: nested destructuring, an array
+pattern, or a default inside a destructuring.
+
 #### Why a service proof is refused
 
 A proof the service cannot write is reported in `reason_evidence.proofs` as `model:<reason>`, and the same code appears in `templates` as `not_attempted:<reason>` because a template without a proof is never attempted. The reasons that turn on the file rather than on the site:
@@ -86,9 +104,37 @@ A proof the service cannot write is reported in `reason_evidence.proofs` as `mod
 
 TypeScript is loaded by Node's own type stripper rather than by a toolchain: the sandbox still installs nothing and compiles nothing. One shape is not detectable in advance and so is not refused: an interface imported as an ordinary value binding (`import { Settings, settings } from './config'` rather than `import type`) survives stripping and names an export the stripped module does not have. That module fails to load, so its proof fails; it is never a false pass.
 
-#### What `path_containment` repairs a site to do
+#### Where a `path_containment` repair finds the path, and when it refuses
 
-The containment check is the same wherever the `path.join` is: resolve the base, resolve the
+Three shapes are repair sites, on both halves, because all three are how real code builds a path:
+
+| Shape | Example | What the repair contains against |
+| --- | --- | --- |
+| a join call | `path.join(BASE, name)`, `path.resolve(__dirname, 'static', name)` | every argument but the last |
+| a concatenation | `'./data/static/' + key + '.yml'` | up to the last separator a literal carries |
+| a template literal | `` `${base}/${name}` `` | the same |
+
+A join is read by its brackets rather than by a pattern, so a call with more than two arguments
+keeps its whole base. A composition is read only out of a filesystem sink's first argument, so a
+message built on the same line is not mistaken for a path, and a `this.` receiver is excluded
+because `this.dialog.open(...)` is a UI call rather than a sink.
+
+The module that a repair writes `resolve` and `sep` against is the one the file already binds,
+under whatever name and in whatever style it binds it: a require under the module's own name or
+an alias, an ESM default or namespace import, and `node:path` or `path` alike. A file that binds
+none gets the import as part of the same patch, in its own style, at the top of its import block.
+
+| Reason | Meaning |
+| --- | --- |
+| `path_identifier_shadowed` | The file does not bind `node:path` and already declares `path` as something of its own, so the import a repair would add is shadowed at the line the repair rewrites. |
+| `path_argument_is_constant` | The sink's path argument is a string literal. There is no untrusted component, so there is nothing to contain and no test that could fail before a repair. |
+| `path_argument_not_composed_in_scope` | The path reaches the sink as a single value built somewhere the enclosing scope does not show. |
+| `path_join_not_found_in_scope` | No filesystem sink is on any line of the enclosing scope. |
+
+The last three are correct refusals rather than gaps, and they are named apart so a reader can
+tell them from one.
+
+The containment check is the same wherever the path is built: resolve the base, resolve the
 candidate against it, and compare before anything touches the filesystem. How the repair refuses
 an escaping path depends on what the site can promise its caller.
 

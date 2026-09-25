@@ -203,6 +203,28 @@ function deserialize_mitig8it_github_v1_RemediationSnapshotResponse(buffer_arg) 
   return github_pb.RemediationSnapshotResponse.deserializeBinary(new Uint8Array(buffer_arg));
 }
 
+function serialize_mitig8it_github_v1_RetireInlineCommentsRequest(arg) {
+  if (!(arg instanceof github_pb.RetireInlineCommentsRequest)) {
+    throw new Error('Expected argument of type mitig8it.github.v1.RetireInlineCommentsRequest');
+  }
+  return Buffer.from(arg.serializeBinary());
+}
+
+function deserialize_mitig8it_github_v1_RetireInlineCommentsRequest(buffer_arg) {
+  return github_pb.RetireInlineCommentsRequest.deserializeBinary(new Uint8Array(buffer_arg));
+}
+
+function serialize_mitig8it_github_v1_RetireInlineCommentsResponse(arg) {
+  if (!(arg instanceof github_pb.RetireInlineCommentsResponse)) {
+    throw new Error('Expected argument of type mitig8it.github.v1.RetireInlineCommentsResponse');
+  }
+  return Buffer.from(arg.serializeBinary());
+}
+
+function deserialize_mitig8it_github_v1_RetireInlineCommentsResponse(buffer_arg) {
+  return github_pb.RetireInlineCommentsResponse.deserializeBinary(new Uint8Array(buffer_arg));
+}
+
 function serialize_mitig8it_github_v1_SubmitPullRequestReviewRequest(arg) {
   if (!(arg instanceof github_pb.SubmitPullRequestReviewRequest)) {
     throw new Error('Expected argument of type mitig8it.github.v1.SubmitPullRequestReviewRequest');
@@ -270,6 +292,17 @@ var GitHubServiceService = exports.GitHubServiceService = {
     requestDeserialize: deserialize_mitig8it_github_v1_PostInlineCommentRequest,
     responseSerialize: serialize_mitig8it_github_v1_PostInlineCommentResponse,
     responseDeserialize: deserialize_mitig8it_github_v1_PostInlineCommentResponse,
+  },
+  retireInlineComments: {
+    path: '/mitig8it.github.v1.GitHubService/RetireInlineComments',
+    requestStream: false,
+    responseStream: false,
+    requestType: github_pb.RetireInlineCommentsRequest,
+    responseType: github_pb.RetireInlineCommentsResponse,
+    requestSerialize: serialize_mitig8it_github_v1_RetireInlineCommentsRequest,
+    requestDeserialize: deserialize_mitig8it_github_v1_RetireInlineCommentsRequest,
+    responseSerialize: serialize_mitig8it_github_v1_RetireInlineCommentsResponse,
+    responseDeserialize: deserialize_mitig8it_github_v1_RetireInlineCommentsResponse,
   },
   createCheckRun: {
     path: '/mitig8it.github.v1.GitHubService/CreateCheckRun',
