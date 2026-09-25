@@ -730,14 +730,183 @@ ended the execution as `inconclusive` with an engine error that said nothing abo
 now abstains with a reason and counts how often it happened. The seed suite is 55 fixtures under
 both adapters with no unexpected failures.
 
+## After path containment reach
+
+The three refusals the section above put in front are gone or named. `path_module_not_required`
+was 65, `path_join_not_found_in_scope` 27 and `function_parameters_not_plain_names` 23; two of the
+three are now 0 and the third is a third smaller and split by what the sink actually does. The
+23 snapshots were replayed once over the same cache, and both generators were then called
+directly over every finding, against this branch and against the base branch's service source,
+because the replay's provider refuses every call and a finding the template does not prove ends
+at `provider_budget_reservation_denied` whatever the template said.
+
+249 of the 1819 findings are in a supported family with their file in the cached tree. The
+section above reported 245 for the same corpus and every other number in its "After" column is
+reproduced here within one, so the difference is in that run's bookkeeping rather than in the
+reach; the before column below is this run's own measurement of the base branch.
+
+| | Before | After the binding | After compositions | After parameters |
+| --- | ---: | ---: | ---: | ---: |
+| Findings the template builds a patch for | 34 | 74 | 78 | **82** |
+| Findings the service writes a proof for | 37 | 37 | 37 | **40** |
+| Findings with both halves | 24 | 24 | 24 | **26** |
+| Findings with neither | 202 | 162 | 158 | **153** |
+| Candidates produced and verified end to end | 8 | | | **8** |
+
+The end-to-end row is the replay's own remediation stage, run once on each branch over the one
+cache. Those two runs did not see quite the same findings: the scanner reported 2442 findings on
+the first and 2393 on the second, differing in three repositories with identical fetch
+limitations, so the difference is the scanner's own run-to-run variation rather than anything in
+this branch. That is exactly why the two halves are measured by calling the generators directly
+over one fixed set of findings instead, and it is worth knowing that an end-to-end comparison
+across two replays carries that much noise.
+
+**The template patch count has more than doubled and the corpus is still verified at 8.** That is
+the third time this measurement has said it, and the reason is now a different one. It is no
+longer that the refusals moved down to the next obstacle: 49 findings gained a patch and only two
+gained a pair. The binding constraint is the proof, and a patch with no test that fails before it
+is never shipped, by design.
+
+### `path_module_not_required` was two defects and a wrong question
+
+65 findings, and reading them was the whole of the work.
+
+The check read only `const path = require('path')`. A module written `import path from
+'node:path'` therefore counted as not importing path at all, which is what Juice Shop's
+`routes/keyServer.ts` and every one of the 35 `dicebear/dicebear` test files are. That is a
+straight defect: those files do bind the module.
+
+The check also ran *before* the template looked for a join, so it answered a question nobody had
+asked. `systeminformation` reads `/proc/meminfo`, `/proc/cpuinfo` and `/sys/class/thermal/...`
+in six files; `snyk-labs/nodejs-goof` reads `'backup.txt'`. None of those has an untrusted
+component, so no import would have helped and no test could fail on them before a repair. They
+were counted as a missing import because the import was checked first.
+
+The binding is now read in every style the corpus carries and the import is added when a file
+has none, in the file's own style and at the top of its import block. A file that binds `path` to
+something of its own refuses as `path_identifier_shadowed`: `routes/videoHandler.ts` writes
+`const path = videoPath()` inside the handler, and an import beside that declaration would be
+shadowed at the very line the repair rewrites.
+
+Reading the corpus also found a latent defect that only became reachable once those 35 dicebear
+files did. `path.resolve(__dirname, 'static/create', name)` takes three arguments, and the
+pattern that read "everything up to the first `)`" as the second one turned the last two into a
+comma expression, so the repair would have dropped one of them. The join is now scanned by its
+brackets and its base is every argument but the last.
+
+| Reason the binding exposed | Before | After |
+| --- | ---: | ---: |
+| `path_module_not_required` (template) | 69 | **0** |
+| `path_join_not_found_in_scope` (template) | 9 | 38 |
+
+40 findings got a patch and the 29 that moved are the ones whose sink the template could then
+look at honestly. That is what the next step is about.
+
+### `path_join_not_found_in_scope` was true and beside the point
+
+It said the template could not find a `path.join` in the enclosing scope, on code that had never
+written one. Juice Shop builds `'./data/static/codefixes/' + key + '.info.yml'` in two routes and
+`'frontend/dist/frontend/assets/i18n/' + fileName` in a third; `systeminformation` builds
+`battery_path + 'uevent'`. One refusal covered a shape that can be repaired and a shape that must
+not be.
+
+A concatenation and a template literal are now repair sites. The split is at the last path
+separator a *literal* part carries, because that is the last point the code itself fixed:
+everything up to it is the directory to contain against and everything after it is where a
+traversal payload arrives. `battery_path + 'uevent'` has no literal separator and so has no base,
+and it correctly stays refused.
+
+Compositions are read only out of a filesystem sink's first argument. `src/client/store/mcp-handler.js`
+builds a user-facing message from a template literal three lines from its finding, and a scan that
+took any composition on the line would have repaired the message.
+
+| Reason the composition exposed | Before | After |
+| --- | ---: | ---: |
+| `path_join_not_found_in_scope` (template) | 38 | 23 |
+| `path_argument_is_constant` (template) | 0 | 6 |
+| `path_argument_not_composed_in_scope` (template) | 0 | 5 |
+
+Four more findings got a patch. The other eleven moved into a reason that says what is true of
+them: a constant path has nothing to contain, and a path that arrives as one value was built
+somewhere the scope does not show.
+
+A large share of what is left under `path_join_not_found_in_scope` is not a path finding at all.
+`path.traversal.user_path` is the tier 1 rule this document quarantined at precision 0.43, and
+`--include-quarantined` keeps it in the run: it reports `this.snackBar.open(...)`,
+`this.dialog.open(...)` and `new File(['x'], 'pic.png')` in Juice Shop's Angular frontend and its
+spec files. Refusing those is the only correct answer, and it is the rule that should change
+rather than the template.
+
+### `function_parameters_not_plain_names` was a destructured parameter
+
+23 findings on the template side and 24 on the proof side, and almost all of them are one shape:
+Juice Shop's coding-challenge fixtures are written `execute: async ({ id }) => {`, so the value
+the sink reads is a member of the parameter rather than the parameter.
+
+A parameter is now modelled as one of four forms. `JsFunction.parameters` is what the list puts
+in scope, so a destructured member reads as a name the body has and the existing taint lookup
+finds it unchanged; a new positional model carries the rest, so a handler still answers through
+its second parameter and a destructured first parameter does not shift the response. A proof
+places the payload in the member the body reads, and a rest element is passed nothing because an
+extra argument would change the array the function sees.
+
+| Reason the parameter model exposed | Before | After |
+| --- | ---: | ---: |
+| `function_parameters_not_plain_names` (template) | 23 | **0** |
+| `function_parameters_not_plain_names` (proof) | 24 | **0** |
+| `method_receiver_not_supported` (proof) | 8 | 18 |
+| `sink_not_recognized` (template) | 6 | 16 |
+| `path_join_not_found_in_scope` (proof) | 19 | 25 |
+
+Four more patches, three more proofs, and two more complete pairs, which is the only step of the
+three that moved the pair count. Everything else went one level down: a site the scan can now
+describe turns out to hang off a class or object-literal receiver a generated test cannot
+construct, or to have a sink shape no family recognizes. Those are the honest next obstacles and
+they are not path-specific.
+
+### What the whole sequence did to the refusals
+
+| Reason | Before | After | Half |
+| --- | ---: | ---: | --- |
+| `path_module_not_required` | 69 | **0** | template |
+| `function_parameters_not_plain_names` | 23 | **0** | template |
+| `function_parameters_not_plain_names` | 24 | **0** | proof |
+| `module_scope_source_not_controllable` | 59 | 59 | proof |
+| `path_join_not_found_in_scope` | 29 | 25 | proof |
+| `path_join_not_found_in_scope` | 9 | 29 | template |
+| `no_untrusted_parameter` | 15 | 19 | proof |
+| `eval_argument_not_an_identifier` | 18 | 19 | both |
+| `method_receiver_not_supported` | 8 | 18 | proof |
+| `string_literal_assignment_not_found` | 17 | 17 | both |
+| `sink_not_recognized` | 6 | 16 | template |
+| `sql_sink_not_in_scope` | 14 | 14 | proof |
+| `command_name_not_literal` | 12 | 12 | template |
+| `path_argument_not_composed_in_scope` | 0 | 7 | template |
+| `path_argument_is_constant` | 0 | 6 | template |
+
+`module_scope_source_not_controllable` is unchanged at 59 and is still the largest single reason.
+It is a correct refusal, as the section above said: the sink runs at import and the value reaching
+it comes from a call no test can set, so there is no test that fails on the vulnerable code and
+passes on the repair.
+
+### The benchmark
+
+Four fixtures were added, one per shape the corpus showed: a concatenation in a module that never
+requires `node:path`, an interpolation in a module that binds it under a name of its own, a
+destructured parameter, and a repairable concatenation in a module that already calls something
+else `path`, which abstains. The two composition fixtures resolve before comparing recorded
+reads: the original writes `/srv/docs/../../etc/passwd` verbatim where a `path.join` would have
+normalized it, and asserting on the literal string would have measured the sink's spelling rather
+than the repair. The seed suite is 59 fixtures under both adapters with no unexpected failures.
+
 ## Suites
 
 | Suite | Command | Result |
 | --- | --- | --- |
-| analysis-service | `python -m pytest tests -q` in `services/analysis-service/src` | 1373 passed, 1 skipped, on the integration branch |
-| remediation-service | `python -m pytest tests -q` in `services/remediation-service` | 503 passed, on the integration branch. Fails by one (`test_python_harness.py`) in an interpreter that has Flask installed, which is pre-existing and environment-dependent |
+| analysis-service | `python -m pytest tests -q` in `services/analysis-service/src` | 1391 passed, 1 skipped, on this branch |
+| remediation-service | `python -m pytest tests -q` in `services/remediation-service` | 578 passed on this branch, 506 on the integration branch. Fails by one (`test_python_harness.py`) in an interpreter that has Flask installed, which is pre-existing and environment-dependent |
 | tier 2 precision benchmark | `python -m pytest tests/test_tier2_precision_benchmark.py -q` | 140 passed, on the integration branch |
-| remediation benchmark | `benchmarks/remediation/evaluate.py --suite seed` and `--adapter engine-local` | 55 cases, 43 repairs verified, 12 safe abstentions, no unexpected failures under either adapter |
+| remediation benchmark | `benchmarks/remediation/evaluate.py --suite seed` and `--adapter engine-local` | 59 cases, 46 repairs verified, 13 safe abstentions, no unexpected failures under either adapter |
 | sandbox harness spec | `node --test-reporter=tap services/remediation-service/tests/harness_spec.js` | 16 passed |
 | remediation benchmark harness | `python -m pytest benchmarks/remediation/tests -q` | 23 passed |
 | replay self-test | `scripts/replay/selftest.py` | ok: findings=2 candidates=2 verified=2 agent_needed=0 |

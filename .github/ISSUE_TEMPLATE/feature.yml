@@ -1,0 +1,64 @@
+name: Feature or new family
+description: A weakness class we should detect, a repair family we should support, or anything else the product should do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two honest limits before you write this up. JavaScript, TypeScript and Python are the only
+        languages analysed. Five repair families are supported: sql_parameterization,
+        command_arguments, path_containment, hardcoded_credential and code_injection_eval. What is
+        already planned is in ROADMAP.md.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind
+      options:
+        - A weakness class that is not detected
+        - A repair family that is not supported
+        - A language that is not analysed
+        - Product or dashboard behaviour
+        - Developer experience, tests, benchmarks
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What goes wrong today, on real code. Not the feature you want: the thing that costs you
+        something without it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: An example
+      description: >
+        Vulnerable code of the shape you mean, and what you would want reported or repaired. For a
+        repair family, what the fixed code should look like.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: proof
+    attributes:
+      label: How a fix would be proven
+      description: >
+        Only for a repair family. A repair is posted only when a generated test fails on the
+        original code and passes on the repair. What would that test do here, and what would it
+        need in order to run? A family where no such test can exist is a family we would have to
+        refuse, and knowing that early is useful.
+
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: Anything that already does this
+      description: >
+        A CWE number, a CVE of this shape, a rule in another scanner, or a write-up. We cannot copy
+        a rule from opengrep-rules or semgrep-rules for licence reasons (docs/legal/third-party-rules.md),
+        but knowing what exists helps.

@@ -224,3 +224,5 @@ min-instance change and the sidecar are live, and record the numbers here.
 - **Alert thresholds.** After a week of real traffic, check what the failure ratio
   actually is on a normal day. If it sits near 0.3, the threshold is wrong for this
   service and should move, rather than being silenced.
+
+The sidecar is opt-in. After the `codesentry-gmp-config` secret exists and the service account can read it, set the repository variable `METRICS_SIDECAR_ENABLED` to `true` and re-run the API deploy. Without the variable the API deploys as a single container and the loopback metrics listener stays off, so a missing secret can never block a production deploy.

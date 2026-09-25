@@ -128,6 +128,6 @@ describe('PullRequestReviewPreview', () => {
       )
     ).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Commit suggestion' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Apply in Mitig8it' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Apply in Mitig8it' })).toBeNull()
   })
 })
