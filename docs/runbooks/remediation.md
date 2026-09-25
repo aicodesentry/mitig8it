@@ -23,13 +23,13 @@ That shape is not what is deployed today. `deploy-remediation-cloudrun.yml` supp
 
 The broker requires `SANDBOX_BROKER_TOKEN`, `SANDBOX_BROKER_ATTESTATION_SECRET`, `SANDBOX_BROKER_ATTESTATION_KEY_ID`, `SANDBOX_BROKER_ID`, `SANDBOX_K8S_NAMESPACE`, `SANDBOX_K8S_SERVICE_ACCOUNT=sandbox-no-access`, `SANDBOX_K8S_RUNTIME_CLASS=gvisor`, `SANDBOX_ALLOWED_IMAGE_DIGESTS`, and initially `SANDBOX_NETWORK_POLICY_ATTESTED=false` plus `SANDBOX_NODE_LIMITS_ATTESTED=false`.
 
-The dedicated worker is a separate `python -m src.worker` Deployment. It requires the same database/artifact settings and its own rendered Workload Identity. `REMEDIATION_WORKER_ENABLED=true` controls the control-plane polling worker only; it does not wire Cloud Tasks. API apply/merge operations additionally require the existing GitHub service URL and internal secret.
+The dedicated worker is a separate `python -m src.worker` Deployment. It requires the same database/artifact settings and its own rendered Workload Identity. `REMEDIATION_WORKER_ENABLED=true` controls the control-plane polling worker only; it does not wire Cloud Tasks. Publishing comments and check runs additionally requires the existing GitHub service URL and internal secret.
 
 ## Ambiguous GitHub write
 
-1. Leave the action in `reconciling`; do not retry a commit or merge operation manually or by replaying the queue message.
+1. Leave the action in `reconciling`; do not retry a comment or check-run publication manually or by replaying the queue message. No operation writes repository code: the App holds no contents write permission.
 2. Preserve the action ID, manifest digest, expected head/base, and adapter operation ID. Inspect the adapter reconciliation result and its commit marker/parent/tree evidence.
-3. Record only `applied`, `not_applied`, or `unresolved` based on reconciliation. An `unresolved` result blocks the action and pages the owner; it is not permission to regenerate or reapply a patch.
+3. Record only `applied`, `not_applied`, or `unresolved` based on reconciliation. An `unresolved` result blocks the action and pages the owner; it is not permission to regenerate a patch.
 4. Disable application (`REMEDIATION_ENABLED=false`) if any action appears to have bypassed exact-head/manifest checks. Preserve audit and GitHub response evidence before changing flags.
 
 ## Automatic generation and inline publication
@@ -61,7 +61,7 @@ Payloads above 256 KB are dropped at persistence time rather than truncated, so 
 
 ## Residual report
 
-After an apply completes, meaning after the fresh analysis of the applied commit has finished, the API publishes one report comment per apply action and updates it in place on retry. The same text is used verbatim as the verification check summary. It states who requested the apply and in which commit, lists the applied fixes, then the remaining open findings grouped by file and ordered by severity, then the findings that were not repaired automatically with the reason for each, and ends with "Merging stays a human action on GitHub."
+A developer applies a fix with GitHub's "Commit suggestion" button. GitHub co-authors the resulting commit to the app, the push webhook recognises that trailer and records an `observed_apply` action, and the applied commit is analysed afresh. Once that analysis finishes, the API publishes one report comment per observed apply and updates it in place on retry. The same text is used verbatim as the verification check summary. It states who applied the fix and in which commit, lists the applied fixes, then the remaining open findings grouped by file and ordered by severity, then the findings that were not repaired automatically with the reason for each, and ends with "Merging stays a human action on GitHub.".
 
 Informational findings in test code are listed separately and do not count toward the blocking total, and the check is green only when no blocking finding remains in the pull request's changed files.
 
@@ -100,7 +100,7 @@ For telemetry, inspect the collector's upstream endpoint and redaction processor
 ## Provider outage
 
 1. Confirm the failure is upstream before changing flags: generation stage attempts fail or time out while snapshotting and retrieval succeed, and the repair service logs provider transport or HTTP status errors rather than schema or policy rejections.
-2. Leave `REMEDIATION_APPLY_ENABLED` and `REMEDIATION_MERGE_ENABLED` unchanged. A provider outage does not invalidate candidates that are already verified, and disabling apply strands them.
+2. Leave `REMEDIATION_PUBLISH_ENABLED` unchanged. A provider outage does not invalidate candidates that are already verified, and disabling publication hides fixes a developer could still apply on GitHub.
 3. Set `REMEDIATION_GENERATE_ENABLED=false` when the error rate is sustained. Queued jobs then drain into a terminal `unsupported` or `inconclusive` state instead of consuming the spend ceiling on retries.
 4. Check reserved against settled spend. Every attempt charges a worst case reservation before the call, so an outage that loses responses leaves reservations that reconciliation must release. Unsettled reservations reduce the effective budget of the next job until they are cleared.
 5. A provider error is never a verification result. Confirm no job moved to `ready` during the outage window, and that partially completed trajectories resumed from their last checkpoint rather than restarting with a fresh budget.
@@ -111,7 +111,7 @@ For telemetry, inspect the collector's upstream endpoint and redaction processor
 1. Identify the exhausted resource before restarting anything: connection slots, transaction age, lock waits, or disk. The connection budget is global, so service instance count multiplied by per instance pool maximum, plus migration, admin, and reconciler reserves, must stay under database capacity.
 2. Reduce demand at the edge. Set `REMEDIATION_GENERATE_ENABLED=false` and lower worker replicas. Do not raise pool maximums to clear a backlog; that moves the failure from the API into the database.
 3. Do not restart the worker fleet to clear stuck jobs. A worker holding an expiring lease must be allowed to expire or to release the lease through the compare and swap claim path, otherwise two workers may publish results for one job.
-4. Audit persistence failure blocks mutation by design. If audit writes fail, application and merge must stay blocked even when the rest of the database recovers.
+4. Audit persistence failure blocks mutation by design. If audit writes fail, publication must stay blocked even when the rest of the database recovers.
 5. After recovery, confirm the outbox drains, no action is stuck in `reconciling`, and no lease is held by a worker that no longer exists.
 
 ## Queue backlog
@@ -124,9 +124,9 @@ For telemetry, inspect the collector's upstream endpoint and redaction processor
 
 ## Revoked installation
 
-1. Treat a revoked or suspended GitHub App installation as an immediate write stop for that installation. Queued application and merge actions must fail closed with a permission error, not retry.
+1. Treat a revoked or suspended GitHub App installation as an immediate write stop for that installation. Queued comment and check-run publications must fail closed with a permission error, not retry.
 2. Flags and permissions are checked at execution time, immediately before each external write. A candidate generated while the installation was authorized carries no authority once it is revoked.
-3. Reconcile any in flight write before marking the action failed. A revoked token does not prove the earlier commit or merge did not land; check the remote history for the commit marker, parent, and tree.
+3. Reconcile any in flight publication before marking the action failed. A revoked token does not prove the earlier comment or check run did not land; read it back by its marker or external id before writing again.
 4. Delete or expire cached snapshots, retrieval indexes, and artifacts scoped to that installation according to the retention policy. Do not retain repository content after access is withdrawn.
 5. Re-enabling requires a fresh installation authorization. Do not reuse a stored token, and do not resume a job that was generated under the previous authorization; regenerate it from the current head.
 
@@ -137,15 +137,15 @@ For telemetry, inspect the collector's upstream endpoint and redaction processor
 3. Disable the affected cohort rather than the whole feature where the regression is scoped to one rule family, model cohort, or tenant. Where scope is unclear, set `REMEDIATION_GENERATE_ENABLED=false` for the cohort and leave already verified candidates alone.
 4. Do not lower an evaluation gate to restore throughput. A failing release suite blocks promotion by design.
 5. Record the regression as a permanent minimized fixture where data policy permits, then require a full sealed release suite run before the new version is promoted again.
-6. Candidates applied before the regression was detected are not reverted automatically. Prepare a reviewed revert patch if any applied commit is implicated, and remember that a flag cannot undo a completed merge.
+6. Fixes a developer applied before the regression was detected are not reverted automatically. Prepare a reviewed revert patch if any applied commit is implicated, and remember that a flag cannot undo a commit a developer already pushed.
 
 ## Restore reconciliation after a database restore
 
-1. Keep every write flag off while the restore is in progress. A restored snapshot is older than the GitHub history it describes, so it cannot prove that a commit or merge did not happen.
+1. Keep every write flag off while the restore is in progress. A restored snapshot is older than the GitHub history it describes, so it cannot prove which comments and check runs were already published.
 2. Bring the database up with workers stopped. Starting workers against a restored snapshot risks replaying outbox rows whose external effect already landed.
 3. Enumerate every action that was not terminal in the snapshot, plus every action created after the snapshot timestamp that the audit trail or GitHub history shows. For each one, compare the expected head, manifest digest, and adapter operation identifier against the remote branch history.
-4. Record the outcome as `applied`, `not_applied`, or `unresolved`. `unresolved` blocks the action and pages the owner. It is not permission to regenerate or reapply a patch.
-5. Only after every action reaches a recorded outcome, restart workers, then re-enable generation, then publication, then application, then merge, in that order.
+4. Record the outcome as `applied`, `not_applied`, or `unresolved`. `unresolved` blocks the action and pages the owner. It is not permission to regenerate a patch.
+5. Only after every action reaches a recorded outcome, restart workers, then re-enable generation, then publication, in that order.
 6. Confirm fencing tokens and lease state are consistent before the first worker starts. A restored fencing token that is lower than one already observed by GitHub allows a stale writer to act.
 7. `mitig8it_remediation_reconciliation_age_seconds` is specified but not yet emitted, so track reconciliation age from the action table during the drill.
 
@@ -161,7 +161,6 @@ API service (`codesentry-api`):
 REMEDIATION_ENABLED=true
 REMEDIATION_GENERATE_ENABLED=true
 REMEDIATION_PUBLISH_ENABLED=true
-REMEDIATION_APPLY_ENABLED=true                  # omit to leave apply off
 REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION=true # required: the only level this stack produces
 REMEDIATION_DISPATCH_MODE=inprocess
 REMEDIATION_WORKER_INPROCESS=true               # runs the control-plane worker in the API process
@@ -220,8 +219,8 @@ What a developer sees on a pull request in this mode:
 | --- | --- |
 | Finding view | An amber warning on each candidate: "Verification level: development unverified. This fix was not verified in an isolated sandbox.", with the driver's limitations listed beside it. |
 | Generate | Generation is automatic: a job is queued as soon as the head's analysis is published, and the verified fixes appear under the findings on GitHub. The panel's "Generate fixes" button is the manual path for a head whose automatic job did not run or failed. |
-| Apply | Fixes are grouped by file and, within a file, by finding. Each finding shows its recommended fix with an "Apply this fix" button; "Apply all fixes in this file" and "Apply all N verified fixes" remain. One fix is committed on its own verification; several fixes are committed together only as the batch the repair service verified (any other combination is refused with `subset_not_verified`). Every apply is one commit against the exact reviewed head with an expected-head check, made only by explicit request. Buttons are disabled when apply is off, when the head moved, or when the consent digest no longer matches. |
-| After apply | The remaining fixes of that generation are marked stale (the head moved) and shown greyed; "Regenerate remaining fixes" starts a new generation on the new head once its analysis completes. A fresh analysis runs on the applied commit, the app's verification check is published, and one residual report comment per apply (updated in place) lists what was applied and what remains open by file and severity, including findings that were not repaired and why. The check is green only when no open finding of any severity remains in the pull request's changed files; informational test-code findings are listed but do not fail it. Merging stays a human action on GitHub. |
+| Apply | Fixes are grouped by file and, within a file, by finding. The panel shows each recommended fix and its evidence; it offers no apply button, because the App holds no write access to repository contents. Applying happens on GitHub, with the "Commit suggestion" button under the suggestion block the app published beneath the finding comment, which commits under the developer's identity. |
+| After apply | The push webhook sees the applied commit, recognises the app's co-author trailer and records an `observed_apply` action. The remaining fixes of that generation are marked stale (the head moved) and shown greyed; "Regenerate remaining fixes" starts a new generation on the new head once its analysis completes. A fresh analysis runs on the applied commit, the app's verification check is published, and one residual report comment per observed apply (updated in place) lists what was applied and what remains open by file and severity, including findings that were not repaired and why. The check is green only when no open finding of any severity remains in the pull request's changed files; informational test-code findings are listed but do not fail it. Merging stays a human action on GitHub. |
 
 Limits of this mode:
 
@@ -243,7 +242,7 @@ docker compose build remediation-service remediation-worker sandbox-broker
 docker compose up api-service api-worker remediation-service remediation-worker sandbox-broker otel-collector
 ```
 
-The compose defaults set `REMEDIATION_GENERATE_ENABLED=true` and leave publish, apply, and merge false. `REMEDIATION_ENABLED`, the global kill switch, is false by default, so every capability stays off until a developer opts in explicitly. Provider settings `REPAIR_LLM_BASE_URL`, `REPAIR_LLM_API_KEY`, and `REPAIR_LLM_MODEL` are passed through from the host environment and are unset by default.
+The compose defaults set `REMEDIATION_GENERATE_ENABLED=true` and leave publish false. `REMEDIATION_ENABLED`, the global kill switch, is false by default, so every capability stays off until a developer opts in explicitly. Provider settings `REPAIR_LLM_BASE_URL`, `REPAIR_LLM_API_KEY`, and `REPAIR_LLM_MODEL` are passed through from the host environment and are unset by default.
 
 Limitations that make this stack unsuitable as evidence:
 

@@ -10,9 +10,9 @@
   "reference_repair": "expected/app.js",
   "finding": {
     "id": "sql-1",
-    "rule_id": "cwe-89.sql-query",
+    "rule_id": "cwe-89.sql-template-literal",
     "cwe_id": "CWE-89",
-    "category": "sql",
+    "category": "sql injection",
     "path": "app.js",
     "line_start": 2,
     "line_end": 2

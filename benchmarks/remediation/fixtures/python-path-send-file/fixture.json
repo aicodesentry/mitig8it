@@ -1,0 +1,59 @@
+{
+  "schema_version": "v1",
+  "id": "python-path-send-file-001",
+  "repository_id": "fixture-python-reports-ah",
+  "split": "validation",
+  "family": "path_containment",
+  "kind": "supported",
+  "expected_state": "ready",
+  "source": "app.py",
+  "reference_repair": "expected/app.py",
+  "finding": {
+    "id": "python-path-send-file-1",
+    "rule_id": "cwe-22.path-traversal-open",
+    "cwe_id": "CWE-22",
+    "category": "path traversal",
+    "message": "The report view joins a query parameter onto the report directory and hands it to send_file.",
+    "path": "app.py",
+    "line_start": 13,
+    "line_end": 13
+  },
+  "trusted_fixture_test": {
+    "runtime": "python3",
+    "path": "tests/verify.py",
+    "timeout_seconds": 10
+  },
+  "budget": {
+    "max_tool_calls": 20,
+    "max_attempts": 3,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 120000,
+    "max_cost_usd": 2.0
+  },
+  "verification_checks": [
+    {
+      "check_id": "exploit",
+      "kind": "exploit",
+      "argv": [
+        "python3",
+        "tests/verify.py",
+        "--exploit"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "failed",
+      "expected_candidate": "passed"
+    },
+    {
+      "check_id": "behavior",
+      "kind": "behavior",
+      "argv": [
+        "python3",
+        "tests/verify.py",
+        "--behavior"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    }
+  ]
+}

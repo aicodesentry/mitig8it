@@ -1,0 +1,228 @@
+# Tier 2 coverage rules for template languages.
+#
+# Original work of this repository. No rule here is copied or adapted from
+# opengrep-rules or semgrep-rules: both are licensed in a way that forbids use inside a
+# paid service. See docs/legal/third-party-rules.md.
+#
+# Every rule carries `internal_type` (a canonical type from taxonomy.py, never the check
+# id), `cwe`, `confidence` and `posting`, exactly as the JavaScript and Python coverage
+# files do. The measurement behind each one is in
+# docs/validation/vulnerable-corpus-2026-09.md.
+#
+# ── Why `generic` and not a template parser ────────────────────────────────────────────
+#
+# The scanner ships an `html` parser and a `vue` parser. Both were measured against these
+# extensions before this file was written and both were rejected:
+#
+# * `languages: [html]` claims only `.html` and `.htm`. The other fourteen extensions are
+#   invisible to it, so it cannot cover the set. On the files it does claim it reports
+#   `PartialParsing` for server-side tags, which books a per-file coverage gap on exactly
+#   the templates these rules exist to read.
+# * `languages: [vue]` returned a syntax error and zero results on a standard single-file
+#   component.
+#
+# Nothing is lost by dropping the AST. Every construct below is lexical: `{{{ }}}`,
+# `<%- %>`, `| safe`, `v-html`, `{@html}` and `!{ }` are token sequences, not nodes in an
+# HTML tree, so a parser would give these patterns no more to work with than tokens do.
+#
+# ── The one rule about writing a rule here ─────────────────────────────────────────────
+#
+# **Every rule in this file must carry `paths: include`.** The scanner runs one process
+# over a whole batch directory, and a `generic` rule with no include reads *every* file in
+# that batch: the `.py`, the `.ts` and the `.java` alongside the templates. The include is
+# the only thing that keeps a template rule inside the template files, and a rule that
+# forgets it does not fail loudly, it silently matches tokens in other languages.
+# tests/test_template_rules_are_path_scoped.py fails if one is missing.
+rules:
+  # ── Unescaped interpolation, by template language ──────────────────────
+
+  - id: cwe-79.tpl-ejs-unescaped-output
+    patterns:
+      - pattern: "<%- ... %>"
+      # `<%- include(...) %>` is how EJS composes partials and `<%- body %>` is how
+      # express-ejs-layouts renders the child view. Both are the framework's own idiom for
+      # inserting already-rendered template output, not a place user input is written
+      # unescaped. Four of the eight findings on the September 2026 corpus were these two.
+      - pattern-not: "<%- include(...) %>"
+      - pattern-not: "<%- body %>"
+    message: "EJS unescaped output tag. `<%-` writes raw HTML; use `<%=` so the value is escaped"
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.ejs"]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 8 findings, all 8 hand-read. 4 true (dvna's
+        two product listings, goof's redirectPage and marked todo) and 4 false, every false
+        one an `include(...)` or a layout `body`. Both are now excluded, which takes the
+        rule to 4 of 4 on that corpus.
+      posting: post
+
+  - id: cwe-79.tpl-erb-unescaped-output
+    patterns:
+      - pattern-either:
+        - pattern: "<%= raw ... %>"
+        - pattern: "<%== ... %>"
+        - pattern: "<%= ... .html_safe %>"
+    message: "ERB unescaped output. `raw`, `<%==` and `.html_safe` all bypass escaping"
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.erb"]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-79.tpl-mustache-triple-brace
+    # A regex, not a pattern, and the reason is worth keeping. `generic` mode is
+    # whitespace-insensitive token matching, so the pattern `{{{ ... }}}` also matches
+    # `{ {{ ... }} }` -- which is exactly what Angular's `@if (...) { {{ x }} } @else {`
+    # control-flow block looks like. Two of the three findings on the September 2026 corpus
+    # were juice-shop Angular templates matched that way. A regex is whitespace-exact and
+    # cannot make that mistake.
+    pattern-regex: "\\{\\{\\{[^{}]+\\}\\}\\}"
+    message: "Handlebars/Mustache triple-brace writes raw HTML. Use double braces so the value is escaped"
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.hbs", "*.handlebars", "*.mustache", "*.html", "*.htm"]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 3 findings, all 3 hand-read. 1 true (goof's
+        `{{{body}}}` layout) and 2 false, both Angular `@if` blocks matched through
+        whitespace-insensitive tokenisation. The regex above removes both.
+      posting: post
+
+  - id: cwe-79.tpl-unescaping-filter
+    patterns:
+      - pattern-either:
+        - pattern: "{{ ... | safe }}"
+        - pattern: "{{ ... | raw }}"
+        - pattern: "{{ ... | safeseq }}"
+    message: "Template filter turns escaping off for this value. Escape it, or sanitize before it reaches the template"
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.jinja", "*.jinja2", "*.j2", "*.njk", "*.twig", "*.html", "*.htm"]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.85"
+      posting: quarantine
+      posting_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 12 findings, 10 adjudicated, 7 true and 3
+        false, precision 0.70. The policy quarantines at three adjudicated findings below
+        0.8 and this is ten, so it is quarantined although the true positives are real: it
+        reaches both pygoat XSS labels, whoogle's proxied search response and a Django form
+        field. All three false positives are one shape, `{{ logo|safe }}` on markup the
+        application itself builds, and no lexical signal separates a constant the app
+        produced from a value a user supplied. Narrowing it would need to know where the
+        value came from. Re-enable it when the rule set can answer that, or when a larger
+        corpus moves the measured number above 0.8.
+
+  - id: cwe-79.tpl-vue-v-html
+    pattern: 'v-html="..."'
+    message: "Vue `v-html` renders the bound value as HTML. Use an interpolation, or sanitize first"
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.vue", "*.html", "*.htm"]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-79.tpl-svelte-html-tag
+    pattern: "{@html ...}"
+    message: "Svelte `{@html}` renders the expression as HTML. Sanitize it or render it as text"
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.svelte"]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-79.tpl-dust-unescaped-filter
+    patterns:
+      - pattern-either:
+        - pattern: "{...|s}"
+        - pattern: "{...|s|...}"
+    message: "Dust `|s` filter disables escaping for this reference. Drop it, or sanitize before it reaches the template"
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.dust"]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-79.tpl-pug-unescaped-interpolation
+    pattern: "!{...}"
+    message: "Pug `!{}` interpolates without escaping. Use `#{}` so the value is escaped"
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.pug"]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.85"
+      # Pug's other unescaped sink, buffered `!= expr`, is deliberately not matched here.
+      # In `generic` mode `!=` is indistinguishable from the inequality operator in the
+      # inline JavaScript these files also carry, so the pattern would report every
+      # comparison in the file. Recorded in docs/validation/vulnerable-corpus-2026-09.md.
+      posting: post
+
+  # ── A DOM sink inside a template ───────────────────────────────────────
+
+  - id: cwe-79.tpl-inline-script-inner-html
+    patterns:
+      - pattern: "innerHTML = ..."
+      - pattern-not: "innerHTML = '';"
+      - pattern-not: 'innerHTML = "";'
+      - pattern-not: "innerHTML = ''"
+      - pattern-not: 'innerHTML = ""'
+    message: "Inline script assigns to innerHTML. Use textContent, or sanitize the value first"
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.ejs", "*.erb", "*.hbs", "*.handlebars", "*.mustache", "*.html",
+                "*.htm", "*.jinja", "*.jinja2", "*.j2", "*.njk", "*.twig", "*.vue",
+                "*.svelte", "*.dust"]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.80"
+      posting: post

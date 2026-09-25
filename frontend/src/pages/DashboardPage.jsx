@@ -2,10 +2,14 @@ import { useAuth } from '../contexts/AuthContext'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { useOnboarding } from '../contexts/OnboardingContext'
-import { repositoryAPI } from '../services/api'
+import { formatRate, repositoryAPI, reportsAPI } from '../services/api'
 import { PageHeader, PageStats } from '../components/PageSection'
 import { Pagination } from '../components/ui/pagination'
-import { ArrowUpRight, CheckCircle2, ExternalLink, GitPullRequest, Shield, ShieldAlert, Server, Search } from 'lucide-react'
+import { ArrowUpRight, CheckCircle2, CircleSlash, ExternalLink, GitPullRequest, Shield, ShieldAlert, Server, Search, Undo2, Wrench } from 'lucide-react'
+
+// The window the quality tiles report on. Thirty days is long enough that a quiet week
+// does not swing a rate, and short enough that a rule change shows up in it.
+const QUALITY_WINDOW_DAYS = 30
 
 const GITHUB_APP_URL = 'https://github.com/apps/mitig8it/installations/new'
 
@@ -290,6 +294,8 @@ const DashboardPage = () => {
   const [prInsights, setPrInsights] = useState([])
   const [insightsLoading, setInsightsLoading] = useState(true)
   const [insightsPage, setInsightsPage] = useState(1)
+  const [quality, setQuality] = useState(null)
+  const [qualityLoading, setQualityLoading] = useState(true)
   const insightsPerPage = 8
 
   useEffect(() => {
@@ -350,8 +356,22 @@ const DashboardPage = () => {
       }
     }
 
+    // The quality report is a read of a pre-computed roll-up, so it is cheap and never
+    // blocks the rest of the dashboard. A failure leaves the tiles reading "n/a".
+    const fetchQuality = async () => {
+      try {
+        const data = await reportsAPI.getQuality({ window: QUALITY_WINDOW_DAYS })
+        setQuality(data.overall || null)
+      } catch (error) {
+        console.error('Failed to fetch quality metrics:', error)
+      } finally {
+        setQualityLoading(false)
+      }
+    }
+
     fetchDashboardData()
     fetchPRInsights()
+    fetchQuality()
   }, [])
 
   const severityTotals = useMemo(() => {
@@ -420,6 +440,30 @@ const DashboardPage = () => {
           { label: 'PRs tracked', value: statVal(prInsights.length), icon: <GitPullRequest className="h-4 w-4 text-neutral-600 dark:text-neutral-300" /> },
           { label: 'Scans run', value: statVal(analysisSummary.total_analyses), icon: <Search className="h-4 w-4 text-neutral-600 dark:text-neutral-300" /> },
           { label: 'Open findings', value: statVal(severityTotals.total), icon: <ShieldAlert className="h-4 w-4 text-neutral-600 dark:text-neutral-300" /> },
+        ]}
+      />
+
+      <PageStats
+        columns={3}
+        items={[
+          {
+            label: `Apply rate (${QUALITY_WINDOW_DAYS}d)`,
+            value: qualityLoading ? '-' : formatRate(quality?.apply_rate),
+            hint: 'Share of published fixes that were applied, in the app or on GitHub.',
+            icon: <Wrench className="h-4 w-4 text-neutral-600 dark:text-neutral-300" />,
+          },
+          {
+            label: `Dismiss rate (${QUALITY_WINDOW_DAYS}d)`,
+            value: qualityLoading ? '-' : formatRate(quality?.dismiss_rate),
+            hint: 'Share of new findings dismissed, suppressed, or resolved without a fix.',
+            icon: <CircleSlash className="h-4 w-4 text-neutral-600 dark:text-neutral-300" />,
+          },
+          {
+            label: `Residual rate (${QUALITY_WINDOW_DAYS}d)`,
+            value: qualityLoading ? '-' : formatRate(quality?.residual_rate),
+            hint: 'Share of applied fixes that left a blocking finding behind.',
+            icon: <Undo2 className="h-4 w-4 text-neutral-600 dark:text-neutral-300" />,
+          },
         ]}
       />
 

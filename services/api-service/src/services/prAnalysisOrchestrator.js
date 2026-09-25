@@ -12,9 +12,25 @@ const analysisRunsDb = require('../db/analysisRuns');
 const repositoriesDb = require('../db/repositories');
 const remediationAutoGenerate = require('./remediationAutoGenerate');
 
-const TIER2_SUPPORTED_EXTENSIONS = new Set([
+// Mirrors CODE_EXTENSIONS and TEMPLATE_EXTENSIONS in
+// services/analysis-service/src/opengrep_runner.py, and the same two sets in
+// scripts/replay/prodfilters.py. Template files are scanned in the scanner's `generic`
+// mode by template_coverage.yml, not by a language parser.
+// services/analysis-service/src/tests/test_supported_extension_parity.py fails if the
+// three copies disagree.
+const TIER2_CODE_EXTENSIONS = [
   '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rb', '.php',
   '.cs', '.c', '.cpp', '.h', '.hpp', '.rs', '.swift', '.kt',
+];
+
+const TIER2_TEMPLATE_EXTENSIONS = [
+  '.html', '.htm', '.ejs', '.erb', '.hbs', '.handlebars', '.mustache',
+  '.dust', '.njk', '.jinja', '.jinja2', '.j2', '.twig', '.vue', '.svelte', '.pug',
+];
+
+const TIER2_SUPPORTED_EXTENSIONS = new Set([
+  ...TIER2_CODE_EXTENSIONS,
+  ...TIER2_TEMPLATE_EXTENSIONS,
 ]);
 
 function markdownEscape(text) {
@@ -179,22 +195,82 @@ function didTier3MeaningfullyChangeFindings(previousFindings, nextFindings) {
   return false;
 }
 
-function buildTestCodeSummaryLines({ testFilesScanned, infoFindings, infoCommentsOmitted }) {
+// The scanner reports a file it could only parse partially, or gave up on after
+// a timeout, as a limitation rather than as a failed scan. Everything else in
+// the pull request was analysed normally, so the run says which files were not
+// and carries on. A limitation never turns the check run red on its own.
+const LIMITATION_LABELS = {
+  partial_parse: 'partially analysed',
+  not_analyzed: 'not fully analysed',
+};
+
+function normalizeLimitations(limitations) {
+  if (!Array.isArray(limitations)) return [];
+  const byKey = new Map();
+  for (const limitation of limitations) {
+    if (!limitation || typeof limitation !== 'object') continue;
+    const path = typeof limitation.path === 'string' ? limitation.path : '';
+    if (!path) continue;
+    const kind = LIMITATION_LABELS[limitation.kind] ? limitation.kind : 'not_analyzed';
+    const key = `${path}::${kind}`;
+    if (byKey.has(key)) continue;
+    const line = Number(limitation.line);
+    byKey.set(key, {
+      path,
+      kind,
+      type: typeof limitation.type === 'string' ? limitation.type : '',
+      message: typeof limitation.message === 'string' ? limitation.message.slice(0, 200) : '',
+      line: Number.isFinite(line) && line > 0 ? line : null,
+    });
+  }
+  return [...byKey.values()];
+}
+
+// "cwe-vul.py (lexical error at line 127)" - enough for a reader to open the
+// file and see why the scanner stopped there.
+function describeLimitation(limitation) {
+  const name = limitation.path.split('/').pop() || limitation.path;
+  const reason = (limitation.type || LIMITATION_LABELS[limitation.kind]).toLowerCase();
+  const detail = [reason, limitation.line ? `at line ${limitation.line}` : '']
+    .filter(Boolean)
+    .join(' ');
+  return detail ? `${name} (${detail})` : name;
+}
+
+function buildLimitationSummaryLine(limitations) {
+  const normalized = normalizeLimitations(limitations);
+  if (normalized.length === 0) return '';
+
+  const partial = normalized.filter((limitation) => limitation.kind === 'partial_parse');
+  const skipped = normalized.filter((limitation) => limitation.kind !== 'partial_parse');
+  const clauses = [];
+  if (partial.length > 0) {
+    clauses.push(
+      `${partial.length} file${partial.length === 1 ? '' : 's'} partially analysed: `
+      + partial.map(describeLimitation).join(', ')
+    );
+  }
+  if (skipped.length > 0) {
+    clauses.push(
+      `${skipped.length} file${skipped.length === 1 ? '' : 's'} not fully analysed: `
+      + skipped.map(describeLimitation).join(', ')
+    );
+  }
+  return `${clauses.join('; ')}.`;
+}
+
+// Counted here, never annotated on the diff. The sentence says the findings were not
+// posted so a reader is not left hunting for comments behind a count, and it is the
+// sentence the Action prints for the same findings.
+function buildTestCodeSummaryLines({ testFilesScanned, infoFindings }) {
   const lines = [];
   if (testFilesScanned <= 0 && infoFindings <= 0) return lines;
 
   lines.push(
     `${severityIcon('info')} ${testFilesScanned} test file${testFilesScanned === 1 ? '' : 's'} scanned; `
-    + `${infoFindings} informational finding${infoFindings === 1 ? '' : 's'} in test code. `
+    + `${infoFindings} informational finding${infoFindings === 1 ? '' : 's'} in test code, not posted. `
     + 'Informational findings never block this check.'
   );
-  if (infoCommentsOmitted > 0) {
-    lines.push(
-      '',
-      `${infoCommentsOmitted} informational comment${infoCommentsOmitted === 1 ? ' was' : 's were'} `
-      + 'omitted from the inline annotations so runtime findings keep their place.'
-    );
-  }
   lines.push('');
   return lines;
 }
@@ -209,8 +285,9 @@ function buildReviewBody(findings, runId, options = {}) {
   const testCodeLines = buildTestCodeSummaryLines({
     testFilesScanned: Number(options.testFilesScanned || 0),
     infoFindings: infoFindings.length,
-    infoCommentsOmitted: Number(options.infoCommentsOmitted || 0),
   });
+  const limitationLine = buildLimitationSummaryLine(options.limitations);
+  const limitationLines = limitationLine ? [`${severityIcon('info')} ${limitationLine}`, ''] : [];
 
   if (total === 0) {
     return [
@@ -220,6 +297,7 @@ function buildReviewBody(findings, runId, options = {}) {
       'This PR passed all security checks.',
       '',
       ...testCodeLines,
+      ...limitationLines,
       `<sub>Run \`${runId.slice(0, 8)}\`</sub>`,
     ].join('\n');
   }
@@ -237,6 +315,7 @@ function buildReviewBody(findings, runId, options = {}) {
     `| **${counts.critical || 0}** | **${counts.high || 0}** | **${counts.medium || 0}** | **${counts.low || 0}** |`,
     '',
     ...testCodeLines,
+    ...limitationLines,
     placement.sentence,
     '',
     `<sub>Analyzed by <strong>Mitig8it</strong> · Run \`${runId.slice(0, 8)}\` · ${placement.short}</sub>`,
@@ -275,6 +354,10 @@ function buildReviewComment(finding, options = {}) {
     buildRepoAwareRemediation(finding, options.repoProfile || null)
     || finding.remediation
     || 'Apply input validation and secure handling.';
+  // Nothing sends an informational finding here any more: `explainInlineCommentDecision`
+  // refuses it before a comment is built. The branch stays because it is the wording this
+  // product puts on a test-code finding, and a renderer that silently dressed one up as
+  // blocking would be a worse thing to leave behind than an unreached branch.
   const inTestCode = isInfoFinding(finding);
   const scannerSeverity = originalSeverity(finding);
   const headline = inTestCode
@@ -310,6 +393,51 @@ function buildReviewComment(finding, options = {}) {
 
 const extractReviewableLines = validatorPrivate.extractReviewableLines;
 const extractReviewableLineSpans = validatorPrivate.extractReviewableLineSpans;
+
+// `.mitig8it.yml` in the repository under review. Reading it here, before the files reach any
+// scanner, is what makes an exclusion mean "never analysed" rather than "analysed and hidden".
+const repositoryConfig = require('./repositoryConfig');
+
+// The file lives at the repository root of the head commit. It is fetched through the same
+// content path the tier 2 enrichment uses, and an absent file is the common case rather than an
+// error: `fetchFileContents` simply returns nothing for it.
+async function loadRepositoryExclusions({ repositoryFullName, installationId, commitSha }) {
+  let text = null;
+  try {
+    const response = await githubServiceRequest('/internal/github/files/content', {
+      repository_full_name: repositoryFullName,
+      installation_id: installationId,
+      ref: commitSha,
+      paths: [repositoryConfig.CONFIG_FILENAME],
+    });
+    for (const file of response?.files || []) {
+      if (file?.path === repositoryConfig.CONFIG_FILENAME && typeof file.content === 'string') text = file.content;
+    }
+  } catch (_error) {
+    // A repository that has no such file, or a content read that failed, reviews everything. It
+    // is the safe direction: the alternative is a run that silently reviewed nothing.
+    return { exclusions: new repositoryConfig.Exclusions(), problem: null };
+  }
+  if (text === null) return { exclusions: new repositoryConfig.Exclusions(), problem: null };
+  try {
+    return { exclusions: repositoryConfig.parse(text), problem: null };
+  } catch (error) {
+    return { exclusions: new repositoryConfig.Exclusions(), problem: `${error.message}; nothing was excluded` };
+  }
+}
+
+// { kept, excluded } over the changed-file entries the adapter returned.
+function applyExclusions(files, exclusions) {
+  const source = Array.isArray(files) ? files : [];
+  if (!exclusions || exclusions.empty) return { kept: source, excluded: [] };
+  const kept = [];
+  const excluded = [];
+  for (const file of source) {
+    if (exclusions.matches(String(file?.path || ''))) excluded.push(file);
+    else kept.push(file);
+  }
+  return { kept, excluded };
+}
 
 function fileExtension(path) {
   const match = String(path || '').toLowerCase().match(/(\.[^./]+)$/);
@@ -367,17 +495,10 @@ function severityRank(severity) {
   return { critical: 4, high: 3, medium: 2, low: 1, info: 0 }[String(severity || '').toLowerCase()] || 0;
 }
 
-function isInfoComment(comment) {
-  return String(comment?.severity || '').toLowerCase() === INFORMATIONAL_SEVERITY;
-}
-
+// Every comment that reaches this comparator is a runtime finding's: an informational
+// finding is refused inline by `explainInlineCommentDecision` and never becomes one. The
+// informational tie-break that used to lead this function went with it.
 function compareReviewComments(a, b) {
-  // Runtime findings always come before informational test-code findings, so a
-  // comment cap drops informational comments first.
-  if (isInfoComment(a) !== isInfoComment(b)) {
-    return isInfoComment(a) ? 1 : -1;
-  }
-
   const pathCompare = String(a.path || '').localeCompare(String(b.path || ''));
   if (pathCompare !== 0) return pathCompare;
 
@@ -444,6 +565,15 @@ function explainInlineCommentDecision(finding) {
 
   if (finding?.is_baseline) {
     return { eligible: false, reason: 'baseline_finding' };
+  }
+
+  // A finding in test code is never annotated on the diff, whatever its evidence. It is
+  // reported as a count in the check summary and the review body, which say it was not
+  // posted. One self-review put eighteen of them across `services/*/tests` on a pull
+  // request whose point was three runtime findings, and they were what a reader had to
+  // dig through to reach them. A comment on test code with no fix behind it is noise.
+  if (isInfoFinding(finding)) {
+    return { eligible: false, reason: 'informational_test_code' };
   }
 
   const confidence = Number(finding?.confidence || 0);
@@ -527,6 +657,16 @@ function buildSurfaceDecisions({ files, findings }) {
       };
     }
 
+    // Decided before the diff is consulted, because being informational is why this
+    // finding is not annotated; whether its line happens to be reviewable is not.
+    if (isInfoFinding(finding)) {
+      return {
+        findingId,
+        surfaceDecision: 'summary_only',
+        surfaceReason: 'informational_test_code',
+      };
+    }
+
     const reviewableLines = reviewableLinesByFile.get(finding?.file_path);
     if (!reviewableLines) {
       return {
@@ -580,6 +720,7 @@ async function githubServiceRequest(path, payload) {
       '/internal/github/files/content': () => client.fetchFileContents(payload),
       '/internal/github/reviews/submit': () => client.submitPullRequestReview(payload),
       '/internal/github/comments/inline': () => client.postInlineComment(payload),
+      '/internal/github/comments/retire': () => client.retireInlineComments(payload),
       '/internal/github/check-runs': () => client.createCheckRun(payload),
     };
 
@@ -649,17 +790,15 @@ function dedupeInlineComments(reviewComments) {
   return deduped;
 }
 
-// Runtime findings keep their inline slots; informational comments are the
-// first to fall outside the cap, and the summary says how many were omitted.
+// The comments one review may carry, in priority order, and how many the cap left out.
+// All of them are runtime findings' now, so the cap costs a runtime comment whenever it
+// bites and the run says so in the log.
 function planInlineComments(reviewComments, cap = INLINE_COMMENT_CAP) {
   const deduped = dedupeInlineComments(prioritizeReviewComments(reviewComments));
-  const selected = deduped.slice(0, cap);
-  const omitted = deduped.slice(cap);
 
   return {
-    comments: selected,
-    infoOmitted: omitted.filter(isInfoComment).length,
-    runtimeOmitted: omitted.filter((comment) => !isInfoComment(comment)).length,
+    comments: deduped.slice(0, cap),
+    omitted: Math.max(0, deduped.length - cap),
   };
 }
 
@@ -702,6 +841,47 @@ async function postInlineCommentsIndividually({
   }
 
   return { attempted: dedupedComments.length, posted };
+}
+
+// An informational finding is still open and still reported, so nothing marks it fixed
+// and nothing else retires the comment an earlier version of this service left on the
+// diff for it. This does, by fingerprint, on every run: the finding is not annotated any
+// more, so neither is the pull request left carrying a comment that says it is.
+//
+// Housekeeping never fails a review that published. A failure is logged and the next
+// analysis of the pull request tries again.
+async function retireInformationalComments({ owner, repo, prNumber, installationId, findings, runId, tierLabel }) {
+  const fingerprints = (findings || [])
+    .filter(isInfoFinding)
+    .map((finding) => finding.fingerprint)
+    .filter(Boolean);
+  if (fingerprints.length === 0) return { retired: 0, kept: 0 };
+
+  try {
+    const result = await githubServiceRequest('/internal/github/comments/retire', {
+      owner,
+      repo,
+      pr_number: prNumber,
+      installation_id: installationId,
+      fingerprints,
+    });
+    logger.info(`${tierLabel}: informational inline comments retired`, {
+      runId,
+      prNumber,
+      candidates: fingerprints.length,
+      retired: Number(result?.retired || 0),
+      kept: Number(result?.kept || 0),
+    });
+    return result;
+  } catch (error) {
+    logger.warn('Failed to retire informational inline comments', {
+      runId,
+      prNumber,
+      candidates: fingerprints.length,
+      error: error.message,
+    });
+    return { retired: 0, kept: 0 };
+  }
 }
 
 function analysisServiceHeaders() {
@@ -818,7 +998,9 @@ async function persistAndFilter({ findings, files, runId, pullRequestId, reposit
   }
 
   const activeFingerprints = persisted.map((f) => f.fingerprint);
-  await findingsDb.markFixed({ repositoryId, pullRequestId, activeFingerprints });
+  await findingsDb.markFixed({
+    repositoryId, pullRequestId, activeFingerprints, analysisRunId: runId, commitSha,
+  });
 
   const postSuppression = await applySuppressions(persisted, repositoryId);
   await persistSurfaceDecisions(buildSurfaceDecisions({ files, findings: postSuppression }));
@@ -827,7 +1009,7 @@ async function persistAndFilter({ findings, files, runId, pullRequestId, reposit
   return { actionable, shouldMarkBaselineSet, findingRows: postSuppression };
 }
 
-async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, installationId, commitSha, runId, tierLabel, repoProfile }) {
+async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, installationId, commitSha, runId, tierLabel, repoProfile, limitations }) {
   const counts = summarizeFindings(actionable).counts;
   const highOrCritical = blockingCount(counts);
   const testFilesScanned = countTestCodeFiles(files);
@@ -892,20 +1074,19 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
     }
 
     const inlinePlan = planInlineComments(reviewComments);
-    if (inlinePlan.infoOmitted > 0 || inlinePlan.runtimeOmitted > 0) {
+    if (inlinePlan.omitted > 0) {
       logger.info(`${tierLabel}: inline comment cap reached`, {
         runId,
         prNumber,
         cap: INLINE_COMMENT_CAP,
-        infoOmitted: inlinePlan.infoOmitted,
-        runtimeOmitted: inlinePlan.runtimeOmitted,
+        omitted: inlinePlan.omitted,
       });
     }
 
     const reviewBody = buildReviewBody(actionable, runId, {
       testFilesScanned,
-      infoCommentsOmitted: inlinePlan.infoOmitted,
-      inlineCount: inlinePlan.comments.filter((comment) => !isInfoComment(comment)).length,
+      inlineCount: inlinePlan.comments.length,
+      limitations,
     });
 
     reviewResp = await submitReviewWithFallback({
@@ -916,6 +1097,10 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
 
     const inlineResult = await postInlineCommentsIndividually({
       owner, repo, prNumber, installationId, commitSha, reviewComments, runId,
+    });
+
+    await retireInformationalComments({
+      owner, repo, prNumber, installationId, findings: actionable, runId, tierLabel,
     });
 
     if (inlineResult.attempted > inlineResult.posted) {
@@ -1018,10 +1203,18 @@ async function runAnalysisJob(payload) {
 
   let allFindings = [];
   let files = [];
+  let excludedFileCount = 0;
+  // Limitations the run must state rather than hide. `file_cap`: a pull request over the
+  // adapter's cap is reviewed as far as the cap allows, and the check summary says how many of
+  // how many files that was. `path_exclusion`: the repository's own `.mitig8it.yml` kept files
+  // out of the analysis, and the summary says how many, so silence about a directory is never
+  // mistaken for a clean bill of health.
+  let analysisLimitations = [];
   let tier2Files = [];
   let lastCounts = {};
   let lastHighOrCritical = 0;
   let testFilesScanned = 0;
+  let limitations = [];
   let reviewResp = {};
   let checkRunResp = {};
   let shouldMarkBaselineSet = false;
@@ -1039,6 +1232,28 @@ async function runAnalysisJob(payload) {
     });
     if (!Array.isArray(filesResp?.files)) throw new Error('Invalid GitHub file response');
     files = filesResp.files;
+    if (filesResp.limitation?.message) {
+      analysisLimitations = [filesResp.limitation];
+      logger.warn('Analysis run is limited', {
+        runId, kind: filesResp.limitation.kind, message: filesResp.limitation.message,
+      });
+    }
+
+    // Excluded before enrichment, so the content of an excluded file is never even fetched.
+    const { exclusions, problem: configProblem } = await loadRepositoryExclusions({
+      repositoryFullName, installationId, commitSha,
+    });
+    if (configProblem) logger.warn('Repository configuration was not used', { runId, message: configProblem });
+    const exclusionResult = applyExclusions(files, exclusions);
+    excludedFileCount = exclusionResult.excluded.length;
+    files = exclusionResult.kept;
+    const exclusionLimitation = repositoryConfig.exclusionLimitation(excludedFileCount);
+    if (exclusionLimitation) {
+      analysisLimitations = [...analysisLimitations, exclusionLimitation];
+      logger.info('Paths were excluded by repository configuration', {
+        runId, excluded: excludedFileCount,
+      });
+    }
     tier2Files = await enrichFilesForTier2({
       files,
       repositoryFullName,
@@ -1055,6 +1270,15 @@ async function runAnalysisJob(payload) {
     const tier1 = await requiredTier('/analyze/pr/tier1', { ...analysisPayload, files }, 30000);
     const tier2 = await requiredTier('/analyze/pr/tier2', { ...analysisPayload, files: tier2Files }, 60000);
     allFindings = [...tier1.findings, ...tier2.findings];
+    // A file the scanner could only parse partially is a gap in coverage, not a
+    // failed scan. The run reports it instead of implying complete analysis.
+    limitations = normalizeLimitations([
+      ...(tier1.analysis_limitations || []),
+      ...(tier2.analysis_limitations || []),
+    ]);
+    if (limitations.length > 0) {
+      logger.warn('Analysis reported coverage limitations', { runId, prNumber, limitations });
+    }
     let repoProfile = {};
     try {
       const profile = await repositoriesDb.getProfile(repositoryId);
@@ -1079,7 +1303,7 @@ async function runAnalysisJob(payload) {
     await findingsDb.snapshotRun(runId, final.findingRows);
     const result = await postReviewToGitHub({
       actionable: final.actionable, files, owner, repo, prNumber, installationId, commitSha, runId,
-      tierLabel: 'Tier 3', repoProfile,
+      tierLabel: 'Tier 3', repoProfile, limitations,
     });
     reviewResp = result.reviewResp;
     lastCounts = result.counts;
@@ -1101,10 +1325,19 @@ async function runAnalysisJob(payload) {
       if (testFilesScanned > 0 || infoCount > 0) {
         summaryLines.push(
           `${testFilesScanned} test file${testFilesScanned === 1 ? '' : 's'} scanned; `
-          + `${infoCount} informational finding${infoCount === 1 ? '' : 's'} in test code `
-          + '(never blocking).'
+          + `${infoCount} informational finding${infoCount === 1 ? '' : 's'} in test code, not posted.`
         );
       }
+      // A limitation is a coverage note, never a reason to fail the check. Two disjoint
+      // sources reach the summary. `analysisLimitations` is run-scoped and carries no
+      // path: a pull request over the adapter's file cap is reviewed as far as the cap
+      // allows, and the summary says how many of how many files that was. `limitations`
+      // is per file: the scanner could not fully read one file, or hit a ceiling on it.
+      // A partial review says so on the check itself, because reporting a clean result
+      // on a pull request the run only partly read would be the dishonest outcome.
+      for (const limitation of analysisLimitations) summaryLines.push(`${limitation.message}.`);
+      const limitationLine = buildLimitationSummaryLine(limitations);
+      if (limitationLine) summaryLines.push(limitationLine);
       checkRunResp = await githubServiceRequest('/internal/github/check-runs', {
         owner, repo, installation_id: installationId, head_sha: commitSha,
         // Informational findings never contribute to the conclusion.
@@ -1122,6 +1355,7 @@ async function runAnalysisJob(payload) {
       filesAnalyzed: files.length,
       checkRunId: checkRunResp.check_run_id,
       reviewId: reviewResp.review_id,
+      limitations,
     });
 
     analysisMetrics.runsCompleted.inc();
@@ -1337,6 +1571,9 @@ module.exports = {
   processQueuedAnalysisRun,
   startAnalysisQueueWorker,
   __private: {
+    applyExclusions,
+    loadRepositoryExclusions,
+    buildLimitationSummaryLine,
     failureReason,
     observeFindingsPosted,
     triggerLabel,
@@ -1357,6 +1594,7 @@ module.exports = {
     explainInlineCommentDecision,
     isInfoFinding,
     isTestCodePath,
+    normalizeLimitations,
     normalizeSuggestionPatch,
     planInlineComments,
     prioritizeReviewComments,

@@ -49,16 +49,67 @@ A finding is classified into one of five families from its CWE and rule text. La
 | `sql_parameterization` | yes | yes |
 | `command_arguments` | yes | yes |
 | `path_containment` | yes | yes |
-| `hardcoded_credential` | no | yes |
-| `code_injection_eval` | no | yes |
+| `hardcoded_credential` | yes | yes |
+| `code_injection_eval` | yes | yes |
 
-The two Python-only families are limited by the Node harness, which records no environment reads and stubs no `eval`. A finding whose family is not supported for its language is reported in `skipped` as `unsupported_rule_family`.
+Both toolchains carry every family. A family is listed for a language only once the harness can observe the repair: the Node harness records environment reads, and it records `eval`, `new Function`, the `vm` compile calls, and a string `setTimeout`/`setInterval` without running any of them. A finding whose family is not supported for its language is reported in `skipped` as `unsupported_rule_family`; what refuses a finding today is the shape, through the static gates below.
 
-Before any agent runs, a finding may also be reported in `skipped` as `rule_family_disabled` (the family is not in `policy.allowed_rule_families`), `affected_source_missing` (the affected path is absent from the snapshot), `unsupported_language` (neither JavaScript nor Python), or one of three static gate codes: `pg_dependency_not_proven` (a JavaScript SQL repair whose snapshot declares no `pg` dependency), `shell_pipeline_unsupported` (the process call carries a pipe or `shell: true`), and `ambiguous_query_api` (a Python query that reaches no known driver `execute()`, so the placeholder style cannot be chosen safely). These gates are abstentions by design; they cost no budget and no provider call.
+Before any agent runs, a finding may also be reported in `skipped` as `rule_family_disabled` (the family is not in `policy.allowed_rule_families`), `affected_source_missing` (the affected path is absent from the snapshot), `unsupported_language` (neither JavaScript nor Python), or one of three static gate codes: `pg_dependency_not_proven` (a JavaScript SQL repair whose snapshot declares no `pg` dependency), `shell_pipeline_unsupported` (the command string's own literal text carries a pipeline, a redirection, a separator, or a substitution, which no argument list expresses), `ambiguous_query_api` (a Python query that reaches no known driver `execute()`, so the placeholder style cannot be chosen safely), and `dynamic_code_unsupported` (a JavaScript `new Function`, `new vm.Script`, or `vm` compile call, which hands back something the module calls later, so no data parser stands in for it). These gates are abstentions by design; they cost no budget and no provider call.
 
 ### Service-generated proofs and template-first patches
 
-For every supported finding the service attempts both halves of the repair before any model call. It derives the enclosing site (an Express route handler, or a Python function or Flask view), generates one harness regression test from that site, and attempts a deterministic template hunk for the family. Template hunks are combined per group, bundled with the service proofs, and verified exactly like a model proposal; a pass that ships from this path records `{"input_tokens": 0, "output_tokens": 0, "provider_request_ids": []}` and never reaches a provider. The model is asked only for findings the template pass did not prove, and it receives the same service-written proof plus the failure tail of a template that failed. A finding still unproven after the group pass gets one focused single-finding run unless the model deliberately abstained. `evidence.groups[].reason_evidence` records which path produced what.
+For every supported finding the service attempts both halves of the repair before any model call. It derives the enclosing site (the request handler that encloses the finding, on either language, else the function or method that does), generates one harness regression test from that site, and attempts a deterministic template hunk for the family. Template hunks are combined per group, bundled with the service proofs, and verified exactly like a model proposal; a pass that ships from this path records `{"input_tokens": 0, "output_tokens": 0, "provider_request_ids": []}` and never reaches a provider. The model is asked only for findings the template pass did not prove, and it receives the same service-written proof plus the failure tail of a template that failed. A finding still unproven after the group pass gets one focused single-finding run unless the model deliberately abstained. `evidence.groups[].reason_evidence` records which path produced what.
+
+#### A finding at module scope
+
+Code with no enclosing callable runs once, when the module is imported. The template rewrites the sink in place exactly as it would inside a function, and the proof drives it by setting what the module reads and then importing it, so what decides whether a proof exists is where the tainted value comes from:
+
+| Source | How the proof drives it |
+| --- | --- |
+| `process.env.NAME`, `os.environ["NAME"]`, `os.getenv("NAME")` | `h.load(path, { env: { NAME: payload } })` / `h.load(path, env={"NAME": payload})`, then the family assertion on the load. |
+| `process.argv[i]`, `sys.argv[i]` | the same load with `argv`, the payload at the index the module reads. |
+| a member of a module required at the top level, JavaScript only and a relative specifier only | the same load with `stubs`, standing the module in. A member that is called rather than read is not one of these: replacing the function with a payload would break the module instead of driving it. |
+| a literal or a module-level constant | asserted on the load directly, which is the `hardcoded_credential` shape: the literal is the sink. |
+| anything else | refused as `module_scope_source_not_controllable`. |
+
+A `path_containment` repair at module scope throws or raises during the import, because there is no caller to answer, so its proof asserts that the import itself is refused for every traversal payload and still succeeds for a legitimate name.
+
+#### Why a service proof is refused
+
+A proof the service cannot write is reported in `reason_evidence.proofs` as `model:<reason>`, and the same code appears in `templates` as `not_attempted:<reason>` because a template without a proof is never attempted. The reasons that turn on the file rather than on the site:
+
+| Reason | Meaning |
+| --- | --- |
+| `module_not_loadable_by_node` | The affected file's suffix is not one the sandbox's Node can run: `.js`, `.cjs`, `.mjs`, `.ts`, `.cts`, and `.mts` are, and `.jsx` and `.tsx` are not, because strip-only mode deletes type syntax and does not transform JSX. |
+| `typescript_syntax_not_strippable:<construct>` | The TypeScript file carries an `enum`, a `namespace`, or a constructor parameter property. Each has to be compiled into code rather than deleted, so Node's strip-only mode refuses the whole file with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. |
+| `module_scope_source_not_controllable` | The finding is at module scope and the value reaching its sink comes from a call that happens on import, so no test can make the reproducer fail before the repair and pass after it. |
+
+TypeScript is loaded by Node's own type stripper rather than by a toolchain: the sandbox still installs nothing and compiles nothing. One shape is not detectable in advance and so is not refused: an interface imported as an ordinary value binding (`import { Settings, settings } from './config'` rather than `import type`) survives stripping and names an export the stripped module does not have. That module fails to load, so its proof fails; it is never a false pass.
+
+#### What `path_containment` repairs a site to do
+
+The containment check is the same wherever the `path.join` is: resolve the base, resolve the
+candidate against it, and compare before anything touches the filesystem. How the repair refuses
+an escaping path depends on what the site can promise its caller.
+
+| Site | Refusal |
+| --- | --- |
+| Express route handler | `return res.status(400).end()` |
+| A route handler the module exports but never registers with Express | `return res.status(400).end()`, the same: it owns a response either way, and its second parameter is it |
+| Flask view | `abort(400)` |
+| A JavaScript function that takes a callback | `return callback(new Error('path escapes base directory'))` |
+| Any other JavaScript function, method, or module-scope code | `throw new Error('path escapes base directory')` |
+| Any other Python function, method, or module-scope code | `raise ValueError('path escapes base directory')` |
+
+A handler owns the response, so it answers, and a function that takes a continuation reports
+through it, because that is how it already reports every other failure. A plain function has
+neither a response to write nor a declared failure value, and a returned sentinel is the one outcome a caller can mistake for a
+path: `null` reaching `fs.readFile` is a crash at a distance, and `''` resolves to the base
+directory itself. Raising is the only refusal a caller cannot read as success. A caller that does
+not catch turns a file disclosure into a 500, which is the trade this family is for; a caller that
+wants a sentinel catches and returns one. The generated proof asserts both halves: the traversal
+payload is refused and reads nothing, and a legitimate name still resolves, so a repair cannot
+pass by refusing everything.
 
 ### Static undefined-name check
 
@@ -109,9 +160,14 @@ Every candidate's evidence carries `evidence.verification_level`:
 | Value | Meaning |
 | --- | --- |
 | `independent_sandbox` | The check pair ran in the isolated Kubernetes/gVisor sandbox with a digest-pinned runner image, denied network, and a read-only root filesystem. |
+| `isolated_job` | Each half of the check pair ran in its own Cloud Run job container, as an unprivileged user holding none of the job's credentials, on a network that the task's own probes measured as unreachable before the check started. The image digest matches `policy.sandbox_image_digest`. There is no read-only root filesystem and no gVisor runtime class. |
 | `development_unverified` | The check pair ran through the development-only local subprocess driver with no network, kernel, or filesystem isolation. |
 
-`development_unverified` evidence is accepted only when the request policy sets `allow_development_verification: true`. That field defaults to `false` and the API control plane keeps it `false` in production, so a development run can never be labelled with the production verification level. A response whose evidence carries an unrecognized level, or `development_unverified` without the policy flag, is never `ready`.
+Levels are ordered `development_unverified` < `isolated_job` < `independent_sandbox`.
+
+`isolated_job` evidence carries `runner.environment_kind: "cloud-run-job"`, `runner.job_executions` naming every Cloud Run execution that produced it, and, on every completed baseline and candidate result, `network_probes` with a `metadata`, `internet`, and `dns` entry and that result's own `job_execution`. Each probe must report `reached: false`; `reached: null` means the probe did not run and is refused exactly like a probe that connected. The driver itself refuses first: a reached or unmeasured probe returns `inconclusive` with `sandbox_network_not_denied`, and a task that reported an image digest other than the pinned one returns `inconclusive` with `sandbox_image_digest_mismatch`. Neither carries check results, so partial evidence can never be read as a pass. `isolated_job` evidence is accepted only when the request policy sets `allow_isolated_job_verification`, which defaults to `true`.
+
+`development_unverified` evidence is accepted only when the request policy sets `allow_development_verification: true`. That field defaults to `false` and the API control plane keeps it `false` in production, so a development run can never be labelled with the production verification level. A response whose evidence carries an unrecognized level, `development_unverified` without the policy flag, or `isolated_job` with `allow_isolated_job_verification: false`, is never `ready`.
 
 ## Scanner findings contract
 
@@ -167,6 +223,8 @@ Settling against an **absent** reservation still raises: a call that was never a
 | `regression_test_not_reproducing` | No finding in the group was shown repaired by its own regression test. |
 | `dependent_hunk_unproven` | Every proven finding in the group was proven only together with hunks owned by an unproven finding, which are never shipped; the same code names each such finding in `skipped`. |
 | `verification_level_not_permitted` | The group's evidence carried a level this policy does not accept. |
+| `sandbox_network_not_denied` | A Cloud Run job sandbox probe reached its target, or could not be run, so the network was not shown denied and no check result is reported. |
+| `sandbox_image_digest_mismatch` | A Cloud Run job task reported running an image other than the pinned `policy.sandbox_image_digest`, or could not report one at all. |
 | any agent reason code | The group's bounded loop abstained or could not reach verified evidence. |
 
 Partial coverage is therefore explicit. A finding absent from every candidate's `finding_ids` was not repaired, and `evidence.groups` states why. The response-level `skipped: [{finding_id, code, message}]` lists every such finding the request carried, including findings outside the enabled families and findings a candidate's group could not prove (`not_repaired`, `regression_test_not_reproducing`, `dependent_hunk_unproven`). A batch of two or more candidates must also prove every claimed finding again on the combined tree; otherwise the response is `inconclusive` with `combined_verification_failed`.

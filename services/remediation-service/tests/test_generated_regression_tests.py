@@ -18,8 +18,11 @@ from src.patches import PatchPolicyError, build_patch_bundle
 from src.retrieval import Snapshot
 from src.sandbox import InProcessSandboxBroker, LocalSubprocessDriver
 from src.verification import Verifier
-from src.verification.checks import build_effective_checks
+from src.verification.checks import NODE_TYPESCRIPT_FLAGS, build_effective_checks
 from tests.conftest import (
+    MODEL_ONLY_LINE,
+    MODEL_ONLY_REPAIRED,
+    MODEL_ONLY_SOURCE,
     NON_REPRODUCING_REGRESSION_TEST,
     REGRESSION_TEST_PATH,
     REPRODUCING_REGRESSION_TEST,
@@ -30,9 +33,38 @@ from tests.conftest import (
 
 requires_node = pytest.mark.skipif(shutil.which("node") is None, reason="generated regression tests run under node")
 
-JS_SOURCE = "function loadUser(db, id) {\n  return db.query(`SELECT * FROM users WHERE id = ${id}`);\n}\nmodule.exports = { loadUser };\n"
-JS_REPAIRED = "function loadUser(db, id) {\n  return db.query('SELECT * FROM users WHERE id = $1', [id]);\n}\nmodule.exports = { loadUser };\n"
-JS_BROKEN = "function loadUser(db, id) {\n  return db.query('SELECT * FROM users WHERE id = $1', [id;\n}\n"
+# The shared model-path source: its SQL text is built a hop away, so the deterministic template
+# declines it and these tests still have a model pass to exercise. See conftest.MODEL_ONLY_SOURCE.
+JS_SOURCE = MODEL_ONLY_SOURCE
+JS_REPAIRED = MODEL_ONLY_REPAIRED
+JS_BROKEN = MODEL_ONLY_REPAIRED.replace("return db.query(sql, [id]);", "return db.query(sql, [id;")
+
+# A method on a class. The service declines to generate a proof for one (`method_receiver_not_supported`:
+# it would have to construct a receiver it cannot derive), and the template pass is skipped with it,
+# so the only test this repository can ship is the model's. The two tests about what happens when
+# that test reproduces, or is missing entirely, need a finding in exactly that position.
+METHOD_SOURCE = (
+    "class UserStore {\n"
+    "  constructor(db) {\n"
+    "    this.db = db;\n"
+    "  }\n"
+    "  loadUser(id) {\n"
+    "    return this.db.query(\"SELECT * FROM users WHERE id = '\" + id + \"'\");\n"
+    "  }\n"
+    "}\n"
+    "module.exports = { UserStore };\n"
+)
+METHOD_REPAIRED = METHOD_SOURCE.replace(
+    "return this.db.query(\"SELECT * FROM users WHERE id = '\" + id + \"'\");",
+    "return this.db.query('SELECT * FROM users WHERE id = $1', [id]);",
+)
+METHOD_LINE = 6
+METHOD_REGRESSION_TEST = (
+    "const { UserStore } = require('../../src/db.js');\n"
+    "let text = '';\n"
+    "new UserStore({ query: (sql) => { text = String(sql); } }).loadUser('1 OR 1=1');\n"
+    "process.exit(text.includes('1 OR 1=1') ? 1 : 0);\n"
+)
 
 # Loads the changed module by relative path and exercises it with an injection payload: the
 # payload reaches the SQL text on the original code and is a bound parameter on the repair.
@@ -47,11 +79,11 @@ JS_TEXT_ONLY_TEST = (
     "const fs = require('node:fs');\n"
     "const path = require('node:path');\n"
     "const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'db.js'), 'utf8');\n"
-    "process.exit(source.includes('${id}') ? 1 : 0);\n"
+    "process.exit(source.includes(\"+ id +\") ? 1 : 0);\n"
 )
 
 
-def _no_profile_payload(request_payload, *, source=JS_SOURCE):
+def _no_profile_payload(request_payload, *, source=JS_SOURCE, line=MODEL_ONLY_LINE):
     """A request that looks like a real repository: JavaScript source, no fixture checks."""
     from src.git_tree import compute_tree_oid
     from src.models import GitTreeEntry
@@ -69,7 +101,7 @@ def _no_profile_payload(request_payload, *, source=JS_SOURCE):
         {"path": "package.json", "content": manifest, "sha": git_blob(manifest)},
     ]
     payload["findings"] = [
-        {"snapshot_id": "finding-1", "rule_id": "js.sql-injection", "cwe_id": "CWE-89", "file_path": "src/db.js", "line_start": 2, "line_end": 2}
+        {"snapshot_id": "finding-1", "rule_id": "js.sql-injection", "cwe_id": "CWE-89", "file_path": "src/db.js", "line_start": line, "line_end": line}
     ]
     payload["policy"] = {
         **request_payload["policy"],
@@ -90,7 +122,7 @@ def _run_engine(payload, *, source=JS_SOURCE, replacement=JS_REPAIRED, regressio
         "hypothesis": "Untrusted id is interpolated into SQL text.",
         "intended_behavior": "Load the same user by id.",
         "assumptions": ["pg positional parameters are available"],
-        "citations": [{"path": "src/db.js", "line_start": 1, "line_end": 4}],
+        "citations": [{"path": "src/db.js", "line_start": 1, "line_end": 8}],
         "changes": [whole_file_change("src/db.js", source, replacement)],
     }
     if regression_tests is not None:
@@ -118,8 +150,15 @@ def _run_engine(payload, *, source=JS_SOURCE, replacement=JS_REPAIRED, regressio
 @requires_node
 @pytest.mark.asyncio
 async def test_reproducing_generated_test_makes_a_repository_without_fixtures_ready(request_payload):
-    """The whole point: no policy checks, and the candidate still reaches `ready`."""
-    response = await _run_engine(_no_profile_payload(request_payload), regression_test=_spec(JS_REGRESSION_TEST))
+    """The whole point: no policy checks, and the candidate still reaches `ready`.
+
+    A method site, so the service writes no proof of its own and the model's test is the only
+    one: this is the path a repository takes when nothing deterministic reaches its finding.
+    """
+    payload = _no_profile_payload(request_payload, source=METHOD_SOURCE, line=METHOD_LINE)
+    response = await _run_engine(
+        payload, source=METHOD_SOURCE, replacement=METHOD_REPAIRED, regression_test=_spec(METHOD_REGRESSION_TEST)
+    )
     assert response.state == "ready", response.reason
     candidate = response.candidates[0]
     assert candidate.finding_ids == ["finding-1"]
@@ -134,7 +173,7 @@ async def test_reproducing_generated_test_makes_a_repository_without_fixtures_re
 
     checks = {item["check_id"]: item for item in response.evidence["verification_run"]["checks"]}
     regression = checks["generated_regression_test"]
-    assert regression["kind"] == "exploit" and regression["argv"] == ["node", REGRESSION_TEST_PATH]
+    assert regression["kind"] == "exploit" and regression["argv"] == ["node", *NODE_TYPESCRIPT_FLAGS, REGRESSION_TEST_PATH]
     assert regression["baseline"]["status"] == "failed" and regression["candidate"]["status"] == "passed"
     syntax = checks["generated_node_syntax"]
     assert syntax["argv"] == ["node", "--check", "src/db.js"] and syntax["candidate"]["status"] == "passed"
@@ -152,7 +191,9 @@ async def test_a_generated_test_that_passes_on_the_baseline_is_inconclusive(requ
 
 @pytest.mark.asyncio
 async def test_a_missing_generated_test_is_inconclusive_and_never_ready(request_payload):
-    response = await _run_engine(_no_profile_payload(request_payload), regression_test=None)
+    """A method site again: with no service proof either, a missing model test leaves nothing."""
+    payload = _no_profile_payload(request_payload, source=METHOD_SOURCE, line=METHOD_LINE)
+    response = await _run_engine(payload, source=METHOD_SOURCE, replacement=METHOD_REPAIRED, regression_test=None)
     assert response.state == "inconclusive"
     assert response.reason["code"] == "regression_test_not_reproducing"
     assert response.candidates == []
@@ -266,8 +307,11 @@ def test_policy_supplied_checks_still_run_and_generated_checks_are_additive(requ
     assert "generated_regression_test" in identifiers
     assert effective.regression_check_ids == {"generated_regression_test"}
     assert effective.generated_files == ({"path": REGRESSION_TEST_PATH, "content": REPRODUCING_REGRESSION_TEST},)
-    # src/db.ts is TypeScript, so node --check cannot parse it and no syntax check is derived.
-    assert not any(item.startswith("generated_node_syntax") for item in identifiers)
+    # src/db.ts is TypeScript: `node --check` parses as JavaScript and would reject every
+    # annotation, so the derived syntax check strips the types instead of parsing them.
+    assert [item for item in identifiers if item.startswith("generated_node_syntax")] == ["generated_node_syntax"]
+    syntax = next(check for check in effective.checks if check.check_id == "generated_node_syntax")
+    assert syntax.argv[0] == "node" and syntax.argv[-1] == "src/db.ts" and "--check" not in syntax.argv
 
 
 def test_the_repository_test_script_is_skipped_with_a_recorded_limitation(request_payload, source):

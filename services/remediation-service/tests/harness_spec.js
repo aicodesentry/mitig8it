@@ -128,6 +128,23 @@ test('pg records query text and values across the promise, callback, config, and
   assert.equal(h.pg.queries.length, 1, 'load resets the recorders');
 });
 
+test('db() hands a proof a recording connection without requiring pg', async () => {
+  // A generated proof for a helper that takes a connection cannot `require('pg')`: nothing is
+  // installed in the sandbox and patch policy refuses a test that asks for a package. h.db() is
+  // the only way it reaches one, so it has to record onto the same h.pg.queries the assertions read.
+  write('services/lookup.js', 'function loadUser(db, id) {\n  return db.query("SELECT * FROM users WHERE id = $1", [id]);\n}\nmodule.exports = { loadUser };\n');
+  const m = h.load('services/lookup.js');
+  const db = h.db();
+  assert.equal(typeof db.query, 'function', 'h.db() hands back something with a query method');
+  const called = h.call(m.loadUser, db, "1' OR '1'='1");
+  await Promise.resolve(called.value).catch(() => {});
+  assert.equal(h.pg.queries.length, 1, 'the call was recorded on h.pg.queries');
+  assert.deepEqual(h.pg.queries[0], { text: 'SELECT * FROM users WHERE id = $1', values: ["1' OR '1'='1"] });
+  // A fresh load clears what the previous one recorded, so one proof cannot see another's calls.
+  h.load('services/lookup.js');
+  assert.equal(h.pg.queries.length, 0);
+});
+
 test('child_process records exec, execFile, spawn, and sync calls and feeds configured stdout', async () => {
   const router = h.load('services/orders.js', { child_process: { stdout: 'rendered' } });
   const rendered = await h.invoke(router, 'post', '/orders/:id/invoice', { params: { id: '7; rm -rf /' } });
@@ -180,6 +197,47 @@ process.stdout.write(String(typeof a.get === 'function' && a === b));
 `);
   const result = cp.spawnSync(process.execPath, [pathReal.join('.mitig8it', 'regression', 'relative.test.js')], { cwd: root, encoding: 'utf8' });
   assert.equal(result.stdout, 'true', result.stderr);
+});
+
+test('every way of turning a string into code is recorded and none of it runs', () => {
+  // The module tries each interpreter with a payload that would end the process if it ran, so a
+  // recorder that forgot to stub one is the difference between a passing run and no run at all.
+  write('services/interpreters.js', `const vm = require('node:vm');
+const KILL = "process.exit(3)";
+function viaEval(source) { return eval(source); }
+function viaFunction(source) { return new Function('row', 'return ' + source + ';'); }
+function viaVm(source) { return [vm.runInNewContext(source), vm.runInThisContext(source)]; }
+function viaTimer(source) { setTimeout(source, 0); setInterval(source, 0); }
+function viaTimerFunction() { let ran = false; setTimeout(() => { ran = true; }, 0); return ran; }
+module.exports = { KILL, viaEval, viaFunction, viaVm, viaTimer, viaTimerFunction };
+`);
+  write('.mitig8it/regression/code.test.js', `const h = require('../harness');
+const m = h.load('services/interpreters.js');
+h.assert.noCode('nothing has been compiled yet');
+m.viaEval(m.KILL);
+h.assert.equal(typeof m.viaFunction(m.KILL), 'function', 'new Function must still hand back something callable');
+m.viaVm(m.KILL);
+m.viaTimer(m.KILL);
+h.assert.equal(h.code.calls.length, 6);
+h.assert.equal(h.code.calls.map((c) => c.kind).join(','), 'eval,Function,vm.runInNewContext,vm.runInThisContext,setTimeout,setInterval');
+for (const entry of h.code.calls) h.assert.includes(entry.source, m.KILL);
+// A function handler is a real timer, not a string of code, so it is left alone.
+h.assert.equal(m.viaTimerFunction(), false);
+h.assert.equal(h.code.calls.length, 6);
+// call() reports a throw instead of raising, so one test can send a payload and a document.
+const bad = h.call(() => { throw new Error('rejected'); });
+h.assert.equal(bad.ok, false);
+h.assert.equal(bad.error.message, 'rejected');
+h.assert.equal(h.call((text) => JSON.parse(text), '[1, 2]').value.length, 2);
+let failed = null;
+try { h.assert.noCode(); } catch (error) { failed = error; }
+h.assert(failed && failed.name === 'HarnessAssertion', 'noCode must fail once a string has been compiled');
+h.assert.includes(String(failed.message), 'process.exit(3)');
+process.stdout.write('recorded');
+`);
+  const result = cp.spawnSync(process.execPath, [pathReal.join('.mitig8it', 'regression', 'code.test.js')], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'recorded', result.stderr);
 });
 
 test('assert helpers throw HarnessAssertion with the given message', () => {
@@ -266,4 +324,94 @@ h.run(async () => {
   const repaired = run('repaired.test.js');
   assert.equal(repaired.status, 0, repaired.stderr);
   assert.equal(repaired.stdout.trim(), 'harness: ok');
+});
+
+// --- TypeScript -------------------------------------------------------------------------------
+// The sandbox has no TypeScript toolchain and never gets one: what follows is what plain node
+// does with the type stripper the service turns on, over the three shapes the corpus writes.
+const TS_FLAGS = ['--experimental-strip-types', '--disable-warning=ExperimentalWarning'];
+const runTest = (name) => cp.spawnSync(process.execPath, [...TS_FLAGS, pathReal.join('.mitig8it', 'regression', name)], { cwd: root, encoding: 'utf8' });
+
+write('services/config.ts', `export interface Settings { token: string; retries: number }
+export const TOKEN: string = process.env.API_TOKEN as string;
+export function settings(retries: number = 1): Settings { return { token: TOKEN, retries }; }
+`);
+write('services/tokens.ts', `const KEY: string = 'sk-live-not-a-real-key';
+type Grant = { key: string };
+function grant(): Grant { return { key: KEY }; }
+module.exports = { grant, KEY };
+`);
+
+test('a TypeScript module with type annotations loads and its types are stripped', () => {
+  write('.mitig8it/regression/ts-types.test.js', `const h = require('../harness');
+h.run(async () => {
+  const m = h.load('services/tokens.ts');
+  h.assert.equal(m.grant().key, 'sk-live-not-a-real-key');
+  h.assert.notInSource(m, 'type Grant');
+});
+`);
+  // The module ran, so the annotation was stripped; notInSource reads the file back, where the
+  // annotation still is, so the test's failure is what proves both halves at once.
+  const result = runTest('ts-types.test.js');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /the source still contains "type Grant"/);
+  write('.mitig8it/regression/ts-ok.test.js', `const h = require('../harness');
+h.run(async () => {
+  const m = h.load('services/tokens.ts');
+  h.assert.equal(m.grant().key, m.KEY);
+});
+`);
+  const passing = runTest('ts-ok.test.js');
+  assert.equal(passing.status, 0, passing.stderr);
+  assert.equal(passing.stdout.trim(), 'harness: ok');
+});
+
+test('a TypeScript module resolves an interface import written without an extension and as .js', () => {
+  // Node resolves neither specifier on its own: `./config` has no extension, and `./config.js`
+  // names a file that does not exist, which is how a TypeScript project under NodeNext writes
+  // an import of `config.ts`.
+  write('services/session.ts', `import type { Settings } from './config';
+import { settings } from './config';
+import { TOKEN } from './config.js';
+export function describe(): string { const s: Settings = settings(2); return s.token + ':' + s.retries + ':' + TOKEN; }
+`);
+  write('.mitig8it/regression/ts-import.test.js', `const h = require('../harness');
+h.run(async () => {
+  const m = h.load('services/session', { env: { API_TOKEN: 'from-env' } });
+  h.assert.envRead('API_TOKEN');
+  h.assert.equal(m.describe(), 'from-env:2:from-env');
+});
+`);
+  const result = runTest('ts-import.test.js');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'harness: ok');
+});
+
+test('an interface imported as a value binding is a shape strip-only mode cannot load', () => {
+  // Strip-only mode deletes an interface but cannot tell that `Settings` in a mixed import list
+  // was one, so the import survives and names an export the stripped module does not have. It is
+  // the `isolatedModules` rule TypeScript itself enforces with `verbatimModuleSyntax`. Nothing
+  // detects it lexically, so the proof is written anyway and fails honestly rather than passing.
+  write('services/mixed.ts', `import { Settings, settings } from './config';
+export function retries(): number { const s: Settings = settings(3); return s.retries; }
+`);
+  write('.mitig8it/regression/ts-mixed.test.js', `const h = require('../harness');
+h.run(async () => { h.load('services/mixed.ts'); });
+`);
+  const result = runTest('ts-mixed.test.js');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /does not provide an export named 'Settings'/);
+});
+
+test('an enum is refused by the stripper, naming the syntax it cannot handle', () => {
+  write('services/levels.ts', `enum Level { Low, High }
+module.exports = { Level };
+`);
+  write('.mitig8it/regression/ts-enum.test.js', `const h = require('../harness');
+h.run(async () => { h.load('services/levels.ts'); });
+`);
+  const result = runTest('ts-enum.test.js');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX/);
+  assert.match(result.stderr, /enum is not supported in strip-only mode/);
 });

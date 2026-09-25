@@ -128,6 +128,10 @@ async function claimNextQueuedRun(staleAfterMinutes = 20) {
            candidate.pr_number AS pull_request_number
          FROM analysis_runs candidate
          JOIN repositories candidate_repo ON candidate_repo.id = candidate.repository_id
+         -- An uninstalled installation's data is being deleted; never analyse for it.
+         JOIN installations candidate_installation
+           ON candidate_installation.id = candidate_repo.installation_id
+          AND candidate_installation.deleted_at IS NULL
          WHERE candidate_repo.is_active = true
            AND NOT (candidate.id = ANY($2::uuid[]))
            AND ((candidate.status = 'pending'
@@ -221,16 +225,18 @@ async function getQueueStats() {
   };
 }
 
-async function markCompleted(runId, { findingsCount, counts, filesAnalyzed, checkRunId, reviewId }) {
+async function markCompleted(runId, { findingsCount, counts, filesAnalyzed, checkRunId, reviewId, limitations }) {
   await pool.query(
     `UPDATE analysis_runs
      SET status = 'completed', findings_count = $2, critical_count = $3,
          high_count = $4, medium_count = $5, low_count = $6,
          files_analyzed = $7, github_check_run_id = $8, summary_comment_id = $9,
+         analysis_limitations = $10::jsonb,
          completed_at = NOW()
      WHERE id = $1`,
     [runId, findingsCount, counts.critical || 0, counts.high || 0,
-     counts.medium || 0, counts.low || 0, filesAnalyzed, checkRunId || null, reviewId || null]
+     counts.medium || 0, counts.low || 0, filesAnalyzed, checkRunId || null, reviewId || null,
+     JSON.stringify(Array.isArray(limitations) ? limitations : [])]
   );
 }
 

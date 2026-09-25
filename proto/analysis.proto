@@ -26,6 +26,7 @@ message AnalyzePullRequestResponse {
   int32 files_analyzed = 4;
   int32 tier = 5;
   repeated mitig8it.common.v1.Finding findings = 6;
+  repeated mitig8it.common.v1.AnalysisLimitation analysis_limitations = 7;
 }
 
 message TriageFindingsRequest {

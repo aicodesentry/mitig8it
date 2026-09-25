@@ -76,9 +76,124 @@ test('a fix section is never carried onto another finding, and a moved head publ
  await expect(postInlineComment({owner:'owner',repo:'repo',pr_number:1,installation_id:1,commit_sha:'head-a',path:'a.py',line:1,body:'<!-- mitig8it-finding:fp1 -->\nnew text'})).rejects.toThrow(/superseded/i);
  expect(axios.mock.calls.every(([r]) => r.method === 'get')).toBe(true);
 });
-test('oversized file scope cannot be silently truncated', async () => {
- axios.mockImplementation(async r => ({data:r.url.includes('/files?') ? Array.from({length:r.url.endsWith('page=3')?1:100},(_,i)=>({filename:`src/${i}.py`,status:'added',patch:'+x=1'})) : {head:{sha:'head-a'}}}));
- await expect(fetchPullRequestFiles(request)).rejects.toThrow(/limit/i);
+// The comments of findings a run no longer annotates. Informational findings in test code
+// are why this exists: the analysis stopped posting them, and what earlier runs left is a
+// comment with nothing behind it. The finding stays open, so nothing else removes it.
+const {retireInlineComments} = require('../services/githubInternalOperations');
+function reviewComments(comments) {
+ const remaining = [...comments];
+ axios.mockImplementation(async r => {
+  if (r.url.includes('/comments?')) return {data: /[?&]page=1(&|$)/.test(r.url) ? comments : []};
+  if (r.method === 'delete') { remaining.splice(remaining.findIndex(c => r.url.endsWith(`/${c.id}`)), 1); return {data:{}}; }
+  return {data:{head:{sha:'head-a'}}};
+ });
+ return remaining;
+}
+const ours = (id, body) => ({id, body, user:{type:'Bot',login:'fixture[bot]'}, path:'a.py'});
+test('the inline comment of a named finding is deleted and every other comment is left alone', async () => {
+ const remaining = reviewComments([
+  ours(1, '<!-- mitig8it-finding:fp-info -->\n**INFORMATIONAL - TEST CODE** - Hardcoded credential'),
+  ours(2, '<!-- mitig8it-finding:fp-runtime -->\nSQL injection'),
+  {id:3, body:'<!-- mitig8it-finding:fp-info -->\nsomeone else said this', user:{type:'User',login:'reviewer'}, path:'a.py'},
+ ]);
+ expect(await retireInlineComments({owner:'owner',repo:'repo',pr_number:1,installation_id:1,fingerprints:['fp-info']}))
+  .toEqual({retired:1, kept:0});
+ expect(remaining.map(c => c.id)).toEqual([2, 3]);
+});
+// A verified fix published under a finding is reviewer-visible work. Housekeeping does not
+// take it away, and says it did not.
+test('a comment carrying a published fix is kept', async () => {
+ const remaining = reviewComments([ours(1, `<!-- mitig8it-finding:fp-info -->\nold text\n\n${FIX_BLOCK}`)]);
+ expect(await retireInlineComments({owner:'owner',repo:'repo',pr_number:1,installation_id:1,fingerprints:['fp-info']}))
+  .toEqual({retired:0, kept:1});
+ expect(remaining.map(c => c.id)).toEqual([1]);
+});
+test('no fingerprints means no GitHub call at all', async () => {
+ axios.mockImplementation(async () => { throw new Error('no request may be made'); });
+ expect(await retireInlineComments({owner:'owner',repo:'repo',pr_number:1,installation_id:1,fingerprints:[]}))
+  .toEqual({retired:0, kept:0});
+ expect(axios).not.toHaveBeenCalled();
+});
+// A pull request over the cap is reviewed as far as the cap allows. Refusing it was the
+// one case where a developer got no review at all, and a partial review that says so is
+// worth more than nothing. The selection must be deterministic and must be declared.
+function filesPage(total) {
+ // GitHub paginates 100 at a time; the filenames are deliberately out of order so the
+ // test proves the sort rather than GitHub's own ordering.
+ const all = Array.from({length: total}, (_, i) => ({filename: `src/file-${String(total - i).padStart(4, '0')}.py`, status: 'added', patch: '+x=1'}));
+ return (url) => {
+  const page = Number(/[?&]page=(\d+)/.exec(url)?.[1] || 1);
+  return all.slice((page - 1) * 100, page * 100);
+ };
+}
+
+test('a pull request over the file cap is reviewed to the cap and says so', async () => {
+ const page = filesPage(250);
+ axios.mockImplementation(async r => ({data: r.url.includes('/files?') ? page(r.url) : {head: {sha: 'head-a'}}}));
+ const result = await fetchPullRequestFiles(request);
+ expect(result.files).toHaveLength(200);
+ expect(result.limitation).toEqual({kind: 'file_cap', message: 'Reviewed 200 of 250 changed files'});
+});
+
+test('the reviewed files are the first 200 in path order, whatever order GitHub returned', async () => {
+ const page = filesPage(250);
+ axios.mockImplementation(async r => ({data: r.url.includes('/files?') ? page(r.url) : {head: {sha: 'head-a'}}}));
+ const first = await fetchPullRequestFiles(request);
+ const paths = first.files.map(f => f.path);
+
+ expect(paths).toEqual([...paths].sort());
+ // 250 files named file-0001..file-0250: the cap keeps the lowest 200 paths.
+ expect(paths[0]).toBe('src/file-0001.py');
+ expect(paths[199]).toBe('src/file-0200.py');
+ expect(paths).not.toContain('src/file-0201.py');
+
+ // The same pull request always yields the same 200 files.
+ jest.clearAllMocks();
+ const shuffled = filesPage(250);
+ axios.mockImplementation(async r => ({data: r.url.includes('/files?') ? [...shuffled(r.url)].reverse() : {head: {sha: 'head-a'}}}));
+ const second = await fetchPullRequestFiles(request);
+ expect(second.files.map(f => f.path)).toEqual(paths);
+});
+
+test('a pull request at or under the cap is reviewed whole and declares no limitation', async () => {
+ const page = filesPage(200);
+ axios.mockImplementation(async r => ({data: r.url.includes('/files?') ? page(r.url) : {head: {sha: 'head-a'}}}));
+ const result = await fetchPullRequestFiles(request);
+ expect(result.files).toHaveLength(200);
+ expect(result.limitation).toBeUndefined();
+});
+
+test('the cap counts analysable files, so excluded paths never push a reviewable PR over it', async () => {
+ // 150 analysable files plus 150 that the dist/ and node_modules filters drop.
+ const analysable = Array.from({length: 150}, (_, i) => ({filename: `src/${String(i).padStart(4, '0')}.py`, status: 'added', patch: '+x=1'}));
+ const excluded = [
+  ...Array.from({length: 75}, (_, i) => ({filename: `dist/${i}.js`, status: 'added', patch: '+x=1'})),
+  ...Array.from({length: 75}, (_, i) => ({filename: `a/node_modules/${i}.js`, status: 'added', patch: '+x=1'})),
+ ];
+ const all = [...analysable, ...excluded];
+ axios.mockImplementation(async r => {
+  if (!r.url.includes('/files?')) return {data: {head: {sha: 'head-a'}}};
+  const pageNumber = Number(/[?&]page=(\d+)/.exec(r.url)?.[1] || 1);
+  return {data: all.slice((pageNumber - 1) * 100, pageNumber * 100)};
+ });
+ const result = await fetchPullRequestFiles(request);
+ expect(result.files).toHaveLength(150);
+ expect(result.limitation).toBeUndefined();
+});
+
+test('a deleted file is not analysable and never occupies a slot under the cap', async () => {
+ const all = [
+  ...Array.from({length: 210}, (_, i) => ({filename: `del/${i}.py`, status: 'removed', patch: ''})),
+  ...Array.from({length: 5}, (_, i) => ({filename: `src/${i}.py`, status: 'modified', patch: '+x=1'})),
+ ];
+ axios.mockImplementation(async r => {
+  if (!r.url.includes('/files?')) return {data: {head: {sha: 'head-a'}}};
+  const pageNumber = Number(/[?&]page=(\d+)/.exec(r.url)?.[1] || 1);
+  return {data: all.slice((pageNumber - 1) * 100, pageNumber * 100)};
+ });
+ const result = await fetchPullRequestFiles(request);
+ expect(result.files.map(f => f.path).sort()).toEqual(['src/0.py', 'src/1.py', 'src/2.py', 'src/3.py', 'src/4.py']);
+ expect(result.limitation).toBeUndefined();
 });
 test('check retries update only this app check for the same head', async () => {
  const {createCheckRun}=require('../services/githubInternalOperations'); process.env.GITHUB_APP_ID='123';

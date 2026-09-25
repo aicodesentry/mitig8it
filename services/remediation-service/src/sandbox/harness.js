@@ -8,7 +8,29 @@ const { Readable } = require('node:stream');
 const realFs = require('node:fs');
 
 const ROOT = path.resolve(__dirname, '..');
-const state = { express: { routes: [] }, pg: { queries: [] }, child_process: { calls: [] }, fs: { reads: [] } };
+
+// TypeScript modules run through Node's own type stripper (Node 22.6 and later), which deletes
+// type-only syntax and refuses enums, namespaces, and parameter properties. Stripping is what
+// compiles the file; what Node still does not do is find it. Its resolver never tries a `.ts`
+// suffix, so an extension-less relative import and the `.js` specifier a TypeScript project
+// writes for a `.ts` source both fail to resolve. Both are resolved here instead, for the
+// module a test loads and for every relative import that module makes.
+const TS_SUFFIXES = ['.ts', '.mts', '.cts'];
+const isFile = (target) => { try { return realFs.statSync(target).isFile(); } catch { return false; } };
+const withSuffix = (base) => TS_SUFFIXES.map((suffix) => base + suffix).find(isFile) || null;
+// The `.ts` source an absolute specifier names, or null when none exists: the file itself, the
+// TypeScript source a `.js`/`.cjs`/`.mjs` specifier stands for, an extension-less path, or a
+// directory's `index.ts`.
+function tsSource(absolute) {
+  const written = /\.([cm]?)js$/.exec(absolute);
+  if (written) {
+    const base = absolute.slice(0, -written[0].length);
+    return (isFile(`${base}.${written[1]}ts`) ? `${base}.${written[1]}ts` : null) || withSuffix(base) || withSuffix(absolute);
+  }
+  return withSuffix(absolute) || withSuffix(path.join(absolute, 'index'));
+}
+const isRelative = (request) => request.startsWith('.') || path.isAbsolute(request);
+const state = { express: { routes: [] }, pg: { queries: [] }, child_process: { calls: [] }, fs: { reads: [] }, env: { reads: [] }, code: { calls: [] } };
 let config = {};
 let fakes = {};
 const later = (fn) => setImmediate(fn);
@@ -56,6 +78,28 @@ function matchRoute(method, target) {
   throw new Error(`harness.invoke: no ${method} handler recorded for ${target}`);
 }
 
+// A recording Express response. `res.out` is { status, body, headers, redirect } as the handler
+// left it, and `ended` runs once the handler ends the response. `h.res()` hands one to a proof
+// that calls a route handler the module never registered, where there is no route to invoke.
+function response(ended = () => {}) {
+  const out = { status: 200, body: undefined, headers: {}, redirect: null };
+  const end = (body) => { if (body !== undefined) out.body = body; ended(); return res; };
+  const base = Object.assign(new EventEmitter(), {
+    locals: {}, out, statusCode: 200, send: end, end, write(chunk) { out.body = (out.body || '') + chunk; return true; },
+    status(code) { out.status = base.statusCode = Number(code); return res; },
+    sendStatus(code) { out.status = Number(code); return end(String(code)); },
+    json(body) { out.headers['content-type'] = 'application/json'; return end(body); },
+    type(v) { out.headers['content-type'] = String(v); return res; },
+    set(n, v) { for (const [k, x] of Object.entries(typeof n === 'object' ? n : { [n]: v })) out.headers[k.toLowerCase()] = x; return res; },
+    redirect(a, b) { out.redirect = out.headers.location = b === undefined ? a : b; out.status = b === undefined ? 302 : Number(a); return end(''); },
+  });
+  base.header = base.setHeader = base.set;
+  base.contentType = base.type;
+  // Other response methods (cookie, vary, sendFile, ...) are chainable no-ops.
+  const res = new Proxy(base, { get: (t, k) => (k in t ? t[k] : k === 'then' || typeof k === 'symbol' ? undefined : () => res) });
+  return res;
+}
+
 function invoke(target, method, route, options = {}) {
   const found = matchRoute(String(method).toLowerCase(), route);
   const headers = {};
@@ -65,25 +109,12 @@ function invoke(target, method, route, options = {}) {
     params: { ...found.params, ...(options.params || {}) }, query: decodeQuery(options.query), body: options.body === undefined ? {} : options.body,
   };
   req.header = req.get;
-  const out = { status: 200, body: undefined, headers: {}, redirect: null };
   return new Promise((resolve, reject) => {
     let done = false;
+    const res = response(() => later(() => settle()));
+    const out = res.out;
     const settle = (error) => { if (done) return; done = true; clearTimeout(timer); if (error) reject(error instanceof Error ? error : new Error(String(error))); else resolve(out); };
     const timer = setTimeout(() => settle(new Error(`harness.invoke: the ${req.method} ${route} handler never ended the response`)), options.timeout || 2000);
-    const end = (body) => { if (body !== undefined) out.body = body; later(() => settle()); return res; };
-    const base = Object.assign(new EventEmitter(), {
-      locals: {}, statusCode: 200, send: end, end, write(chunk) { out.body = (out.body || '') + chunk; return true; },
-      status(code) { out.status = base.statusCode = Number(code); return res; },
-      sendStatus(code) { out.status = Number(code); return end(String(code)); },
-      json(body) { out.headers['content-type'] = 'application/json'; return end(body); },
-      type(v) { out.headers['content-type'] = String(v); return res; },
-      set(n, v) { for (const [k, x] of Object.entries(typeof n === 'object' ? n : { [n]: v })) out.headers[k.toLowerCase()] = x; return res; },
-      redirect(a, b) { out.redirect = out.headers.location = b === undefined ? a : b; out.status = b === undefined ? 302 : Number(a); return end(''); },
-    });
-    base.header = base.setHeader = base.set;
-    base.contentType = base.type;
-    // Other response methods (cookie, vary, sendFile, ...) are chainable no-ops.
-    const res = new Proxy(base, { get: (t, k) => (k in t ? t[k] : k === 'then' || typeof k === 'symbol' ? undefined : () => res) });
     const chain = found.route.handlers.filter((h) => h !== app);
     let index = 0;
     const next = (error) => {
@@ -122,6 +153,10 @@ class Client {
 }
 class Pool extends Client {}
 const pg = { Pool, Client, query };
+// db(): a recording pg client, for a proof that calls an exported function taking a connection
+// instead of driving a route. Nothing is installed in the sandbox and the patch policy refuses a
+// test that requires a package, so a generated test cannot reach `new Pool()` any other way.
+const db = () => new Pool();
 
 const outcome = (command) => { const c = obj(config.child_process); const p = isFn(c.result) ? obj(c.result(command)) : c; return { stdout: p.stdout ?? '', stderr: p.stderr || '', error: p.error || null, code: p.code || 0 }; };
 // `shell` is the command line a shell would interpret: the whole string for exec/execSync, or
@@ -166,21 +201,110 @@ fs.createReadStream = (file) => (seen(file), Readable.from([encode(content(file)
 Object.defineProperty(fs, 'promises', { value: Object.create(realFs.promises) });
 fs.promises.readFile = (file, options) => (seen(file), exists(file) ? Promise.resolve(encode(content(file), options)) : Promise.reject(enoent(file)));
 
-const builtinFakes = { express, pg, child_process, fs, 'fs/promises': fs.promises };
+// Every way a module can turn a string into running code is recorded and none of them runs. A
+// code_injection_eval repair is proven by the payload never being compiled, so an interpreter
+// that still ran it would prove the opposite of what the test claims. `eval`, `Function`, and a
+// string timer are resolved through the global scope chain, so replacing the global binding is
+// what the module under test sees; `vm` is a fake module like the others. Each entry is
+// { kind, source }: the call that would have compiled, and the text it was given.
+const recordCode = (kind, source) => { state.code.calls.push({ kind, source: String(source) }); };
+const noop = function compiledByHarness() {};
+global.eval = (source) => { recordCode('eval', source); };
+const RealFunction = global.Function;
+const FakeFunction = function Function(...args) { recordCode('Function', args.length ? args[args.length - 1] : ''); return noop; };
+FakeFunction.prototype = RealFunction.prototype;
+global.Function = FakeFunction;
+const realTimer = { setTimeout: global.setTimeout, setInterval: global.setInterval };
+for (const name of ['setTimeout', 'setInterval']) {
+  global[name] = (handler, ...rest) => (typeof handler === 'string' ? recordCode(name, handler) : realTimer[name](handler, ...rest));
+}
+const vm = {
+  runInNewContext: (code) => { recordCode('vm.runInNewContext', code); },
+  runInThisContext: (code) => { recordCode('vm.runInThisContext', code); },
+  runInContext: (code) => { recordCode('vm.runInContext', code); },
+  compileFunction: (code) => (recordCode('vm.compileFunction', code), noop),
+  createContext: (sandbox) => obj(sandbox),
+  Script: class Script { constructor(code) { recordCode('vm.Script', code); } runInNewContext() {} runInThisContext() {} runInContext() {} },
+};
+
+const builtinFakes = { express, pg, child_process, fs, 'fs/promises': fs.promises, vm };
 const originalLoad = Module._load;
 Module._load = function load(request, parent, isMain) {
-  const name = String(request).replace(/^node:/, '');
-  return Object.prototype.hasOwnProperty.call(fakes, name) ? fakes[name] : originalLoad.call(this, request, parent, isMain);
+  const written = String(request);
+  const name = written.replace(/^node:/, '');
+  if (Object.prototype.hasOwnProperty.call(fakes, name)) return fakes[name];
+  try {
+    return originalLoad.call(this, request, parent, isMain);
+  } catch (error) {
+    // Only a relative or absolute specifier Node could not find is retried as TypeScript: a
+    // missing package is still a missing package, and the patch policy refuses a test that asks
+    // for one.
+    if (error.code !== 'MODULE_NOT_FOUND' || !isRelative(written)) throw error;
+    const from = parent && parent.filename ? path.dirname(parent.filename) : ROOT;
+    const found = tsSource(path.resolve(from, written));
+    if (!found) throw error;
+    return originalLoad.call(this, found, parent, isMain);
+  }
 };
+// A TypeScript module written with `import`/`export` is loaded by the ES module loader, which
+// never consults `Module._load`, so its imports are resolved through the synchronous hooks Node
+// 22.15 and later expose. The hook only redirects a relative specifier to the `.ts` source it
+// names; everything else falls through to the real resolver.
+if (typeof Module.registerHooks === 'function') {
+  Module.registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (isRelative(String(specifier))) {
+        let from = ROOT;
+        try { from = path.dirname(new URL(context.parentURL).pathname); } catch { from = ROOT; }
+        const found = tsSource(path.resolve(from, String(specifier)));
+        if (found) return { url: new URL(`file://${found}`).href, shortCircuit: true };
+      }
+      return nextResolve(specifier, context);
+    },
+  });
+}
+
+// process.env is replaced once, by a proxy that records every name the module under test reads:
+// a hardcoded-credential repair is proven by the read happening at all, so the read has to be
+// observable. Values from load(..., { env }) sit over the real environment and are cleared by the
+// next load, so one test cannot leak a secret into the next. `loadedFile` is the file the last
+// load() ran, so assert.notInSource can read it back.
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const supplied = {};
+let loadedFile = null;
+Object.defineProperty(process, 'env', { configurable: true, writable: true, value: new Proxy(process.env, {
+  get: (t, k) => (typeof k === 'string' && state.env.reads.push(k) && has(supplied, k) ? supplied[k] : t[k]),
+  has: (t, k) => (typeof k === 'string' && state.env.reads.push(k), has(supplied, k) || k in t),
+  ownKeys: (t) => [...new Set([...Reflect.ownKeys(t), ...Object.keys(supplied)])],
+  getOwnPropertyDescriptor: (t, k) => (has(supplied, k)
+    ? { value: supplied[k], writable: true, enumerable: true, configurable: true }
+    : Reflect.getOwnPropertyDescriptor(t, k)),
+}) });
+
+// `process.argv` as the test process was started, so a load that did not supply one restores it.
+const realArgv = process.argv.slice();
 
 function load(target, options = {}) {
   config = obj(options);
   reset();
+  // A module at module scope may read its input from the command line, which is the only way a
+  // test can set it: the sink runs on import, before anything else can be called.
+  process.argv = list(config.argv).length ? list(config.argv).map(String) : realArgv.slice();
+  for (const name of Object.keys(supplied)) delete supplied[name];
+  for (const [name, value] of Object.entries(obj(config.env))) supplied[name] = String(value);
   fakes = { ...builtinFakes, ...obj(config.stubs) };
   for (const name of list(config.real)) delete fakes[name];
   const from = target.startsWith('.') ? path.dirname(require.main ? require.main.filename : __filename) : ROOT;
-  const resolved = require.resolve(path.resolve(from, target));
+  const absolute = path.resolve(from, target);
+  let resolved;
+  try {
+    resolved = require.resolve(absolute);
+  } catch (error) {
+    resolved = tsSource(absolute);
+    if (!resolved) throw error;
+  }
   delete require.cache[resolved];
+  loadedFile = resolved;
   return require(resolved);
 }
 
@@ -211,8 +335,37 @@ assert.inside = (target, base, options) => {
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) fail(o.message || `expected ${String(read)} to stay under ${String(base)}`);
   }
 };
+// envRead(name): the module read process.env.<name> at least once. A module that still carries the
+// literal never reads it, which is what makes this fail before a repair and pass after one.
+assert.envRead = (name, message) => { if (!state.env.reads.includes(String(name))) fail(message || `expected the module to read process.env.${String(name)}`, state.env.reads); };
+// notInSource(target, literal): the loaded module's file no longer carries the literal, and no
+// string it exports does. `target` is the module load() returned, or a path.
+assert.notInSource = (target, literal, message) => {
+  const file = typeof target === 'string' ? path.resolve(target) : loadedFile;
+  if (!file) fail(message || 'no module has been loaded, so there is no source to check');
+  const want = String(literal);
+  if (realFs.readFileSync(file, 'utf8').includes(want)) fail(message || `the source still contains ${JSON.stringify(want)}`);
+  for (const [key, value] of Object.entries(obj(typeof target === 'string' ? {} : target))) {
+    if (typeof value === 'string' && value.includes(want)) fail(message || `exported value ${key} still carries ${JSON.stringify(want)}`);
+  }
+};
 // argv(call, payload): the child ran with an argv array (no shell string) and the injected payload is its own element (the command name itself is argv[0]).
 assert.argv = (call, payload, message) => { if (!call) fail(message || 'no child process call was recorded'); if (typeof call.shell === 'string') fail(message || `command ran through a shell: ${call.shell}`); const want = String(payload); if (want !== call.command && !(Array.isArray(call.args) && call.args.some((a) => String(a) === want))) fail(message || `expected the injected input ${JSON.stringify(payload)} to be its own args element of ${call.command}`, call.args); };
+
+// noCode(message): nothing the module did turned a string into code. It is the whole proof of a
+// code_injection_eval repair, so it names what would have been compiled when it fails.
+assert.noCode = (message) => { if (state.code.calls.length) fail(message || 'expected no string to be compiled or evaluated', state.code.calls.map((c) => `${c.kind}: ${c.source}`)); };
+// call(fn, ...args): calls a plain exported function and never throws. Returns { ok, value, error },
+// so one test can send a payload that is meant to be rejected and a document that must still parse.
+const call = (fn, ...args) => {
+  if (!isFn(fn)) fail(`expected a function to call, got ${util.inspect(fn)}`);
+  try {
+    return { ok: true, value: fn(...args), error: null };
+  } catch (error) {
+    process.stderr.write(`harness: call(${fn.name || 'anonymous'}) threw ${(error && error.message) || error}\n`);
+    return { ok: false, value: undefined, error };
+  }
+};
 
 // Runs one test body: exit 0 when it resolves, exit 1 with the error otherwise.
 const run = (body) => Promise.resolve().then(body).then(
@@ -220,4 +373,4 @@ const run = (body) => Promise.resolve().then(body).then(
   (error) => { process.stderr.write(`harness: ${(error && error.stack) || error}\n`); process.exit(1); },
 );
 
-module.exports = { version: 1, root: ROOT, load, invoke, run, assert, reset, express: state.express, pg: state.pg, child_process: state.child_process, fs: state.fs, app };
+module.exports = { version: 1, root: ROOT, load, invoke, res: response, call, run, assert, reset, db, express: state.express, pg: state.pg, child_process: state.child_process, fs: state.fs, code: state.code, app };

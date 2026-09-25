@@ -70,7 +70,9 @@ class TestExtractFileContent:
                 '+api_key = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"',
             ]
         )
-        assert _extract_file_content(patch) == 'api_key = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"'
+        # The artifact is excluded, and its line is left blank so the real declaration
+        # keeps the line number the file gives it.
+        assert _extract_file_content(patch) == '\napi_key = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"'
 
     def test_prefers_full_file_content_when_available(self):
         file_info = {

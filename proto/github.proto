@@ -9,19 +9,12 @@ service GitHubService {
   rpc FetchFileContents(FetchFileContentsRequest) returns (FetchFileContentsResponse);
   rpc SubmitPullRequestReview(SubmitPullRequestReviewRequest) returns (SubmitPullRequestReviewResponse);
   rpc PostInlineComment(PostInlineCommentRequest) returns (PostInlineCommentResponse);
+  rpc RetireInlineComments(RetireInlineCommentsRequest) returns (RetireInlineCommentsResponse);
   rpc CreateCheckRun(CreateCheckRunRequest) returns (CreateCheckRunResponse);
-  rpc PrepareRemediation(RemediationPrepareRequest) returns (RemediationPrepareResponse);
   rpc SnapshotRemediation(RemediationSnapshotRequest) returns (RemediationSnapshotResponse);
-  rpc CommitRemediation(RemediationCommitRequest) returns (RemediationCommitResponse);
-  rpc ReconcileRemediation(RemediationReconcileRequest) returns (RemediationReconcileResponse);
-  rpc MergeRemediation(RemediationMergeRequest) returns (RemediationMergeResponse);
-  rpc CancelScheduledMerge(CancelScheduledMergeRequest) returns (CancelScheduledMergeResponse);
-  rpc ReadMergeEligibility(MergeEligibilityRequest) returns (MergeEligibilityResponse);
-  rpc ReadPullRequestHead(PullRequestHeadRequest) returns (PullRequestHeadResponse);
   rpc CreateRemediationCheckRun(RemediationCheckRunRequest) returns (RemediationCheckRunResponse);
   rpc PublishRemediationComment(RemediationCommentRequest) returns (RemediationCommentResponse);
   rpc PublishFindingFixSections(FindingFixSectionsRequest) returns (FindingFixSectionsResponse);
-  rpc AuthorizeRemediation(RemediationAuthorizeRequest) returns (RemediationAuthorizeResponse);
   rpc HealthCheck(mitig8it.common.v1.HealthCheckRequest) returns (mitig8it.common.v1.HealthCheckResponse);
 }
 
@@ -32,8 +25,17 @@ message FetchPullRequestFilesRequest {
   string commit_sha = 4;
 }
 
+// A limitation the analysis run must state rather than hide. `kind` is the machine
+// name (today only `file_cap`) and `message` is what the check summary shows. Absent
+// when the whole pull request was reviewed.
+message AnalysisLimitation {
+  string kind = 1;
+  string message = 2;
+}
+
 message FetchPullRequestFilesResponse {
   repeated mitig8it.common.v1.ChangedFile files = 1;
+  AnalysisLimitation limitation = 2;
 }
 
 message FetchFileContentsRequest {
@@ -85,6 +87,22 @@ message PostInlineCommentResponse {
   bool success = 3;
 }
 
+// The inline comments an earlier run posted for findings this run does not annotate,
+// named by the fingerprints in their markers. `kept` counts the ones left in place
+// because a verified fix was published under them.
+message RetireInlineCommentsRequest {
+  string owner = 1;
+  string repo = 2;
+  int32 pr_number = 3;
+  int64 installation_id = 4;
+  repeated string fingerprints = 5;
+}
+
+message RetireInlineCommentsResponse {
+  int32 retired = 1;
+  int32 kept = 2;
+}
+
 message CreateCheckRunRequest {
   string owner = 1;
   string repo = 2;
@@ -113,18 +131,6 @@ message RemediationEnvelope {
   string manifest_digest = 9;
 }
 
-message RemediationPrepareRequest {
-  RemediationEnvelope envelope = 1;
-}
-
-message RemediationPrepareResponse {
-  string state = 1;
-  string operation_id = 2;
-  string branch = 3;
-  string expected_head_oid = 4;
-  string marker = 5;
-}
-
 message RemediationSnapshotRequest {
   RemediationEnvelope envelope = 1;
   repeated string finding_paths = 2;
@@ -150,124 +156,6 @@ message RemediationSnapshotResponse {
   string head_sha = 4;
   string base_sha = 5;
   repeated string omitted_source_paths = 6;
-}
-
-message RemediationFileChange {
-  string path = 1;
-  string contents_base64 = 2;
-}
-
-message RemediationCommitRequest {
-  RemediationEnvelope envelope = 1;
-  string branch = 2;
-  string expected_head_oid = 3;
-  string verified_tree_oid = 4;
-  string commit_message = 5;
-  repeated RemediationFileChange changes = 6;
-}
-
-message RemediationCommitResponse {
-  string state = 1;
-  string operation_id = 2;
-  string commit_sha = 3;
-  string tree_oid = 4;
-  string reason = 5;
-}
-
-message RemediationReconcileRequest {
-  RemediationEnvelope envelope = 1;
-  string verified_tree_oid = 2;
-}
-
-message RemediationReconcileResponse {
-  string state = 1;
-  string operation_id = 2;
-  string commit_sha = 3;
-  string tree_oid = 4;
-  string reason = 5;
-}
-
-message RemediationMergeRequest {
-  RemediationEnvelope envelope = 1;
-  string expected_head_sha = 2;
-  string expected_base_sha = 3;
-  string merge_method = 4;
-  string verification_check_name = 5;
-}
-
-message RemediationMergeResponse {
-  string state = 1;
-  string operation_id = 2;
-  string commit_sha = 3;
-  string reason = 4;
-}
-
-message CancelScheduledMergeRequest {
-  RemediationEnvelope envelope = 1;
-  int32 pull_number = 2;
-  string expected_head_sha = 3;
-}
-
-message CancelScheduledMergeResponse {
-  string state = 1;
-  string operation_id = 2;
-  string head_sha = 3;
-  bool merged = 4;
-  string reason = 5;
-}
-
-message MergeEligibilityRequest {
-  RemediationEnvelope envelope = 1;
-  int32 pull_number = 2;
-  string expected_head_sha = 3;
-  string verification_check_name = 4;
-}
-
-message RequiredCheck {
-  string context = 1;
-  int64 app_id = 2;
-}
-
-message CheckRunSummary {
-  int64 id = 1;
-  string name = 2;
-  int64 app_id = 3;
-  string status = 4;
-  string conclusion = 5;
-}
-
-message ReviewSummary {
-  int32 required = 1;
-  int32 approvals = 2;
-  bool changes_requested = 3;
-}
-
-message MergeEligibilityResponse {
-  bool eligible = 1;
-  repeated string blockers = 2;
-  repeated RequiredCheck required_checks = 3;
-  repeated CheckRunSummary check_runs = 4;
-  ReviewSummary reviews = 5;
-  string protection_source = 6;
-  string mergeable_state = 7;
-  string head_sha = 8;
-  string base_sha = 9;
-  string verification_check_name = 10;
-}
-
-message PullRequestHeadRequest {
-  RemediationEnvelope envelope = 1;
-  int32 pull_number = 2;
-}
-
-message PullRequestHeadResponse {
-  string head_sha = 1;
-  string base_sha = 2;
-  string state = 3;
-  bool draft = 4;
-  bool merged = 5;
-  string mergeable_state = 6;
-  bool fork = 7;
 }
 
 message RemediationCheckRunRequest {
@@ -377,21 +265,4 @@ message FindingFixSectionsResponse {
   string operation_id = 2;
   repeated FindingFixSectionResult results = 3;
   string reason = 4;
-}
-
-// Live authorization pre-flight. The control plane calls this before persisting an
-// apply intent; it proves current actor write permission and installation grant.
-message RemediationAuthorizeRequest {
-  RemediationEnvelope envelope = 1;
-}
-
-message RemediationAuthorizeResponse {
-  string state = 1;
-  bool installation_active = 2;
-  bool repository_granted = 3;
-  bool actor_write_permission = 4;
-  string head_sha = 5;
-  string base_sha = 6;
-  string head_branch = 7;
-  string base_branch = 8;
 }

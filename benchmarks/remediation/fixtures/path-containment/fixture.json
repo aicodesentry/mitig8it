@@ -10,9 +10,9 @@
   "reference_repair": "expected/app.js",
   "finding": {
     "id": "path-1",
-    "rule_id": "cwe-22.path-traversal",
+    "rule_id": "cwe-22.path-traversal-fs",
     "cwe_id": "CWE-22",
-    "category": "path",
+    "category": "path traversal",
     "path": "app.js",
     "line_start": 4,
     "line_end": 4

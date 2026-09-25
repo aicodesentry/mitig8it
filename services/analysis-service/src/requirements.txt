@@ -7,5 +7,8 @@ protobuf==6.33.5
 prometheus-client==0.26.0
 httpx==0.28.1
 semgrep==1.173.0
+# The tier 2 posting policy is read out of the rule YAML at import; semgrep pulls
+# PyYAML in too, but the runner imports it directly, so it is declared here.
+PyYAML==6.0.3
 openai==2.54.0
 click==8.4.2

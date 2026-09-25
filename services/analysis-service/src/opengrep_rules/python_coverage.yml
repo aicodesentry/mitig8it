@@ -1,0 +1,966 @@
+# Tier 2 coverage rules for Python.
+#
+# Original work of this repository. No rule here is copied or adapted from
+# opengrep-rules or semgrep-rules: both are licensed in a way that forbids use inside a
+# paid service. See docs/legal/third-party-rules.md.
+#
+# Every rule carries `internal_type` (a canonical type from taxonomy.py, never the check
+# id), `cwe`, `confidence`, `family` when one of the five remediation families applies,
+# and `posting`. `posting: quarantine` means the rule still runs and is still counted but
+# nothing it produces reaches a reviewer; the measurement behind each one is in
+# docs/validation/tier2-coverage-2026-09.md.
+rules:
+  # ── SQL injection ──────────────────────────────────────────────────────
+
+  - id: cwe-89.py-execute-fstring-direct
+    patterns:
+      - pattern-either:
+        - pattern: $CURSOR.execute(f"...{$INPUT}...")
+        - pattern: $CURSOR.execute(f"...{$INPUT}...", ...)
+        - pattern: $CURSOR.executemany(f"...{$INPUT}...", ...)
+    message: "SQL passed to execute() as an f-string. Pass the value as a bound parameter"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03:2021"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.90"
+      posting: post
+
+  - id: cwe-89.py-execute-concat-direct
+    patterns:
+      - pattern-either:
+        - pattern: $CURSOR.execute("..." + $INPUT)
+        - pattern: $CURSOR.execute("..." + $INPUT, ...)
+        - pattern: $CURSOR.execute("..." % $INPUT)
+        - pattern: $CURSOR.execute("...".format(...))
+        - pattern: $CURSOR.execute("..." + $INPUT + "...")
+    message: "SQL passed to execute() as a built string. Pass the value as a bound parameter"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03:2021"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.88"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 7 findings over 2 repositories, all 7 adjudicated by
+        label and true (DSVW, and 5 of the SciTokens keycache statements in CVE-2026-32714),
+        precision 1.00.
+      posting: post
+
+  - id: cwe-89.py-sqlalchemy-text-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: text(f"...{$INPUT}...")
+        - pattern: sqlalchemy.text(f"...{$INPUT}...")
+        - pattern: text("..." + $INPUT)
+        - pattern: text("...".format(...))
+    message: "SQLAlchemy text() built by interpolation. Use a :name bind parameter"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03:2021"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-89.py-django-raw-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: $M.objects.raw(f"...{$INPUT}...")
+        - pattern: $M.objects.raw("..." + $INPUT)
+        - pattern: $M.objects.raw("...".format(...))
+        - pattern: $M.objects.extra(where=[f"...{$INPUT}..."])
+        - pattern: $M.objects.extra(where=["..." + $INPUT])
+    message: "Django raw SQL built by interpolation. Pass params to raw() instead"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03:2021"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.88"
+      posting: post
+
+  # ── NoSQL injection ────────────────────────────────────────────────────
+
+  - id: cwe-943.py-pymongo-where-operator
+    patterns:
+      - pattern-either:
+        - pattern: '$C.find({..., "$where": $INPUT, ...})'
+        - pattern: '$C.find_one({..., "$where": $INPUT, ...})'
+    message: "MongoDB $where runs JavaScript on the server. Express the filter with query operators"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-943"
+      owasp: "A03:2021"
+      category: "NoSQL injection"
+      internal_type: "nosql_injection"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-943.py-pymongo-request-filter
+    patterns:
+      - pattern-either:
+        - pattern: $C.find(request.json)
+        - pattern: $C.find(request.get_json())
+        - pattern: $C.find_one(request.json)
+        - pattern: $C.find_one(request.get_json())
+        - pattern: $C.delete_one(request.json)
+    message: "Request body used directly as a MongoDB filter. An operator object matches every document"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-943"
+      owasp: "A03:2021"
+      category: "NoSQL injection"
+      internal_type: "nosql_injection"
+      confidence: "0.85"
+      posting: post
+
+  # ── Command injection ──────────────────────────────────────────────────
+
+  - id: cwe-78.py-os-system-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: os.system(f"...{$INPUT}...")
+        - pattern: os.system("..." + $INPUT)
+        - pattern: os.system("...".format(...))
+        - pattern: os.system("..." % $INPUT)
+    message: "Shell command assembled by interpolation. Use subprocess.run with an argument list"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021"
+      category: "command injection"
+      internal_type: "command_injection"
+      family: "command_arguments"
+      confidence: "0.90"
+      posting: post
+
+  - id: cwe-78.py-subprocess-shell-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: subprocess.run(f"...{$INPUT}...", ..., shell=True, ...)
+        - pattern: subprocess.call(f"...{$INPUT}...", ..., shell=True, ...)
+        - pattern: subprocess.Popen(f"...{$INPUT}...", ..., shell=True, ...)
+        - pattern: subprocess.check_output(f"...{$INPUT}...", ..., shell=True, ...)
+        - pattern: subprocess.run("..." + $INPUT, ..., shell=True, ...)
+        - pattern: subprocess.check_output("..." + $INPUT, ..., shell=True, ...)
+    message: "subprocess with shell=True on a built command string. Pass an argument list and drop shell"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021"
+      category: "command injection"
+      internal_type: "command_injection"
+      family: "command_arguments"
+      confidence: "0.90"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, adjudicated by label and true (DSVW's
+        nslookup), precision 1.00.
+      posting: post
+
+  - id: cwe-78.py-os-popen-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: os.popen(f"...{$INPUT}...")
+        - pattern: os.popen("..." + $INPUT)
+        - pattern: os.popen(f"...{$INPUT}...", ...)
+        - pattern: commands.getoutput(f"...{$INPUT}...")
+        - pattern: commands.getstatusoutput(f"...{$INPUT}...")
+    message: "os.popen runs a shell string. Use subprocess with an argument list"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021"
+      category: "command injection"
+      internal_type: "command_injection"
+      family: "command_arguments"
+      confidence: "0.88"
+      posting: post
+
+  # ── Code injection ─────────────────────────────────────────────────────
+
+  - id: cwe-95.py-eval-request-value
+    patterns:
+      - pattern-either:
+        - pattern: eval($INPUT)
+        - pattern: eval($INPUT, ...)
+        - pattern: exec($INPUT)
+        - pattern: exec($INPUT, ...)
+      - metavariable-regex:
+          metavariable: $INPUT
+          regex: .*(request\.|args\.|form\.|json\.|payload|user_input|untrusted|body).*
+    message: "Request value executed as Python. Parse it with ast.literal_eval or json.loads"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A03:2021"
+      category: "code injection"
+      internal_type: "dynamic_code_execution"
+      family: "code_injection_eval"
+      confidence: "0.90"
+      posting: post
+
+  - id: cwe-95.py-eval-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: eval(f"...{$INPUT}...")
+        - pattern: eval("..." + $INPUT)
+        - pattern: exec(f"...{$INPUT}...")
+        - pattern: exec("..." + $INPUT)
+        - pattern: exec("...".format(...))
+    message: "Python source assembled by interpolation and executed"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A03:2021"
+      category: "code injection"
+      internal_type: "dynamic_code_execution"
+      family: "code_injection_eval"
+      confidence: "0.88"
+      posting: post
+
+  # ── Server-side template injection ─────────────────────────────────────
+
+  - id: cwe-1336.py-jinja-template-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: Template(f"...{$INPUT}...")
+        - pattern: jinja2.Template(f"...{$INPUT}...")
+        - pattern: Template("..." + $INPUT)
+        - pattern: $ENV.from_string(f"...{$INPUT}...")
+        - pattern: $ENV.from_string("..." + $INPUT)
+    message: "Template source built by interpolation. The input is template syntax, not data; pass it as a context variable"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-1336"
+      owasp: "A03:2021"
+      category: "template injection"
+      internal_type: "server_side_template_injection"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-79.py-jinja-autoescape-off
+    patterns:
+      - pattern-either:
+        - pattern: jinja2.Environment(..., autoescape=False, ...)
+        - pattern: Environment(..., autoescape=False, ...)
+        - pattern: jinja2.Environment()
+        - pattern: Environment(loader=$L)
+    message: "Jinja environment without autoescape. Every rendered variable is raw HTML"
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.70"
+      posting: quarantine
+      posting_evidence: >-
+        Zero findings on the September 2026 corpus, and it does not qualify for the
+        sink-only exemption: an environment without autoescape is cross-site scripting only
+        when the templates render HTML, which the pattern cannot see, and Jinja is widely
+        used for configuration files, SQL and email text where autoescape would be wrong.
+        Re-enable it when the pattern can tell the template language from the loader.
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, on a Jinja Environment that renders
+        Python source files in django-make-app, not HTML. That is exactly the false positive the
+        quarantine predicted, so it stays quarantined.
+
+  # ── XSS ────────────────────────────────────────────────────────────────
+
+  - id: cwe-79.py-django-mark-safe-dynamic
+    patterns:
+      - pattern-either:
+        - pattern: mark_safe(f"...{$INPUT}...")
+        - pattern: mark_safe("..." + $INPUT)
+        - pattern: mark_safe("...".format(...))
+        - pattern: format_html_join($S, "..." + $INPUT, ...)
+    message: "mark_safe on a built string turns off escaping for the interpolated value. Use format_html"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-79.py-html-response-interpolated
+    patterns:
+      - pattern-either:
+        - pattern: HttpResponse(f"...{$INPUT}...")
+        - pattern: HttpResponse("..." + $INPUT)
+        - pattern: make_response(f"...<{$TAG}...{$INPUT}...")
+      - metavariable-regex:
+          metavariable: $INPUT
+          regex: .*(request\.|args\.|form\.|GET|POST|params|user_input).*
+    message: "HTML response interpolates request input. Escape it or render a template"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.82"
+      posting: post
+
+  - id: cwe-79.py-html-percent-format
+    patterns:
+      - pattern: $FMT % $X
+      # The format string has to open a tag and carry a substitution. `"hello %s"` and
+      # `"SELECT * FROM %s"` interpolate too, and neither is markup.
+      - metavariable-regex:
+          metavariable: $FMT
+          regex: "^['\\\"].*<[a-zA-Z/].*%[sr].*"
+    message: "HTML assembled by percent formatting. Escape the substituted value, or render it through a template that escapes"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.80"
+      posting: post
+
+  # There is deliberately no `autoescape=False` rule for Python here. One existed and was
+  # measured: `cwe-79.py-jinja-autoescape-off`, thirty lines above, is quarantined because
+  # an environment without autoescape is cross-site scripting only when the templates
+  # render HTML, and Jinja is widely used for configuration, SQL and email text where
+  # autoescaping would be wrong. A broader `$F(..., autoescape=False, ...)` written here
+  # would have inherited that defect and quietly undone the quarantine under a new id.
+  # `anxolerd/dvpwa`'s `setup_jinja(..., autoescape=False)` therefore stays a known miss;
+  # it is recorded in docs/validation/vulnerable-corpus-2026-09.md.
+
+  # ── Insecure deserialization ───────────────────────────────────────────
+
+  - id: cwe-502.py-marshal-loads
+    patterns:
+      - pattern-either:
+        - pattern: marshal.loads(...)
+        - pattern: marshal.load(...)
+    message: "marshal deserializes code objects and is not safe on untrusted input. Use json"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021"
+      category: "insecure deserialization"
+      internal_type: "unsafe_deserialization"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-502.py-dill-shelve-load
+    patterns:
+      - pattern-either:
+        - pattern: dill.loads(...)
+        - pattern: dill.load(...)
+        - pattern: cloudpickle.loads(...)
+        - pattern: jsonpickle.decode(...)
+        - pattern: shelve.open(...)
+    message: "This loader reconstructs arbitrary Python objects. Use a data-only format for untrusted input"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021"
+      category: "insecure deserialization"
+      internal_type: "unsafe_deserialization"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-502.py-pickle-load-file
+    patterns:
+      - pattern-either:
+        - pattern: pickle.load(...)
+        - pattern: cPickle.load(...)
+        - pattern: cPickle.loads(...)
+        - pattern: pandas.read_pickle(...)
+        - pattern: pd.read_pickle(...)
+    message: "pickle.load reconstructs arbitrary Python objects. A crafted file runs code at load"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021"
+      category: "insecure deserialization"
+      internal_type: "unsafe_deserialization"
+      confidence: "0.88"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 2 findings, 1 hand-read and true (whoogle-search
+        unpickles a file named by a request argument), precision 1.00.
+      posting: post
+
+  # ── Path traversal and unsafe file access ──────────────────────────────
+
+  - id: cwe-22.py-send-file-request-path
+    patterns:
+      - pattern-either:
+        - pattern: send_file(os.path.join($BASE, request.args.get(...)))
+        - pattern: send_file(os.path.join($BASE, request.args[$K]))
+        - pattern: send_file(f"...{request.args.get(...)}...")
+        - pattern: send_from_directory($BASE, request.args.get(...))
+        - pattern: send_file(os.path.join($BASE, $NAME))
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: .*(request\.|filename|user_path|param).*
+    message: "Response file chosen by request input. Resolve with realpath and abort before any read outside the base"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-22.py-archive-extractall
+    patterns:
+      - pattern-either:
+        - pattern: $T.extractall(...)
+        - pattern: tarfile.open(...).extractall(...)
+        - pattern: zipfile.ZipFile(...).extractall(...)
+      - pattern-not: $T.extractall(..., filter="data", ...)
+      - pattern-not: $T.extractall(..., filter=$F, ...)
+    message: "Archive extracted without a member filter. A `../` entry writes outside the destination"
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.80"
+      posting: post
+
+  - id: cwe-22.py-open-request-path
+    patterns:
+      - pattern-either:
+        - pattern: open(os.path.join($BASE, request.args.get(...)), ...)
+        - pattern: open(os.path.join($BASE, request.args[$K]), ...)
+        - pattern: open(f"...{request.args.get(...)}...", ...)
+        - pattern: open(f"...{request.form[$K]}...", ...)
+    message: "File opened at a request-controlled path. Resolve with realpath and abort before any read outside the base"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-22.py-pathlib-join-interpolated
+    patterns:
+      - pattern: $BASE / f"...{$NAME}..."
+    message: "pathlib join with an interpolated name. `/` does not contain the result: an absolute or `../` value replaces or escapes the base. Resolve and check against the base before using it"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.85"
+      posting: post
+
+  # ── SSRF ───────────────────────────────────────────────────────────────
+
+  - id: cwe-918.py-urlopen-request-url
+    patterns:
+      - pattern-either:
+        - pattern: urllib.request.urlopen($URL, ...)
+        - pattern: urllib.request.urlopen($URL)
+        - pattern: urlopen($URL)
+        - pattern: urlopen($URL, ...)
+      - metavariable-regex:
+          metavariable: $URL
+          regex: .*(request\.|args\.|form\.|json\.|params|user_url|target_url).*
+    message: "urlopen to a request-controlled URL. Check the host against an allowlist"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-918"
+      owasp: "A10:2021"
+      category: "SSRF"
+      internal_type: "server_side_request_forgery"
+      confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, hand-read and true (DSVW's FETCH
+        primitive), precision 1.00.
+      posting: post
+
+  - id: cwe-918.py-requests-interpolated-url
+    patterns:
+      - pattern-either:
+        - pattern: requests.get(f"...{$INPUT}...", ...)
+        - pattern: requests.post(f"...{$INPUT}...", ...)
+        - pattern: httpx.get(f"...{$INPUT}...", ...)
+        - pattern: requests.request($M, f"...{$INPUT}...", ...)
+      - metavariable-regex:
+          metavariable: $INPUT
+          regex: .*(request\.|args\.|form\.|json\.|params|user_).*
+    message: "Outbound URL interpolates request input. A value with its own scheme or host redirects the request"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-918"
+      owasp: "A10:2021"
+      category: "SSRF"
+      internal_type: "server_side_request_forgery"
+      confidence: "0.82"
+      posting: post
+
+  # ── Weak or misused crypto ─────────────────────────────────────────────
+
+  - id: cwe-916.py-password-weak-hash-usedforsecurity
+    patterns:
+      - pattern-either:
+        - pattern: hashlib.md5($SECRET).hexdigest()
+        - pattern: hashlib.sha1($SECRET).hexdigest()
+        - pattern: hashlib.new("md5", $SECRET)
+        - pattern: hashlib.new("sha1", $SECRET)
+      - metavariable-regex:
+          metavariable: $SECRET
+          regex: (?i).*(password|passwd|pwd|passphrase|credential|secret).*
+      - pattern-not: hashlib.md5($SECRET, usedforsecurity=False)
+      - pattern-not: hashlib.sha1($SECRET, usedforsecurity=False)
+    message: "Password digested with MD5 or SHA-1. Use bcrypt, scrypt or argon2"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-916"
+      owasp: "A02:2021"
+      category: "weak password hashing"
+      internal_type: "weak_password_hash"
+      confidence: "0.88"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 3 findings over 2 repositories, all 3 adjudicated by
+        label and true, precision 1.00.
+      posting: post
+
+  - id: cwe-327.py-ecb-cipher-mode
+    patterns:
+      - pattern-either:
+        - pattern: AES.new($KEY, AES.MODE_ECB)
+        - pattern: AES.new($KEY, AES.MODE_ECB, ...)
+        - pattern: DES.new(...)
+        - pattern: DES3.new(...)
+        - pattern: ARC4.new(...)
+        - pattern: Cipher($A, modes.ECB(...), ...)
+        - pattern: algorithms.Blowfish(...)
+    message: "ECB mode and the legacy DES, 3DES, RC4 and Blowfish ciphers leak plaintext structure. Use AES-GCM"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-327"
+      owasp: "A02:2021"
+      category: "weak cryptography"
+      internal_type: "weak_cipher_algorithm"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-329.py-static-initialization-vector
+    patterns:
+      - pattern-either:
+        - pattern: AES.new($KEY, $MODE, b"...")
+        - pattern: AES.new($KEY, $MODE, iv=b"...")
+        - pattern: Cipher($A, modes.CBC(b"..."), ...)
+        - pattern: Cipher($A, modes.CTR(b"..."), ...)
+        - pattern: AES.new($KEY, $MODE, nonce=b"...")
+    message: "Cipher constructed with a fixed initialization vector. Derive a fresh IV per message with os.urandom"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-329"
+      owasp: "A02:2021"
+      category: "weak cryptography"
+      internal_type: "static_initialization_vector"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-338.py-random-module-secret
+    patterns:
+      - pattern-either:
+        - pattern: $NAME = random.random()
+        - pattern: $NAME = random.randint(...)
+        - pattern: $NAME = random.choice(...)
+        - pattern: $NAME = "".join(random.choice(...) for $_ in ...)
+        - pattern: $NAME = "".join(random.choices(...))
+        - pattern: $NAME = random.getrandbits(...)
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)^(?!.*(jitter|delay|backoff|sample|sleep|seed)).*(token|secret|nonce|otp|password|api_?key|session_?id|csrf|salt|reset_?code|verification_?code).*$
+    message: "Security value taken from the random module, which is not a cryptographic generator. Use the secrets module"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-338"
+      owasp: "A02:2021"
+      category: "insecure randomness"
+      internal_type: "insecure_randomness"
+      confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, adjudicated by label and true (DSVW's
+        `random.choices` session id), precision 1.00.
+      posting: post
+
+  # ── Hardcoded credentials ──────────────────────────────────────────────
+
+  - id: cwe-798.py-connection-string-literal
+    patterns:
+      - pattern-either:
+        - pattern: $NAME = "$VALUE"
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|mssql)://[^:/@\s]+:[^@/\s]{6,}@.+$
+    message: "Connection string carries a literal password. Read the credential from the environment"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021"
+      category: "hardcoded secrets"
+      internal_type: "hardcoded_secret"
+      family: "hardcoded_credential"
+      confidence: "0.90"
+      posting: post
+
+  - id: cwe-798.py-credential-keyword-argument
+    patterns:
+      - pattern-either:
+        - pattern: $F(..., password="$VALUE", ...)
+        - pattern: $F(..., passwd="$VALUE", ...)
+        - pattern: $F(..., api_key="$VALUE", ...)
+        - pattern: $F(..., secret="$VALUE", ...)
+        - pattern: $F(..., token="$VALUE", ...)
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^(?!(?:changeme|change_me|your[-_].*|placeholder|redacted|example|secret|password|test|dummy)$)[A-Za-z0-9+/=_.\-]{12,}$
+    message: "Credential passed as a literal keyword argument. Read it from the environment"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021"
+      category: "hardcoded secrets"
+      internal_type: "hardcoded_secret"
+      family: "hardcoded_credential"
+      confidence: "0.82"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 3 findings in pygoat, 1 hand-read and true
+        (`sql_lab_table(id="admin", password="65079b00…")`), precision 1.00.
+      posting: post
+
+  # ── JWT misuse ─────────────────────────────────────────────────────────
+
+  - id: cwe-347.py-jwt-verification-disabled
+    patterns:
+      - pattern-either:
+        - pattern: jwt.decode(..., verify=False, ...)
+        - pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+        - pattern: 'jwt.decode(..., options={..., "verify_exp": False, ...}, ...)'
+        - pattern: jwt.get_unverified_header(...)
+    message: "JWT decoded without checking the signature. Every claim in it is attacker-controlled"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-347"
+      owasp: "A02:2021"
+      category: "JWT misuse"
+      internal_type: "jwt_signature_not_verified"
+      confidence: "0.88"
+      posting: post
+
+  - id: cwe-347.py-jwt-none-algorithm
+    patterns:
+      - pattern-either:
+        - pattern: jwt.decode(..., algorithms=["none"], ...)
+        - pattern: jwt.decode(..., algorithms=[..., "none", ...], ...)
+        - pattern: jwt.encode(..., algorithm="none", ...)
+    message: "The `none` JWT algorithm means the token is unsigned. Name the algorithm you accept"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-347"
+      owasp: "A02:2021"
+      category: "JWT misuse"
+      internal_type: "jwt_algorithm_none"
+      confidence: "0.92"
+      posting: post
+
+  # ── Open redirect ──────────────────────────────────────────────────────
+
+  - id: cwe-601.py-redirect-request-value
+    patterns:
+      - pattern-either:
+        - pattern: redirect(request.args.get(...))
+        - pattern: redirect(request.args[$K])
+        - pattern: redirect(request.form.get(...))
+        - pattern: redirect(request.values.get(...))
+        - pattern: HttpResponseRedirect(request.GET.get(...))
+        - pattern: HttpResponseRedirect(request.GET[$K])
+    message: "Redirect target taken straight from the request. Allow only relative paths or a known host list"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-601"
+      owasp: "A01:2021"
+      category: "open redirect"
+      internal_type: "open_redirect"
+      confidence: "0.88"
+      posting: post
+
+  # ── Insecure TLS ───────────────────────────────────────────────────────
+
+  - id: cwe-295.py-requests-verify-false
+    patterns:
+      - pattern-either:
+        - pattern: requests.get(..., verify=False, ...)
+        - pattern: requests.post(..., verify=False, ...)
+        - pattern: requests.put(..., verify=False, ...)
+        - pattern: requests.delete(..., verify=False, ...)
+        - pattern: requests.request(..., verify=False, ...)
+        - pattern: $S.verify = False
+        - pattern: httpx.Client(..., verify=False, ...)
+    message: "TLS certificate verification disabled on this request"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-295"
+      owasp: "A05:2021"
+      category: "security misconfiguration"
+      internal_type: "tls_validation_disabled"
+      confidence: "0.92"
+      posting: post
+
+  - id: cwe-295.py-ssl-unverified-context
+    patterns:
+      - pattern-either:
+        - pattern: ssl._create_unverified_context(...)
+        - pattern: ssl._create_default_https_context = ssl._create_unverified_context
+        - pattern: $CTX.verify_mode = ssl.CERT_NONE
+        - pattern: $CTX.check_hostname = False
+    message: "SSL context accepts any certificate. The connection is not authenticated"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-295"
+      owasp: "A05:2021"
+      category: "security misconfiguration"
+      internal_type: "tls_validation_disabled"
+      confidence: "0.90"
+      posting: post
+
+  - id: cwe-326.py-tls-version-legacy
+    patterns:
+      - pattern-either:
+        - pattern: ssl.SSLContext(ssl.PROTOCOL_TLSv1)
+        - pattern: ssl.SSLContext(ssl.PROTOCOL_TLSv1_1)
+        - pattern: ssl.SSLContext(ssl.PROTOCOL_SSLv3)
+        - pattern: ssl.SSLContext(ssl.PROTOCOL_SSLv23)
+        - pattern: $CTX.minimum_version = ssl.TLSVersion.TLSv1
+        - pattern: $CTX.minimum_version = ssl.TLSVersion.TLSv1_1
+    message: "A TLS version below 1.2 is negotiable here. Raise the minimum to TLSv1.2"
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: "CWE-326"
+      owasp: "A02:2021"
+      category: "weak cryptography"
+      internal_type: "weak_tls_protocol"
+      confidence: "0.90"
+      posting: post
+
+  # ── XXE ────────────────────────────────────────────────────────────────
+
+  - id: cwe-611.py-lxml-resolve-entities
+    patterns:
+      - pattern-either:
+        - pattern: etree.XMLParser(..., resolve_entities=True, ...)
+        - pattern: lxml.etree.XMLParser(..., resolve_entities=True, ...)
+        - pattern: etree.XMLParser(..., no_network=False, ...)
+        - pattern: xmlrpc.client.ServerProxy(...)
+    message: "XML parser resolves external entities. A document can read local files; use defusedxml"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-611"
+      owasp: "A05:2021"
+      category: "XXE"
+      internal_type: "xml_external_entity"
+      confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 1 finding, adjudicated by label and true (DSVW's XXE
+        parser), precision 1.00.
+      posting: post
+
+  # ── Flask and Django misconfiguration ──────────────────────────────────
+
+  - id: cwe-489.py-app-debug-true
+    patterns:
+      - pattern-either:
+        - pattern: $APP.config["DEBUG"] = True
+        - pattern: $APP.config.update(..., DEBUG=True, ...)
+        - pattern: $APP.debug = True
+    message: "Debug mode enabled. The debugger page discloses source, settings and an interactive console"
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: "CWE-489"
+      owasp: "A05:2021"
+      category: "security misconfiguration"
+      internal_type: "debug_mode_enabled"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-489.py-debug-constant-true
+    pattern: DEBUG = True
+    message: "Debug mode enabled. The debugger page discloses source, settings and an interactive console"
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: "CWE-489"
+      owasp: "A05:2021"
+      category: "security misconfiguration"
+      internal_type: "debug_mode_enabled"
+      confidence: "0.60"
+      posting: quarantine
+      posting_evidence: >-
+        Zero findings on the September 2026 corpus, and it does not qualify for the
+        sink-only exemption: a module-level `DEBUG = True` is a Django settings module only
+        when the module is one, and the same line in a script or a test is a local flag with
+        no security meaning. The anchored half of this shape posts as
+        `cwe-489.py-app-debug-true`. Re-enable it when the pattern can require a settings
+        module.
+        benchmarks/vulnerable-corpus 2026-09: 2 findings, both `DEBUG = True` in a real Django
+        settings module and one of them confirmed by a label, which is the shape the quarantine
+        doubted. The policy needs 3 measured hits to re-enable, so this rule is one hit short
+        and stays quarantined.
+
+  - id: cwe-798.py-framework-secret-key-literal
+    patterns:
+      - pattern-either:
+        - pattern: SECRET_KEY = "$VALUE"
+        - pattern: $APP.secret_key = "$VALUE"
+        - pattern: $APP.config["SECRET_KEY"] = "$VALUE"
+        - pattern: $APP.config.update(..., SECRET_KEY="$VALUE", ...)
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^(?!(?:changeme|change_me|your[-_].*|placeholder)$).{8,}$
+    message: "Framework signing key is a literal. Read it from the environment"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021"
+      category: "hardcoded secrets"
+      internal_type: "hardcoded_secret"
+      family: "hardcoded_credential"
+      confidence: "0.88"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 2 findings in pygoat, 1 adjudicated by label and true
+        (a Django SECRET_KEY literal), precision 1.00.
+      posting: post
+
+  - id: cwe-614.py-session-cookie-insecure
+    patterns:
+      - pattern-either:
+        - pattern: SESSION_COOKIE_SECURE = False
+        - pattern: SESSION_COOKIE_HTTPONLY = False
+        - pattern: CSRF_COOKIE_SECURE = False
+        - pattern: $APP.config["SESSION_COOKIE_SECURE"] = False
+        - pattern: $APP.config["SESSION_COOKIE_HTTPONLY"] = False
+    message: "Session cookie sent without the secure or httpOnly flag"
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: "CWE-614"
+      owasp: "A05:2021"
+      category: "session management"
+      internal_type: "insecure_cookie_flags"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-352.py-csrf-exempt
+    patterns:
+      - pattern-either:
+        - pattern: "@csrf_exempt"
+        - pattern: "@csrf.exempt"
+        - pattern: WTF_CSRF_ENABLED = False
+        - pattern: $APP.config["WTF_CSRF_ENABLED"] = False
+    message: "CSRF protection switched off for this handler. A cross-site form can invoke it"
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: "CWE-352"
+      owasp: "A01:2021"
+      category: "security misconfiguration"
+      internal_type: "csrf_protection_disabled"
+      confidence: "0.80"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-09: 25 findings in pygoat, 2 adjudicated, both true (a
+        documented CSRF lab view and an API view that turns Django's protection off), precision
+        1.00.
+      posting: post
+
+  - id: cwe-942.py-cors-credentials-wildcard
+    patterns:
+      - pattern-either:
+        - pattern: CORS($APP, ..., origins="*", ..., supports_credentials=True, ...)
+        - pattern: CORS($APP, ..., supports_credentials=True, ..., origins="*", ...)
+        - pattern: CORS_ORIGIN_ALLOW_ALL = True
+        - pattern: CORS_ALLOW_ALL_ORIGINS = True
+    message: "CORS allows every origin. With credentials any site can read the response"
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: "CWE-942"
+      owasp: "A01:2021"
+      category: "security misconfiguration"
+      internal_type: "permissive_cors_policy"
+      confidence: "0.85"
+      posting: post
+
+  - id: cwe-489.py-flask-run-host-all-interfaces
+    patterns:
+      - pattern: $APP.run(..., host="0.0.0.0", ..., debug=True, ...)
+    message: "Debug server bound to every interface. The interactive debugger is reachable off the host"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-489"
+      owasp: "A05:2021"
+      category: "security misconfiguration"
+      internal_type: "debug_mode_enabled"
+      confidence: "0.90"
+      posting: post

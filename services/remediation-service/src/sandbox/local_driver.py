@@ -9,13 +9,15 @@ presented as the production `independent_sandbox` verification level.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import shutil
 import subprocess
 import tempfile
 import time
-from pathlib import Path
+from functools import lru_cache
+from pathlib import Path, PurePath
 from typing import Any
 
 from .execution import aggregate_outcome, build_evidence, output_tail, parse_scanner_findings
@@ -31,6 +33,116 @@ LOCAL_DRIVER_WARNING = (
 
 VERIFICATION_LEVEL = "development_unverified"
 MAX_CAPTURED_CHARS = 200_000
+
+# The service test harness (sandbox/harness.js) compiles TypeScript with Node's own type
+# stripper and installs its resolver through `module.registerHooks`. Both arrived in Node 22:
+# `stripTypeScriptTypes` in 22.13 and `registerHooks` in 22.15, and the flags the harness is
+# launched with are younger than Node 20 too. `services/remediation-service/Dockerfile` pins the
+# runtime that carries them in `ARG NODE_VERSION`, and every environment that runs this driver
+# has to match it.
+#
+# On an older runtime nothing about a candidate is ever exercised: Node rejects the flag set
+# before it reads a line of repository code, so the check fails identically on the baseline and
+# the candidate tree and the pipeline reports a repair that did not prove itself. That reads as
+# a bad repair. It is a bad toolchain. The driver probes `node` once and names what is missing,
+# so the next reader of a failing run sees the runtime rather than the candidate.
+NODE_EXECUTABLE_NAMES = frozenset({"node", "node.exe"})
+REQUIRED_NODE_FEATURES = ("module.stripTypeScriptTypes", "module.registerHooks")
+NODE_PROBE_PROGRAM = (
+    "const m = require('node:module');"
+    "const missing = ["
+    "typeof m.stripTypeScriptTypes === 'function' ? null : 'module.stripTypeScriptTypes',"
+    "typeof m.registerHooks === 'function' ? null : 'module.registerHooks',"
+    "].filter(Boolean);"
+    "process.stdout.write(JSON.stringify({ version: process.version, missing }));"
+)
+NODE_PROBE_TIMEOUT_SECONDS = 30
+NODE_RUNTIME_REASON = "node_runtime_missing_features"
+MAX_REASON_FEATURE_CHARS = 200
+
+
+class NodeRuntimeReport:
+    """What this host's `node` is, and which harness features it does not have."""
+
+    def __init__(self, version: str | None, missing: tuple[str, ...]):
+        self.version = version
+        self.missing = missing
+
+    def detail(self) -> str:
+        return (
+            f"the sandbox test harness needs Node features this runtime does not provide: "
+            f"{', '.join(self.missing)}. `node` here reports {self.version or 'an unknown version'}; "
+            "the supported runtime is the one services/remediation-service/Dockerfile pins in "
+            "ARG NODE_VERSION. No repository code ran, so this says nothing about the candidate."
+        )
+
+    def reason_code(self) -> str:
+        return f"{NODE_RUNTIME_REASON}:{','.join(self.missing)}"[: len(NODE_RUNTIME_REASON) + MAX_REASON_FEATURE_CHARS]
+
+
+def typescript_flags() -> tuple[str, ...]:
+    """The flag set the harness is launched with, read from its one definition.
+
+    Imported here rather than at module scope because `src.patches` imports `src.sandbox`
+    for the harness paths, so a top-level import would close the cycle.
+    """
+    from ..patches import NODE_TYPESCRIPT_FLAGS  # noqa: PLC0415 - breaks an import cycle.
+
+    return tuple(NODE_TYPESCRIPT_FLAGS)
+
+
+def _probe_node(flags: tuple[str, ...]) -> tuple[str | None, tuple[str, ...]] | None:
+    """Runs the feature probe under `flags`. None means the probe itself could not complete."""
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell, no repository input.
+            ["node", *flags, "-e", NODE_PROBE_PROGRAM],
+            env={"PATH": os.environ.get("PATH", ""), "NO_COLOR": "1"},
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=NODE_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        report = json.loads(completed.stdout.strip() or "null")
+    except ValueError:
+        return None
+    if not isinstance(report, dict) or not isinstance(report.get("missing"), list):
+        return None
+    missing = tuple(item for item in report["missing"] if isinstance(item, str))
+    version = report.get("version") if isinstance(report.get("version"), str) else None
+    return version, missing
+
+
+@lru_cache(maxsize=1)
+def node_runtime_report() -> NodeRuntimeReport:
+    """This host's Node capability, probed once per process.
+
+    An empty `missing` also covers the case where `node` could not be probed at all: an absent
+    or unrunnable binary is already reported per check as `check_not_executable`, and inventing
+    a feature gap for it would be a worse diagnosis than the one that path already gives.
+    """
+    flags = typescript_flags()
+    probed = _probe_node(flags)
+    if probed is not None:
+        version, missing = probed
+        report = NodeRuntimeReport(version, missing)
+    else:
+        # Node rejected the flag set itself, which is exactly what an unknown
+        # `--experimental-strip-types` does. Ask again without the flags, so the answer can name
+        # the missing APIs as well as the options Node would not accept.
+        bare = _probe_node(())
+        if bare is None:
+            return NodeRuntimeReport(None, ())
+        version, missing = bare
+        report = NodeRuntimeReport(version, (*missing, *flags))
+    if report.missing:
+        logger.error(report.detail())
+    return report
 
 
 class LocalExecutionError(RuntimeError):
@@ -68,6 +180,10 @@ class LocalSubprocessDriver:
         started = time.monotonic()
         if budget_seconds <= 0:
             return self._incomplete(started, "job_deadline_exceeded")
+        if PurePath(str(check["argv"][0])).name in NODE_EXECUTABLE_NAMES:
+            node = node_runtime_report()
+            if node.missing:
+                return self._incomplete(started, node.reason_code(), node.detail())
         try:
             workspace = Path(tempfile.mkdtemp(prefix="mitig8it-local-", dir=self.workspace_root))
         except OSError as error:
@@ -127,13 +243,15 @@ class LocalSubprocessDriver:
         }
 
     @staticmethod
-    def _incomplete(started: float, reason: str) -> dict[str, Any]:
+    def _incomplete(started: float, reason: str, detail: str | None = None) -> dict[str, Any]:
+        """A check that did not run. `detail` is a sentence for a human reading the evidence."""
         return {
             "completed": False,
             "status": "inconclusive",
             "exit_code": None,
             "stdout_digest": None,
             "output_truncated": False,
+            "output_tail": detail,
             "duration_ms": round((time.monotonic() - started) * 1000),
             "reason_code": reason,
             "scanner_findings": None,
@@ -172,9 +290,11 @@ class InProcessSandboxBroker:
         deadline = int(payload["execution_policy"].get("deadline_seconds") or deadline_seconds)
         try:
             result = await asyncio.to_thread(self.driver.execute, payload, deadline)
-        except (LocalExecutionError, OSError, KeyError, TypeError, ValueError):
+        except (RuntimeError, OSError, KeyError, TypeError, ValueError):
             # OSError included deliberately: the driver touches the filesystem, and a raised
             # driver failure that escapes here ends the worker's attempt with the lease still
-            # held instead of producing inconclusive evidence.
+            # held instead of producing inconclusive evidence. RuntimeError covers every
+            # driver's own failure type (LocalExecutionError, CloudRunJobExecutionError,
+            # KubernetesExecutionError) without importing the cloud clients on this path.
             result = {"outcome": "inconclusive", "reason_code": "sandbox_execution_failed", "checks": []}
         return build_evidence(payload, result, self.driver.runner_identity(payload), self.driver.verification_level)

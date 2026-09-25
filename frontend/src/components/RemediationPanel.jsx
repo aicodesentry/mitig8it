@@ -5,42 +5,35 @@ import { getPrivateCacheEpoch } from '../services/privateCache'
 import { unifiedDiff } from '../lib/lineDiff'
 
 const terminal = new Set(['ready', 'completed', 'merged', 'cancelled', 'superseded', 'unsupported', 'inconclusive', 'failed', 'expired', 'blocked', 'rejected'])
-// A merge intent keeps moving while it is blocked or in flight, so only these four end it.
-const mergeTerminal = new Set(['merged', 'cancelled', 'expired', 'superseded'])
 const blockedActionStates = new Set(['blocked', 'rejected', 'failed', 'expired', 'superseded'])
 const settledActionStates = new Set(['completed', 'blocked', 'rejected', 'failed', 'expired', 'superseded', 'cancelled'])
-const cancellableMerge = new Set(['waiting_for_application', 'waiting_for_checks', 'eligible', 'blocked'])
 // Previews are readable while ready and after an application commit superseded them.
 const previewable = new Set(['ready', 'superseded'])
 const label = (state) => String(state || 'queued').replaceAll('_', ' ')
+
+// What each verification level is called on screen. The isolated job level names the sandbox
+// and what it denied, so nobody has to read `isolated_job` and guess how strong it is; the
+// development level keeps its own warning styling below.
+const VERIFICATION_LEVEL_TEXT = {
+  independent_sandbox: 'isolated sandbox',
+  isolated_job: 'isolated sandbox (Cloud Run job, network denied)',
+}
 const errorMessage = (error) => error?.response?.data?.error || 'Could not refresh repair status. Refresh before taking another action.'
 const buttonClass = 'rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50'
 const smallButtonClass = 'rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50'
 const STALE_HEAD_MESSAGE = 'The pull request has new commits since these fixes were generated; regenerate to continue.'
 const STALE_CANDIDATE_MESSAGE = 'Stale: the pull request head moved after this fix was verified. It will not be rebased or reapplied.'
-const HUMAN_MERGE_CAPTION = 'Each fix is committed to the pull request branch only when you ask for it here, as one commit against the exact reviewed head. Merging stays a human action on GitHub.'
-
-const mergeDescriptions = {
-  waiting_for_application: 'Waiting for the reviewed fixes to be committed to the pull request.',
-  waiting_for_checks: 'Waiting for the required checks and reviews on the applied commit.',
-  eligible: 'Required checks and reviews passed. The merge can proceed.',
-  merging: 'The merge request was sent to GitHub.',
-  merged: 'The pull request was merged.',
-  blocked: 'GitHub is blocking this merge.',
-  expired: 'The merge request expired before the checks completed. Request it again if you still want it.',
-  cancelled: 'The merge request was cancelled.',
-  superseded: 'New commits replaced the reviewed batch, so the merge request no longer applies.',
-  reconciling: 'Checking with GitHub whether the merge completed.',
-}
+// Mitig8it cannot push to the repository: the GitHub App holds no write access to code.
+// Each verified fix is posted as a suggestion block under its finding comment on the
+// pull request, and GitHub's own "Commit suggestion" button commits it under the
+// developer's identity.
+const SUGGESTION_CAPTION = 'Each verified fix is posted as a suggestion under its finding comment on the pull request. Use GitHub\'s "Commit suggestion" button to apply it; the commit is made under your identity. Mitig8it cannot push to your repository.'
 
 const rejectionReasons = {
   stale_head: STALE_HEAD_MESSAGE,
   manifest_mismatch: 'The reviewed fix no longer matches the verified evidence. Generate new fixes to continue.',
-  candidate_stale: 'The pull request head moved after this fix was verified, so nothing was applied. Regenerate remaining fixes.',
-  subset_not_verified: 'This combination of fixes was not verified together. Apply one fix at a time, or apply all verified fixes.',
+  candidate_stale: 'The pull request head moved after this fix was verified. Regenerate remaining fixes.',
   job_not_ready: 'The repair job was not ready when this request arrived. Generate new fixes to continue.',
-  flag_disabled: 'Automatic application is turned off for this repository.',
-  permission_revoked: 'Your write access to this repository was revoked, so nothing was applied.',
 }
 
 const reasonText = (code) => {
@@ -77,22 +70,6 @@ const behaviorOutcome = (evidence) => {
 const limitText = (item) => {
   if (typeof item === 'string') return item
   return item?.reason || item?.message || item?.description || item?.detail || item?.path || 'Unspecified coverage limit'
-}
-
-// Blockers arrive as codes with optional prose, and older records as bare strings.
-const blockerText = (blocker) => {
-  if (typeof blocker === 'string') return blocker
-  if (!blocker) return 'Unspecified merge blocker'
-  const code = blocker.code ? label(blocker.code) : ''
-  const message = blocker.message || blocker.reason || blocker.description || blocker.detail || ''
-  if (code && message) return `${code}: ${message}`
-  return code || message || 'Unspecified merge blocker'
-}
-
-const expiryText = (value) => {
-  if (!value) return ''
-  const when = new Date(value)
-  return Number.isNaN(when.getTime()) ? '' : `Merge request expires ${when.toLocaleString()}`
 }
 
 // A server-supplied unified diff is authoritative; the client diff is only a fallback.
@@ -155,13 +132,12 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
-  const [rejectedHead, setRejectedHead] = useState(null)
+  const [rejectedHead] = useState(null)
   const [feedback, setFeedback] = useState({})
   const mounted = useRef(true)
   const epoch = useRef(getPrivateCacheEpoch())
   const revision = useRef(0)
   const working = useRef(false)
-  const consent = useRef(null)
   const current = useCallback(() => mounted.current && epoch.current === getPrivateCacheEpoch(), [])
 
   const refresh = useCallback(async () => {
@@ -185,8 +161,7 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
     return () => { mounted.current = false; revision.current += 1 }
   }, [refresh])
 
-  const active = state && ((state.job && !terminal.has(state.job.state)) || (state.action && !terminal.has(state.action.state))
-    || (state.merge_intent?.state && !mergeTerminal.has(state.merge_intent.state)))
+  const active = state && ((state.job && !terminal.has(state.job.state)) || (state.action && !terminal.has(state.action.state)))
   useEffect(() => {
     if (!active) return undefined
     const timer = setInterval(() => { if (!working.current) refresh() }, 5000)
@@ -222,26 +197,6 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
   const applicableCandidates = allCandidates.filter((candidate) => (candidate.status || 'applicable') === 'applicable')
   const staleCandidates = allCandidates.filter((candidate) => candidate.status === 'stale')
 
-  // Consent binds the exact ordered subset and the digest the server computed for it.
-  // A different subset is a different consent with its own idempotency key.
-  const apply = (candidateIds, manifestDigest, description) => {
-    if (!preview || error || staleHead || !manifestDigest || !candidateIds.length) return
-    const manifest = `${state.job.id}:${manifestDigest}:${candidateIds.join(',')}`
-    if (consent.current?.manifest !== manifest) consent.current = { manifest, key: crypto.randomUUID() }
-    const payload = {
-      head_sha: preview.head_sha, base_sha: preview.base_sha, manifest_digest: manifestDigest,
-      candidate_ids: candidateIds, merge_when_ready: false, idempotency_key: consent.current.key,
-    }
-    perform(() => remediationAPI.apply(state.job.id, payload),
-      `${description} requested. Follow the commit and verification status below. Merging stays a human action on GitHub.`,
-      (failure) => {
-        if (failure?.response?.status !== 409) return false
-        if (failure?.response?.data?.code === 'candidate_stale') return false
-        setRejectedHead(preview.head_sha)
-        return true
-      })
-  }
-
   const generate = (message = 'Repair generation requested.') => perform(
     () => remediationAPI.generate(pullRequestId, { idempotency_key: crypto.randomUUID() }),
     message,
@@ -264,10 +219,6 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
   const verification = preview?.verification || null
   const coverageGaps = [...(verification?.coverage_gaps || []), ...(verification?.limitations || [])]
   const action = state?.action || null
-  const mergeIntent = state?.merge_intent || null
-  const mergeBlockers = mergeIntent?.blockers || []
-  const mergeExpiry = mergeIntent && !mergeTerminal.has(mergeIntent.state) ? expiryText(mergeIntent.expires_at) : ''
-  const mergeAttempts = Number(mergeIntent?.merge_attempts || 0)
   const actionBlocked = Boolean(action && blockedActionStates.has(action.state))
   const actionInFlight = Boolean(action && !settledActionStates.has(action.state))
   const blockedReason = actionBlocked ? reasonText(action.rejection_reason || action.reason) : ''
@@ -275,8 +226,6 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
   const showGenerate = Boolean(capabilities.generate && (jobFinished || actionBlocked) && !staleCandidates.length)
   const showRegenerate = Boolean(capabilities.generate && staleCandidates.length)
   const regenerateBlocked = busy || Boolean(error) || actionInFlight
-  const applicable = previewApplicable && applicableCandidates.length > 0 && Boolean(preview?.manifest_digest) && !actionInFlight
-  const applyBlocked = busy || Boolean(error) || staleHead || !capabilities.apply || !applicable
 
   const renderCandidate = (candidate) => {
     const limits = [...(candidate.evidence?.limitations || candidate.limitations || []), ...coverageGaps]
@@ -323,7 +272,7 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
         <p className={`text-sm ${unverified ? 'rounded bg-amber-50 p-2 font-medium text-amber-900' : 'text-neutral-600'}`}>
           {unverified
             ? 'Verification level: development unverified. This fix was not verified in an isolated sandbox.'
-            : `Verification level: ${label(level || 'unknown')}`}
+            : `Verification level: ${VERIFICATION_LEVEL_TEXT[level] || label(level || 'unknown')}`}
         </p>
         {limits.length > 0 && <div className="rounded bg-amber-50 p-2 text-xs text-amber-900">
           <p className="font-medium">Coverage limits</p>
@@ -339,9 +288,6 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
           </div>
         </details>
         <div className="flex flex-wrap items-center gap-2">
-          {status === 'applicable' && <button type="button" className={`${buttonClass} bg-neutral-900 text-white`}
-            disabled={applyBlocked || !candidate.manifest_digest}
-            onClick={() => apply([candidate.id], candidate.manifest_digest, 'Application of this fix')}>Apply this fix</button>}
           <span className="flex flex-wrap items-center gap-2 text-xs text-neutral-600">
             <span>Was this fix useful?</span>
             {feedback[candidate.id]
@@ -382,24 +328,11 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
         <p className="font-medium">{STALE_HEAD_MESSAGE}</p>
       </div>}
       {action && <div role="status" className="rounded-lg bg-blue-50 p-3 text-sm text-blue-900">
-        <p className="font-medium capitalize">Application: {label(action.state)}</p>
+        <p className="font-medium capitalize">Applied on GitHub: {label(action.state)}</p>
         {actionBlocked && blockedReason && <p className="mt-1">{blockedReason}</p>}
         {!actionBlocked && action.reason && <p>{reasonText(action.reason)}</p>}
         {action.commit_sha && <p>Commit: <code>{action.commit_sha.slice(0, 12)}</code></p>}
         {action.state === 'completed' && <p>The applied commit was re-analysed. The residual report is posted on the pull request.</p>}
-        {mergeIntent?.state && <>
-          <p className="mt-1">Merge: {label(mergeIntent.state)}</p>
-          {mergeDescriptions[mergeIntent.state] && <p>{mergeDescriptions[mergeIntent.state]}</p>}
-          {mergeBlockers.length > 0 && <ul className="mt-1 list-disc pl-5">
-            {mergeBlockers.map((blocker, index) => <li key={`${blockerText(blocker)}:${index}`}>{blockerText(blocker)}</li>)}
-          </ul>}
-          {mergeIntent.cancellation_reason && <p>Cancellation reason: {label(mergeIntent.cancellation_reason)}</p>}
-          {mergeIntent.observed_merge_sha && <p>Merge commit: <code>{mergeIntent.observed_merge_sha.slice(0, 12)}</code></p>}
-          {mergeAttempts > 0 && <p>Merge attempts: {mergeAttempts}</p>}
-          {mergeExpiry && <p>{mergeExpiry}</p>}
-          {cancellableMerge.has(mergeIntent.state) && <button className={`${buttonClass} mt-2`} disabled={busy}
-            onClick={() => perform(() => remediationAPI.cancelMerge(action.id), 'Merge request cancelled.')}>Cancel scheduled merge</button>}
-        </>}
       </div>}
       {preview && <div className="space-y-4">
         <p className="text-sm font-medium"><span>{coverageSentence(allCandidates.length, allSkipped.length)}</span> · reviewed commit <code>{preview.head_sha?.slice(0, 12)}</code></p>
@@ -410,26 +343,14 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
         {findingId && candidates.length === 0 && skipped.length === 0 && <p className="text-sm text-neutral-600">
           No verified fix was generated for this finding.
         </p>}
-        {groups.map((group) => {
-          const groupApplicable = group.candidates.filter((candidate) => (candidate.status || 'applicable') === 'applicable')
-          const file = group.file
-          const fileApply = groupApplicable.length > 1 && file && file.candidate_ids?.length === groupApplicable.length
-          return (
-            <section key={group.path} aria-label={group.path} className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="break-all text-sm font-semibold">{group.path}</h3>
-                {fileApply && <button type="button" className={buttonClass} disabled={applyBlocked || !file.verified_together || !file.manifest_digest}
-                  onClick={() => apply(file.candidate_ids, file.manifest_digest, `Application of all fixes in ${group.path}`)}>
-                  Apply all fixes in this file
-                </button>}
-              </div>
-              {fileApply && !file.verified_together && <p className="text-xs text-neutral-600">
-                These fixes were not verified together. Apply them one at a time, or apply all {applicableCandidates.length} verified fixes.
-              </p>}
-              {group.candidates.map(renderCandidate)}
-            </section>
-          )
-        })}
+        {groups.map((group) => (
+          <section key={group.path} aria-label={group.path} className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="break-all text-sm font-semibold">{group.path}</h3>
+            </div>
+            {group.candidates.map(renderCandidate)}
+          </section>
+        ))}
         {verification?.outcome && <p className="text-sm text-neutral-600">Verification outcome: {label(verification.outcome)}</p>}
         {skipped.length > 0 && <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
           <p className="font-medium">{skipped.length === 1 ? '1 finding needs manual work' : `${skipped.length} findings need manual work`}</p>
@@ -450,14 +371,8 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
         </>}
         {state?.job && !terminal.has(state.job.state) && <button className={buttonClass} disabled={busy}
           onClick={() => perform(() => remediationAPI.cancel(state.job.id), 'Cancellation requested.')}>Cancel generation</button>}
-        {previewApplicable && applicableCandidates.length > 0 && <>
-          <button className={buttonClass} disabled={applyBlocked}
-            onClick={() => apply(applicableCandidates.map((candidate) => candidate.id), preview.manifest_digest, 'Application of all verified fixes')}>
-            Apply all {applicableCandidates.length} verified fixes
-          </button>
-          {!capabilities.apply && <p className="self-center text-xs text-neutral-600">Applying fixes is turned off for this repository.</p>}
-          <p className="w-full text-xs text-neutral-500">{HUMAN_MERGE_CAPTION}</p>
-        </>}
+        {previewApplicable && applicableCandidates.length > 0
+          && <p className="w-full text-xs text-neutral-500">{SUGGESTION_CAPTION}</p>}
       </div>
     </section>
   )

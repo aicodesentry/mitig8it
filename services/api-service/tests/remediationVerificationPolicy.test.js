@@ -10,6 +10,7 @@ const POLICY_ENV = [
   'REMEDIATION_VERIFICATION_CHECKS_JSON', 'REMEDIATION_ALLOWED_RULE_FAMILIES_JSON',
   'REMEDIATION_INPUT_USD_PER_MILLION_TOKENS', 'REMEDIATION_OUTPUT_USD_PER_MILLION_TOKENS',
   'REMEDIATION_REQUIRE_GENERATED_REGRESSION_TEST', 'REMEDIATION_RUN_REPOSITORY_TESTS',
+  'REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION', 'REMEDIATION_ALLOW_ISOLATED_JOB_VERIFICATION',
 ];
 
 function configure() {
@@ -101,5 +102,62 @@ describe('remediation verification policy', () => {
     expect(selected.run_repository_tests).toBe(false);
     expect(selected.verification_checks).toEqual([]);
     expect(selected.max_revisions).toBe(2);
+  });
+
+  // The three levels the repair service can report. `independent_sandbox` is the
+  // Kubernetes/gVisor sandbox and always passes. `isolated_job` is the Cloud Run job sandbox:
+  // separate containers, a check user holding none of the job's credentials, and a network the
+  // job's own probes measured as unreachable, so it passes by default and an operator who will
+  // accept nothing weaker than gVisor turns it off. `development_unverified` is repository code
+  // running in the service's own container and stays off unless an operator opts in.
+  describe('which verification levels may be applied', () => {
+    test('the isolated Cloud Run job sandbox is accepted by default and the development sandbox is not', () => {
+      expect(policy.allowIsolatedJobVerification()).toBe(true);
+      expect(policy.allowDevelopmentVerification()).toBe(false);
+      expect(policy.verificationLevelPermitted('independent_sandbox')).toBe(true);
+      expect(policy.verificationLevelPermitted('isolated_job')).toBe(true);
+      expect(policy.verificationLevelPermitted('development_unverified')).toBe(false);
+    });
+
+    test('an operator can refuse everything below the gVisor sandbox', () => {
+      process.env.REMEDIATION_ALLOW_ISOLATED_JOB_VERIFICATION = 'false';
+      expect(policy.allowIsolatedJobVerification()).toBe(false);
+      expect(policy.verificationLevelPermitted('isolated_job')).toBe(false);
+      expect(policy.verificationLevelPermitted('independent_sandbox')).toBe(true);
+    });
+
+    test('allowing the development sandbox does not change the isolated job level either way', () => {
+      process.env.REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION = 'true';
+      expect(policy.verificationLevelPermitted('development_unverified')).toBe(true);
+      expect(policy.verificationLevelPermitted('isolated_job')).toBe(true);
+    });
+
+    test('a level this control plane does not know is never permitted', () => {
+      expect(policy.verificationLevelPermitted('some_level_from_the_future')).toBe(false);
+      expect(policy.verificationLevelPermitted('')).toBe(false);
+      expect(policy.verificationLevelPermitted(undefined)).toBe(false);
+      expect(policy.verificationLevelPermitted('none')).toBe(false);
+    });
+
+    test('the capability report states both verification flags', () => {
+      expect(policy.capabilityReport().isolated_job_verification_allowed).toBe(true);
+      expect(policy.capabilityReport().development_verification_allowed).toBe(false);
+      process.env.REMEDIATION_ALLOW_ISOLATED_JOB_VERIFICATION = 'false';
+      expect(policy.capabilityReport().isolated_job_verification_allowed).toBe(false);
+    });
+
+    test('the repair request policy tells the repair service which levels it may report', () => {
+      const { repairPolicy } = require('../src/services/remediationWorkflow');
+      const selected = repairPolicy({ ...policy.DEFAULT_POLICY, ...policy.getPolicy() });
+      expect(selected.allow_isolated_job_verification).toBe(true);
+      expect(selected.allow_development_verification).toBe(false);
+    });
+
+    test('a control plane that refuses the level says so in the request it sends', () => {
+      process.env.REMEDIATION_ALLOW_ISOLATED_JOB_VERIFICATION = 'false';
+      const { repairPolicy } = require('../src/services/remediationWorkflow');
+      const selected = repairPolicy({ ...policy.DEFAULT_POLICY, ...policy.getPolicy() });
+      expect(selected.allow_isolated_job_verification).toBe(false);
+    });
   });
 });

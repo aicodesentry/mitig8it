@@ -18,8 +18,9 @@ from src.agent import ProviderAction, RepairAgent
 from src.engine import RepairEngine
 from src.families import COMMAND_ARGUMENTS, JAVASCRIPT, PATH_CONTAINMENT, PYTHON, SQL_PARAMETERIZATION, language_of_path, rule_family
 from src.fixtures import build_repair_request, read_fixture
+from src.gates import SHELL_PIPELINE_MESSAGE, static_gate
 from src.git_tree import compute_tree_oid
-from src.models import GitTreeEntry, RepairRequest
+from src.models import FindingSnapshot, GitTreeEntry, RepairRequest
 from src.patches import build_patch_bundle
 from src.proofs import GeneratedProof, ProofFallback, generate_proof
 from src.retrieval import Snapshot
@@ -73,6 +74,25 @@ FLASK_PY = (
     '    subprocess.run("convert " + name + " out.png", shell=True)\n'
     '    return "", 204\n'
 )
+# An Express route that hands a command line to a shell through `spawn`, which is the shape the
+# gate refused outright until the refusal was narrowed to commands carrying shell syntax.
+SPAWN_COMMAND = "'tar -czf backup.tgz ' + req.body.target"
+SPAWN_SHELL_JS = (
+    "const express = require('express');\n"
+    "const { spawn } = require('node:child_process');\n"
+    "\n"
+    "const app = express();\n"
+    "\n"
+    "app.post('/backups', (req, res) => {\n"
+    f"  const child = spawn({SPAWN_COMMAND}, {{ shell: true }});\n"
+    "  child.on('close', () => res.status(204).end());\n"
+    "});\n"
+    "\n"
+    "module.exports = app;\n"
+)
+SPAWN_FINDINGS = [
+    {"snapshot_id": "spawn-7", "rule_id": "javascript.lang.security.audit.child-process-spawn-shell", "cwe_id": "CWE-78", "file_path": "app.js", "line_start": 7, "line_end": 7},
+]
 FLASK_FINDINGS = [
     {"snapshot_id": "traversal-13", "rule_id": "python.flask.path-traversal", "cwe_id": "CWE-22", "file_path": "app.py", "line_start": 13, "line_end": 13},
     {"snapshot_id": "command-19", "rule_id": "python.lang.security.audit.subprocess-shell", "cwe_id": "CWE-78", "file_path": "app.py", "line_start": 19, "line_end": 19},
@@ -268,17 +288,133 @@ async def test_each_python_fixture_template_matches_the_reference_repair_and_its
     assert _outcomes(verification)[finding.stable_id] == ("failed", "passed")
 
 
-@pytest.mark.parametrize("fixture_name", ["sql-parameterized", "command-arguments", "path-containment"])
-def test_a_javascript_fixture_without_a_route_falls_back_to_the_model_with_the_reason(fixture_name):
-    """The JavaScript fixtures are plain builder functions that call no recorded sink, so no
-    harness assertion can prove them: the generators say so and the model writes the test."""
+@pytest.mark.parametrize(
+    "fixture_name,reason",
+    [("sql-parameterized", "sql_sink_not_in_scope"), ("command-arguments", "command_sink_not_in_scope")],
+)
+def test_a_builder_function_has_no_observable_sink_so_the_model_writes_the_test(fixture_name, reason):
+    """These two fixtures build a query object and an argv array and never run either.
+
+    The site is derived now that a plain function counts as one, but the harness records pg
+    queries and child processes, and neither happens here: a generated proof would pass on the
+    original code, which proves nothing and would sink the candidate. The generator says which
+    sink it wanted and the model writes the test against the caller instead.
+    """
     fixture_dir = FIXTURES / fixture_name
     fixture = read_fixture(fixture_dir)
     request = build_repair_request(fixture_dir, fixture)
     snapshot, proofs, templates = _generate(request)
     [finding] = request.findings
-    assert isinstance(proofs[finding.stable_id], ProofFallback) and proofs[finding.stable_id].reason == "enclosing_route_not_found"
-    assert isinstance(templates[finding.stable_id], TemplateFallback) and templates[finding.stable_id].reason == "enclosing_route_not_found"
+    assert isinstance(proofs[finding.stable_id], ProofFallback) and proofs[finding.stable_id].reason == reason
+    # No proof means no template pass for the finding either, whatever the template would have made.
+    assert isinstance(templates[finding.stable_id], TemplateFallback)
+
+
+def test_a_path_helper_outside_a_route_is_now_proven_and_templated():
+    """The third fixture is the one the site model reaches end to end.
+
+    `resolveUpload` joins a base and a name and returns the result, which the harness does
+    observe: the repaired helper throws on a traversal payload and still resolves a legitimate
+    name. Before the site model this was `enclosing_route_not_found` on both halves.
+    """
+    fixture_dir = FIXTURES / "path-containment"
+    fixture = read_fixture(fixture_dir)
+    request = build_repair_request(fixture_dir, fixture)
+    snapshot, proofs, templates = _generate(request)
+    [finding] = request.findings
+    proof = proofs[finding.stable_id]
+    assert isinstance(proof, GeneratedProof), proof
+    assert "h.call(m.resolveUpload" in proof.content and "to be refused" in proof.content
+    template = templates[finding.stable_id]
+    assert isinstance(template, TemplatePatch), template
+    assert "throw new Error('path escapes base directory');" in "\n".join(template.changes[0]["replacement_lines"])
+
+
+def test_the_model_only_fixture_is_refused_by_the_template():
+    """`conftest.MODEL_ONLY_SOURCE` has to stay outside the template, or the tests that use it
+    stop testing the model path. This pins the reason so the day that changes, it is here."""
+    from tests.conftest import MODEL_ONLY_LINE, MODEL_ONLY_SOURCE
+
+    finding = FindingSnapshot(
+        snapshot_id="model-only", rule_id="js.sql-injection", cwe_id="CWE-89",
+        file_path="src/db.js", line_start=MODEL_ONLY_LINE, line_end=MODEL_ONLY_LINE,
+    )
+
+    class _Snapshot:
+        def full_content(self, path):
+            return MODEL_ONLY_SOURCE
+
+    outcome = generate_template(_Snapshot(), finding, "sql_parameterization", "javascript")
+    assert isinstance(outcome, TemplateFallback) and outcome.reason == "query_text_not_literal"
+
+
+@requires_node
+@pytest.mark.asyncio
+async def test_spawn_with_shell_true_over_a_plain_command_drops_the_option_and_takes_an_argv_list():
+    """The gate used to refuse every `shell: true`, which refused a repairable shape.
+
+    `spawn('tar -czf backup.tgz ' + target, { shell: true })` is a command name and its
+    arguments with a shell wrapped around them, and the shell is the only reason the
+    interpolated value is within reach of a command separator. Dropping the option and
+    splitting the string is the rewrite `execFile` already gets, so the gate lets it through
+    and the template writes it.
+    """
+    request = _request([("app.js", SPAWN_SHELL_JS), ("package.json", ORDERS_PACKAGE)], SPAWN_FINDINGS)
+    snapshot, proofs, templates = _generate(request)
+    [finding] = request.findings
+    assert static_gate(snapshot, finding, COMMAND_ARGUMENTS, JAVASCRIPT) is None
+    assert isinstance(templates[finding.stable_id], TemplatePatch)
+    assert "h.assert.argv(h.child_process.calls[0], payload)" in proofs[finding.stable_id].content
+    bundle, verification = await _verify_templates(request)
+    fixed = bundle.patches[0].replacement_content
+    assert "  const child = spawn('tar', ['-czf', 'backup.tgz', req.body.target]);" in fixed
+    assert "shell" not in fixed
+    assert verification.status == "passed", verification.reason_code
+    assert _outcomes(verification)[finding.stable_id] == ("failed", "passed")
+
+
+def test_a_shell_command_carrying_shell_syntax_is_still_refused_by_the_gate():
+    """Only the metacharacter-free shape is narrowed out of the refusal.
+
+    A pipeline, a redirection, a separator, a substitution, or a background job is syntax an
+    argument list cannot express, so an automatic rewrite would change what runs. The check
+    reads the command's literal text only: an interpolated value is the untrusted data the
+    repair exists to keep away from a shell, never a reason to refuse.
+    """
+    for command in (
+        "'tar -czf - ' + req.body.target + ' | gpg -e'",
+        "'tar -czf ' + req.body.target + ' > /srv/out.tgz'",
+        "'backup ' + req.body.target + ' && rm -rf /srv/tmp'",
+        "'backup `hostname`-' + req.body.target",
+    ):
+        source = SPAWN_SHELL_JS.replace(SPAWN_COMMAND, command)
+        request = _request([("app.js", source), ("package.json", ORDERS_PACKAGE)], SPAWN_FINDINGS)
+        [finding] = request.findings
+        assert static_gate(Snapshot(request), finding, COMMAND_ARGUMENTS, JAVASCRIPT) == (
+            "shell_pipeline_unsupported",
+            SHELL_PIPELINE_MESSAGE,
+        ), command
+
+
+def test_a_shell_option_beside_other_options_is_removed_alone():
+    source = SPAWN_SHELL_JS.replace("{ shell: true }", "{ shell: true, cwd: '/srv' }")
+    request = _request([("app.js", source), ("package.json", ORDERS_PACKAGE)], SPAWN_FINDINGS)
+    [finding] = request.findings
+    patch = generate_template(Snapshot(request), finding, COMMAND_ARGUMENTS, JAVASCRIPT)
+    assert isinstance(patch, TemplatePatch), getattr(patch, "reason", patch)
+    assert patch.changes[0]["replacement_lines"] == [
+        "  const child = spawn('tar', ['-czf', 'backup.tgz', req.body.target], { cwd: '/srv' });"
+    ]
+
+
+def test_spawn_without_the_shell_option_is_left_to_the_model():
+    """`spawn('sh', ['-c', command])` already takes an argument array, so this rewrite does not
+    recognize it and says so rather than producing a patch that changes nothing."""
+    source = SPAWN_SHELL_JS.replace(f"spawn({SPAWN_COMMAND}, {{ shell: true }})", "spawn('sh', ['-c', 'tar -czf backup.tgz ' + req.body.target])")
+    request = _request([("app.js", source), ("package.json", ORDERS_PACKAGE)], SPAWN_FINDINGS)
+    [finding] = request.findings
+    patch = generate_template(Snapshot(request), finding, COMMAND_ARGUMENTS, JAVASCRIPT)
+    assert isinstance(patch, TemplateFallback) and patch.reason == "spawn_without_shell_option"
 
 
 def test_templates_of_one_group_are_combined_and_a_conflicting_one_is_dropped():
@@ -408,3 +544,65 @@ async def test_a_model_test_beside_the_proof_runs_in_addition_and_cannot_replace
         ("other", ".mitig8it/regression/other.test.js"),
     ]
     assert merged[0]["content"] == proof.content
+
+
+# --- a credential inside a multi-line object literal -----------------------------------------
+
+SESSION_JS = """const store = new Map();
+
+function install(app) {
+  app.use(session({
+    secret: 'keyboard cat',
+    resave: true,
+  }));
+}
+
+module.exports = { install };
+"""
+
+# Line 4 is what a rule matching the whole `app.use(session({ ... }))` call reports; line 5 is
+# where the credential is. Before the vulnerable-corpus run of September 2026 both the template
+# and the proof looked only at the reported line, and refused four real findings because of it.
+SESSION_FINDING = {
+    "snapshot_id": "session-4",
+    "rule_id": "cwe-798.js-session-secret-literal",
+    "cwe_id": "CWE-798",
+    "file_path": "server.js",
+    "line_start": 4,
+    "line_end": 7,
+}
+
+
+def _session_snapshot():
+    request = _request([("server.js", SESSION_JS)], [SESSION_FINDING])
+    return Snapshot(request), request.findings[0]
+
+
+class TestCredentialInsideAnObjectLiteral:
+    def test_the_template_rewrites_the_line_the_credential_is_on(self):
+        snapshot, finding = _session_snapshot()
+        patch = generate_template(snapshot, finding, "hardcoded_credential", JAVASCRIPT)
+        assert isinstance(patch, TemplatePatch), getattr(patch, "reason", patch)
+        [change] = patch.changes
+        assert change["start_line"] == 5
+        assert change["original_lines"] == ["    secret: \'keyboard cat\',"]
+        assert change["replacement_lines"] == ["    secret: process.env.SECRET,"]
+
+    def test_the_proof_asserts_on_the_same_credential(self):
+        snapshot, finding = _session_snapshot()
+        proof = generate_proof(snapshot, finding, "hardcoded_credential", JAVASCRIPT)
+        assert isinstance(proof, GeneratedProof), getattr(proof, "reason", proof)
+        assert "SECRET" in proof.content
+        assert "keyboard cat" in proof.content
+
+    def test_the_search_never_leaves_the_finding(self):
+        """A literal outside the reported range is a different finding\'s business.
+
+        Searching the span is only safe because it cannot reach a literal the rule did not
+        match. A finding narrowed to the call\'s first line alone has to go back to refusing,
+        or the template starts rewriting values nothing reported.
+        """
+        request = _request([("server.js", SESSION_JS)], [{**SESSION_FINDING, "line_end": 4}])
+        patch = generate_template(Snapshot(request), request.findings[0], "hardcoded_credential", JAVASCRIPT)
+        assert isinstance(patch, TemplateFallback)
+        assert patch.reason == "string_literal_assignment_not_found"

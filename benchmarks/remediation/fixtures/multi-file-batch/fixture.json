@@ -10,9 +10,9 @@
   "reference_repair": "expected/orders.js",
   "finding": {
     "id": "orders-1",
-    "rule_id": "cwe-89.sql-query",
+    "rule_id": "cwe-89.sql-template-literal",
     "cwe_id": "CWE-89",
-    "category": "sql",
+    "category": "sql injection",
     "message": "The order lookup interpolates the customer email into SQL text.",
     "path": "orders.js",
     "line_start": 4,
@@ -24,9 +24,9 @@
       "reference_repair": "expected/customers.js",
       "finding": {
         "id": "customers-1",
-        "rule_id": "cwe-89.sql-query",
+        "rule_id": "cwe-89.sql-template-literal",
         "cwe_id": "CWE-89",
-        "category": "sql",
+        "category": "sql injection",
         "message": "The customer email normalizer returns untrusted input unchecked into a SQL filter.",
         "path": "customers.js",
         "line_start": 3,

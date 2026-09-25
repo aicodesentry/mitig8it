@@ -3,6 +3,16 @@
 Date: 2026-09-15
 Status: implementation specification; no infrastructure or product changes applied by this document.
 
+> Superseded in part. This document specified an in-app apply that committed to the pull
+> request branch, and a merge controller behind an operator flag. Both were removed by
+> the least-privilege change: the GitHub App no longer holds write access to repository
+> contents, so it cannot commit to a branch or merge a pull request, and no flag can
+> restore either. A verified fix is published as a GitHub suggestion block and applied by
+> a developer with GitHub's own "Commit suggestion" button, under that developer's
+> identity. Sections 1, 6 (the apply and merge endpoints) and the W12 row are read as
+> history; everything about generation, verification, evidence and publication still
+> describes the system. See [the progress ledger](agentic-remediation-progress.md).
+
 ## 1. Outcome and scope
 
 Build one complete, versioned release that turns a confirmed PR finding into a repository-aware repair, verifies that repair, presents it below the finding, and lets an authorized developer apply the verified batch and optionally request merge after checks pass.
@@ -148,10 +158,10 @@ Index runnable stages on `(state, next_attempt_at)`, lease expiry, PR/head, tena
 - `POST /api/pull-requests/:id/remediations`: create generation request; optional finding selection. Server resolves immutable snapshots and current permissions.
 - `GET /api/remediations/:id`: status, stage, verified count, unsupported count, safe failure reason, spend summary, and progress cursor.
 - `GET /api/remediations/:id/preview`: recommended changes, original/replacement code, affected tests, evidence summary, exact manifest digest and revisions.
-- `POST /api/remediations/:id/apply`: `{head_sha, base_sha, manifest_digest, candidate_ids, merge_when_ready, idempotency_key}`. No caller-supplied patch text or arbitrary path is accepted.
+- `POST /api/remediations/:id/apply`: removed; see the note at the top of this document. It now returns 410.
 - `POST /api/remediations/:id/cancel`: cancel generation or application if still cancellable.
 - `GET /api/remediation-actions/:id`: application, checks, and merge status; polling must survive reloads.
-- `POST /api/remediation-actions/:id/cancel-merge`: revoke pending intent.
+- `POST /api/remediations/:id/apply`: removed. It returns 410 pointing at GitHub's "Commit suggestion" button, because the App holds no write access to repository contents.
 - `POST /api/remediations/:id/feedback`: accepted, edited, rejected, or incorrect, with structured reason and authorized artifact references.
 
 All writes use the existing session/CSRF protections plus live authorization for code mutation. Return 403 for denied access, 409 for changed revision/manifest, 422 for unsupported action, 429 for exhausted budget, and 202 for accepted work. The same idempotency key with a different payload is 409.
@@ -213,7 +223,7 @@ Keep acceptance tests used for release evaluation outside the agent's writable e
 
 ### Product flow
 
-Below each finding show: recommended fix, minimal diff, behavior preserved, verification result, coverage limits, and a manual-work reason when appropriate. Fixes are grouped by file and, within a file, by finding; each finding carries `Apply this fix`, each file `Apply all fixes in this file`, and the PR `Apply all 3 verified fixes`. A human applies fixes by explicit request, finding by finding or as the verified batch; nothing merges automatically and the product offers no merge action (merging stays a human action on GitHub; `REMEDIATION_MERGE_ENABLED` is an operator-only experimental setting that defaults off). Consent binds the head, base, the ordered subset, and a manifest digest computed over exactly that subset. One candidate is applied on its own verification; more than one only as the combination the repair service verified, otherwise the request is refused as `subset_not_verified`. After an apply commits, the remaining candidates of that generation are stale (head changed) and are regenerated on the new head, never rebased. One click submits the visible selection; it does not authorize any later regenerated patch. When the fresh analysis of the applied head completes, one residual report comment per apply (updated in place) and the app's verification check list what was applied and what remains open by file and severity, including unrepaired findings with their reasons; the check is green only when no open finding of any severity remains in the changed files, with informational test-code findings listed but not failing it.
+Below each finding show: recommended fix, minimal diff, behavior preserved, verification result, coverage limits, and a manual-work reason when appropriate. Fixes are grouped by file and, within a file, by finding. The panel carries no apply or merge action: as of the least-privilege change the GitHub App holds no write access to repository contents, so it cannot commit to a branch or merge a pull request. A developer applies a fix on GitHub with the "Commit suggestion" button under the suggestion block the app published beneath the finding comment, which commits under that developer's identity. After such a commit, the remaining candidates of that generation are stale (head changed) and are regenerated on the new head, never rebased. The push webhook records the commit as an `observed_apply` action. When the fresh analysis of the applied head completes, one residual report comment per observed apply (updated in place) and the app's verification check list what was applied and what remains open by file and severity, including unrepaired findings with their reasons; the check is green only when no open finding of any severity remains in the changed files, with informational test-code findings listed but not failing it.
 
 GitHub comments link to the authenticated preview. A GET link never changes code. Optional GitHub check-run requested actions must validate webhook signature, installation, sender's live write permission, action ID, revision, and manifest exactly as the API does. Native inline suggestions may remain available, but their direct GitHub application is an external push that invalidates the prior batch; do not claim they passed combined verification.
 
@@ -339,7 +349,7 @@ All paths below are planned additions/edits, not claims that those files already
 | W09 | Batch planner and immutable manifest builder in remediation service | W08 | Overlap/dependency cases handled; combined tree independently verified; stale input rejected |
 | W10 | `services/api-service/src/routes/remediation.js`, DB modules, polling/status contracts; new GitHub adapter RPCs/HTTP parity | W02–W03, W09 | Authorization, CSRF, request replay, foreign manifest, permission-revocation, atomic commit and lost-response tests |
 | W11 | `frontend/src/pages/PullRequestFindingsPage.jsx`, `FindingDetailPage.jsx`, `frontend/src/components/RemediationPanel.jsx`, `frontend/src/services/api.js`; review-comment formatter | W04, W09–W10 | Browser tests: preview, apply, partial coverage, pending/error/reload, account switch, stale head, cancelled job |
-| W12 | `services/api-service/src/services/mergeController.js`, webhook event handling, required check integration, capability detection | W10–W11 | Exact-head merge intent, missing CI, missing reviews, unknown rules, revoked access, changed base/head, cancellation, merge-queue handling |
+| W12 | Removed with the least-privilege change. The merge controller and the in-app apply path are gone, and the App no longer holds write access to repository contents, so neither can be restored by a flag | W10–W11 | Merging is a human action on GitHub |
 | W13 | Feedback and reviewed memory modules; data deletion and retention jobs | W06, W08, W11 | Unreviewed/foreign/reverted examples excluded; deletion invalidates caches/artifacts |
 | W14 | `benchmarks/remediation/` full suite, `tests/load/`, chaos and security acceptance tests | W01–W13 | All declared release gates met with machine-readable report and limitations |
 | W15 | CI workflows, infrastructure-as-code, deployment runbooks, rollback and restore drills | W03–W14 | Clean staging deployment, real GitHub test PR lifecycle, tested kill switches, restore and reconciliation |

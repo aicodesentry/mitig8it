@@ -168,6 +168,20 @@ test('clean scan fixes automatically suppressed findings without later resurrect
   assert.equal((await findings.getById(row.id, f.user)).status, 'fixed');
 });
 
+// Two analysis tiers reported the same flaw under two fingerprints until the taxonomy
+// made both tiers name one internal type. The re-analysis carries only the surviving
+// fingerprint, so the merged-away one leaves no open finding and no orphaned comment.
+test('a fingerprint that a later run merged away is fixed while the surviving one stays open', async () => {
+  const f = await fixture();
+  const survivor = await findings.upsert(findingParams(f, { ruleId: 'opengrep.cwe-89.sql-template-literal' }));
+  const mergedAway = await findings.upsert(findingParams(f, { ruleId: 'sql.injection.raw_query' }));
+
+  await findings.markFixed({ repositoryId: f.repo, pullRequestId: f.pr, activeFingerprints: [survivor.fingerprint] });
+
+  assert.equal((await findings.getById(survivor.id, f.user)).status, 'open');
+  assert.equal((await findings.getById(mergedAway.id, f.user)).status, 'fixed');
+});
+
 test('concurrent queue claim serializes a PR even when its live run appears stale', async () => {
   const f = await fixture();
   const second = await newRun(f.repo, f.pr);

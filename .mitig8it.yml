@@ -1,0 +1,24 @@
+# What Mitig8it does not review in this repository.
+#
+# Everything here is measurement input rather than product code. `benchmarks/` is the whole
+# evaluation harness: the remediation fixtures and the vulnerable corpus are supposed to be
+# insecure, and the tier 1 and tier 2 precision `cases.json` files are labelled vulnerable
+# snippets quoted verbatim so the scanner can be scored against them. A finding on any of them is
+# the product working rather than a defect, and reporting it on a pull request buries the
+# findings that matter. `docs/validation/` writes those measurements up, quoting the same
+# snippets in prose. `action/tests/fixtures/` is recorded API payloads, not source.
+#
+# The action posted 34 comments on the fixtures, and then on the case files and the validation
+# write-ups, before this file covered them.
+#
+# This excludes paths from review. It is not a fix for a rule that should never have fired on a
+# `.md` or a `.json` file in the first place; that scoping is fixed in the rules themselves, and
+# this file only keeps our own measurement corpus out of our own pull requests.
+#
+# Both the App and the Action read this file and apply it identically; the dialect is stated in
+# contracts/repository-configuration-v1.json and documented in
+# docs/getting-started/configuration.md.
+exclude:
+  - benchmarks/**
+  - docs/validation/**
+  - action/tests/fixtures/**

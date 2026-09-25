@@ -15,8 +15,28 @@ from ..sandbox.execution import aggregate_outcome
 from .checks import EffectiveChecks, build_effective_checks, generated_snapshot_entries
 
 PRODUCTION_VERIFICATION_LEVEL = "independent_sandbox"
+# Between the two: the check pair ran in separate Cloud Run job containers, each under its own
+# unprivileged user, on a network its probes measured as unreachable. It is not the production
+# level, because it offers neither a gVisor runtime class nor a read-only root filesystem, and
+# it is nothing like the development level, because no repository code touches this service.
+ISOLATED_JOB_VERIFICATION_LEVEL = "isolated_job"
 DEVELOPMENT_VERIFICATION_LEVEL = "development_unverified"
-VERIFICATION_LEVELS = {PRODUCTION_VERIFICATION_LEVEL, DEVELOPMENT_VERIFICATION_LEVEL}
+VERIFICATION_LEVELS = {
+    PRODUCTION_VERIFICATION_LEVEL,
+    ISOLATED_JOB_VERIFICATION_LEVEL,
+    DEVELOPMENT_VERIFICATION_LEVEL,
+}
+# Weakest first. A caller that has to compare two levels orders them by this list rather than
+# by string, so adding a level never silently reorders anything.
+VERIFICATION_LEVEL_ORDER = (
+    DEVELOPMENT_VERIFICATION_LEVEL,
+    ISOLATED_JOB_VERIFICATION_LEVEL,
+    PRODUCTION_VERIFICATION_LEVEL,
+)
+ISOLATED_JOB_ENVIRONMENT_KIND = "cloud-run-job"
+# The three targets a Cloud Run job task probes from the check's own user before the check
+# runs. Evidence that does not carry all three as an explicit `false` is not this level.
+ISOLATED_JOB_PROBE_TARGETS = ("metadata", "internet", "dns")
 
 
 @dataclass(frozen=True)
@@ -138,6 +158,31 @@ class Verifier:
                     level,
                     ["the sandbox reported development-only evidence and policy does not allow it"],
                 )
+            if level == ISOLATED_JOB_VERIFICATION_LEVEL and not request.policy.allow_isolated_job_verification:
+                return VerificationResult(
+                    "unsupported",
+                    {"reason_code": "isolated_job_verification_not_permitted", "verification_level": level},
+                    None,
+                    "isolated_job_verification_not_permitted",
+                    level,
+                    ["the sandbox reported isolated Cloud Run job evidence and policy does not allow it"],
+                )
+            halted = self._driver_halt(evidence)
+            if halted is not None:
+                # The driver ran no check and said why: a sandbox whose network probes came
+                # back reachable, an image digest that did not match, an unattested cluster.
+                # Its reason survives here instead of collapsing into a generic evidence error.
+                status, reason = halted
+                return VerificationResult(
+                    status,
+                    evidence,
+                    evidence_digest(evidence),
+                    reason,
+                    level,
+                    [f"verification did not run: {reason}"],
+                    [],
+                    [self._untested(finding.stable_id) for finding in request.findings],
+                )
             verdicts = self._finding_verdicts(request, effective, evidence)
             status = self._effective_outcome(evidence, verdicts.excluded_check_ids)
             self._validate_evidence(
@@ -254,6 +299,22 @@ class Verifier:
         return aggregate_outcome(records)
 
     @staticmethod
+    def _driver_halt(evidence: dict[str, Any]) -> tuple[str, str] | None:
+        """A driver that executed no check and named the reason, or None.
+
+        Only an empty check list qualifies. A driver that ran checks and still reported a
+        reason code does not take this path, because the checks themselves are the evidence
+        and `_effective_outcome` must decide from them.
+        """
+        outcome = evidence.get("outcome")
+        reason = evidence.get("reason_code")
+        if outcome not in {"inconclusive", "unsupported"} or evidence.get("checks"):
+            return None
+        if not isinstance(reason, str) or not reason or len(reason) > 120:
+            return None
+        return str(outcome), reason
+
+    @staticmethod
     def _verification_level(evidence: dict[str, Any]) -> str:
         if not isinstance(evidence, dict):
             raise BrokerEvidenceError("broker evidence is not an object")
@@ -286,6 +347,15 @@ class Verifier:
         if level == DEVELOPMENT_VERIFICATION_LEVEL:
             limitations.append(
                 "verification ran in the development local sandbox without network, kernel, or filesystem isolation"
+            )
+        if level == ISOLATED_JOB_VERIFICATION_LEVEL:
+            # An honest limitation, not a caveat that undoes the level: the checks did run in
+            # separate containers on a network their own probes measured as unreachable. What
+            # this level does not carry is the production level's read-only root filesystem and
+            # gVisor runtime class, so it says exactly that and nothing weaker.
+            limitations.append(
+                "verification ran in an isolated Cloud Run job container without a read-only root "
+                "filesystem or a gVisor runtime class"
             )
         if "existing_test" not in kinds:
             limitations.append("the repository's original test suite was not run")
@@ -335,6 +405,8 @@ class Verifier:
                 raise BrokerEvidenceError("runner image digest mismatch")
             if runner.get("network") != "deny" or runner.get("read_only_root") is not True:
                 raise BrokerEvidenceError("runner isolation claims do not satisfy policy")
+        elif level == ISOLATED_JOB_VERIFICATION_LEVEL:
+            self._validate_isolated_job_runner(request, runner, evidence)
         elif runner.get("runtime_class") != "local-subprocess":
             raise BrokerEvidenceError("development evidence does not identify the local development runner")
 
@@ -375,6 +447,43 @@ class Verifier:
                 raise BrokerEvidenceError("passed evidence relies on a failing baseline behavior check")
             if check.kind == "exploit" and baseline.get("status") != "failed":
                 raise BrokerEvidenceError("exploit check did not demonstrate the original vulnerability")
+
+    @staticmethod
+    def _validate_isolated_job_runner(request: RepairRequest, runner: dict[str, Any], evidence: dict[str, Any]) -> None:
+        """What the `isolated_job` level has to have measured before it may be claimed.
+
+        The production level is validated on declared isolation properties, because the cluster
+        enforces them. This level is validated on *measurements*: the driver may claim a denied
+        network only once every task that completed reported every probe target as explicitly
+        unreachable from the check's own user. `reached: null` is a probe that did not run, and
+        it fails here exactly like a probe that connected.
+        """
+        if runner.get("image_digest") != request.policy.sandbox_image_digest:
+            raise BrokerEvidenceError("runner image digest mismatch")
+        if runner.get("environment_kind") != ISOLATED_JOB_ENVIRONMENT_KIND:
+            raise BrokerEvidenceError("isolated job evidence does not identify a Cloud Run job container")
+        executions = runner.get("job_executions")
+        if not isinstance(executions, list) or not executions or not all(isinstance(name, str) and name for name in executions):
+            raise BrokerEvidenceError("isolated job evidence does not name the job executions that produced it")
+        if runner.get("network") != "deny":
+            raise BrokerEvidenceError("isolated job evidence does not claim a denied network")
+        results = evidence.get("checks") if isinstance(evidence.get("checks"), list) else []
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            for variant in ("baseline", "candidate"):
+                outcome = result.get(variant)
+                if not isinstance(outcome, dict) or outcome.get("completed") is not True:
+                    continue
+                probes = outcome.get("network_probes")
+                if not isinstance(probes, dict):
+                    raise BrokerEvidenceError("isolated job evidence carries no network probes")
+                for target in ISOLATED_JOB_PROBE_TARGETS:
+                    probe = probes.get(target)
+                    if not isinstance(probe, dict) or probe.get("reached") is not False:
+                        raise BrokerEvidenceError(f"isolated job network probe {target} did not report unreachable")
+                if not isinstance(outcome.get("job_execution"), str) or not outcome["job_execution"]:
+                    raise BrokerEvidenceError("isolated job check result does not name its job execution")
 
     @staticmethod
     def _unsupported(code: str) -> VerificationResult:

@@ -1,0 +1,5 @@
+{
+  "schema_version": "v1",
+  "note": "Fixtures whose reviewed repair is correct but which a recorded engine or harness defect stops the pipeline from carrying. An entry labels a failure; it never turns one into a pass, never leaves the precision, coverage, or abstention arithmetic, and never satisfies the release gate. Every entry names the defect's file and line so it cannot quietly absorb a new regression.",
+  "failures": []
+}

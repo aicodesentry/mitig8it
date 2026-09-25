@@ -27,14 +27,23 @@ from .gates import PYTHON_SQL_DRIVERS, python_imports
 from .models import FindingSnapshot
 from .retrieval import Snapshot
 from .sites import (
+    JS_CALLBACK_PARAMETERS,
+    JS_EVAL_ARGUMENT_RE,
+    JsFunction,
     JsRoute,
+    ModuleScope,
     PyFunction,
     SiteError,
     js_bound_names,
+    js_environment_name,
+    js_eval_site,
+    js_literal_assignment,
+    js_literal_assignment_in_span,
     js_names_in,
     js_require_line,
-    js_route_for_line,
-    python_function_for_line,
+    js_site_for_line,
+    scope_lines_near,
+    python_site_for_line,
     python_import_anchor,
     python_module_assignment,
 )
@@ -447,6 +456,18 @@ def _assignment(line: str) -> tuple[str, str, str, bool] | None:
     return match.group("prefix"), match.group("name"), match.group("expr"), bool(match.group("semi"))
 
 
+def _require_literal_query(segments: list[tuple[str, str]]) -> None:
+    """The query must carry SQL text of its own, not just be one computed expression.
+
+    `db.query(sql)` after `const sql = buildLookup(id)` parses as a single interpolated part with
+    no literal around it. Binding that as a parameter would send an empty statement and pass the
+    whole query as data. The text is built somewhere this scan cannot see, so nothing here knows
+    what is literal and what is input, and the model reads the builder instead.
+    """
+    if not any(kind == "lit" and text.strip() for kind, text in segments):
+        raise TemplateError("query_text_not_literal")
+
+
 def _sink_and_source(lines: list[str], line: int, start: int, end: int, sink_re: re.Pattern[str]) -> tuple[int, int | None, str, str, str]:
     """`(sink_line, assignment_line, sink_prefix, expression, sink_rest)` for the query call.
 
@@ -508,20 +529,32 @@ def _reject_fragments(values: list[BoundValue], lines: list[str], scope_start: i
 
 _JS_QUERY_RE = re.compile(r"\.query\s*\(")
 _JS_EXEC_RE = re.compile(r"(?P<callee>(?:[\w$]+\.)?exec(?P<sync>Sync)?)\s*\((?!File)")
+_JS_SPAWN_RE = re.compile(r"(?P<callee>(?:[\w$]+\.)?spawn(?P<sync>Sync)?)\s*\(")
+_JS_SHELL_OPTION_RE = re.compile(r"shell\s*:\s*true")
+# The options object of a process call. Its properties split on commas because it carries no
+# nested object; one that does makes the shape unrecognized rather than mis-parsed.
+_JS_OPTIONS_RE = re.compile(r",\s*\{(?P<body>[^{}]*)\}")
 _JS_JOIN_RE = re.compile(r"path\.join\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)")
 
 
-def _js_sql(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> TemplatePatch:
+def _js_sql(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction | ModuleScope) -> TemplatePatch:
+    """Interpolated SQL becomes a parameterized query, wherever the query is built.
+
+    The enclosing scope is only ever read as bounds: how far back to look for the assignment
+    that feeds the call, and which names in it are the untrusted ones. A route handler and a
+    plain function answer both questions, so the rewrite is the same in either.
+    """
     path = finding.affected_path
     lines = snapshot.full_content(path).splitlines()
-    sink_line, assign_line, sink_prefix, expression, rest = _sink_and_source(lines, _finding_line(finding), route.start_line, route.end_line, _JS_QUERY_RE)
+    sink_line, assign_line, sink_prefix, expression, rest = _sink_and_source(lines, _finding_line(finding), site.start_line, site.end_line, _JS_QUERY_RE)
     if not rest.startswith(")"):
         raise TemplateError("query_call_has_extra_arguments")
     segments = js_segments(expression)
     if not any(kind == "expr" for kind, _ in segments):
         raise TemplateError("no_interpolated_input")
+    _require_literal_query(segments)
     text, values = bind_placeholders(segments, lambda n: f"${n}")
-    _reject_fragments(values, lines, route.start_line, sink_line, (), js_segments)
+    _reject_fragments(values, lines, site.start_line, sink_line, site.parameters, js_segments)
     literal = js_string_literal(text)
     array = "[" + ", ".join(js_value(value) for value in values) + "]"
     if assign_line is None:
@@ -590,18 +623,58 @@ def _py_argv_element(token: list[tuple[str, str]]) -> str:
     return "f" + py_string_literal("".join(text if kind == "lit" else f"{{{text}}}" for kind, text in token))
 
 
-def _js_command(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> TemplatePatch:
+def _js_without_shell_option(rest: str) -> str:
+    """Removes `shell: true` from a process call's options object, and the object once it empties.
+
+    `, { shell: true });` becomes `);`, while `, { shell: true, cwd: base });` keeps the `cwd`.
+    """
+    match = _JS_OPTIONS_RE.search(rest)
+    if match is None:
+        raise TemplateError("shell_option_object_not_found")
+    kept = [
+        item.strip()
+        for item in match.group("body").split(",")
+        if item.strip() and not _JS_SHELL_OPTION_RE.fullmatch(item.strip())
+    ]
+    replacement = ", { " + ", ".join(kept) + " }" if kept else ""
+    return rest[: match.start()] + replacement + rest[match.end() :]
+
+
+def _js_command(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """`exec` of a command string becomes `execFile` with an argument array.
+
+    The rewrite reads and replaces the one call, so it needs no enclosing scope at all: a
+    command built in a helper, a CLI entry point or a route handler is the same edit.
+
+    `spawn(command, { shell: true })` takes the same rewrite with the shell option dropped and
+    the callee left alone, because `spawn` already takes a file and an argument array: the shell
+    was the only thing putting the interpolated value back within reach of a command separator.
+    The gate has already refused a command whose literal text carries shell syntax an argument
+    list cannot express, so what arrives here is a command name and its arguments.
+    """
     path = finding.affected_path
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
     text = lines[line - 1]
+    shell_mode = False
     sink = _JS_EXEC_RE.search(text)
     if not sink:
-        raise TemplateError("exec_call_not_found")
+        sink = _JS_SPAWN_RE.search(text)
+        if not sink:
+            raise TemplateError("exec_call_not_found")
+        shell_mode = True
     argument, rest = split_first_argument(text, sink.end())
-    if re.search(r"shell\s*:\s*true", rest):
-        raise TemplateError("shell_option_set")
+    if _JS_SHELL_OPTION_RE.search(rest):
+        if not shell_mode:
+            # `exec` runs a shell whatever its options say, so the option is not what makes this
+            # call shell-mode and removing it would repair nothing.
+            raise TemplateError("shell_option_set")
+        rest = _js_without_shell_option(rest)
+    elif shell_mode:
+        # `spawn` without the option already takes an argument array, so this is a different
+        # shape (`spawn('sh', ['-c', command])`) that this rewrite does not recognize.
+        raise TemplateError("spawn_without_shell_option")
     segments = js_segments(argument)
     tokens = _tokens(segments)
     if not tokens or len(tokens[0]) != 1 or tokens[0][0][0] != "lit":
@@ -610,7 +683,10 @@ def _js_command(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) ->
     argv = "[" + ", ".join(_js_argv_element(token) for token in tokens[1:]) + "]"
     callee = sink.group("callee")
     sync = bool(sink.group("sync"))
-    new_name = "execFileSync" if sync else "execFile"
+    if shell_mode:
+        new_name = "spawnSync" if sync else "spawn"
+    else:
+        new_name = "execFileSync" if sync else "execFile"
     changes: list[dict[str, Any]] = []
     if "." in callee:
         namespace = callee.rsplit(".", 1)[0]
@@ -626,51 +702,96 @@ def _js_command(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) ->
             changes.append(_hunk(path, finding.stable_id, number, [require_line], [widened]))
     replacement = f"{text[: sink.start()]}{new_callee}({command}, {argv}{rest}"
     changes.append(_hunk(path, finding.stable_id, line, [text], [replacement]))
-    return TemplatePatch(finding.stable_id, COMMAND_ARGUMENTS, changes, f"{callee} of a command string becomes {new_callee} with an argument array")
+    summary = (
+        f"{callee} of a command string loses shell: true and takes an argument array"
+        if shell_mode
+        else f"{callee} of a command string becomes {new_callee} with an argument array"
+    )
+    return TemplatePatch(finding.stable_id, COMMAND_ARGUMENTS, changes, summary)
 
 
-def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, route: JsRoute) -> TemplatePatch:
+# What a repaired path helper does when the resolved path leaves its base directory. A caller
+# that does not catch gets a 500 instead of somebody else's file, which is the trade the family
+# is for; `contracts/repair-v1.md` states it under path_containment.
+PATH_ESCAPE_MESSAGE = "path escapes base directory"
+
+
+def _js_rejection(site: JsRoute | JsFunction | ModuleScope) -> str:
+    """The statement that refuses a path escaping the base directory.
+
+    A route handler owns the response, so it answers 400, which is the contract it already has.
+    A plain function has no response to write, so it throws: the one behaviour a caller cannot
+    mistake for a valid path, where returning a sentinel would be read as one.
+    """
+    if isinstance(site, JsRoute):
+        return f"return {site.res}.status(400).end();"
+    # A route handler the module never registered owns a response just the same, and its second
+    # parameter is it: answering 400 is the contract its caller already has.
+    if isinstance(site, JsFunction) and site.kind == "handler" and len(site.parameters) >= 2:
+        return f"return {site.parameters[1]}.status(400).end();"
+    # A function that takes a continuation reports the refusal through it, for the same reason:
+    # that is how it already reports every other failure, and throwing at a caller that is
+    # waiting on a callback is a behaviour change on top of the repair.
+    if isinstance(site, JsFunction):
+        callback = next((name for name in site.parameters if name in JS_CALLBACK_PARAMETERS), None)
+        if callback:
+            return f"return {callback}(new Error({js_string_literal(PATH_ESCAPE_MESSAGE)}));"
+    return f"throw new Error({js_string_literal(PATH_ESCAPE_MESSAGE)});"
+
+
+def _js_containment_summary(site: JsRoute | JsFunction | ModuleScope) -> str:
+    if isinstance(site, JsRoute) or (isinstance(site, JsFunction) and site.kind == "handler" and len(site.parameters) >= 2):
+        tail = "answers 400"
+    elif isinstance(site, JsFunction) and any(name in JS_CALLBACK_PARAMETERS for name in site.parameters):
+        tail = "calls back with an error"
+    else:
+        tail = "throws"
+    return f"path.resolve with a containment check that {tail} before any read"
+
+
+def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction | ModuleScope) -> TemplatePatch:
+    """A `path.join` of untrusted input becomes a resolve plus a containment check.
+
+    The check is the same wherever the join is; only how it refuses differs, which is what
+    `_js_rejection` decides from the site.
+    """
     path = finding.affected_path
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
     if js_require_line(source, "path") is None:
         raise TemplateError("path_module_not_required")
+    rejection = _js_rejection(site)
     join_line = None
-    for number in range(min(line, route.end_line), route.start_line, -1):
+    for number in scope_lines_near(site.start_line, site.end_line, line):
         found = _JS_JOIN_RE.search(lines[number - 1])
         if found:
             join_line = number
             break
     if join_line is None:
-        raise TemplateError("path_join_not_found_in_route")
+        raise TemplateError("path_join_not_found_in_scope")
     text = lines[join_line - 1]
     found = _JS_JOIN_RE.search(text)
     base, user_input = found.group("base"), found.group("input")
     indent = text[: len(text) - len(text.lstrip())]
-    taken = js_names_in(lines[route.start_line - 1 : route.end_line])
+    taken = js_names_in(lines[site.start_line - 1 : site.end_line])
     base_name = next(name for name in ("baseDir", "containedBase", "resolvedBase") if name not in taken)
     assignment = _assignment(text)
     if assignment and assignment[2].strip() == found.group(0):
         target = assignment[1]
-        head = [
-            f"{indent}const {base_name} = path.resolve({base});",
-            f"{indent}const {target} = path.resolve({base_name}, String({user_input}));",
-            f"{indent}if ({target} !== {base_name} && !{target}.startsWith({base_name} + path.sep)) return {route.res}.status(400).end();",
-        ]
         tail: list[str] = []
     else:
         target = next(name for name in ("target", "safeTarget", "resolvedTarget") if name not in taken)
-        head = [
-            f"{indent}const {base_name} = path.resolve({base});",
-            f"{indent}const {target} = path.resolve({base_name}, String({user_input}));",
-            f"{indent}if ({target} !== {base_name} && !{target}.startsWith({base_name} + path.sep)) return {route.res}.status(400).end();",
-        ]
         tail = [text.replace(found.group(0), target, 1)]
+    head = [
+        f"{indent}const {base_name} = path.resolve({base});",
+        f"{indent}const {target} = path.resolve({base_name}, String({user_input}));",
+        f"{indent}if ({target} !== {base_name} && !{target}.startsWith({base_name} + path.sep)) {rejection}",
+    ]
     last = max(join_line, line)
     original = lines[join_line - 1 : last]
     replacement = head + tail + lines[join_line:last]
-    return TemplatePatch(finding.stable_id, PATH_CONTAINMENT, [_hunk(path, finding.stable_id, join_line, original, replacement)], "path.resolve with a containment check that answers 400 before any read")
+    return TemplatePatch(finding.stable_id, PATH_CONTAINMENT, [_hunk(path, finding.stable_id, join_line, original, replacement)], _js_containment_summary(site))
 
 
 # --- Python ---------------------------------------------------------------------------------
@@ -727,6 +848,7 @@ def _py_sql(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunction) 
     segments = py_segments(expression)
     if not any(kind == "expr" for kind, _ in segments):
         raise TemplateError("no_interpolated_input")
+    _require_literal_query(segments)
     text, values = bind_placeholders(segments, _PLACEHOLDERS[driver])
     _reject_fragments(values, lines, function.start_line, sink_line, function.parameters, py_segments)
     literal = py_string_literal(text)
@@ -747,6 +869,69 @@ def _py_sql(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunction) 
     replacement[assign_line - first] = f"{prefix}{name} = {literal}"
     replacement[sink_line - first] = f"{sink_prefix}{name}, {params}{rest}"
     return TemplatePatch(finding.stable_id, SQL_PARAMETERIZATION, [_hunk(path, finding.stable_id, first, original, replacement)], f"{driver} placeholders with bound parameters")
+
+
+def _js_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """`const apiKey = "sk-live-…"` becomes `const apiKey = process.env.API_KEY`.
+
+    The environment name is derived from the identifier the literal is bound to, so the
+    repair does not invent a name the author has to look up, and `process.env` needs no
+    import. A config key (`apiKey: "sk-live-…"`) takes the same rewrite on the value.
+    """
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    found = js_literal_assignment_in_span(source, finding.line_start, finding.line_end)
+    if found is None:
+        raise TemplateError("string_literal_assignment_not_found")
+    line, (name, literal, quote, _kind) = found
+    variable = js_environment_name(name)
+    if not variable:
+        raise TemplateError("environment_name_not_derived")
+    text = source.splitlines()[line - 1]
+    needle = f"{quote}{literal}{quote}"
+    if text.count(needle) != 1:
+        # More than one occurrence means the rewrite would have to choose, and choosing
+        # wrong rewrites a different value on the same line.
+        raise TemplateError("literal_not_uniquely_placed")
+    replacement = text.replace(needle, f"process.env.{variable}", 1)
+    if replacement == text:
+        raise TemplateError("assignment_not_rewritten")
+    return TemplatePatch(
+        finding.stable_id,
+        HARDCODED_CREDENTIAL,
+        [_hunk(path, finding.stable_id, line, [text], [replacement])],
+        f"{name} read from process.env.{variable} instead of a literal",
+    )
+
+
+def _js_eval(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """`eval(raw)` of a request value becomes `JSON.parse(raw)`.
+
+    This is the JavaScript reading of the decision the Python family makes with
+    `ast.literal_eval`: when the string is a document the code reads back as a value, parsing it
+    as data preserves what the function returns and removes the interpreter. When the string is
+    a program, the gate has already refused the finding, so what arrives here is the data shape.
+    `eval` of anything but a single identifier, or of an identifier that does not come from a
+    parameter, is left to the model, because the template cannot say what the string holds.
+    """
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    line = _finding_line(finding)
+    try:
+        _function, _untrusted, _members = js_eval_site(source, line)
+    except SiteError as exc:
+        raise TemplateError(exc.code) from exc
+    text = source.splitlines()[line - 1]
+    found = JS_EVAL_ARGUMENT_RE.search(text)
+    if not found:
+        raise TemplateError("eval_argument_not_an_identifier")
+    replacement = text[: found.start()] + f"JSON.parse({found.group('arg')})" + text[found.end() :]
+    return TemplatePatch(
+        finding.stable_id,
+        CODE_INJECTION_EVAL,
+        [_hunk(path, finding.stable_id, line, [text], [replacement])],
+        f"eval({found.group('arg')}) becomes JSON.parse({found.group('arg')})",
+    )
 
 
 def _py_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
@@ -807,24 +992,27 @@ def _py_command(snapshot: Snapshot, finding: FindingSnapshot, function: PyFuncti
 
 
 def _py_traversal(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunction) -> TemplatePatch:
+    """The same containment rewrite as `_js_traversal`, refusing the same way.
+
+    A Flask view aborts 400; a plain function raises `ValueError`, for the reason
+    `_js_rejection` gives on the JavaScript side.
+    """
     path = finding.affected_path
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
-    if not function.route:
-        raise TemplateError("traversal_outside_flask_view")
     if "os" not in python_imports(source):
         raise TemplateError("os_not_imported")
-    flask_import = re.search(r"^from flask import (?P<names>[^\n#]+)$", source, re.M)
-    if not flask_import:
+    flask_import = re.search(r"^from flask import (?P<names>[^\n#]+)$", source, re.M) if function.route else None
+    if function.route and not flask_import:
         raise TemplateError("flask_import_not_found")
     join_line = None
-    for number in range(min(line, function.end_line), function.start_line, -1):
+    for number in scope_lines_near(function.start_line, function.end_line, line):
         if _PY_JOIN_RE.search(lines[number - 1]):
             join_line = number
             break
     if join_line is None:
-        raise TemplateError("path_join_not_found_in_view")
+        raise TemplateError("path_join_not_found_in_scope")
     text = lines[join_line - 1]
     found = _PY_JOIN_RE.search(text)
     base, user_input = found.group("base"), found.group("input")
@@ -838,19 +1026,22 @@ def _py_traversal(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunc
     else:
         target = next(name for name in ("target", "safe_target") if not re.search(rf"(?<!\w){name}(?!\w)", body_text))
         tail = [text.replace(found.group(0), target, 1)]
+    rejection = "abort(400)" if function.route else f"raise ValueError({py_string_literal(PATH_ESCAPE_MESSAGE)})"
     head = [
         f"{indent}{base_name} = os.path.realpath({base})",
         f"{indent}{target} = os.path.realpath(os.path.join({base_name}, {user_input}))",
         f"{indent}if {target} != {base_name} and not {target}.startswith({base_name} + os.sep):",
-        f"{indent}    abort(400)",
+        f"{indent}    {rejection}",
     ]
     last = max(join_line, line)
     changes = [_hunk(path, finding.stable_id, join_line, lines[join_line - 1 : last], head + tail + lines[join_line:last])]
-    names = [item.strip() for item in flask_import.group("names").split(",")]
-    if "abort" not in names:
-        number = source[: flask_import.start()].count("\n") + 1
-        changes.insert(0, _hunk(path, finding.stable_id, number, [flask_import.group(0)], [f"from flask import {', '.join(names + ['abort'])}"]))
-    return TemplatePatch(finding.stable_id, PATH_CONTAINMENT, changes, "os.path.realpath with a containment check that aborts 400 before any file access")
+    if flask_import is not None:
+        names = [item.strip() for item in flask_import.group("names").split(",")]
+        if "abort" not in names:
+            number = source[: flask_import.start()].count("\n") + 1
+            changes.insert(0, _hunk(path, finding.stable_id, number, [flask_import.group(0)], [f"from flask import {', '.join(names + ['abort'])}"]))
+    tail_text = "aborts 400" if function.route else "raises ValueError"
+    return TemplatePatch(finding.stable_id, PATH_CONTAINMENT, changes, f"os.path.realpath with a containment check that {tail_text} before any file access")
 
 
 # --- entry points ---------------------------------------------------------------------------
@@ -860,17 +1051,24 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
     path = finding.affected_path
     try:
         if language == JAVASCRIPT:
-            route = js_route_for_line(snapshot.full_content(path), _finding_line(finding))
-            if family == SQL_PARAMETERIZATION:
-                return _js_sql(snapshot, finding, route)
+            # A secret literal is not inside any function, and neither is a parser a route
+            # calls, so both are recognized before the enclosing-scope lookup.
+            if family == HARDCODED_CREDENTIAL:
+                return _js_credential(snapshot, finding)
+            if family == CODE_INJECTION_EVAL:
+                return _js_eval(snapshot, finding)
             if family == COMMAND_ARGUMENTS:
-                return _js_command(snapshot, finding, route)
+                # The rewrite replaces one call in place, so it needs no enclosing scope.
+                return _js_command(snapshot, finding)
+            site = js_site_for_line(snapshot.full_content(path), _finding_line(finding))
+            if family == SQL_PARAMETERIZATION:
+                return _js_sql(snapshot, finding, site)
             if family == PATH_CONTAINMENT:
-                return _js_traversal(snapshot, finding, route)
+                return _js_traversal(snapshot, finding, site)
         elif language == PYTHON:
             if family == HARDCODED_CREDENTIAL:
                 return _py_credential(snapshot, finding)
-            function = python_function_for_line(snapshot.full_content(path), _finding_line(finding))
+            function = python_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _py_sql(snapshot, finding, function)
             if family == CODE_INJECTION_EVAL:

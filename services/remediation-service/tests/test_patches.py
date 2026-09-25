@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.conftest import whole_file_change
+from tests.conftest import renamed_payload, whole_file_change
 
 from src.digests import content_sha256
 from src.models import RepairRequest
@@ -68,15 +68,49 @@ def test_patch_accepts_valid_javascript_and_records_no_syntax_limitation(request
     assert not any("syntax check skipped" in item for item in bundle.limitations)
 
 
-def test_typescript_candidates_record_an_explicit_syntax_check_limitation(request_payload, source):
+def test_typescript_candidates_are_parsed_by_the_type_stripper(request_payload, source):
+    """A `.ts` candidate is parsed, not skipped: `node --check` would reject the annotation."""
     request = RepairRequest.model_validate(request_payload)
-    replacement = source.replace("${id}", "$1")
+    annotated = "export function loadUser(db: Db, id: string): Promise<Row[]> {\n  return db.query('SELECT * FROM users WHERE id = $1', [id]);\n}\n"
     bundle = build_patch_bundle(
         request,
         Snapshot(request),
-        [whole_file_change("src/db.ts", source, replacement)],
+        [whole_file_change("src/db.ts", source, annotated)],
     )
-    assert any("syntax check skipped for src/db.ts" in item for item in bundle.limitations)
+    assert not any("syntax check" in item for item in bundle.limitations), bundle.limitations
+
+
+def test_a_typescript_candidate_that_does_not_parse_is_rejected(request_payload, source):
+    request = RepairRequest.model_validate(request_payload)
+    with pytest.raises(PatchPolicyError, match="candidate_syntax_invalid:src/db.ts"):
+        build_patch_bundle(
+            request,
+            Snapshot(request),
+            [whole_file_change("src/db.ts", source, "export function loadUser(db: Db, id: string {\n")],
+        )
+
+
+def test_a_candidate_with_syntax_the_stripper_refuses_is_rejected(request_payload, source):
+    """An enum has to be compiled, not deleted, so strip-only mode refuses the whole file."""
+    request = RepairRequest.model_validate(request_payload)
+    with pytest.raises(PatchPolicyError, match="candidate_syntax_invalid:src/db.ts"):
+        build_patch_bundle(
+            request,
+            Snapshot(request),
+            [whole_file_change("src/db.ts", source, "enum Mode { Read, Write }\n" + source)],
+        )
+
+
+def test_an_unparsed_suffix_still_records_an_explicit_syntax_check_limitation(request_payload, source):
+    """`.tsx` is JSX, which strip-only mode does not transform, so it is still only recorded."""
+    payload = renamed_payload(request_payload, "src/db.ts", "src/db.tsx")
+    request = RepairRequest.model_validate(payload)
+    bundle = build_patch_bundle(
+        request,
+        Snapshot(request),
+        [whole_file_change("src/db.tsx", source, source.replace("${id}", "$1"))],
+    )
+    assert any("syntax check skipped for src/db.tsx" in item for item in bundle.limitations)
 
 
 def test_patch_rejects_an_undeclared_dependency(request_payload, source):

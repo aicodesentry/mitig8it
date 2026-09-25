@@ -20,24 +20,28 @@ from tests.conftest import whole_file_change
 from tests.test_coverage_revision import CANDIDATE_TAIL, SelectiveBroker, _abstain, _payload, _test, _verify
 from tests.test_engine import PassingBroker, ScriptedProvider
 
+# Methods, so the service writes no proof and the template pass is skipped with it. These tests are
+# about how the model's hunks are split into per-finding candidates, which needs a model pass.
 SOURCE = (
     "const { Pool } = require('pg');\n"
     "const { exec } = require('child_process');\n"
-    "function loadUser(db, id) {\n"
-    "  return db.query(`SELECT * FROM users WHERE id = ${id}`);\n"
+    "class Jobs {\n"
+    "  loadUser(db, id) {\n"
+    "    return db.query(`SELECT * FROM users WHERE id = ${id}`);\n"
+    "  }\n"
+    "  render(id, cb) {\n"
+    "    return exec(`render --order ${id}`, cb);\n"
+    "  }\n"
+    "  archive(name, cb) {\n"
+    "    return exec(`tar -czf ${name}.tgz`, cb);\n"
+    "  }\n"
     "}\n"
-    "function render(id, cb) {\n"
-    "  return exec(`render --order ${id}`, cb);\n"
-    "}\n"
-    "function archive(name, cb) {\n"
-    "  return exec(`tar -czf ${name}.tgz`, cb);\n"
-    "}\n"
-    "module.exports = { loadUser, render, archive, Pool };\n"
+    "module.exports = { Jobs, Pool };\n"
 )
 FINDINGS = [
-    {"snapshot_id": "f-sql", "rule_id": "js.sql-injection", "cwe_id": "CWE-89", "file_path": "src/app.js", "line_start": 4, "line_end": 4},
-    {"snapshot_id": "f-exec", "rule_id": "js.command-injection", "cwe_id": "CWE-78", "file_path": "src/app.js", "line_start": 7, "line_end": 7},
-    {"snapshot_id": "f-tar", "rule_id": "js.command-injection", "cwe_id": "CWE-78", "file_path": "src/app.js", "line_start": 10, "line_end": 10},
+    {"snapshot_id": "f-sql", "rule_id": "js.sql-injection", "cwe_id": "CWE-89", "file_path": "src/app.js", "line_start": 5, "line_end": 5},
+    {"snapshot_id": "f-exec", "rule_id": "js.command-injection", "cwe_id": "CWE-78", "file_path": "src/app.js", "line_start": 8, "line_end": 8},
+    {"snapshot_id": "f-tar", "rule_id": "js.command-injection", "cwe_id": "CWE-78", "file_path": "src/app.js", "line_start": 11, "line_end": 11},
 ]
 IMPORT_HUNK = {
     "path": "src/app.js",
@@ -49,23 +53,23 @@ IMPORT_HUNK = {
 SQL_HUNK = {
     "path": "src/app.js",
     "finding_id": "f-sql",
-    "start_line": 4,
-    "original_lines": ["  return db.query(`SELECT * FROM users WHERE id = ${id}`);"],
-    "replacement_lines": ["  return db.query('SELECT * FROM users WHERE id = $1', [id]);"],
+    "start_line": 5,
+    "original_lines": ["    return db.query(`SELECT * FROM users WHERE id = ${id}`);"],
+    "replacement_lines": ["    return db.query('SELECT * FROM users WHERE id = $1', [id]);"],
 }
 EXEC_HUNK = {
     "path": "src/app.js",
     "finding_id": "f-exec",
-    "start_line": 7,
-    "original_lines": ["  return exec(`render --order ${id}`, cb);"],
-    "replacement_lines": ["  return execFile('render', ['--order', id], cb);"],
+    "start_line": 8,
+    "original_lines": ["    return exec(`render --order ${id}`, cb);"],
+    "replacement_lines": ["    return execFile('render', ['--order', id], cb);"],
 }
 TAR_HUNK = {
     "path": "src/app.js",
     "finding_id": "f-tar",
-    "start_line": 10,
-    "original_lines": ["  return exec(`tar -czf ${name}.tgz`, cb);"],
-    "replacement_lines": ["  return execFile('tar', ['-czf', name + '.tgz'], cb);"],
+    "start_line": 11,
+    "original_lines": ["    return exec(`tar -czf ${name}.tgz`, cb);"],
+    "replacement_lines": ["    return execFile('tar', ['-czf', name + '.tgz'], cb);"],
 }
 
 
@@ -80,7 +84,7 @@ def _propose(changes, finding_ids, call_id="propose"):
             "hypothesis": "Untrusted input reaches a sink.",
             "intended_behavior": "Preserve the documented behavior for legitimate input.",
             "assumptions": ["pg positional parameters are available"],
-            "citations": [{"path": "src/app.js", "line_start": 1, "line_end": 12}],
+            "citations": [{"path": "src/app.js", "line_start": 1, "line_end": 14}],
             "changes": changes,
             "regression_tests": [_test(finding_id) for finding_id in finding_ids],
         },
@@ -119,8 +123,8 @@ def test_a_hunk_owned_by_an_unproven_finding_is_dropped_and_a_prerequisite_survi
     plan = split_hunks(request.findings, bundle.hunks, ["f-sql", "f-tar"])
     # f-exec is unproven: its hunk is gone everywhere, but the import it was tagged with stays
     # in the f-tar candidate because that hunk uses execFile.
-    assert [hunk.start_line for hunk in plan["f-sql"]] == [4]
-    assert [hunk.start_line for hunk in plan["f-tar"]] == [2, 10]
+    assert [hunk.start_line for hunk in plan["f-sql"]] == [5]
+    assert [hunk.start_line for hunk in plan["f-tar"]] == [2, 11]
     assert "f-exec" not in plan
 
 
@@ -129,8 +133,8 @@ def test_a_co_located_finding_shares_the_hunk_that_fixes_both(request_payload):
     request = _request(request_payload, findings=findings)
     bundle = build_patch_bundle(request, Snapshot(request), [SQL_HUNK])
     plan = split_hunks(request.findings, bundle.hunks, ["f-sql", "f-sql-2"])
-    assert [hunk.start_line for hunk in plan["f-sql"]] == [4]
-    assert [hunk.start_line for hunk in plan["f-sql-2"]] == [4]
+    assert [hunk.start_line for hunk in plan["f-sql"]] == [5]
+    assert [hunk.start_line for hunk in plan["f-sql-2"]] == [5]
     # The tagged owner decides dropping: an unproven owner takes the hunk away from both.
     assert split_hunks(request.findings, bundle.hunks, ["f-sql-2"]) == {"f-sql-2": []}
 
@@ -174,7 +178,7 @@ async def test_an_unproven_findings_hunk_never_ships_and_the_proven_finding_gets
     assert candidate.finding_ids == ["f-sql"]
     replacement = candidate.patch[0].replacement_content
     assert "$1" in replacement and "execFile" not in replacement
-    assert candidate.preview["hunks"] == [{"path": "src/app.js", "start_line": 4, "end_line": 4, "finding_id": "f-sql"}]
+    assert candidate.preview["hunks"] == [{"path": "src/app.js", "start_line": 5, "end_line": 5, "finding_id": "f-sql"}]
     assert [entry["path"] for entry in candidate.generated_tests] == [".mitig8it/regression/f-sql.test.js"]
     # The group run, then the f-sql candidate on its own tree; the batch of one needs no more.
     assert len(broker.runs) == 2
@@ -261,10 +265,10 @@ def test_combining_candidates_applies_a_shared_hunk_once_and_keeps_every_hunk(re
     content = combined.patches[0].replacement_content
     assert content.count("const { execFile } = require('child_process');") == 1
     assert "execFile('render'" in content and "execFile('tar'" in content
-    assert [hunk.start_line for hunk in combined.hunks] == [2, 7, 10]
+    assert [hunk.start_line for hunk in combined.hunks] == [2, 8, 11]
     assert {test.finding_id for test in combined.generated_tests} == {"f-exec", "f-tar"}
     other_import = {**IMPORT_HUNK, "replacement_lines": [IMPORT_HUNK["original_lines"][0], "const cp = require('child_process');"]}
-    third = build_patch_bundle(request, snapshot, [other_import, {**TAR_HUNK, "replacement_lines": ["  return cp.execFile('tar', ['-czf', name + '.tgz'], cb);"]}])
+    third = build_patch_bundle(request, snapshot, [other_import, {**TAR_HUNK, "replacement_lines": ["    return cp.execFile('tar', ['-czf', name + '.tgz'], cb);"]}])
     with pytest.raises(PatchPolicyError, match="overlapping_candidates"):
         combine_patch_bundles(request, snapshot, [first, third])
 

@@ -11,4 +11,15 @@ const stageDuration = new client.Histogram({ name: 'mitig8it_remediation_stage_d
 // the number a dashboard needs to answer "how many remediations failed today".
 const jobTerminalStates = new client.Counter({ name: 'mitig8it_remediation_jobs_terminal_total', help: 'Remediation jobs that reached a terminal state, by state', labelNames: ['state'] });
 
-module.exports = { stageAttempts, leaseReclaims, actionTransitions, stageDuration, usageReleases, jobTerminalStates };
+// The three quality rates, set by the reconciler's quality_metrics step from the daily
+// roll-up. They are gauges, not counters: each pass replaces the value rather than adding
+// to it. A rate with no denominator is not exported at all, because a gauge has no way to
+// say "unknown" and zero would be read as a real answer.
+const qualityApplyRate = new client.Gauge({ name: 'mitig8it_quality_apply_rate', help: 'Share of published fixes that were applied', labelNames: ['installation_id', 'window'] });
+const qualityDismissRate = new client.Gauge({ name: 'mitig8it_quality_dismiss_rate', help: 'Share of new findings that were dismissed, suppressed, or resolved without a fix', labelNames: ['installation_id', 'window'] });
+const qualityResidualRate = new client.Gauge({ name: 'mitig8it_quality_residual_rate', help: 'Share of applied fixes that left a blocking finding behind', labelNames: ['installation_id', 'window'] });
+
+module.exports = {
+  stageAttempts, leaseReclaims, actionTransitions, stageDuration, usageReleases, jobTerminalStates,
+  qualityApplyRate, qualityDismissRate, qualityResidualRate,
+};

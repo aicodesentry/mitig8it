@@ -2,38 +2,42 @@
 // routes and over gRPC. Both transports are driven here against the same mocked
 // operations module, so a divergence in payload shape or result mapping fails the build.
 const OPERATION_NAMES = [
-  'authorizeRemediationActor',
-  'cancelScheduledMerge',
-  'commitRemediationAction',
   'createCheckRun',
   'createRemediationCheckRun',
   'fetchFileContents',
   'fetchPullRequestFiles',
   'fetchRemediationSnapshot',
-  'mergeRemediationAction',
   'postInlineComment',
-  'prepareRemediationAction',
   'publishFindingFixSections',
   'publishRemediationComment',
+  'retireInlineComments',
+  'submitPullRequestReview',
+];
+
+// The operations that used to write to a repository. The App holds no contents write
+// permission any more, so neither transport may expose them.
+const REMOVED_OPERATION_NAMES = [
+  'authorizeRemediationActor',
+  'cancelScheduledMerge',
+  'commitRemediationAction',
+  'mergeRemediationAction',
+  'prepareRemediationAction',
   'readMergeEligibility',
   'readPullRequestHead',
   'reconcileRemediationAction',
-  'submitPullRequestReview',
 ];
 
 jest.mock('../services/githubInternalOperations', () => {
   const operations = {};
   for (const name of [
-    'cancelScheduledMerge', 'commitRemediationAction', 'createCheckRun', 'createRemediationCheckRun',
-    'fetchFileContents', 'fetchPullRequestFiles', 'fetchRemediationSnapshot', 'mergeRemediationAction',
-    'postInlineComment', 'prepareRemediationAction', 'readMergeEligibility', 'readPullRequestHead',
-    'reconcileRemediationAction', 'submitPullRequestReview', 'authorizeRemediationActor', 'publishRemediationComment',
-    'publishFindingFixSections',
+    'createCheckRun', 'createRemediationCheckRun',
+    'fetchFileContents', 'fetchPullRequestFiles', 'fetchRemediationSnapshot',
+    'postInlineComment', 'retireInlineComments', 'submitPullRequestReview',
+    'publishRemediationComment', 'publishFindingFixSections',
   ]) {
     operations[name] = jest.fn();
   }
   operations.githubRequest = jest.fn();
-  operations.remediationMarker = jest.fn();
   operations.remediationVerificationCheckName = jest.fn();
   operations.OperationError = class OperationError extends Error {
     constructor(message, statusCode = 500, detail = null) {
@@ -129,26 +133,6 @@ const cases = [
     }),
   },
   {
-    name: 'prepare',
-    path: '/github/remediation/prepare',
-    rpc: 'prepareRemediation',
-    operation: 'prepareRemediationAction',
-    body: { ...envelopeBody },
-    request: () => {
-      const request = new githubPb.RemediationPrepareRequest();
-      request.setEnvelope(buildEnvelope());
-      return request;
-    },
-    result: { state: 'ready', operation_id: actionId, branch: 'repair-branch', expected_head_oid: head, marker: '<!-- marker -->' },
-    read: (response) => ({
-      state: response.getState(),
-      operation_id: response.getOperationId(),
-      branch: response.getBranch(),
-      expected_head_oid: response.getExpectedHeadOid(),
-      marker: response.getMarker(),
-    }),
-  },
-  {
     name: 'snapshot',
     path: '/github/remediation/snapshot',
     rpc: 'snapshotRemediation',
@@ -177,187 +161,6 @@ const cases = [
       head_sha: response.getHeadSha(),
       base_sha: response.getBaseSha(),
       omitted_source_paths: response.getOmittedSourcePathsList(),
-    }),
-  },
-  {
-    name: 'commit',
-    path: '/github/remediation/commit',
-    rpc: 'commitRemediation',
-    operation: 'commitRemediationAction',
-    body: {
-      ...envelopeBody,
-      branch: 'repair-branch',
-      expected_head_oid: head,
-      verified_tree_oid: tree,
-      commit_message: 'Apply verified remediation',
-      changes: [{ path: 'src/app.js', contents_base64: 'Y29uc3Qgc2FmZSA9IHRydWU7Cg==' }],
-    },
-    request: () => {
-      const request = new githubPb.RemediationCommitRequest();
-      request.setEnvelope(buildEnvelope());
-      request.setBranch('repair-branch');
-      request.setExpectedHeadOid(head);
-      request.setVerifiedTreeOid(tree);
-      request.setCommitMessage('Apply verified remediation');
-      const change = new githubPb.RemediationFileChange();
-      change.setPath('src/app.js');
-      change.setContentsBase64('Y29uc3Qgc2FmZSA9IHRydWU7Cg==');
-      request.setChangesList([change]);
-      return request;
-    },
-    result: { state: 'applied', operation_id: actionId, commit_sha: 'e'.repeat(40), tree_oid: tree, reason: '' },
-    read: (response) => ({
-      state: response.getState(),
-      operation_id: response.getOperationId(),
-      commit_sha: response.getCommitSha(),
-      tree_oid: response.getTreeOid(),
-      reason: response.getReason(),
-    }),
-  },
-  {
-    name: 'reconcile',
-    path: '/github/remediation/reconcile',
-    rpc: 'reconcileRemediation',
-    operation: 'reconcileRemediationAction',
-    body: { ...envelopeBody, verified_tree_oid: tree },
-    request: () => {
-      const request = new githubPb.RemediationReconcileRequest();
-      request.setEnvelope(buildEnvelope());
-      request.setVerifiedTreeOid(tree);
-      return request;
-    },
-    result: { state: 'unresolved', operation_id: actionId, commit_sha: '', tree_oid: '', reason: 'head_changed_without_matching_marker' },
-    read: (response) => ({
-      state: response.getState(),
-      operation_id: response.getOperationId(),
-      commit_sha: response.getCommitSha(),
-      tree_oid: response.getTreeOid(),
-      reason: response.getReason(),
-    }),
-  },
-  {
-    name: 'merge',
-    path: '/github/remediation/merge',
-    rpc: 'mergeRemediation',
-    operation: 'mergeRemediationAction',
-    body: {
-      ...envelopeBody,
-      expected_head_sha: head,
-      expected_base_sha: base,
-      merge_method: 'squash',
-      verification_check_name: 'Mitig8it Remediation Verification',
-    },
-    request: () => {
-      const request = new githubPb.RemediationMergeRequest();
-      request.setEnvelope(buildEnvelope());
-      request.setExpectedHeadSha(head);
-      request.setExpectedBaseSha(base);
-      request.setMergeMethod('squash');
-      request.setVerificationCheckName('Mitig8it Remediation Verification');
-      return request;
-    },
-    result: { state: 'reconciling', operation_id: actionId, commit_sha: '', reason: 'github_merge_outcome_ambiguous' },
-    read: (response) => ({
-      state: response.getState(),
-      operation_id: response.getOperationId(),
-      commit_sha: response.getCommitSha(),
-      reason: response.getReason(),
-    }),
-  },
-  {
-    name: 'cancel-merge',
-    path: '/github/remediation/cancel-merge',
-    rpc: 'cancelScheduledMerge',
-    operation: 'cancelScheduledMerge',
-    body: { ...envelopeBody, pull_number: 9, expected_head_sha: head },
-    request: () => {
-      const request = new githubPb.CancelScheduledMergeRequest();
-      request.setEnvelope(buildEnvelope());
-      request.setPullNumber(9);
-      request.setExpectedHeadSha(head);
-      return request;
-    },
-    result: { state: 'cancelled', operation_id: actionId, head_sha: head, merged: false, reason: '' },
-    read: (response) => ({
-      state: response.getState(),
-      operation_id: response.getOperationId(),
-      head_sha: response.getHeadSha(),
-      merged: response.getMerged(),
-      reason: response.getReason(),
-    }),
-  },
-  {
-    name: 'merge-eligibility',
-    path: '/github/remediation/merge-eligibility',
-    rpc: 'readMergeEligibility',
-    operation: 'readMergeEligibility',
-    body: {
-      ...envelopeBody,
-      pull_number: 9,
-      expected_head_sha: head,
-      verification_check_name: 'Mitig8it Remediation Verification',
-    },
-    request: () => {
-      const request = new githubPb.MergeEligibilityRequest();
-      request.setEnvelope(buildEnvelope());
-      request.setPullNumber(9);
-      request.setExpectedHeadSha(head);
-      request.setVerificationCheckName('Mitig8it Remediation Verification');
-      return request;
-    },
-    result: {
-      eligible: false,
-      blockers: ['verification_check_not_successful'],
-      required_checks: [{ context: 'Mitig8it Remediation Verification', app_id: 123 }],
-      check_runs: [{ id: 3, name: 'Mitig8it Remediation Verification', app_id: 999, status: 'completed', conclusion: 'success' }],
-      reviews: { required: 1, approvals: 1, changes_requested: false },
-      protection_source: 'branch_protection',
-      mergeable_state: 'clean',
-      head_sha: head,
-      base_sha: base,
-      verification_check_name: 'Mitig8it Remediation Verification',
-    },
-    read: (response) => ({
-      eligible: response.getEligible(),
-      blockers: response.getBlockersList(),
-      required_checks: response.getRequiredChecksList().map((check) => ({ context: check.getContext(), app_id: check.getAppId() })),
-      check_runs: response.getCheckRunsList().map((check) => ({
-        id: check.getId(), name: check.getName(), app_id: check.getAppId(),
-        status: check.getStatus(), conclusion: check.getConclusion(),
-      })),
-      reviews: {
-        required: response.getReviews().getRequired(),
-        approvals: response.getReviews().getApprovals(),
-        changes_requested: response.getReviews().getChangesRequested(),
-      },
-      protection_source: response.getProtectionSource(),
-      mergeable_state: response.getMergeableState(),
-      head_sha: response.getHeadSha(),
-      base_sha: response.getBaseSha(),
-      verification_check_name: response.getVerificationCheckName(),
-    }),
-  },
-  {
-    name: 'pull-head',
-    path: '/github/remediation/pull-head',
-    rpc: 'readPullRequestHead',
-    operation: 'readPullRequestHead',
-    body: { ...envelopeBody, pull_number: 9 },
-    request: () => {
-      const request = new githubPb.PullRequestHeadRequest();
-      request.setEnvelope(buildEnvelope());
-      request.setPullNumber(9);
-      return request;
-    },
-    result: { head_sha: head, base_sha: base, state: 'open', draft: false, merged: false, mergeable_state: 'clean', fork: false },
-    read: (response) => ({
-      head_sha: response.getHeadSha(),
-      base_sha: response.getBaseSha(),
-      state: response.getState(),
-      draft: response.getDraft(),
-      merged: response.getMerged(),
-      mergeable_state: response.getMergeableState(),
-      fork: response.getFork(),
     }),
   },
   {
@@ -404,91 +207,6 @@ const cases = [
       external_id: response.getExternalId(),
       updated: response.getUpdated(),
       reason: response.getReason(),
-    }),
-  },
-  {
-    name: 'authorize',
-    path: '/github/remediation/authorize',
-    rpc: 'authorizeRemediation',
-    operation: 'authorizeRemediationActor',
-    body: { ...envelopeBody },
-    request: () => {
-      const request = new githubPb.RemediationAuthorizeRequest();
-      request.setEnvelope(buildEnvelope());
-      return request;
-    },
-    result: {
-      state: 'authorized',
-      installation_active: true,
-      repository_granted: true,
-      actor_write_permission: true,
-      head_sha: head,
-      base_sha: base,
-      head_branch: 'feature-branch',
-      base_branch: 'main',
-    },
-    read: (response) => ({
-      state: response.getState(),
-      installation_active: response.getInstallationActive(),
-      repository_granted: response.getRepositoryGranted(),
-      actor_write_permission: response.getActorWritePermission(),
-      head_sha: response.getHeadSha(),
-      base_sha: response.getBaseSha(),
-      head_branch: response.getHeadBranch(),
-      base_branch: response.getBaseBranch(),
-    }),
-  },
-  {
-    // A ruleset-governed branch reports a different protection source and ruleset-derived
-    // blockers, so both transports must carry those values unchanged.
-    name: 'merge-eligibility-rulesets',
-    path: '/github/remediation/merge-eligibility',
-    rpc: 'readMergeEligibility',
-    operation: 'readMergeEligibility',
-    body: {
-      ...envelopeBody,
-      pull_number: 9,
-      expected_head_sha: head,
-      verification_check_name: 'Mitig8it Remediation Verification',
-    },
-    request: () => {
-      const request = new githubPb.MergeEligibilityRequest();
-      request.setEnvelope(buildEnvelope());
-      request.setPullNumber(9);
-      request.setExpectedHeadSha(head);
-      request.setVerificationCheckName('Mitig8it Remediation Verification');
-      return request;
-    },
-    result: {
-      eligible: false,
-      blockers: ['merge_queue_unsupported', 'ruleset_rule_unsupported_required_deployments'],
-      required_checks: [{ context: 'Mitig8it Remediation Verification', app_id: 123 }],
-      check_runs: [{ id: 3, name: 'Mitig8it Remediation Verification', app_id: 123, status: 'completed', conclusion: 'success' }],
-      reviews: { required: 0, approvals: 0, changes_requested: false },
-      protection_source: 'rulesets',
-      mergeable_state: 'clean',
-      head_sha: head,
-      base_sha: base,
-      verification_check_name: 'Mitig8it Remediation Verification',
-    },
-    read: (response) => ({
-      eligible: response.getEligible(),
-      blockers: response.getBlockersList(),
-      required_checks: response.getRequiredChecksList().map((check) => ({ context: check.getContext(), app_id: check.getAppId() })),
-      check_runs: response.getCheckRunsList().map((check) => ({
-        id: check.getId(), name: check.getName(), app_id: check.getAppId(),
-        status: check.getStatus(), conclusion: check.getConclusion(),
-      })),
-      reviews: {
-        required: response.getReviews().getRequired(),
-        approvals: response.getReviews().getApprovals(),
-        changes_requested: response.getReviews().getChangesRequested(),
-      },
-      protection_source: response.getProtectionSource(),
-      mergeable_state: response.getMergeableState(),
-      head_sha: response.getHeadSha(),
-      base_sha: response.getBaseSha(),
-      verification_check_name: response.getVerificationCheckName(),
     }),
   },
   {
@@ -581,7 +299,21 @@ test('the operations module exposes every function both transports dispatch to',
   for (const name of OPERATION_NAMES) {
     expect(typeof require('../services/githubInternalOperations')[name]).toBe('function');
   }
-  expect(cases).toHaveLength(13);
+  expect(cases).toHaveLength(4);
+});
+
+// A regression guard for the least-privilege change: neither the gRPC service nor the
+// operations module may grow a code-writing operation back.
+test('no transport exposes an operation that writes to a repository', () => {
+  const { githubService: service } = require('../github_grpc_server');
+  for (const rpc of ['commitRemediation', 'mergeRemediation', 'prepareRemediation', 'reconcileRemediation',
+    'cancelScheduledMerge', 'readMergeEligibility', 'readPullRequestHead', 'authorizeRemediation']) {
+    expect(service[rpc]).toBeUndefined();
+  }
+  const real = jest.requireActual('../services/githubInternalOperations');
+  for (const name of REMOVED_OPERATION_NAMES) {
+    expect(real[name]).toBeUndefined();
+  }
 });
 
 test.each(cases)('$name reaches the same operation with the same payload over HTTP and gRPC', async (testCase) => {
@@ -612,4 +344,29 @@ test.each(cases)('$name maps an operation refusal to a transport-specific failur
     code: 9,
     message: 'Remediation action is superseded',
   });
+});
+
+// Retiring an inline comment is an analysis operation, not a remediation one, so it carries
+// no consent envelope and has no place in the cases above. It is driven over both transports
+// for the same reason they are: production speaks gRPC, and an operation that worked only
+// over HTTP would be an operation that never ran.
+test('retiring inline comments reaches the same operation with the same payload over HTTP and gRPC', async () => {
+  operations.retireInlineComments.mockResolvedValue({ retired: 2, kept: 1 });
+  const body = { owner: 'owner', repo: 'repo', pr_number: 9, installation_id: 41, fingerprints: ['fp-one', 'fp-two'] };
+
+  const res = createRes();
+  await findRouteHandler('/github/comments/retire')({ body }, res);
+
+  const request = new githubPb.RetireInlineCommentsRequest();
+  request.setOwner('owner');
+  request.setRepo('repo');
+  request.setPrNumber(9);
+  request.setInstallationId(41);
+  request.setFingerprintsList(['fp-one', 'fp-two']);
+  const grpcResponse = await callGrpc('retireInlineComments', request);
+
+  const [httpPayload, grpcPayload] = operations.retireInlineComments.mock.calls.map(([payload]) => payload);
+  expect(grpcPayload).toEqual(httpPayload);
+  expect(res.body).toEqual({ retired: 2, kept: 1 });
+  expect({ retired: grpcResponse.getRetired(), kept: grpcResponse.getKept() }).toEqual(res.body);
 });

@@ -27,28 +27,6 @@ function deserialize_mitig8it_common_v1_HealthCheckResponse(buffer_arg) {
   return common_pb.HealthCheckResponse.deserializeBinary(new Uint8Array(buffer_arg));
 }
 
-function serialize_mitig8it_github_v1_CancelScheduledMergeRequest(arg) {
-  if (!(arg instanceof github_pb.CancelScheduledMergeRequest)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.CancelScheduledMergeRequest');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_CancelScheduledMergeRequest(buffer_arg) {
-  return github_pb.CancelScheduledMergeRequest.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_CancelScheduledMergeResponse(arg) {
-  if (!(arg instanceof github_pb.CancelScheduledMergeResponse)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.CancelScheduledMergeResponse');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_CancelScheduledMergeResponse(buffer_arg) {
-  return github_pb.CancelScheduledMergeResponse.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
 function serialize_mitig8it_github_v1_CreateCheckRunRequest(arg) {
   if (!(arg instanceof github_pb.CreateCheckRunRequest)) {
     throw new Error('Expected argument of type mitig8it.github.v1.CreateCheckRunRequest');
@@ -137,28 +115,6 @@ function deserialize_mitig8it_github_v1_FindingFixSectionsResponse(buffer_arg) {
   return github_pb.FindingFixSectionsResponse.deserializeBinary(new Uint8Array(buffer_arg));
 }
 
-function serialize_mitig8it_github_v1_MergeEligibilityRequest(arg) {
-  if (!(arg instanceof github_pb.MergeEligibilityRequest)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.MergeEligibilityRequest');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_MergeEligibilityRequest(buffer_arg) {
-  return github_pb.MergeEligibilityRequest.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_MergeEligibilityResponse(arg) {
-  if (!(arg instanceof github_pb.MergeEligibilityResponse)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.MergeEligibilityResponse');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_MergeEligibilityResponse(buffer_arg) {
-  return github_pb.MergeEligibilityResponse.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
 function serialize_mitig8it_github_v1_PostInlineCommentRequest(arg) {
   if (!(arg instanceof github_pb.PostInlineCommentRequest)) {
     throw new Error('Expected argument of type mitig8it.github.v1.PostInlineCommentRequest');
@@ -179,50 +135,6 @@ function serialize_mitig8it_github_v1_PostInlineCommentResponse(arg) {
 
 function deserialize_mitig8it_github_v1_PostInlineCommentResponse(buffer_arg) {
   return github_pb.PostInlineCommentResponse.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_PullRequestHeadRequest(arg) {
-  if (!(arg instanceof github_pb.PullRequestHeadRequest)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.PullRequestHeadRequest');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_PullRequestHeadRequest(buffer_arg) {
-  return github_pb.PullRequestHeadRequest.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_PullRequestHeadResponse(arg) {
-  if (!(arg instanceof github_pb.PullRequestHeadResponse)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.PullRequestHeadResponse');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_PullRequestHeadResponse(buffer_arg) {
-  return github_pb.PullRequestHeadResponse.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_RemediationAuthorizeRequest(arg) {
-  if (!(arg instanceof github_pb.RemediationAuthorizeRequest)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.RemediationAuthorizeRequest');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_RemediationAuthorizeRequest(buffer_arg) {
-  return github_pb.RemediationAuthorizeRequest.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_RemediationAuthorizeResponse(arg) {
-  if (!(arg instanceof github_pb.RemediationAuthorizeResponse)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.RemediationAuthorizeResponse');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_RemediationAuthorizeResponse(buffer_arg) {
-  return github_pb.RemediationAuthorizeResponse.deserializeBinary(new Uint8Array(buffer_arg));
 }
 
 function serialize_mitig8it_github_v1_RemediationCheckRunRequest(arg) {
@@ -269,94 +181,6 @@ function deserialize_mitig8it_github_v1_RemediationCommentResponse(buffer_arg) {
   return github_pb.RemediationCommentResponse.deserializeBinary(new Uint8Array(buffer_arg));
 }
 
-function serialize_mitig8it_github_v1_RemediationCommitRequest(arg) {
-  if (!(arg instanceof github_pb.RemediationCommitRequest)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.RemediationCommitRequest');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_RemediationCommitRequest(buffer_arg) {
-  return github_pb.RemediationCommitRequest.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_RemediationCommitResponse(arg) {
-  if (!(arg instanceof github_pb.RemediationCommitResponse)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.RemediationCommitResponse');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_RemediationCommitResponse(buffer_arg) {
-  return github_pb.RemediationCommitResponse.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_RemediationMergeRequest(arg) {
-  if (!(arg instanceof github_pb.RemediationMergeRequest)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.RemediationMergeRequest');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_RemediationMergeRequest(buffer_arg) {
-  return github_pb.RemediationMergeRequest.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_RemediationMergeResponse(arg) {
-  if (!(arg instanceof github_pb.RemediationMergeResponse)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.RemediationMergeResponse');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_RemediationMergeResponse(buffer_arg) {
-  return github_pb.RemediationMergeResponse.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_RemediationPrepareRequest(arg) {
-  if (!(arg instanceof github_pb.RemediationPrepareRequest)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.RemediationPrepareRequest');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_RemediationPrepareRequest(buffer_arg) {
-  return github_pb.RemediationPrepareRequest.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_RemediationPrepareResponse(arg) {
-  if (!(arg instanceof github_pb.RemediationPrepareResponse)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.RemediationPrepareResponse');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_RemediationPrepareResponse(buffer_arg) {
-  return github_pb.RemediationPrepareResponse.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_RemediationReconcileRequest(arg) {
-  if (!(arg instanceof github_pb.RemediationReconcileRequest)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.RemediationReconcileRequest');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_RemediationReconcileRequest(buffer_arg) {
-  return github_pb.RemediationReconcileRequest.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
-function serialize_mitig8it_github_v1_RemediationReconcileResponse(arg) {
-  if (!(arg instanceof github_pb.RemediationReconcileResponse)) {
-    throw new Error('Expected argument of type mitig8it.github.v1.RemediationReconcileResponse');
-  }
-  return Buffer.from(arg.serializeBinary());
-}
-
-function deserialize_mitig8it_github_v1_RemediationReconcileResponse(buffer_arg) {
-  return github_pb.RemediationReconcileResponse.deserializeBinary(new Uint8Array(buffer_arg));
-}
-
 function serialize_mitig8it_github_v1_RemediationSnapshotRequest(arg) {
   if (!(arg instanceof github_pb.RemediationSnapshotRequest)) {
     throw new Error('Expected argument of type mitig8it.github.v1.RemediationSnapshotRequest');
@@ -377,6 +201,28 @@ function serialize_mitig8it_github_v1_RemediationSnapshotResponse(arg) {
 
 function deserialize_mitig8it_github_v1_RemediationSnapshotResponse(buffer_arg) {
   return github_pb.RemediationSnapshotResponse.deserializeBinary(new Uint8Array(buffer_arg));
+}
+
+function serialize_mitig8it_github_v1_RetireInlineCommentsRequest(arg) {
+  if (!(arg instanceof github_pb.RetireInlineCommentsRequest)) {
+    throw new Error('Expected argument of type mitig8it.github.v1.RetireInlineCommentsRequest');
+  }
+  return Buffer.from(arg.serializeBinary());
+}
+
+function deserialize_mitig8it_github_v1_RetireInlineCommentsRequest(buffer_arg) {
+  return github_pb.RetireInlineCommentsRequest.deserializeBinary(new Uint8Array(buffer_arg));
+}
+
+function serialize_mitig8it_github_v1_RetireInlineCommentsResponse(arg) {
+  if (!(arg instanceof github_pb.RetireInlineCommentsResponse)) {
+    throw new Error('Expected argument of type mitig8it.github.v1.RetireInlineCommentsResponse');
+  }
+  return Buffer.from(arg.serializeBinary());
+}
+
+function deserialize_mitig8it_github_v1_RetireInlineCommentsResponse(buffer_arg) {
+  return github_pb.RetireInlineCommentsResponse.deserializeBinary(new Uint8Array(buffer_arg));
 }
 
 function serialize_mitig8it_github_v1_SubmitPullRequestReviewRequest(arg) {
@@ -447,6 +293,17 @@ var GitHubServiceService = exports.GitHubServiceService = {
     responseSerialize: serialize_mitig8it_github_v1_PostInlineCommentResponse,
     responseDeserialize: deserialize_mitig8it_github_v1_PostInlineCommentResponse,
   },
+  retireInlineComments: {
+    path: '/mitig8it.github.v1.GitHubService/RetireInlineComments',
+    requestStream: false,
+    responseStream: false,
+    requestType: github_pb.RetireInlineCommentsRequest,
+    responseType: github_pb.RetireInlineCommentsResponse,
+    requestSerialize: serialize_mitig8it_github_v1_RetireInlineCommentsRequest,
+    requestDeserialize: deserialize_mitig8it_github_v1_RetireInlineCommentsRequest,
+    responseSerialize: serialize_mitig8it_github_v1_RetireInlineCommentsResponse,
+    responseDeserialize: deserialize_mitig8it_github_v1_RetireInlineCommentsResponse,
+  },
   createCheckRun: {
     path: '/mitig8it.github.v1.GitHubService/CreateCheckRun',
     requestStream: false,
@@ -458,17 +315,6 @@ var GitHubServiceService = exports.GitHubServiceService = {
     responseSerialize: serialize_mitig8it_github_v1_CreateCheckRunResponse,
     responseDeserialize: deserialize_mitig8it_github_v1_CreateCheckRunResponse,
   },
-  prepareRemediation: {
-    path: '/mitig8it.github.v1.GitHubService/PrepareRemediation',
-    requestStream: false,
-    responseStream: false,
-    requestType: github_pb.RemediationPrepareRequest,
-    responseType: github_pb.RemediationPrepareResponse,
-    requestSerialize: serialize_mitig8it_github_v1_RemediationPrepareRequest,
-    requestDeserialize: deserialize_mitig8it_github_v1_RemediationPrepareRequest,
-    responseSerialize: serialize_mitig8it_github_v1_RemediationPrepareResponse,
-    responseDeserialize: deserialize_mitig8it_github_v1_RemediationPrepareResponse,
-  },
   snapshotRemediation: {
     path: '/mitig8it.github.v1.GitHubService/SnapshotRemediation',
     requestStream: false,
@@ -479,72 +325,6 @@ var GitHubServiceService = exports.GitHubServiceService = {
     requestDeserialize: deserialize_mitig8it_github_v1_RemediationSnapshotRequest,
     responseSerialize: serialize_mitig8it_github_v1_RemediationSnapshotResponse,
     responseDeserialize: deserialize_mitig8it_github_v1_RemediationSnapshotResponse,
-  },
-  commitRemediation: {
-    path: '/mitig8it.github.v1.GitHubService/CommitRemediation',
-    requestStream: false,
-    responseStream: false,
-    requestType: github_pb.RemediationCommitRequest,
-    responseType: github_pb.RemediationCommitResponse,
-    requestSerialize: serialize_mitig8it_github_v1_RemediationCommitRequest,
-    requestDeserialize: deserialize_mitig8it_github_v1_RemediationCommitRequest,
-    responseSerialize: serialize_mitig8it_github_v1_RemediationCommitResponse,
-    responseDeserialize: deserialize_mitig8it_github_v1_RemediationCommitResponse,
-  },
-  reconcileRemediation: {
-    path: '/mitig8it.github.v1.GitHubService/ReconcileRemediation',
-    requestStream: false,
-    responseStream: false,
-    requestType: github_pb.RemediationReconcileRequest,
-    responseType: github_pb.RemediationReconcileResponse,
-    requestSerialize: serialize_mitig8it_github_v1_RemediationReconcileRequest,
-    requestDeserialize: deserialize_mitig8it_github_v1_RemediationReconcileRequest,
-    responseSerialize: serialize_mitig8it_github_v1_RemediationReconcileResponse,
-    responseDeserialize: deserialize_mitig8it_github_v1_RemediationReconcileResponse,
-  },
-  mergeRemediation: {
-    path: '/mitig8it.github.v1.GitHubService/MergeRemediation',
-    requestStream: false,
-    responseStream: false,
-    requestType: github_pb.RemediationMergeRequest,
-    responseType: github_pb.RemediationMergeResponse,
-    requestSerialize: serialize_mitig8it_github_v1_RemediationMergeRequest,
-    requestDeserialize: deserialize_mitig8it_github_v1_RemediationMergeRequest,
-    responseSerialize: serialize_mitig8it_github_v1_RemediationMergeResponse,
-    responseDeserialize: deserialize_mitig8it_github_v1_RemediationMergeResponse,
-  },
-  cancelScheduledMerge: {
-    path: '/mitig8it.github.v1.GitHubService/CancelScheduledMerge',
-    requestStream: false,
-    responseStream: false,
-    requestType: github_pb.CancelScheduledMergeRequest,
-    responseType: github_pb.CancelScheduledMergeResponse,
-    requestSerialize: serialize_mitig8it_github_v1_CancelScheduledMergeRequest,
-    requestDeserialize: deserialize_mitig8it_github_v1_CancelScheduledMergeRequest,
-    responseSerialize: serialize_mitig8it_github_v1_CancelScheduledMergeResponse,
-    responseDeserialize: deserialize_mitig8it_github_v1_CancelScheduledMergeResponse,
-  },
-  readMergeEligibility: {
-    path: '/mitig8it.github.v1.GitHubService/ReadMergeEligibility',
-    requestStream: false,
-    responseStream: false,
-    requestType: github_pb.MergeEligibilityRequest,
-    responseType: github_pb.MergeEligibilityResponse,
-    requestSerialize: serialize_mitig8it_github_v1_MergeEligibilityRequest,
-    requestDeserialize: deserialize_mitig8it_github_v1_MergeEligibilityRequest,
-    responseSerialize: serialize_mitig8it_github_v1_MergeEligibilityResponse,
-    responseDeserialize: deserialize_mitig8it_github_v1_MergeEligibilityResponse,
-  },
-  readPullRequestHead: {
-    path: '/mitig8it.github.v1.GitHubService/ReadPullRequestHead',
-    requestStream: false,
-    responseStream: false,
-    requestType: github_pb.PullRequestHeadRequest,
-    responseType: github_pb.PullRequestHeadResponse,
-    requestSerialize: serialize_mitig8it_github_v1_PullRequestHeadRequest,
-    requestDeserialize: deserialize_mitig8it_github_v1_PullRequestHeadRequest,
-    responseSerialize: serialize_mitig8it_github_v1_PullRequestHeadResponse,
-    responseDeserialize: deserialize_mitig8it_github_v1_PullRequestHeadResponse,
   },
   createRemediationCheckRun: {
     path: '/mitig8it.github.v1.GitHubService/CreateRemediationCheckRun',
@@ -578,17 +358,6 @@ var GitHubServiceService = exports.GitHubServiceService = {
     requestDeserialize: deserialize_mitig8it_github_v1_FindingFixSectionsRequest,
     responseSerialize: serialize_mitig8it_github_v1_FindingFixSectionsResponse,
     responseDeserialize: deserialize_mitig8it_github_v1_FindingFixSectionsResponse,
-  },
-  authorizeRemediation: {
-    path: '/mitig8it.github.v1.GitHubService/AuthorizeRemediation',
-    requestStream: false,
-    responseStream: false,
-    requestType: github_pb.RemediationAuthorizeRequest,
-    responseType: github_pb.RemediationAuthorizeResponse,
-    requestSerialize: serialize_mitig8it_github_v1_RemediationAuthorizeRequest,
-    requestDeserialize: deserialize_mitig8it_github_v1_RemediationAuthorizeRequest,
-    responseSerialize: serialize_mitig8it_github_v1_RemediationAuthorizeResponse,
-    responseDeserialize: deserialize_mitig8it_github_v1_RemediationAuthorizeResponse,
   },
   healthCheck: {
     path: '/mitig8it.github.v1.GitHubService/HealthCheck',

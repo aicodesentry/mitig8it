@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import src.sandbox.broker_app as broker_app
@@ -59,8 +60,15 @@ def test_kubernetes_is_the_default_driver(monkeypatch):
     monkeypatch.delenv("SANDBOX_DRIVER", raising=False)
     assert broker_app.selected_driver_kind() == "kubernetes"
     sentinel = object()
-    monkeypatch.setattr(broker_app, "KubernetesJobDriver", lambda: sentinel)
+    monkeypatch.setattr(broker_app, "build_selected_driver", lambda kind=None: sentinel if kind == "kubernetes" else None)
     assert broker_app.build_driver() is sentinel
+
+
+def test_an_unknown_driver_fails_closed(monkeypatch):
+    monkeypatch.setenv("SANDBOX_DRIVER", "docker")
+    with pytest.raises(HTTPException) as failure:
+        broker_app.selected_driver_kind()
+    assert failure.value.status_code == 503
 
 
 def test_local_driver_is_opt_in(monkeypatch):

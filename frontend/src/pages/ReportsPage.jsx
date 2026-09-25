@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { ArrowUpRight, ClipboardList, Clock3, ShieldAlert, Sparkles } from 'lucide-react';
-import { reportsAPI, repositoryAPI } from '../services/api';
+import { formatRate, reportsAPI, repositoryAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { getPrivateCacheEpoch } from '../services/privateCache';
 import { Pagination } from '../components/ui/pagination';
@@ -36,6 +36,7 @@ const AccountReports = ({ userId }) => {
   const [selectedStatus, setSelectedStatus] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
+  const [rulesByDismissRate, setRulesByDismissRate] = useState([]);
   const itemsPerPage = 10;
 
   useEffect(() => {
@@ -90,6 +91,29 @@ const AccountReports = ({ userId }) => {
     load();
     return () => { active = false; };
   }, [userId, currentPage, selectedRepo, selectedStatus]);
+
+  // The rule table follows the repository filter but not the page or the status filter:
+  // it describes the rules themselves, not the analyses listed below it. It is read from
+  // a pre-computed roll-up, so it is not cached and not paginated.
+  useEffect(() => {
+    let active = true;
+    const epoch = getPrivateCacheEpoch();
+    const load = async () => {
+      try {
+        const data = await reportsAPI.getQuality({
+          window: 30, ...(selectedRepo ? { repositoryId: selectedRepo } : {})
+        });
+        if (!active || epoch !== getPrivateCacheEpoch()) return;
+        setRulesByDismissRate(data.by_rule || []);
+      } catch (err) {
+        if (!active) return;
+        console.error('Failed to fetch quality metrics:', err);
+        setRulesByDismissRate([]);
+      }
+    };
+    load();
+    return () => { active = false; };
+  }, [userId, selectedRepo]);
 
   const handleViewDetails = async (analysis) => {
     const epoch = getPrivateCacheEpoch();
@@ -204,6 +228,40 @@ const AccountReports = ({ userId }) => {
           </button>
         )}
       </div>
+
+      {/* Rules ranked by how often people reject what they report */}
+      {rulesByDismissRate.length > 0 && (
+        <div>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-neutral-900 dark:text-white">Rules by dismiss rate</h2>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              Last 30 days. A high rate means the rule reports findings people reject.
+            </p>
+          </div>
+          <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+            <table className="min-w-full divide-y divide-neutral-100 dark:divide-neutral-800">
+              <thead>
+                <tr>
+                  <th scope="col" className="px-4 py-2 text-left text-xs font-medium text-neutral-500 dark:text-neutral-400">Rule</th>
+                  <th scope="col" className="px-4 py-2 text-right text-xs font-medium text-neutral-500 dark:text-neutral-400">Findings</th>
+                  <th scope="col" className="px-4 py-2 text-right text-xs font-medium text-neutral-500 dark:text-neutral-400">Dismiss rate</th>
+                  <th scope="col" className="px-4 py-2 text-right text-xs font-medium text-neutral-500 dark:text-neutral-400">Apply rate</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                {rulesByDismissRate.map((rule) => (
+                  <tr key={rule.rule_id}>
+                    <td className="px-4 py-2 font-mono text-xs text-neutral-900 dark:text-neutral-100">{rule.rule_id}</td>
+                    <td className="px-4 py-2 text-right text-sm text-neutral-600 dark:text-neutral-300">{rule.findings_new}</td>
+                    <td className="px-4 py-2 text-right text-sm font-medium text-neutral-900 dark:text-white">{formatRate(rule.dismiss_rate)}</td>
+                    <td className="px-4 py-2 text-right text-sm text-neutral-600 dark:text-neutral-300">{formatRate(rule.apply_rate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Table */}
       <div>

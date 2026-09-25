@@ -9,9 +9,9 @@
   "source": "app.js",
   "finding": {
     "id": "pipeline-1",
-    "rule_id": "cwe-78.shell-pipeline",
+    "rule_id": "cmd.injection.shell_true",
     "cwe_id": "CWE-78",
-    "category": "command",
+    "category": "command injection",
     "path": "app.js",
     "line_start": 3,
     "line_end": 3
