@@ -46,6 +46,22 @@ have, so the module fails to load and the proof fails on both trees rather than 
 something invented. That is the honest outcome, and on a real application's entry module it is
 the common one, because a proof has to load the module's whole import closure.
 
+## What a proof's module may reach
+
+Because of that, the service decides before it writes a proof whether the module can load at
+all, over the closure the load actually pulls in: every static `import`, and every `require`
+whose statement begins at column 0, followed through relative specifiers inside the snapshot. A
+`require` inside a function body runs when that function is called, which a proof need never do,
+so it is not counted.
+
+A specifier in that closure has to be a Node built-in or one of the fakes above; anything else
+refuses the finding as `dependency_not_available_in_sandbox:<package>`. A TypeScript file
+anywhere in the closure is checked for the three constructs strip-only mode refuses, so an
+`enum` two relative imports away refuses as `typescript_syntax_not_strippable:enum` rather than
+ending in a bare `SyntaxError` on both trees. A relative specifier the snapshot does not carry is
+neither followed nor refused: the snapshot is a budgeted slice of the tree, and its absence says
+nothing about the repository.
+
 One shape loads under `tsc` and not here: an interface imported as an ordinary value binding
 (`import { Settings, settings } from './config'`). Strip-only mode cannot tell which name was a
 type, so the import survives and names an export the stripped module does not have. It is the
