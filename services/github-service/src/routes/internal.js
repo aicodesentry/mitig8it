@@ -5,6 +5,7 @@ const {
   fetchFileContents,
   fetchPullRequestFiles,
   postInlineComment,
+  retireInlineComments,
   submitPullRequestReview,
 } = require('../services/githubInternalOperations');
 
@@ -48,6 +49,12 @@ router.post('/github/reviews/submit', routeOperation(
 router.post('/github/comments/inline', routeOperation(
   postInlineComment,
   'Failed to post inline comment'
+));
+
+// The inline comments of findings this run does not annotate, removed by fingerprint.
+router.post('/github/comments/retire', routeOperation(
+  retireInlineComments,
+  'Failed to retire inline comments'
 ));
 
 router.post('/github/check-runs', routeOperation(
