@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any
 
 from .families import (
@@ -291,15 +292,122 @@ _TS_UNSTRIPPABLE = (
 )
 
 
-def _js_loadable(path: str, source: str) -> None:
-    """Raises unless the sandbox's `node` can load the module a generated proof has to load."""
-    if path.endswith(NODE_LOADABLE_SUFFIXES):
-        return
-    if not path.endswith(TYPESCRIPT_SUFFIXES):
-        raise SiteError("module_not_loadable_by_node")
-    for pattern, construct in _TS_UNSTRIPPABLE:
-        if pattern.search(source):
-            raise SiteError(f"typescript_syntax_not_strippable:{construct}")
+# Everything the sandbox can supply at load time. The harness fakes the first set and Node
+# supplies the second; there is no network and no `node_modules`, so a module that reaches
+# anything else while it is being imported does not load, on the repaired tree exactly as on the
+# vulnerable one. `contracts/test-harness-v1.md` is the source of the fake list.
+HARNESS_FAKED_MODULES = frozenset({"express", "pg", "child_process", "fs", "fs/promises", "vm"})
+NODE_BUILTIN_MODULES = frozenset(
+    """assert assert/strict async_hooks buffer child_process cluster console constants crypto dgram
+    diagnostics_channel dns dns/promises domain events fs fs/promises http http2 https inspector
+    inspector/promises module net os path path/posix path/win32 perf_hooks process punycode
+    querystring readline readline/promises repl stream stream/consumers stream/promises stream/web
+    string_decoder test test/mock_loader timers timers/promises tls trace_events tty url util
+    util/types v8 vm wasi worker_threads zlib sqlite""".split()
+)
+# What a module pulls in *while it is being imported*: every static `import`, and a `require`
+# whose statement begins at column 0. A `require` inside a function body is indented and runs
+# only when that function is called, which a proof may never do, so counting it would refuse
+# modules that load perfectly well. The heuristic therefore errs toward attempting.
+_JS_STATIC_IMPORT_RE = re.compile(r"""^[ \t]*(?:import|export)\b[^;\n]*?from\s*['"]([^'"]+)['"]|^[ \t]*import\s*['"]([^'"]+)['"]""", re.M)
+_JS_LOAD_TIME_REQUIRE_RE = re.compile(r"""^(?=\S)[^\n]*?\brequire\(\s*['"]([^'"]+)['"]\s*\)""", re.M)
+# A proof's module graph is walked once; a repository with a cycle or a very wide import fan-out
+# still costs a bounded number of reads.
+MAX_WALKED_MODULES = 200
+MANIFEST_FILENAME = "package.json"
+
+
+def _js_install_populates_node_modules(snapshot: Snapshot) -> bool:
+    """Whether an install will put a `node_modules` in this workspace.
+
+    A manifest is the whole question, and deliberately not which names it lists. `npm ci`
+    installs the lockfile's **resolved closure**, so the packages that reach the workspace are
+    far more than the ones a manifest names directly: `body-parser` arrives behind `express`,
+    and a monorepo's `@scope/*` workspaces arrive because they are workspaces. Refusing on the
+    declared names measured exactly zero of the 81 findings
+    `docs/validation/pairs-2026-09.md` counts, because not one of them imports a package its
+    root manifest happens to name.
+
+    What this gives up is refusing in advance a module that imports something the repository
+    never resolved at all. That case is not lost, only moved: the load then fails identically on
+    both trees, the pair is recorded unverified, and the install log in the evidence says what
+    the workspace actually received. A tree with no manifest anywhere is still refused, because
+    there is nothing for an install to read.
+    """
+    if not snapshot.request.policy.install_dependencies:
+        return False
+    return any(path == MANIFEST_FILENAME or path.endswith("/" + MANIFEST_FILENAME) for path in snapshot.paths)
+
+
+def _js_specifiers(source: str) -> list[str]:
+    found: list[str] = []
+    for match in _JS_STATIC_IMPORT_RE.finditer(source):
+        found.append(next(group for group in match.groups() if group))
+    found.extend(match.group(1) for match in _JS_LOAD_TIME_REQUIRE_RE.finditer(source))
+    return found
+
+
+def _js_resolve(snapshot: Snapshot, from_path: str, specifier: str) -> str | None:
+    """The snapshot path a relative specifier names, by the rules the harness resolves it with."""
+    base = PurePosixPath(PurePosixPath(from_path).parent / specifier)
+    parts: list[str] = []
+    for part in base.parts:
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+        elif part != ".":
+            parts.append(part)
+    stem = "/".join(parts)
+    candidates = [stem]
+    written = re.search(r"\.([cm]?)js$", stem)
+    if written:
+        # `./config.js` is how a TypeScript project under NodeNext writes an import of config.ts.
+        candidates.insert(0, stem[: -len(written.group(0))] + "." + written.group(1) + "ts")
+    candidates += [stem + suffix for suffix in (*TYPESCRIPT_SUFFIXES, *NODE_LOADABLE_SUFFIXES)]
+    candidates += [stem + "/index" + suffix for suffix in (*TYPESCRIPT_SUFFIXES, *NODE_LOADABLE_SUFFIXES)]
+    paths = set(snapshot.paths)
+    return next((candidate for candidate in candidates if candidate in paths), None)
+
+
+def _js_loadable(snapshot: Snapshot, path: str) -> None:
+    """Raises unless the sandbox's `node` can load the module a generated proof has to load.
+
+    The subject is not the only file that has to load: importing it imports everything it names
+    at load time, and a failure anywhere in that closure is a proof that fails identically on
+    both trees. Those are the failures this refuses in advance, with the module that caused them
+    named. A relative import the snapshot does not carry is not inspected and not refused: the
+    snapshot is a budgeted slice of the tree, so absence there says nothing about the repository.
+    """
+    installed = _js_install_populates_node_modules(snapshot)
+    pending = [path]
+    seen: set[str] = set()
+    while pending and len(seen) < MAX_WALKED_MODULES:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        if current.endswith(TYPESCRIPT_SUFFIXES):
+            for pattern, construct in _TS_UNSTRIPPABLE:
+                if pattern.search(snapshot.full_content(current)):
+                    raise SiteError(f"typescript_syntax_not_strippable:{construct}")
+        elif not current.endswith(NODE_LOADABLE_SUFFIXES):
+            raise SiteError("module_not_loadable_by_node")
+        for specifier in _js_specifiers(snapshot.full_content(current)):
+            if specifier.startswith("."):
+                found = _js_resolve(snapshot, current, specifier)
+                if found is not None:
+                    pending.append(found)
+                continue
+            name = specifier[5:] if specifier.startswith("node:") else specifier
+            if name in NODE_BUILTIN_MODULES or name in HARNESS_FAKED_MODULES:
+                continue
+            if installed:
+                # The workspace will carry an installed `node_modules`. If this package is not
+                # in it, the load fails identically on both trees and the pair is recorded
+                # unverified, with the install log saying why, rather than refused here.
+                continue
+            raise SiteError(f"dependency_not_available_in_sandbox:{name.split('/')[0]}")
 
 
 # The calls the harness records for each family. A generated proof asserts on those recorders, so
@@ -885,8 +993,32 @@ def _py_untrusted_parameter(function: PyFunction, lines: list[str], sink_line: i
         text = lines[number - 1]
         for parameter in candidates:
             if re.search(rf"(?<!\w){re.escape(parameter)}(?!\w)", text):
+                _py_plain_value(function, lines, parameter)
                 return parameter
+    _py_plain_value(function, lines, candidates[-1])
     return candidates[-1]
+
+
+# What a web framework's request object is read for. A parameter the body reads one of these off
+# is that object, not a string, and a proof that puts a traversal payload in its place hands the
+# function something it cannot use.
+_PY_REQUEST_ATTRIBUTES = ("method", "args", "form", "files", "headers", "cookies", "COOKIES",
+                          "GET", "POST", "user", "session", "query_params", "json", "body", "path_params")
+
+
+def _py_plain_value(function: PyFunction, lines: list[str], parameter: str) -> None:
+    """Raises when the body uses `parameter` as a framework request rather than as a value.
+
+    pygoat's `ssti_lab(request)` is the shape: it is a Django view, so the site model finds no
+    route to drive it through, and calling it directly puts the payload where a request object
+    belongs. `request.user.is_authenticated` is then falsy, the function returns a redirect, and
+    the proof fails on the repaired tree exactly as it fails on the vulnerable one. There is no
+    fake Django request to supply, so the honest answer is to refuse.
+    """
+    body = "\n".join(lines[function.start_line - 1 : function.end_line])
+    pattern = rf"(?<!\w){re.escape(parameter)}\s*\.\s*(?:{'|'.join(_PY_REQUEST_ATTRIBUTES)})(?!\w)"
+    if re.search(pattern, body):
+        raise SiteError("request_object_not_constructible")
 
 
 def _py_view_invoke(function: PyFunction, untrusted_expression: str | None, payload_expression: str) -> str:
@@ -1227,7 +1359,7 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
             # Every JavaScript proof loads the module, so loadability is decided once, before the
             # families that need no enclosing scope: a secret literal is not inside any function,
             # and neither is a parser a route calls.
-            _js_loadable(path, snapshot.full_content(path))
+            _js_loadable(snapshot, path)
             if family == HARDCODED_CREDENTIAL:
                 return _js_credential_proof(snapshot, finding)
             if family == CODE_INJECTION_EVAL:

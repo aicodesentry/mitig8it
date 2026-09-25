@@ -49,6 +49,13 @@ executes the repository module at `target` (a repository path such as `services/
 resolved from the repository root, or an absolute path) with the fakes below installed, and
 returns the module object. Each call resets every recorder and re-executes the module. The
 module's directory and the repository root are put on `sys.path`, so sibling imports resolve.
+A module inside a package is loaded under its dotted name (`introduction/views.py` becomes
+`introduction.views`), with each directory between the repository root and the module registered
+as a package whose `__path__` is that directory, so the module's own relative imports
+(`from .forms import Form`) resolve. Those packages are synthetic: their `__init__.py` is
+deliberately not executed, because the harness runs exactly the module the proof names. A
+directory whose name is not a Python identifier has no dotted name, and such a module is loaded
+under its bare basename as before.
 
 - `env`: values set in `os.environ` before the module runs; reads are recorded in `h.env.reads`. A literal name the module reads with `os.environ["NAME"]` that the test did not set gets the placeholder `mitig8it-unset-NAME`, so a patch that moved one secret to the environment does not crash every other test of the same patch at import; `os.environ.get` keeps its real semantics.
 - `argv`: `sys.argv` for this load only, restored to the test process's own on the next load that does not supply one. It is for a module that reads its input from the command line at import, where there is no function to pass an argument to.

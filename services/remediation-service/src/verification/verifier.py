@@ -139,6 +139,14 @@ class Verifier:
                 "commands": [check.model_dump(mode="json") for check in checks],
                 "max_output_chars": request.policy.max_output_chars,
                 "deadline_seconds": request.policy.request_timeout_seconds,
+                # The one step of a run that is allowed to reach a registry, and only while the
+                # snapshot is being materialized. `network: deny` above is still what every
+                # check runs under. Only the development-only local driver acts on this; the
+                # isolated drivers ignore it, for the reason `contracts/repair-v1.md` gives
+                # under "Installed dependencies".
+                "install_dependencies": request.policy.install_dependencies,
+                "dependency_install_timeout_seconds": request.policy.dependency_install_timeout_seconds,
+                "max_dependency_install_bytes": request.policy.max_dependency_install_bytes,
             },
             "versions": request.versions,
         }

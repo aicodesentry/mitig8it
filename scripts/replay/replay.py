@@ -246,9 +246,108 @@ def run_snapshot(
     }
 
 
+# --- pairs mode ------------------------------------------------------------------------------
+
+# A pair's two sandbox runs materialize the snapshot twice, so one repository's pairs are given
+# a wall clock of their own rather than the snapshot batch's.
+PAIRS_TIMEOUT_SECONDS = 3600
+
+
+# The root manifests a pair's snapshot has to carry. `walk_analysable_files` answers the
+# scanner's question, which is "what can be analysed", and `package.json` is not an analysable
+# extension; a repair's question is different. The engine reads a manifest to decide that a
+# database driver is a real dependency and, with `policy.install_dependencies`, to decide that
+# an install will populate `node_modules`, and it read neither of those here until this was
+# added: the worker's own `PAIR_ROOT_FILES` listed names that never arrived. In the service the
+# retriever carries them, so a measurement without them measures a snapshot production never
+# sends.
+PAIRS_ROOT_MANIFESTS = ("package.json", "requirements.txt", "pyproject.toml", "setup.py", "setup.cfg")
+PAIRS_MANIFEST_MAX_BYTES = 200_000
+
+
+def _root_manifests(root: Path) -> list[dict[str, Any]]:
+    """The tree's root manifests, read whatever their extension."""
+    found: list[dict[str, Any]] = []
+    for name in PAIRS_ROOT_MANIFESTS:
+        path = root / name
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > PAIRS_MANIFEST_MAX_BYTES:
+            continue
+        found.append({"path": name, "content": path.read_text(encoding="utf-8", errors="replace"), "patch": ""})
+    return found
+
+
+def _pairs_payload(result: dict[str, Any], cache: SnapshotCache, with_dependencies: bool = False) -> dict[str, Any]:
+    """One repository's findings, joined back to the tree they were found in.
+
+    A snapshot result records its findings but not the source they came from, so the content is
+    read back out of the same pinned tree the run analysed. The ref is a full commit sha, so
+    what is read here is byte-identical to what produced the findings.
+    """
+    repo, ref = result["repo"], result["ref"]
+    root = cache.tree(repo, ref)
+    findings: list[dict[str, Any]] = []
+    for record in result.get("records") or []:
+        findings.extend(record.get("findings") or [])
+
+    # Every analysable file of the tree, not just the ones a finding names: a proof loads the
+    # module under test, and that module imports its neighbours. The worker then spends the
+    # remediation service's own snapshot budget per finding, nearest the finding first.
+    files: list[dict[str, Any]] = []
+    for path in walk_analysable_files(root):
+        relative = path.relative_to(root).as_posix()
+        entry = read_snapshot_file(path, relative)
+        if "skipped" in entry:
+            continue
+        entry.pop("non_utf8", None)
+        files.append({"path": relative, "content": entry["content"], "patch": ""})
+    files = _root_manifests(root) + files
+    payload = {
+        "mode": "pairs", "repo": repo, "number": 0, "head_sha": ref, "base_sha": ref,
+        "files": files, "findings": findings, "limitations": [],
+    }
+    if with_dependencies:
+        # The install runs over the whole pinned tree, not the budgeted slice a pair sees: it is
+        # the repository's own manifests and lockfiles that `npm ci` and `pip install` read, and
+        # the workspace is then pointed at what came out. The worker does the installing, because
+        # it is the process that has the remediation service on its path and the measurement has
+        # to install exactly what `policy.install_dependencies` would.
+        payload["install_dependencies"] = True
+        payload["dependency_tree"] = str(root)
+    return payload
+
+
+def run_pairs(results: list[Path], cache: SnapshotCache, timeout: int, python: str,
+              with_dependencies: bool = False) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    for path in results:
+        result = json.loads(path.read_text(encoding="utf-8"))
+        if result.get("mode") != "snapshot":
+            print(f"  {path.name}: not a snapshot run, skipped", flush=True)
+            continue
+        payload = _pairs_payload(result, cache, with_dependencies)
+        print(f"{result['repo']}@{result['ref'][:10]}: {len(payload['findings'])} findings over "
+              f"{len(payload['files'])} files", flush=True)
+        record = run_pull_request(payload, timeout, python)
+        records.append(record)
+        counts = ((record.get("pairs") or {}).get("counts")) or {}
+        install = ((record.get("pairs") or {}).get("install")) or {}
+        if with_dependencies:
+            print(f"  install: {'ok' if install.get('dependencies_installed') else install.get('reason_code')} "
+                  f"{install.get('duration_ms', 0)}ms {install.get('bytes_installed', 0)} bytes "
+                  f"ecosystems={','.join(install.get('ecosystems') or []) or 'none'}", flush=True)
+        print(f"  supported={counts.get('supported', 0)} patch={counts.get('patch', 0)} "
+              f"proof={counts.get('proof', 0)} both={counts.get('both', 0)} "
+              f"verified={counts.get('verified', 0)} {record.get('wall_ms')}ms", flush=True)
+    totals = {key: 0 for key in ("supported", "patch", "proof", "both", "verified")}
+    for record in records:
+        for key, value in (((record.get("pairs") or {}).get("counts")) or {}).items():
+            totals[key] = totals.get(key, 0) + int(value)
+    return {"mode": "pairs", "with_dependencies": with_dependencies, "totals": totals, "records": records}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--repo", required=True, help="owner/name of a public repository")
+    parser.add_argument("--repo", help="owner/name of a public repository")
     parser.add_argument("--prs", type=int, default=15, help="how many recent merged pull requests to replay")
     parser.add_argument("--out", required=True, help="path of the per-repository JSON result file")
     parser.add_argument("--cache", default=str(HERE / ".cache"), help="directory for cached GitHub responses")
@@ -263,10 +362,41 @@ def main() -> int:
                         help="skip the remediation stage (analysis only)")
     parser.add_argument("--include-quarantined", action="store_true",
                         help="report findings from quarantined rules too, so they can be re-measured")
+    parser.add_argument("--pairs", action="store_true",
+                        help="measure both repair halves over the findings of earlier snapshot runs, "
+                             "and run every complete pair's proof on the original and the patched tree")
+    parser.add_argument("--results", nargs="+", default=[],
+                        help="pairs mode: the snapshot result files to measure")
+    parser.add_argument("--with-dependencies", action="store_true",
+                        help="pairs mode: install each repository's declared dependencies into its "
+                             "pinned tree and let the sandbox workspace see them, the way "
+                             "policy.install_dependencies does in the service")
     args = parser.parse_args()
 
     if args.include_quarantined:
         os.environ["REPLAY_INCLUDE_QUARANTINED"] = "1"
+
+    if args.pairs:
+        if not args.results:
+            print("--pairs requires --results", file=sys.stderr)
+            return 2
+        cache = SnapshotCache(Path(args.cache) / "snapshots", refresh=args.refresh)
+        timeout = args.timeout if args.timeout != DEFAULT_TIMEOUT_SECONDS else PAIRS_TIMEOUT_SECONDS
+        try:
+            result = run_pairs([Path(item) for item in args.results], cache, timeout, args.python,
+                               args.with_dependencies)
+        except SnapshotError as exc:
+            print(f"pairs: snapshot unavailable: {exc}", file=sys.stderr)
+            return 2
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        print(f"pairs: wrote {out_path} {result['totals']}", flush=True)
+        return 0
+
+    if not args.repo:
+        print("--repo is required outside --pairs mode", file=sys.stderr)
+        return 2
 
     if args.snapshot:
         if not args.ref:

@@ -53,8 +53,8 @@ Measured in September 2026. Every cell links to the run that produced it.
 | Findings on clean code | [134 over 165 pull requests](docs/validation/real-repo-replay-2026-09.md) | Merged pull requests from 11 public libraries with no known vulnerability, 816 changed files. 30 of the 134 findings were read by hand and 29 were wrong, which is why five tier 1 rules are now quarantined. |
 | Tier 2 rules | [130, of which 124 post](docs/validation/tier2-coverage-2026-09.md) | Up from 25. Six are quarantined on their own measured precision. All written in-house, because [the public rule libraries forbid use in a paid service](docs/legal/third-party-rules.md). |
 | The Action on real repositories | [63 of 65 comments](docs/validation/action-trial-2026-09.md) | Installed on private copies of ten real repositories: 65 inline comments, 63 true positives, 1 false positive, 1 unsure. |
-| Evaluation corpus | [55 fixtures](benchmarks/remediation/README.md) | 43 repairs verified and 12 correct abstentions, under both the reference and engine-local adapters, with no unexpected failures. |
-| Verified fixes on real vulnerable code | [8](docs/validation/vulnerable-corpus-2026-09.md#after-typescript-and-module-scope) | Out of 245 findings in a supported family. The proof is the binding constraint, not the patch. |
+| Evaluation corpus | [59 fixtures](benchmarks/remediation/README.md) | 46 repairs verified and 13 correct abstentions, under both the reference and engine-local adapters, with no unexpected failures. |
+| Verified fixes on real vulnerable code | [8](docs/validation/vulnerable-corpus-2026-09.md#after-the-pairs-measurement) | Out of 249 findings in a supported family. Loading the module the proof names is the binding constraint, not the patch. |
 
 A 100% pass rate from the evaluation corpus is not a quality claim, and the reasons are written
 down beside it. [docs/validation/README.md](docs/validation/README.md) says how to read each of
@@ -79,11 +79,13 @@ Why the proof exists, what it establishes and what it does not:
 
 ## What it does not do yet
 
-- **Eight verified fixes on real vulnerable code.** Of 245 corpus findings in a supported family,
-  the template patches 33 and the engine proves 37; 8 verify end to end, and all eight are
-  hardcoded credentials. Two structural obstacles were removed this month and the count did not
-  move either time. The constraint is the proof: 60 of the refusals are sinks that run at import
-  from a value no test can set, where refusing is the right answer.
+- **Eight verified fixes on real vulnerable code.** Of 249 corpus findings in a supported family,
+  the template patches 62 and the service proves 16; 8 have both halves, all 8 verify end to end,
+  and all eight are hardcoded credentials. Every pair that existed but did not verify is now
+  refused before the work is done, with a reason that names the cause, so the pair count says what
+  it claims to. The constraint the corpus points at now is narrower than the proof:
+  `dependency_not_available_in_sandbox` is the largest reason a finding gets no proof, at 84, and a
+  dependency-free sandbox can only load a dependency-free module.
 - **Recall is the weak half, and it is uneven by class.** Deserialization and dynamic code
   execution are near 1.00. Cross-site scripting reaches 26 of 32 labels but only 18 of those come
   from rules allowed to post; path traversal is 7 of 14. A maintainer who reads a clean review and

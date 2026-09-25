@@ -9,4 +9,8 @@ c08c138f0d9d46573ef7e8d88b4a442e46a348c9:services/api-service/tests/githubRemedi
 # The live text.py fixture from nebullii/Indoor-Plants carries the placeholder literal the
 # hardcoded-credential generators are tested against. It is a fake test value, not a credential.
 5982372b691518fd3ca6844a4bdaf657f5477225:services/remediation-service/tests/fixtures/live/text.py:generic-api-key:10
+# Test fixture: a fake API key literal the dependency-installed verification test repairs. Not a credential.
+7cc107757051ce7b6d19580f97dc39d4f83d14ca:services/remediation-service/tests/test_dependency_installed_verification.py:generic-api-key:61
+# Test fixture: a fake API key literal in the proof-closure test. Not a credential.
+8642df179a1cad34929d4f7469794b663d405e9c:services/remediation-service/tests/test_proof_module_closure.py:generic-api-key:27
 74db4329332c283d55bcf5da072adadcf99a99e6:action/tests/test_repair_engine.py:generic-api-key:253

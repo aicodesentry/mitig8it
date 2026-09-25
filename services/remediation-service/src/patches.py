@@ -648,7 +648,14 @@ def _reject_service_path(path: str) -> None:
         )
 
 
-def _path_forbidden(path: str, request: RepairRequest) -> bool:
+def path_forbidden(path: str, request: RepairRequest) -> bool:
+    """Whether policy refuses to change this file at all: a test directory, a lock file, CI.
+
+    Public because the answer is needed before a repair is attempted as well as when one is
+    submitted. A finding in a forbidden file used to be refused here, after both generators had
+    produced a patch and a proof for it, which made a pair that policy could never let ship
+    indistinguishable from one that failed on its merits. The engine now asks first.
+    """
     lowered = path.lower()
     name = PurePosixPath(path).name.lower()
     if name in {item.lower() for item in request.policy.forbidden_filenames}:
@@ -773,7 +780,7 @@ def build_generated_tests(
             )
         if path in snapshot.paths:
             raise PatchPolicyError(f"regression_test_overwrites_repository_file:{path}")
-        if _path_forbidden(path, request):
+        if path_forbidden(path, request):
             raise PatchPolicyError(f"protected_path:{path}")
         if path in seen:
             raise PatchPolicyError("duplicate_regression_test_path")
@@ -1267,7 +1274,7 @@ def _build_bundle_from_contents(
     for path, replacement in sorted(replacements.items()):
         _reject_service_path(path)
         original = snapshot.full_content(path)
-        if _path_forbidden(path, request):
+        if path_forbidden(path, request):
             raise PatchPolicyError(f"protected_path:{path}")
         if PurePosixPath(path).suffix.lower() not in APPLICATION_SUFFIXES:
             raise PatchPolicyError(f"unsupported_application_file:{path}")
