@@ -112,6 +112,30 @@ module.exports = {
     return { comment_id: comment.id, url: 'fake', success: true };
   },
 
+  // The contract retireInlineComments documents: delete my own comment for each fingerprint the
+  // caller names, except one carrying a published fix, which is kept and counted apart.
+  retireInlineComments: async (p) => {
+    await roundTrip();
+    const state = load();
+    const wanted = new Set(p.fingerprints || []);
+    let retired = 0;
+    let kept = 0;
+    const survivors = [];
+    for (const comment of state.comments) {
+      const match = /<!--\s*mitig8it-finding:([^\s>]+)\s*-->/.exec(String(comment.body || ''));
+      if (!match || !wanted.has(match[1]) || comment.user.login !== state.botLogin) {
+        survivors.push(comment);
+        continue;
+      }
+      if (String(comment.body).includes('<!-- mitig8it-fix:')) { kept += 1; survivors.push(comment); continue; }
+      retired += 1;
+    }
+    state.comments = survivors;
+    record(state, 'retire', { fingerprints: (p.fingerprints || []).length, retired, kept });
+    save(state);
+    return { retired, kept };
+  },
+
   publishFindingFixSections: async (p) => {
     validateEnvelope(p);
     const state = load(); record(state, 'fixes', { sections: p.sections.length }); save(state);

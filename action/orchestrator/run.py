@@ -248,17 +248,21 @@ def thread_summary_line(threads: Optional[Dict[str, Any]]) -> str:
     the line is unconditional and states the denominator too. `seen` is every review thread on
     the pull request and `ours` is how many carried our marker; the two being far apart is the
     symptom that a matching bug produces, and it is now visible in the log.
+
+    `minimized` is gone and `retired` and `kept` are in its place. A minimized thread is still an
+    unresolved conversation, so the trial's fixed finding left the pull request blocked; the
+    action deletes its own stale comment now instead, and keeps the one carrying a published fix.
     """
     if not isinstance(threads, dict):
         return "Review threads: the publisher reported no reconciliation."
     numbers = {
         key: int(threads.get(key) or 0)
-        for key in ("seen", "ours", "resolved", "minimized", "failed")
+        for key in ("seen", "ours", "resolved", "retired", "kept", "failed")
     }
     line = (
         f"Review threads: {numbers['seen']} seen, {numbers['ours']} with our marker, "
-        f"{numbers['resolved']} resolved, {numbers['minimized']} minimized, "
-        f"{numbers['failed']} failed."
+        f"{numbers['resolved']} resolved, {numbers['retired']} retired, "
+        f"{numbers['kept']} kept for a published fix, {numbers['failed']} failed."
     )
     unavailable = str(threads.get("unavailable") or "")
     if unavailable:

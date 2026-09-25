@@ -211,9 +211,17 @@ function checkRunSummary(request) {
 // thread per finding per run. The self-review reached 74 open threads this way, none resolved.
 //
 // Resolving a review thread is GraphQL-only; there is no REST endpoint for it, and nothing else
-// in this repository speaks GraphQL, so the client is here. `minimizeComment` is the fallback,
-// because a token that may resolve is not guaranteed to be a token that may minimize or the
-// other way round, and a thread that can be neither is reported rather than silently left.
+// in this repository speaks GraphQL, so the client is here. The workflow token cannot resolve
+// one: the trial's third commit fixed a finding for real and the log read "0 resolved, 1
+// minimized", with the thread left `isResolved=false, isOutdated=true`. A minimized thread still
+// counts as unresolved, so a repository with "all conversations must be resolved" was blocked by
+// a finding its author had already fixed, by a review that could not undo what it had said.
+//
+// So the fallback is to delete our own comment, which is what github-service's
+// `retireInlineComments` does for the App and what removes the thread outright rather than
+// folding it away. Only comments carrying our marker for a fingerprint this run no longer
+// reports are touched, and one carrying a published fix is kept: that is reviewer-visible work
+// and housekeeping must not take it away.
 
 // GitHub Actions sets GITHUB_GRAPHQL_URL, and it differs on Enterprise Server, so it is read
 // rather than hardcoded the way the REST base is.
@@ -232,7 +240,10 @@ const THREADS_QUERY = `query($owner:String!,$repo:String!,$number:Int!,$cursor:S
 }`;
 
 const RESOLVE_MUTATION = `mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}`;
-const MINIMIZE_MUTATION = `mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}`;
+
+// A comment that carries a published fix is kept whatever else is true of it. The marker is
+// github-service's own; `retireInlineComments` refuses to delete one for the same reason.
+const FIX_MARKER = '<!-- mitig8it-fix:';
 
 function createGraphQLClient({ token, url = GRAPHQL_URL, fetchImpl }) {
   const call = fetchImpl || globalThis.fetch;
@@ -347,26 +358,48 @@ async function surveyReviewThreads(request, { graphql }) {
   return { counters, threads, stale, byFingerprint: new Map(threads.map((t) => [t.fingerprint, t])) };
 }
 
-async function reconcileReviewThreads(survey, { graphql }) {
+// A thread this run no longer reports, closed the best way the token allows: resolved when it
+// can be, and otherwise removed by deleting the comment that opened it. A comment carrying a
+// published fix is kept either way and counted apart, so the summary line never claims to have
+// tidied something it deliberately left.
+async function reconcileReviewThreads(survey, { graphql, operations, base }) {
   const { counters, stale } = survey;
+  const doomed = [];
   for (const thread of stale) {
+    if (String(thread.body || '').includes(FIX_MARKER)) {
+      counters.kept += 1;
+      continue;
+    }
     try {
       await graphql(RESOLVE_MUTATION, { id: thread.id });
       counters.resolved += 1;
     } catch (error) {
-      if (!thread.commentId) {
-        counters.failed += 1;
-        counters.errors.push(`thread ${thread.fingerprint}: ${error.message}`);
-        continue;
-      }
-      try {
-        await graphql(MINIMIZE_MUTATION, { id: thread.commentId });
-        counters.minimized += 1;
-      } catch (fallbackError) {
-        counters.failed += 1;
-        counters.errors.push(`thread ${thread.fingerprint}: ${error.message}; ${fallbackError.message}`);
-      }
+      doomed.push({ thread, error });
     }
+  }
+  if (doomed.length && operations?.retireInlineComments) {
+    try {
+      const retired = await operations.retireInlineComments({
+        owner: base.owner,
+        repo: base.repo,
+        pr_number: base.pr_number,
+        installation_id: base.installation_id,
+        fingerprints: doomed.map((item) => item.thread.fingerprint),
+      });
+      counters.retired += Number(retired?.retired || 0);
+      counters.kept += Number(retired?.kept || 0);
+      const unaccounted = doomed.length - Number(retired?.retired || 0) - Number(retired?.kept || 0);
+      if (unaccounted > 0) {
+        counters.failed += unaccounted;
+        counters.errors.push(`thread ${doomed[0].thread.fingerprint}: ${doomed[0].error.message}`);
+      }
+    } catch (error) {
+      counters.failed += doomed.length;
+      counters.errors.push(`thread ${doomed[0].thread.fingerprint}: ${doomed[0].error.message}; ${error.message}`);
+    }
+  } else if (doomed.length) {
+    counters.failed += doomed.length;
+    counters.errors.push(`thread ${doomed[0].thread.fingerprint}: ${doomed[0].error.message}`);
   }
   return counters;
 }
@@ -491,7 +524,7 @@ async function publish(request, { fetchImpl, graphql } = {}) {
   // the orchestrator states it on the one summary line it logs.
   if (survey) {
     try {
-      results.threads = await reconcileReviewThreads(survey, { graphql: graphqlClient });
+      results.threads = await reconcileReviewThreads(survey, { graphql: graphqlClient, operations, base });
     } catch (error) {
       results.threads = { ...survey.counters, unavailable: error.message };
     }
