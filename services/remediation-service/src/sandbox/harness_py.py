@@ -618,30 +618,50 @@ def invoke(app, method, rule, params=None, query=None, json=None, form=None, dat
 
 
 # --- auto-stubs for third-party imports the sandbox does not carry ------------------------------
-class _Stub:
-    def __init__(self, name):
-        self._name = name
+# A stub is a class rather than an object, because a module under test does not only call what it
+# imports: it inherits from it. `class NewUserForm(UserCreationForm)` is the first statement of
+# pygoat's `introduction/forms.py`, and a stub object there is a metaclass Python calls with the
+# name, the bases and the namespace, which ended the import with a TypeError about argument
+# counts. As a class it is a base like any other, it still answers every attribute with another
+# stub, and calling it yields an instance instead of raising.
+class _StubMeta(type):
+    def __getattr__(cls, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return _stub(cls.__name__ + "." + name)
 
-    def __call__(self, *args, **kwargs):
-        return _Stub(self._name + "()")
+    def __iter__(cls):
+        return iter(())
+
+    def __repr__(cls):
+        return "<harness stub %s>" % cls.__name__
+
+
+class _Stub(metaclass=_StubMeta):
+    def __init__(self, *args, **kwargs):
+        pass
 
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
-        return _Stub(self._name + "." + name)
+        return _stub(type(self).__name__ + "." + name)
 
     def __iter__(self):
         return iter(())
 
     def __repr__(self):
-        return "<harness stub %s>" % self._name
+        return "<harness stub %s>" % type(self).__name__
+
+
+def _stub(name):
+    return _StubMeta(name, (_Stub,), {})
 
 
 class _StubModule(types.ModuleType):
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
-        return _Stub(self.__name__ + "." + name)
+        return _stub(self.__name__ + "." + name)
 
 
 class _StubLoader(importlib.abc.Loader):

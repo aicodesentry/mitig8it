@@ -964,8 +964,32 @@ def _py_untrusted_parameter(function: PyFunction, lines: list[str], sink_line: i
         text = lines[number - 1]
         for parameter in candidates:
             if re.search(rf"(?<!\w){re.escape(parameter)}(?!\w)", text):
+                _py_plain_value(function, lines, parameter)
                 return parameter
+    _py_plain_value(function, lines, candidates[-1])
     return candidates[-1]
+
+
+# What a web framework's request object is read for. A parameter the body reads one of these off
+# is that object, not a string, and a proof that puts a traversal payload in its place hands the
+# function something it cannot use.
+_PY_REQUEST_ATTRIBUTES = ("method", "args", "form", "files", "headers", "cookies", "COOKIES",
+                          "GET", "POST", "user", "session", "query_params", "json", "body", "path_params")
+
+
+def _py_plain_value(function: PyFunction, lines: list[str], parameter: str) -> None:
+    """Raises when the body uses `parameter` as a framework request rather than as a value.
+
+    pygoat's `ssti_lab(request)` is the shape: it is a Django view, so the site model finds no
+    route to drive it through, and calling it directly puts the payload where a request object
+    belongs. `request.user.is_authenticated` is then falsy, the function returns a redirect, and
+    the proof fails on the repaired tree exactly as it fails on the vulnerable one. There is no
+    fake Django request to supply, so the honest answer is to refuse.
+    """
+    body = "\n".join(lines[function.start_line - 1 : function.end_line])
+    pattern = rf"(?<!\w){re.escape(parameter)}\s*\.\s*(?:{'|'.join(_PY_REQUEST_ATTRIBUTES)})(?!\w)"
+    if re.search(pattern, body):
+        raise SiteError("request_object_not_constructible")
 
 
 def _py_view_invoke(function: PyFunction, untrusted_expression: str | None, payload_expression: str) -> str:

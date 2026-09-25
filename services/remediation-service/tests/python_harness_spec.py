@@ -165,9 +165,20 @@ write("introduction/forms.py", '''SAFE_NAME = "report.txt"
 ''')
 write("introduction/__init__.py", '''raise AssertionError("the package __init__ must not run")
 ''')
+write("introduction/models.py", '''from django.contrib.auth.forms import UserCreationForm
+from django import forms
+
+
+class NewUserForm(UserCreationForm):
+    email = forms.EmailField(required=True)
+
+    class Meta:
+        fields = ("username", "email")
+''')
 write("introduction/views.py", '''import os
 
 from .forms import SAFE_NAME
+from .models import NewUserForm
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -305,6 +316,11 @@ class HarnessSpec(unittest.TestCase):
         m = h.load("introduction/views.py")
         self.assertEqual(m.SAFE_NAME, "report.txt")
         self.assertEqual(m.__name__, "introduction.views")
+        # pygoat's shape: a sibling module subclasses something it imported from a package the
+        # sandbox does not carry, so the stub for it has to be usable as a base class.
+        self.assertTrue(isinstance(m.NewUserForm, type))
+        self.assertIn("django", h.stubbed)
+        self.assertIn("stub", repr(m.NewUserForm()))
         # The package is synthetic: its __init__ would have raised had the harness run it.
         self.assertEqual(sys.modules["introduction"].__path__, [os.path.join(ROOT, "introduction")])
         # The next load clears it, so one proof cannot see the module another one imported.
