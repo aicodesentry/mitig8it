@@ -68,6 +68,11 @@ def log(message: str) -> None:
     print(message, flush=True)
 
 
+def plural(count: int, noun: str) -> str:
+    """`1 finding`, `2 findings`. The trial read "1 runtime findings" in the check summary."""
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
 def annotate(level: str, message: str) -> None:
     """A workflow annotation, so the message shows on the run summary and not only in the log."""
     single_line = message.replace("\n", "%0A")
@@ -329,25 +334,51 @@ def render_finding_comment(finding: Dict[str, Any]) -> str:
     cwe = str(finding.get("cwe_id") or "")
     if cwe:
         lines.append(f"Weakness: {cwe}")
+    # The OpenGrep rules set title, description and remediation to the rule's own message, so
+    # two thirds of the trial's comments said one sentence three times: 40 of 65. The whole body
+    # of `views/admin.ejs:17` was "EJS unescaped output tag. `<%-` writes raw HTML; use `<%=` so
+    # the value is escaped" in bold, again as prose, and a third time after "Remediation:". A
+    # field that only repeats what the reader has already read is dropped.
     description = str(finding.get("description") or "")
-    if description:
+    if description and not _same_sentence(description, title):
         lines.extend(["", description])
+    else:
+        description = ""
     evidence = str(finding.get("evidence") or "")
     if evidence:
         lines.extend(["", evidence])
     remediation = str(finding.get("remediation") or "")
-    if remediation:
+    if remediation and not (description and _same_sentence(remediation, description)):
         lines.extend(["", f"Remediation: {remediation}"])
     return "\n".join(lines)
 
 
+def _same_sentence(left: str, right: str) -> bool:
+    """Two fields saying the same thing, allowing for spacing and a trailing stop."""
+    def normalise(value: str) -> str:
+        return " ".join(str(value or "").split()).rstrip(".").casefold()
+
+    return bool(normalise(left)) and normalise(left) == normalise(right)
+
+
 def fail_conclusion(fail_on: str, counts: Dict[str, int]) -> str:
-    """The check run conclusion, which is also what decides the job's exit code."""
-    if fail_on == "critical" and counts.get("critical", 0) > 0:
+    """The check run conclusion, which is also what decides the job's exit code.
+
+    All 26 runs of the trial concluded `neutral`, including the five that found nothing at all,
+    so a repository with a clean review and a repository with 22 critical findings both showed
+    the same grey check and only the title told them apart. `neutral` is what a review held back
+    by `fail-on: none` deserves; it is not what an empty review deserves. So: `failure` when the
+    repository's own threshold is met, `neutral` when there is something to report and the
+    repository asked not to be blocked by it, and `success` otherwise.
+    """
+    critical = int(counts.get("critical", 0))
+    high = int(counts.get("high", 0))
+    runtime = sum(int(counts.get(key, 0)) for key in ("critical", "high", "medium", "low"))
+    if fail_on == "critical" and critical > 0:
         return "failure"
-    if fail_on == "high" and (counts.get("critical", 0) + counts.get("high", 0)) > 0:
+    if fail_on == "high" and (critical + high) > 0:
         return "failure"
-    if fail_on == "none":
+    if fail_on == "none" and runtime > 0:
         return "neutral"
     return "success"
 
@@ -566,7 +597,7 @@ def _run() -> int:
             f"this pull request changes {len(scoped)} files, above the max-files input of "
             f"{max_files}. Raise the input or split the change."
         )
-    log(f"{len(scoped)} file(s) in scope.")
+    log(f"{plural(len(scoped), 'file')} in scope.")
 
     wanted = [f["path"] for f in scoped if pr_scope.should_fetch_full_file_content(f)]
     contents = reader.file_contents(wanted, head_sha) if wanted else {}
@@ -585,8 +616,9 @@ def _run() -> int:
     findings = analysis.analyze(repository, pr_number, head_sha, analysis_files)
     counts = analysis.severity_counts(findings)
     log(
-        f"{len(findings)} finding(s): {counts['critical']} critical, {counts['high']} high, "
-        f"{counts['medium']} medium, {counts['low']} low, {counts['info']} informational."
+        f"{plural(len(findings), 'finding')}: {counts['critical']} critical, "
+        f"{counts['high']} high, {counts['medium']} medium, {counts['low']} low, "
+        f"{counts['info']} informational."
     )
 
     fix_sections: List[Dict[str, Any]] = []
@@ -601,7 +633,7 @@ def _run() -> int:
             contents=contents,
             model_configured=model_configured,
         )
-        log(f"{len(fix_sections)} fix suggestion(s) produced.")
+        log(f"{plural(len(fix_sections), 'fix suggestion')} produced.")
 
     patches_by_path = {f["path"]: f.get("patch") or "" for f in scoped}
     plan = plan_comments(findings, patches_by_path)
@@ -609,7 +641,7 @@ def _run() -> int:
     unanchored = plan["unanchored"]
     if unanchored:
         log(
-            f"{len(unanchored)} finding(s) are on lines this pull request did not change; "
+            f"{plural(len(unanchored), 'finding')} on lines this pull request did not change; "
             "they are listed in the review body rather than on the diff."
         )
 
@@ -667,8 +699,8 @@ def _run() -> int:
     exclusion_line = repo_config.exclusion_summary(excluded_files)
     write_summary(
         f"### {CHECK_RUN_NAME}\n\n"
-        f"{len(findings)} finding(s), {counts['critical']} critical, {counts['high']} high, "
-        f"{len(fix_sections)} fix suggestion(s).\n\n"
+        f"{plural(len(findings), 'finding')}, {counts['critical']} critical, "
+        f"{counts['high']} high, {plural(len(fix_sections), 'fix suggestion')}.\n\n"
         + (f"{exclusion_line}.\n\n" if exclusion_line else "")
         + (
             "Fixes were generated with model assistance.\n"

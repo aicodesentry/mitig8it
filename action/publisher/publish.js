@@ -172,8 +172,11 @@ function buildReviewBody(request) {
 
 function checkRunSummary(request) {
   const totals = totalsOf(request);
+  // "1 runtime findings" is what the trial read, and "runtime finding" is internal vocabulary:
+  // nothing told a first user it meant "not in test code". The plural agrees with the number
+  // and the noun says what it means.
   const parts = [
-    `Mitig8it found ${plural(totals.runtime, 'runtime finding')} (${breakdown(totals)}).`,
+    `Mitig8it found ${plural(totals.runtime, 'finding')} outside test code (${breakdown(totals)}).`,
   ];
   if (totals.runtime > 0) {
     parts.push(totals.unanchored > 0

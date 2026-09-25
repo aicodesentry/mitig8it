@@ -234,7 +234,7 @@ def test_the_title_the_summary_and_the_review_body_state_one_total(tmp_path):
     review = next(call for call in recorded if call["name"] == "review")
     assert "37 findings" in check["title"]
     assert "32 critical or high" in check["title"]
-    assert "37 runtime findings" in check["summary"]
+    assert "37 findings outside test code" in check["summary"]
     assert "37 findings detected" in review["body"]
 
 

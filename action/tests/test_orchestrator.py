@@ -369,6 +369,63 @@ def test_inline_comments_are_capped_at_the_production_limit():
     assert len(comments) == pr_scope.INLINE_COMMENT_CAP
 
 
+def test_a_comment_never_says_one_sentence_three_times():
+    """40 of the trial's 65 comments did. The OpenGrep rules set all three fields to the message.
+
+    The whole body of `views/admin.ejs:17` was "EJS unescaped output tag. `<%-` writes raw HTML;
+    use `<%=` so the value is escaped" in bold, again as prose, and a third time after
+    "Remediation:".
+    """
+    sentence = "EJS unescaped output tag. `<%-` writes raw HTML; use `<%=` so the value is escaped"
+    body = run.render_finding_comment(
+        {
+            "fingerprint": "fp",
+            "file_path": "views/admin.ejs",
+            "line_start": 17,
+            "severity": "critical",
+            "title": sentence,
+            "description": sentence,
+            "remediation": sentence,
+        }
+    )
+    assert body.count(sentence) == 2, body
+    assert f"**{sentence}**" in body
+    assert f"Remediation: {sentence}" in body
+
+
+def test_a_description_that_says_something_new_is_kept():
+    body = run.render_finding_comment(
+        {
+            "fingerprint": "fp",
+            "file_path": "a.py",
+            "line_start": 1,
+            "severity": "high",
+            "title": "SQL injection",
+            "description": "The login query concatenates the request body.",
+            "remediation": "Pass the value as a bound parameter.",
+        }
+    )
+    assert "The login query concatenates the request body." in body
+    assert "Remediation: Pass the value as a bound parameter." in body
+
+
+def test_a_remediation_that_only_repeats_the_description_is_dropped():
+    sentence = "Pass the value as a bound parameter."
+    body = run.render_finding_comment(
+        {
+            "fingerprint": "fp",
+            "file_path": "a.py",
+            "line_start": 1,
+            "severity": "high",
+            "title": "SQL injection",
+            "description": sentence,
+            "remediation": sentence,
+        }
+    )
+    assert body.count(sentence) == 1
+    assert "Remediation:" not in body
+
+
 def test_inline_comments_are_ordered_most_severe_first():
     findings = [
         {"fingerprint": "low", "file_path": "src/reports.py", "line_start": 3, "severity": "low"},
@@ -398,6 +455,22 @@ def test_fail_on_decides_the_conclusion(fail_on, counts, expected):
 def test_fail_on_none_never_blocks():
     """Installing the action must not break a merge on the day it is added."""
     assert run.fail_conclusion("none", {"critical": 99, "high": 99}) == "neutral"
+
+
+def test_a_clean_review_is_green_rather_than_grey():
+    """All 26 trial runs concluded neutral, including the five that found nothing.
+
+    A repository with a clean review and a repository with 22 critical findings showed the same
+    grey check, and only the title told them apart. `neutral` belongs to a review held back by
+    `fail-on: none`, not to a review with nothing in it.
+    """
+    empty = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    for fail_on in ("none", "high", "critical"):
+        assert run.fail_conclusion(fail_on, empty) == "success"
+    # Informational findings are in test code and never decide anything.
+    assert run.fail_conclusion("none", dict(empty, info=7)) == "success"
+    # Something to report, and the repository asked not to be blocked by it.
+    assert run.fail_conclusion("none", dict(empty, medium=1)) == "neutral"
 
 
 # --- informational findings -------------------------------------------------------------------
