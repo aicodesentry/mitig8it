@@ -40,6 +40,9 @@ from .sites import (
     js_literal_assignment,
     js_literal_assignment_in_span,
     js_names_in,
+    js_identifier_is_bound,
+    js_module_binding,
+    js_path_join_in_scope,
     js_require_line,
     js_site_for_line,
     scope_lines_near,
@@ -534,9 +537,6 @@ _JS_SHELL_OPTION_RE = re.compile(r"shell\s*:\s*true")
 # The options object of a process call. Its properties split on commas because it carries no
 # nested object; one that does makes the shape unrecognized rather than mis-parsed.
 _JS_OPTIONS_RE = re.compile(r",\s*\{(?P<body>[^{}]*)\}")
-_JS_JOIN_RE = re.compile(r"path\.join\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)")
-
-
 def _js_sql(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | JsFunction | ModuleScope) -> TemplatePatch:
     """Interpolated SQL becomes a parameterized query, wherever the query is built.
 
@@ -759,39 +759,50 @@ def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | 
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
-    if js_require_line(source, "path") is None:
-        raise TemplateError("path_module_not_required")
-    rejection = _js_rejection(site)
-    join_line = None
-    for number in scope_lines_near(site.start_line, site.end_line, line):
-        found = _JS_JOIN_RE.search(lines[number - 1])
-        if found:
-            join_line = number
-            break
-    if join_line is None:
+    # The join is looked for before the import, not after it. Reading the import first reported
+    # `path_module_not_required` for every path finding whose file happens not to import `path`,
+    # including the ones whose sink takes a constant and has nothing to contain at all; the
+    # vulnerable-corpus run of 24 September 2026 collected 65 findings under that one reason.
+    # Which sink this is decides whether the import matters, so the sink is found first.
+    binding = js_module_binding(source, "path", "path")
+    join = js_path_join_in_scope(lines, site.start_line, site.end_line, line, (binding.name, "path"))
+    if join is None:
         raise TemplateError("path_join_not_found_in_scope")
+    join_line = join.line
+    rejection = _js_rejection(site)
+    changes: list[dict[str, Any]] = []
+    if not binding.present:
+        # A file that does not import `path` can still be repaired, as long as the name the
+        # repair introduces is free: the import is part of the same patch. A file that binds
+        # `path` to something else of its own cannot, because the repair's `path.resolve` would
+        # read that binding instead of the module.
+        if js_identifier_is_bound(source, binding.name):
+            raise TemplateError("path_identifier_shadowed")
+        anchor = lines[binding.import_line_number - 1]
+        changes.append(_hunk(path, finding.stable_id, binding.import_line_number, [anchor], [binding.import_line, anchor]))
     text = lines[join_line - 1]
-    found = _JS_JOIN_RE.search(text)
-    base, user_input = found.group("base"), found.group("input")
+    base, user_input = join.base, join.user_input
     indent = text[: len(text) - len(text.lstrip())]
     taken = js_names_in(lines[site.start_line - 1 : site.end_line])
     base_name = next(name for name in ("baseDir", "containedBase", "resolvedBase") if name not in taken)
     assignment = _assignment(text)
-    if assignment and assignment[2].strip() == found.group(0):
+    if assignment and assignment[2].strip() == join.text:
         target = assignment[1]
         tail: list[str] = []
     else:
         target = next(name for name in ("target", "safeTarget", "resolvedTarget") if name not in taken)
-        tail = [text.replace(found.group(0), target, 1)]
+        tail = [text.replace(join.text, target, 1)]
+    module = binding.name
     head = [
-        f"{indent}const {base_name} = path.resolve({base});",
-        f"{indent}const {target} = path.resolve({base_name}, String({user_input}));",
-        f"{indent}if ({target} !== {base_name} && !{target}.startsWith({base_name} + path.sep)) {rejection}",
+        f"{indent}const {base_name} = {module}.resolve({base});",
+        f"{indent}const {target} = {module}.resolve({base_name}, String({user_input}));",
+        f"{indent}if ({target} !== {base_name} && !{target}.startsWith({base_name} + {module}.sep)) {rejection}",
     ]
     last = max(join_line, line)
     original = lines[join_line - 1 : last]
     replacement = head + tail + lines[join_line:last]
-    return TemplatePatch(finding.stable_id, PATH_CONTAINMENT, [_hunk(path, finding.stable_id, join_line, original, replacement)], _js_containment_summary(site))
+    changes.append(_hunk(path, finding.stable_id, join_line, original, replacement))
+    return TemplatePatch(finding.stable_id, PATH_CONTAINMENT, changes, _js_containment_summary(site))
 
 
 # --- Python ---------------------------------------------------------------------------------

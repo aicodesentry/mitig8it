@@ -659,6 +659,229 @@ def js_require_line(source: str, module: str) -> tuple[int, str] | None:
     return None
 
 
+@dataclass(frozen=True)
+class JsModuleBinding:
+    """How a file already names a core module, or how a new import of it would be written.
+
+    `name` is the namespace identifier a repair writes `name.resolve(...)` against. `present`
+    says whether the file already binds it: when it does not, `import_line` is the statement to
+    insert and `import_line_number` is where, and both are None once it does.
+    """
+
+    name: str
+    present: bool
+    style: str  # commonjs | esm
+    members: frozenset[str] = frozenset()
+    import_line: str | None = None
+    import_line_number: int | None = None
+
+
+# `import x from 'm'` and `export ...` are the two statements that make a file a module Node
+# loads as ESM regardless of extension, and a file that carries either is one an inserted
+# `const x = require(...)` would break.
+_JS_ESM_MARKER_RE = re.compile(r"^\s*(?:import\s+[^(]|import\s*\{|import\s+['\"]|export\s+(?:default|const|let|var|function|class|\{|\*))", re.M)
+_JS_MODULE_IMPORT_RE = re.compile(
+    r"^\s*import\s+(?:(?P<default>[A-Za-z_$][\w$]*)|\*\s*as\s+(?P<star>[A-Za-z_$][\w$]*)|\{(?P<named>[^}]*)\})"
+    r"(?:\s*,\s*(?:\{(?P<also>[^}]*)\}|\*\s*as\s+(?P<star2>[A-Za-z_$][\w$]*)))?\s+from\s+['\"](?:node:)?(?P<module>[^'\"]+)['\"]"
+)
+_JS_MODULE_REQUIRE_RE = re.compile(
+    r"^\s*(?:export\s+)?(?:const|let|var)\s+(?:(?P<name>[A-Za-z_$][\w$]*)|\{(?P<named>[^}]*)\})\s*"
+    r"(?::\s*[^=]+?)?=\s*require\(\s*['\"](?:node:)?(?P<module>[^'\"]+)['\"]\s*\)"
+)
+# Any statement that opens a file's import block, so an inserted import lands with the others
+# rather than above a licence header or below the first use.
+_JS_IMPORT_STATEMENT_RE = re.compile(
+    r"^\s*(?:import\s|export\s+.*\sfrom\s|(?:const|let|var)\s+.+?=\s*require\()"
+)
+
+
+def js_module_style(source: str) -> str:
+    """Whether a file is written with `import`/`export` or with `require`."""
+    return "esm" if _JS_ESM_MARKER_RE.search(js_strip_strings(source)) else "commonjs"
+
+
+def _js_destructured_names(text: str) -> set[str]:
+    names: set[str] = set()
+    for part in text.split(","):
+        item = part.strip()
+        if ":" in item:
+            item = item.split(":", 1)[1].strip()
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", item):
+            names.add(item)
+    return names
+
+
+def js_import_anchor(source: str) -> int:
+    """The 1-based line an inserted import goes before: the top of the file's import block.
+
+    A file opens with a licence header far more often than not, so inserting at line 1 would
+    put the import above it. The first import or require statement is the top of the block,
+    and a file with neither takes the first line that is not a comment, a directive, or blank.
+    """
+    lines = js_strip_strings(source).splitlines()
+    for number, text in enumerate(lines, 1):
+        if _JS_IMPORT_STATEMENT_RE.match(text):
+            return number
+    in_block_comment = False
+    for number, text in enumerate(lines, 1):
+        stripped = text.strip()
+        if in_block_comment:
+            if "*/" in stripped:
+                in_block_comment = False
+            continue
+        if stripped.startswith("/*"):
+            in_block_comment = "*/" not in stripped
+            continue
+        # `js_strip_strings` has blanked the contents, so a directive prologue such as
+        # `'use strict';` reads as an empty quoted statement here rather than by its text.
+        if not stripped or stripped.startswith("//") or re.fullmatch(r"['\"][^'\"]*['\"]\s*;?", stripped):
+            continue
+        return number
+    return 1
+
+
+def js_identifier_is_bound(source: str, name: str) -> bool:
+    """Whether the file already declares `name` as something of its own.
+
+    An inserted `import path from 'node:path'` is only correct in a file where nothing else is
+    called `path`; `routes/videoHandler.ts` in the vulnerable corpus binds `const path =
+    videoPath()` inside its handler, and an import next to that declaration would be shadowed
+    at exactly the line the repair rewrites.
+    """
+    escaped = re.escape(name)
+    stripped = js_strip_strings(source)
+    patterns = (
+        rf"(?:const|let|var)\s+{escaped}(?![\w$])",
+        rf"function\s*\*?\s+{escaped}(?![\w$])",
+        rf"class\s+{escaped}(?![\w$])",
+        # A parameter or a catch binding: the name is introduced by the list it sits in.
+        rf"\(\s*{escaped}\s*[,)]",
+        rf",\s*{escaped}\s*[,)]\s*(?:=>|\{{)",
+        rf"catch\s*\(\s*{escaped}\s*\)",
+    )
+    return any(re.search(pattern, stripped, re.M) for pattern in patterns)
+
+
+def js_module_binding(source: str, module: str, preferred: str) -> JsModuleBinding:
+    """How `module` is bound in `source`, or how an import of it would be written.
+
+    Four binding styles reach this on the vulnerable corpus and all four are recognized: a
+    CommonJS require under the module's own name or an alias, a destructuring require, an ESM
+    default or namespace import, and an ESM named import. `node:path` and `path` are the same
+    module, so either spelling counts as bound.
+
+    When nothing binds it the result says so and carries the statement to insert, written in
+    the file's own style so a repair does not mix `require` into an ESM module.
+    """
+    # Read from the raw lines, not the blanked ones: `js_strip_strings` empties string contents,
+    # which is exactly where the module specifier is. A comment that looks like an import is
+    # ruled out by the blanked line at the same index instead.
+    blanked = js_strip_strings(source).splitlines()
+    namespace: str | None = None
+    members: set[str] = set()
+    for index, text in enumerate(source.splitlines()):
+        if index >= len(blanked) or blanked[index].lstrip().startswith(("//", "*", "/*")):
+            continue
+        for pattern in (_JS_MODULE_IMPORT_RE, _JS_MODULE_REQUIRE_RE):
+            match = pattern.match(text)
+            if not match or match.group("module") != module:
+                continue
+            groups = match.groupdict()
+            for key in ("default", "star", "star2", "name"):
+                if groups.get(key) and namespace is None:
+                    namespace = groups[key]
+            for key in ("named", "also"):
+                if groups.get(key):
+                    members |= _js_destructured_names(groups[key])
+    style = js_module_style(source)
+    if namespace is not None:
+        return JsModuleBinding(namespace, True, style, frozenset(members))
+    statement = (
+        f"import {preferred} from 'node:{module}'" if style == "esm" else f"const {preferred} = require('node:{module}')"
+    )
+    return JsModuleBinding(
+        preferred, False, style, frozenset(members), statement, js_import_anchor(source)
+    )
+
+
+@dataclass(frozen=True)
+class JsPathJoin:
+    """A `path.join`/`path.resolve` call on one line: its text, its base, and its last argument.
+
+    `base` is every argument but the last, exactly as written, because `path.resolve` takes a
+    varargs base and a repair re-resolves it unchanged. `user_input` is the last argument, which
+    is the one a traversal payload arrives in.
+    """
+
+    line: int
+    text: str
+    base: str
+    user_input: str
+
+
+def _js_split_arguments(raw: str, blanked: str) -> list[str] | None:
+    """The top-level arguments of an argument list, or None when the brackets do not balance."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for index, ch in enumerate(blanked):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif ch == "," and depth == 0:
+            parts.append(raw[start:index].strip())
+            start = index + 1
+    if depth != 0:
+        return None
+    parts.append(raw[start:].strip())
+    return [part for part in parts if part]
+
+
+def js_path_join_on_line(text: str, names: tuple[str, ...]) -> JsPathJoin | None:
+    """The first `<binding>.join(...)` or `.resolve(...)` on one line, parsed by its brackets.
+
+    A regular expression cannot do this: `path.resolve(__dirname, 'static/create', name)` takes
+    three arguments, and a pattern that reads "everything up to the first `)`" as the second one
+    silently turns the last two into a comma expression. The vulnerable corpus has 35 findings
+    in `dicebear/dicebear` of exactly that shape, so the call is scanned rather than matched.
+    """
+    blanked_line = js_strip_strings(text)
+    for name in dict.fromkeys(names):
+        if not name:
+            continue
+        for match in re.finditer(rf"(?<![\w$.]){re.escape(name)}\s*\.\s*(?:join|resolve)\s*\(", blanked_line):
+            open_at = match.end() - 1
+            depth = 0
+            close_at = None
+            for index in range(open_at, len(blanked_line)):
+                if blanked_line[index] in "([{":
+                    depth += 1
+                elif blanked_line[index] in ")]}":
+                    depth -= 1
+                    if depth == 0:
+                        close_at = index
+                        break
+            if close_at is None:
+                continue
+            arguments = _js_split_arguments(text[open_at + 1 : close_at], blanked_line[open_at + 1 : close_at])
+            if not arguments or len(arguments) < 2:
+                continue
+            return JsPathJoin(0, text[match.start() : close_at + 1], ", ".join(arguments[:-1]), arguments[-1])
+    return None
+
+
+def js_path_join_in_scope(lines: list[str], start_line: int, end_line: int, line: int, names: tuple[str, ...]) -> JsPathJoin | None:
+    """The `path.join`/`path.resolve` nearest the finding inside its scope, or None."""
+    for number in scope_lines_near(start_line, end_line, line):
+        found = js_path_join_on_line(lines[number - 1], names)
+        if found:
+            return JsPathJoin(number, found.text, found.base, found.user_input)
+    return None
+
+
 def js_bound_names(source: str, module: str) -> tuple[str | None, set[str]]:
     """How a module is bound: (`namespace name` or None, {destructured names})."""
     found = js_require_line(source, module)

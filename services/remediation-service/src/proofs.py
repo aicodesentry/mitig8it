@@ -41,8 +41,10 @@ from .sites import (
     js_eval_site,
     js_literal_assignment,
     js_literal_assignment_in_span,
+    js_module_binding,
     js_module_constant,
     js_module_exports_name,
+    js_path_join_in_scope,
     js_site_for_line,
     module_directory,
     python_flask_app_name,
@@ -542,14 +544,11 @@ def _js_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRo
     source = snapshot.full_content(path)
     lines = source.splitlines()
     line = _finding_line(finding)
-    join = None
-    for number in scope_lines_near(site.start_line, site.end_line, line):
-        found = re.search(r"path\.(?:join|resolve)\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)", lines[number - 1])
-        if found:
-            join = (number, found.group("base"), found.group("input"))
-            break
-    if join is None:
+    binding = js_module_binding(source, "path", "path")
+    found = js_path_join_in_scope(lines, site.start_line, site.end_line, line, (binding.name, "path"))
+    if found is None:
         raise SiteError("path_join_not_found_in_scope")
+    join = (found.line, found.base, found.user_input)
     base = _js_base_expression(source, path, join[1])
     if isinstance(site, JsFunction) and site.kind == "handler":
         return _js_traversal_handler_proof(snapshot, finding, site, join, base)
@@ -807,15 +806,11 @@ def _js_module_scope_proof(snapshot: Snapshot, finding: FindingSnapshot, scope: 
         _js_sink_in_scope(lines, scope, _JS_COMMAND_SINK_RE, "command_sink_not_in_scope")
         return _js_module_proof(snapshot, finding, scope, family, COMMAND_PAYLOAD, _JS_ARGV_ASSERTIONS[:-2])
     if family == PATH_CONTAINMENT:
-        join = None
-        for number in scope_lines_near(scope.start_line, scope.end_line, _finding_line(finding)):
-            found = re.search(r"path\.(?:join|resolve)\(\s*(?P<base>[^,()]+?)\s*,\s*(?P<input>[^()]+?)\s*\)", lines[number - 1])
-            if found:
-                join = found
-                break
+        binding = js_module_binding(source, "path", "path")
+        join = js_path_join_in_scope(lines, scope.start_line, scope.end_line, _finding_line(finding), (binding.name, "path"))
         if join is None:
             raise SiteError("path_join_not_found_in_scope")
-        return _js_module_traversal_proof(snapshot, finding, scope, _js_base_expression(source, path, join.group("base")))
+        return _js_module_traversal_proof(snapshot, finding, scope, _js_base_expression(source, path, join.base))
     raise SiteError("family_not_generated_at_module_scope")
 
 
