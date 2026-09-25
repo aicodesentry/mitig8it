@@ -20,7 +20,7 @@ The repository is still named `codesentry` and some environment variables, packa
 | PostgreSQL | Compose service | 5432 | System of record. |
 | Prometheus | Compose service | 9090 | Local scrape target for service metrics. |
 
-Local wiring lives in [docker-compose.yml](docker-compose.yml). Deployment wiring lives in `.github/workflows/`.
+Local wiring lives in [docker-compose.yml](../../docker-compose.yml). Deployment wiring lives in `.github/workflows/`.
 
 ## The Pull Request Flow
 
@@ -37,7 +37,7 @@ Local wiring lives in [docker-compose.yml](docker-compose.yml). Deployment wirin
 ## Detection Pipeline
 
 - Tier 1: deterministic regex and dependency-risk checks in `services/analysis-service/src/security_rules.py`.
-- Tier 2: OpenGrep AST rules in `services/analysis-service/src/opengrep_rules/`. 116 rules cover JavaScript, TypeScript and Python across injection, path traversal, SSRF, XSS, deserialization, weak crypto, hardcoded credentials, JWT misuse, open redirect, prototype pollution, TLS and framework middleware; other languages carry a smaller set. Every rule is written in this repository: no public rule library is used, because the obvious ones forbid it in a paid service (see [third-party-rules.md](docs/legal/third-party-rules.md)). A rule posts only on measured precision or an argued sink-only pattern, and one that fails that test is quarantined: it still runs and is still counted, but nothing it produces reaches a reviewer. Files are scanned in batches bounded by `OPENGREP_BATCH_MAX_FILES` and `OPENGREP_BATCH_MAX_BYTES`; any batch failure fails the tier closed, so partial results are never returned.
+- Tier 2: OpenGrep AST rules in `services/analysis-service/src/opengrep_rules/`. 116 rules cover JavaScript, TypeScript and Python across injection, path traversal, SSRF, XSS, deserialization, weak crypto, hardcoded credentials, JWT misuse, open redirect, prototype pollution, TLS and framework middleware; other languages carry a smaller set. Every rule is written in this repository: no public rule library is used, because the obvious ones forbid it in a paid service (see [third-party-rules.md](../legal/third-party-rules.md)). A rule posts only on measured precision or an argued sink-only pattern, and one that fails that test is quarantined: it still runs and is still counted, but nothing it produces reaches a reviewer. Files are scanned in batches bounded by `OPENGREP_BATCH_MAX_FILES` and `OPENGREP_BATCH_MAX_BYTES`; any batch failure fails the tier closed, so partial results are never returned.
 - Tier 3: optional provider-agnostic LLM triage through `LLM_PROVIDER` and `LLM_API_KEY`. The Gemini default model is `gemini-2.5-flash-lite`; the OpenAI default is `gpt-4o-mini`. Triage failures are non-blocking, and every log line and error body on those paths is passed through a redaction helper that strips API keys and Authorization values.
 
 The blocking analysis routes are synchronous handlers that FastAPI runs in its threadpool, and the combined route runs tier 1 and tier 2 concurrently with a fixed merge order, so a long scan does not block `/health` and fingerprints stay stable.
@@ -144,7 +144,7 @@ docker compose up api-service api-worker remediation-service remediation-worker 
 
 The compose defaults set `REMEDIATION_GENERATE_ENABLED=true` and leave publish false, and `REMEDIATION_ENABLED` is false, so every capability stays off until a developer opts in. The stack runs without a gVisor runtime class, without NetworkPolicy, without CMEK artifact storage, and with both sandbox attestation gates false. `SANDBOX_NETWORK_POLICY_ATTESTED` and `SANDBOX_NODE_LIMITS_ATTESTED` must not be set to true based on anything it reports. Provider credentials pass through from the host environment and are unset by default, so the repair loop abstains rather than calling a model.
 
-For standalone service runs, environment variables, and the GitHub App setup, see [docs/getting-started/](docs/getting-started/local-dev.md).
+For standalone service runs, environment variables, and the GitHub App setup, see [docs/getting-started/](../getting-started/local-dev.md).
 
 ## Tests
 
@@ -198,11 +198,11 @@ Backend images go to Google Artifact Registry. Runtime secrets come from GCP Sec
 
 Every Cloud Run service scales to zero and none of the deploy workflows passes `--no-cpu-throttling` or `--min-instances` above zero, so CPU is allocated during request handling only. The remediation service is deployed with `--max-instances 1`, `--concurrency 1`, `--timeout 900`, the local execution backend, an in-process worker and sandbox, and both attestation gates false.
 
-See [docs/deployment/cloud-run-firebase.md](docs/deployment/cloud-run-firebase.md).
+See [docs/deployment/cloud-run-firebase.md](../deployment/cloud-run-firebase.md).
 
 ### Single-instance development deployment
 
-One Cloud Run instance per service, no separate worker and no separate broker. It exists so the feature can be enabled on a repository the operator owns, in development-verification mode. It is not a production configuration and produces no release evidence. The full variable list for the API and the repair service, the authentication layout, and the limits of the mode are in [docs/runbooks/remediation.md](docs/runbooks/remediation.md).
+One Cloud Run instance per service, no separate worker and no separate broker. It exists so the feature can be enabled on a repository the operator owns, in development-verification mode. It is not a production configuration and produces no release evidence. The full variable list for the API and the repair service, the authentication layout, and the limits of the mode are in [docs/runbooks/remediation.md](../runbooks/remediation.md).
 
 Its limits, in short: every result is `development_unverified`; repository checks run as ordinary subprocesses inside the repair container with no isolation; the execution store is a per-instance SQLite file on ephemeral storage that does not survive a revision or an instance replacement; and it must only be enabled on repositories whose contents the operator controls, because the repository's own commands execute inside the service container.
 
@@ -226,11 +226,11 @@ Development-grade today:
 - Observability. Traces, metrics, and alert rules are written and redacted, but no collector endpoint, scrape target, or alert rule is wired to a backend in any deploy workflow.
 - Retention, deletion, and restore procedures, which are documented but have never been exercised.
 
-The full record of what has been observed, with each number traceable to a pull request or a run, is the ledger: [docs/architecture/agentic-remediation-progress.md](docs/architecture/agentic-remediation-progress.md). Known engineering debt that was deliberately deferred is listed in [docs/architecture/known-debt.md](docs/architecture/known-debt.md).
+The full record of what has been observed, with each number traceable to a pull request or a run, is the ledger: [docs/architecture/agentic-remediation-progress.md](../architecture/agentic-remediation-progress.md). Known engineering debt that was deliberately deferred is listed in [docs/architecture/known-debt.md](../architecture/known-debt.md).
 
 ## Documentation
 
-All project documentation lives under [docs/](docs/README.md):
+All project documentation lives under [docs/](../README.md):
 
 ```text
 docs/
@@ -245,11 +245,11 @@ docs/
 
 Common entry points:
 
-- [Local Development](docs/getting-started/local-dev.md)
-- [Environment Setup](docs/getting-started/environment.md)
-- [Architecture Overview](docs/architecture/overview.md)
-- [Remediation Runbook](docs/runbooks/remediation.md)
-- [CI/CD Pipeline](docs/deployment/ci-cd-pipeline.md)
-- [Cloud Run and Firebase Deployment](docs/deployment/cloud-run-firebase.md)
+- [Local Development](../getting-started/local-dev.md)
+- [Environment Setup](../getting-started/environment.md)
+- [Architecture Overview](../architecture/overview.md)
+- [Remediation Runbook](../runbooks/remediation.md)
+- [CI/CD Pipeline](../deployment/ci-cd-pipeline.md)
+- [Cloud Run and Firebase Deployment](../deployment/cloud-run-firebase.md)
 
-The dated documents in the repository root (`BUG-REVIEW-2026-09-05.md`, `PRODUCT-ANALYSIS-2026-08-08.md`, `DEVELOPER-READINESS-REVIEW-2026-08-14.md`, `EXECUTION-PLAN-2026-08-17.md`, `HARDENING-HANDOFF.md`, `HARDENING-TRACKER.md`, and the `TASK-0*.md` files) are historical records of reviews and work packages as they stood on their dates. They are kept as written and are not maintained against the current code.
+The dated documents under [`docs/history/`](../history/README.md) (`BUG-REVIEW-2026-09-05.md`, `PRODUCT-ANALYSIS-2026-08-08.md`, `DEVELOPER-READINESS-REVIEW-2026-08-14.md`, `EXECUTION-PLAN-2026-08-17.md`, `HARDENING-HANDOFF.md`, `HARDENING-TRACKER.md`, and the `TASK-0*.md` files) are historical records of reviews and work packages as they stood on their dates. They are kept as written and are not maintained against the current code.
