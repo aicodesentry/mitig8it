@@ -504,6 +504,9 @@ def _pair_request(modules: dict[str, Any], payload: dict[str, Any], finding: dic
             "max_tool_calls": 4,
             "max_attempts": 1,
             "max_spend_usd": 0.0,
+            # With the install on, the loadability gate stops refusing a package the
+            # repository's own manifest declares, because the workspace will carry it.
+            "install_dependencies": bool(payload.get("install_dependencies")),
         },
         "versions": {"replay": "replay-pairs-v1", "retriever": "v1", "verifier": "v1"},
     })
@@ -552,6 +555,59 @@ def _measure_pair(modules: dict[str, Any], request: Any, snapshot: Any, template
     }
 
 
+# One repository's dependencies are installed once and every one of its workspaces is pointed at
+# the result. A pair materializes the workspace twice per check and a repository has dozens of
+# pairs, so installing per workspace here would cost hours per repository and measure nothing the
+# one install does not. The service itself installs per workspace, which is the isolation this
+# measurement gives up in order to be runnable.
+DEPENDENCY_INSTALL_TIMEOUT_SECONDS = 600
+DEPENDENCY_INSTALL_MAX_BYTES = 4_000_000_000
+INSTALL_MARKER = ".mitig8it-dependencies.json"
+
+
+def install_repository_dependencies(payload: dict[str, Any]) -> dict[str, Any]:
+    """Installs the pinned tree's declared dependencies and tells the local driver where they are.
+
+    The install is the remediation service's own `install_dependencies`, so what is measured here
+    is what `policy.install_dependencies` does rather than a harness approximation of it. The
+    result is cached beside the tree by the lockfile digest, because a rerun over the same cache
+    must not pay for the same `npm ci` again.
+    """
+    from src.sandbox.dependencies import (  # noqa: PLC0415
+        DEPENDENCY_ROOTS_ENV,
+        NODE_MODULES,
+        VENV_DIRECTORY,
+        install_dependencies,
+    )
+
+    tree = Path(payload["dependency_tree"])
+    marker = tree / INSTALL_MARKER
+    if marker.is_file():
+        record = json.loads(marker.read_text(encoding="utf-8"))
+        record["cached"] = True
+    else:
+        started = time.perf_counter()
+        result = install_dependencies(tree, DEPENDENCY_INSTALL_TIMEOUT_SECONDS, DEPENDENCY_INSTALL_MAX_BYTES)
+        record = result.as_dict()
+        record["site_packages"] = list(result.site_packages)
+        record["cached"] = False
+        record["wall_ms"] = int((time.perf_counter() - started) * 1000)
+        marker.write_text(json.dumps(record), encoding="utf-8")
+
+    roots: dict[str, Any] = {}
+    if (tree / NODE_MODULES).is_dir():
+        roots[NODE_MODULES] = str(tree / NODE_MODULES)
+    site_packages = [item for item in (record.get("site_packages") or []) if Path(item).is_dir()]
+    if not site_packages:
+        site_packages = [str(path) for path in sorted((tree / VENV_DIRECTORY).glob("lib/python*/site-packages"))]
+    if site_packages:
+        roots["site_packages"] = site_packages
+    record["roots"] = roots
+    if roots:
+        os.environ[DEPENDENCY_ROOTS_ENV] = json.dumps(roots)
+    return record
+
+
 def run_pairs(payload: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
     """Both halves per finding, and the two tree outcomes for every finding that has both.
 
@@ -561,6 +617,9 @@ def run_pairs(payload: dict[str, Any], findings: list[dict[str, Any]]) -> dict[s
     run on the original tree and on the patched tree.
     """
     modules = load_pair_modules()
+    install: dict[str, Any] = {"dependencies_installed": False}
+    if payload.get("install_dependencies") and payload.get("dependency_tree"):
+        install = install_repository_dependencies(payload)
     by_path = {item["path"]: item.get("content", "") for item in payload["files"] if item.get("content")}
 
     rows: list[dict[str, Any]] = []
@@ -626,7 +685,7 @@ def run_pairs(payload: dict[str, Any], findings: list[dict[str, Any]]) -> dict[s
                                "error_type": type(exc).__name__, "traceback": traceback.format_exc()[-4000:]})
         rows.append(row)
 
-    return {"counts": counts, "rows": rows, "exceptions": exceptions}
+    return {"counts": counts, "rows": rows, "exceptions": exceptions, "install": install}
 
 
 # --- entry point ----------------------------------------------------------------------------

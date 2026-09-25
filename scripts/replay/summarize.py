@@ -233,7 +233,56 @@ def render_pairs(documents: list[dict[str, Any]]) -> str:
         f"| Findings with both halves | {totals['both']} |",
         f"| Pairs that verify end to end | {totals['verified']} |",
     ]
-    return "\n".join(lines + reach)
+    return "\n".join(lines + reach + render_installs(documents) + render_proof_reasons(documents))
+
+
+def render_installs(documents: list[dict[str, Any]]) -> list[str]:
+    """One row per repository whose dependencies a `--with-dependencies` run installed."""
+    installs = [
+        (record.get("repo") or "", (record.get("pairs") or {}).get("install") or {})
+        for document in documents
+        for record in document.get("records") or []
+        if ((record.get("pairs") or {}).get("install") or {}).get("reason_code") != "no_dependency_manifest"
+        or ((record.get("pairs") or {}).get("install") or {}).get("ecosystems")
+    ]
+    installs = [(repo, install) for repo, install in installs if install and "dependencies_installed" in install]
+    if not any(install.get("ecosystems") or install.get("reason_code") for _, install in installs):
+        return []
+    lines = [
+        "",
+        "### The install, per repository",
+        "",
+        "| Repository | Ecosystems | Install | Lockfile | Duration | On disk |",
+        "| --- | --- | --- | --- | ---: | ---: |",
+    ]
+    for repo, install in sorted(installs):
+        lockfiles = install.get("lockfiles") or []
+        foreign = install.get("foreign_lockfiles") or []
+        situation = ", ".join(f"`{item}`" for item in lockfiles) or "none carried"
+        if foreign:
+            situation += " (repository also carries " + ", ".join(f"`{item}`" for item in foreign) + ")"
+        outcome = "installed" if install.get("dependencies_installed") else f"`{install.get('reason_code')}`"
+        lines.append(
+            f"| `{_cell(repo)}` | {', '.join(install.get('ecosystems') or []) or 'none'} | {outcome} "
+            f"| {situation} | {round(int(install.get('duration_ms') or 0) / 1000)}s "
+            f"| {round(int(install.get('bytes_installed') or 0) / 1_000_000)} MB |"
+        )
+    return lines
+
+
+def render_proof_reasons(documents: list[dict[str, Any]]) -> list[str]:
+    """Why the findings that got no proof got none, counted."""
+    reasons: Counter[str] = Counter()
+    for row in pair_rows(documents):
+        if row.get("skipped"):
+            reasons[str(row["skipped"])] += 1
+        elif isinstance(row.get("proof"), str) and row["proof"].startswith("no:"):
+            reasons[row["proof"][3:]] += 1
+    if not reasons:
+        return []
+    lines = ["", "### Why a finding got no proof", "", "| Reason | Count |", "| --- | ---: |"]
+    lines += [f"| `{_cell(reason)}` | {count} |" for reason, count in reasons.most_common()]
+    return lines
 
 
 def main() -> int:

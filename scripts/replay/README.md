@@ -151,6 +151,22 @@ The snapshot a pair runs against is not the whole tree: the remediation service 
 files and the corpus trees are far larger, so the budget is spent nearest the finding first,
 after the affected file and the root manifests. What a proof needs from the rest of the tree is
 the module its subject imports and the manifest that proves a dependency, and both are there.
+The manifests are read whatever their extension: `walk_analysable_files` answers the scanner's
+question and `package.json` is not an analysable extension, so until this was fixed the root
+manifests the worker's `PAIR_ROOT_FILES` names never actually arrived.
+
+`--with-dependencies` installs each repository's declared dependencies before the pairs run and
+lets the sandbox workspace see them. The install is the remediation service's own
+`src/sandbox/dependencies.py`, so what is measured is what `policy.install_dependencies` does:
+`npm ci --ignore-scripts` from the lockfile the repository carries, `pip install
+--only-binary=:all:` into a venv beside the tree, under a ten-minute cap per repository, with
+network only for that step. It runs in the worker, once per repository, and caches its result in
+a marker beside the cached tree, so a rerun over the same cache costs no `npm ci`; the local
+driver is then pointed at the installed tree through `SANDBOX_LOCAL_DEPENDENCY_ROOTS` and links
+it into each workspace. The service installs per workspace instead, which is the isolation this
+gives up in order to be runnable over hundreds of workspaces. Each record carries its
+repository's install under `pairs.install`, and `summarize.py --pairs` renders it as a table.
+Deleting `--cache` removes the installed trees with it.
 
 ## Caveats
 
