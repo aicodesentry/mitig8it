@@ -72,6 +72,65 @@ class JsRoute:
 
 
 @dataclass(frozen=True)
+class JsParameter:
+    """One parameter as written, in the four forms a generated call has to line up with.
+
+    A plain name and a name with a default are both passed positionally. A rest element takes
+    however many arguments are left, so a proof passes it nothing. A destructured parameter binds
+    no name at all: what the body reads are its `members`, and a proof reaches one of them by
+    passing an object literal with that key.
+    """
+
+    text: str
+    name: str | None = None
+    has_default: bool = False
+    rest: bool = False
+    members: tuple[str, ...] = ()
+
+    @property
+    def bound_names(self) -> tuple[str, ...]:
+        """Every identifier this parameter puts in the function's scope."""
+        return (self.name,) if self.name else self.members
+
+
+# A parameter list item: `name`, `name = default`, `...rest`, or `{ a, b }`, each with an
+# optional TypeScript annotation. Nested destructuring and array patterns are deliberately not
+# here: a proof that guessed at their shape would build a call that does not match.
+_JS_PARAMETER_RE = re.compile(
+    r"^(?P<rest>\.\.\.\s*)?(?:(?P<name>[A-Za-z_$][\w$]*)|\{(?P<members>[^{}]*)\})"
+    r"(?:\s*\?)?(?:\s*:\s*(?P<annotation>[^=]+?))?(?:\s*=\s*(?P<default>.+))?$"
+)
+
+
+def js_parameters(declared: str) -> tuple[JsParameter, ...] | None:
+    """The parameter list as a model, or None when a form in it cannot be lined up with a call."""
+    blanked = js_strip_strings(declared)
+    items = _js_split_top_level(declared, blanked, ",")
+    if items is None:
+        return None
+    parsed: list[JsParameter] = []
+    for item in items:
+        match = _JS_PARAMETER_RE.match(item.strip())
+        if not match:
+            return None
+        members = match.group("members")
+        if members is not None:
+            names = tuple(
+                part.split(":", 1)[-1].strip() if ":" in part else part.strip()
+                for part in members.split(",")
+                if part.strip()
+            )
+            if not names or any(not re.fullmatch(r"[A-Za-z_$][\w$]*", name) for name in names):
+                return None
+            parsed.append(JsParameter(item.strip(), None, match.group("default") is not None, False, names))
+            continue
+        parsed.append(
+            JsParameter(item.strip(), match.group("name"), match.group("default") is not None, bool(match.group("rest")))
+        )
+    return tuple(parsed)
+
+
+@dataclass(frozen=True)
 class JsFunction:
     """A named JavaScript function that is not an Express handler, called directly by a proof.
 
@@ -84,11 +143,15 @@ class JsFunction:
     name: str
     start_line: int
     end_line: int
+    # Every identifier the parameter list puts in scope, which for a destructured parameter is
+    # its members rather than the parameter. Anything that needs a *position* reads
+    # `parameter_model` instead, because a destructured parameter contributes no name to this.
     parameters: tuple[str, ...]
     returns_directly: bool = False
     kind: str = "function"  # function | method
     is_async: bool = False
     inputs: tuple[UntrustedInput, ...] = ()
+    parameter_model: tuple[JsParameter, ...] = ()
 
     @property
     def names(self) -> set[str]:
@@ -363,9 +426,10 @@ def js_function_for_line(source: str, line: int) -> JsFunction:
         end = _js_brace_end(stripped, index, offset)
         if end is None or end < line - 1:
             continue
-        written = [item.strip() for item in declared.split(",") if item.strip()]
-        if any(not re.fullmatch(r"[\w$]+", item) for item in written):
+        model = js_parameters(declared)
+        if model is None:
             raise SiteError("function_parameters_not_plain_names")
+        written = [name for parameter in model for name in parameter.bound_names]
         returns = bool(re.match(r"^\s*return\s", lines[line - 1]))
         is_async = bool(re.search(r"(?<![\w$])async(?![\w$])", lines[index][: offset]))
         inputs = _js_function_inputs(lines, index + 1, end + 1, tuple(written))
@@ -374,8 +438,16 @@ def js_function_for_line(source: str, line: int) -> JsFunction:
         # this snapshot may not contain. Calling it with a string would pass a payload where a
         # request object goes, so a proof drives it with a request and a recording response
         # instead, which is what `kind` tells the generator.
-        handler = bool(inputs) and len(written) >= 2 and all(item.expression.startswith(written[0] + ".") for item in inputs)
-        return JsFunction(name, index + 1, end + 1, tuple(written), returns, "handler" if handler else kind, is_async, inputs)
+        # Read off the positional model, not the bound names: `({ params }, res)` binds `params`
+        # first and `res` second, and a handler is a function whose first *parameter* is the
+        # request object, which a destructured one is not.
+        first = model[0].name if model else None
+        handler = bool(inputs) and first is not None and len(model) >= 2 and all(
+            item.expression.startswith(first + ".") for item in inputs
+        )
+        return JsFunction(
+            name, index + 1, end + 1, tuple(written), returns, "handler" if handler else kind, is_async, inputs, model
+        )
     raise SiteError("enclosing_function_not_found")
 
 

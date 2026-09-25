@@ -727,8 +727,12 @@ def _js_rejection(site: JsRoute | JsFunction | ModuleScope) -> str:
         return f"return {site.res}.status(400).end();"
     # A route handler the module never registered owns a response just the same, and its second
     # parameter is it: answering 400 is the contract its caller already has.
-    if isinstance(site, JsFunction) and site.kind == "handler" and len(site.parameters) >= 2:
-        return f"return {site.parameters[1]}.status(400).end();"
+    if isinstance(site, JsFunction) and site.kind == "handler" and len(site.parameter_model) >= 2:
+        # The response is the second *parameter*, which a destructured first parameter would
+        # push out of line if this counted bound names instead.
+        second = site.parameter_model[1].name
+        if second:
+            return f"return {second}.status(400).end();"
     # A function that takes a continuation reports the refusal through it, for the same reason:
     # that is how it already reports every other failure, and throwing at a caller that is
     # waiting on a callback is a behaviour change on top of the repair.
@@ -740,7 +744,10 @@ def _js_rejection(site: JsRoute | JsFunction | ModuleScope) -> str:
 
 
 def _js_containment_summary(site: JsRoute | JsFunction | ModuleScope) -> str:
-    if isinstance(site, JsRoute) or (isinstance(site, JsFunction) and site.kind == "handler" and len(site.parameters) >= 2):
+    if isinstance(site, JsRoute) or (
+        isinstance(site, JsFunction) and site.kind == "handler" and len(site.parameter_model) >= 2
+        and site.parameter_model[1].name
+    ):
         tail = "answers 400"
     elif isinstance(site, JsFunction) and any(name in JS_CALLBACK_PARAMETERS for name in site.parameters):
         tail = "calls back with an error"
