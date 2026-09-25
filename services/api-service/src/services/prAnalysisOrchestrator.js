@@ -275,6 +275,58 @@ function buildTestCodeSummaryLines({ testFilesScanned, infoFindings }) {
   return lines;
 }
 
+// The findings with nowhere to put a comment, named rather than counted.
+//
+// GitHub accepts an inline comment only on a line the pull request touches, and a comment on the
+// nearest line it does touch would point at the wrong code. Both products therefore decline to
+// annotate those findings, and both used to say only how many there were: this body said "N
+// findings are listed here only (the line is outside the diff or the evidence is below the
+// inline threshold), with details in the Mitig8it dashboard", which asks a reader to go
+// somewhere else to learn what is wrong with their pull request. The Action, which has no
+// dashboard to send anyone to, said nothing at all beyond the count.
+//
+// So the locations are in the review body now, in both. The heading is shared wording and
+// action/tests/test_node_parity.py compares the two, because a reader who has seen one product
+// should recognise the section in the other.
+const UNANCHORED_HEADING = 'Findings on lines this pull request did not change';
+const UNANCHORED_ROW_CAP = 50;
+
+function permalinkFor(repository, path, line) {
+  if (!repository?.owner || !repository?.repo || !repository?.commitSha) return '';
+  const server = String(process.env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/$/, '');
+  const encoded = String(path).split('/').map(encodeURIComponent).join('/');
+  return `${server}/${repository.owner}/${repository.repo}/blob/${repository.commitSha}/${encoded}#L${line}`;
+}
+
+function buildUnanchoredSection(findings, repository) {
+  const rows = (findings || []).filter((finding) => finding?.file_path && finding?.line_start);
+  if (!rows.length) return [];
+  const shown = rows.slice(0, UNANCHORED_ROW_CAP);
+  const lines = [
+    `#### ${UNANCHORED_HEADING} (${rows.length})`,
+    '',
+    'GitHub accepts an inline comment only on a line the pull request touches, and a comment on '
+    + 'the nearest line that it does touch would point at the wrong code. These are listed here '
+    + 'instead, against the commit that was reviewed.',
+    '',
+    '| Severity | Rule | Location |',
+    '| --- | --- | --- |',
+  ];
+  for (const finding of shown) {
+    const rule = String(finding.rule_id || finding.title || '').replace(/[`|]/g, '');
+    const path = String(finding.file_path).replace(/[|]/g, '');
+    const url = permalinkFor(repository, finding.file_path, finding.line_start);
+    const location = url ? `[${path}:${finding.line_start}](${url})` : `${path}:${finding.line_start}`;
+    lines.push(`| ${finding.severity || 'unknown'} | ${rule ? `\`${rule}\`` : '-'} | ${location} |`);
+  }
+  if (rows.length > shown.length) {
+    lines.push('');
+    lines.push(`${rows.length - shown.length} further finding${rows.length - shown.length === 1 ? '' : 's'} not listed here.`);
+  }
+  lines.push('');
+  return lines;
+}
+
 function buildReviewBody(findings, runId, options = {}) {
   const all = findings || [];
   const runtimeFindings = all.filter((finding) => !isInfoFinding(finding));
@@ -303,6 +355,7 @@ function buildReviewBody(findings, runId, options = {}) {
   }
 
   const placement = buildPlacementLine(total, options);
+  const unanchoredLines = buildUnanchoredSection(options.unanchoredFindings, options.repository);
 
   return [
     '<!-- mitig8it-review -->',
@@ -318,6 +371,7 @@ function buildReviewBody(findings, runId, options = {}) {
     ...limitationLines,
     placement.sentence,
     '',
+    ...unanchoredLines,
     `<sub>Analyzed by <strong>Mitig8it</strong> · Run \`${runId.slice(0, 8)}\` · ${placement.short}</sub>`,
   ].join('\n');
 }
@@ -1019,10 +1073,23 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
     const filePatchByPath = new Map(files.map((f) => [f.path, f.patch || '']));
     const suggestionStats = { rendered: 0, noPatch: 0, gateRejected: 0, validatorRejected: 0 };
     const rejectionReasons = {};
+    const surfaceDecisions = buildSurfaceDecisions({ files, findings: actionable });
     const inlineFindingIds = new Set(
-      buildSurfaceDecisions({ files, findings: actionable })
+      surfaceDecisions
         .filter((decision) => decision.surfaceDecision === 'inline')
         .map((decision) => decision.findingId)
+    );
+    // Summary only because the pull request does not touch the line, which is the case the
+    // review body now names rather than counts. A finding held back by the inline threshold
+    // is a different case: it is on the diff and the placement sentence already covers it.
+    const offDiffFindingIds = new Set(
+      surfaceDecisions
+        .filter((decision) => decision.surfaceDecision === 'summary_only'
+          && ['line_not_reviewable', 'file_not_reviewable'].includes(decision.surfaceReason))
+        .map((decision) => decision.findingId)
+    );
+    const offDiffFindings = actionable.filter(
+      (f) => offDiffFindingIds.has(f.id || f.finding_id || f.fingerprint)
     );
     const reviewComments = actionable
       .filter((f) => inlineFindingIds.has(f.id || f.finding_id || f.fingerprint))
@@ -1087,6 +1154,8 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
       testFilesScanned,
       inlineCount: inlinePlan.comments.length,
       limitations,
+      unanchoredFindings: offDiffFindings,
+      repository: { owner, repo, commitSha },
     });
 
     reviewResp = await submitReviewWithFallback({
@@ -1579,6 +1648,8 @@ module.exports = {
     triggerLabel,
     buildReviewBody,
     buildReviewComment,
+    buildUnanchoredSection,
+    UNANCHORED_HEADING,
     buildTier2FilePayload,
     compareReviewComments,
     didTier3MeaningfullyChangeFindings,

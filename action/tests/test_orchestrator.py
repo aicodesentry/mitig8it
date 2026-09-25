@@ -282,6 +282,79 @@ def test_findings_outside_the_diff_get_no_inline_comment():
     assert run.build_inline_comments(findings, {"src/reports.py": PATCH}) == []
 
 
+def test_a_finding_outside_the_diff_is_reported_rather_than_dropped():
+    """Having nowhere to put a comment is a reason to name the finding, not to hide it.
+
+    On nodejs-goof the trial saw six findings, five critical, and no sentence anywhere naming
+    a file or a line. Across the ten repositories 28 of 93 findings existed only as a number.
+    """
+    findings = [
+        {
+            "fingerprint": "fp",
+            "file_path": "src/reports.py",
+            "line_start": 99,
+            "severity": "high",
+            "rule_id": "sql.injection.raw_query",
+        }
+    ]
+    plan = run.plan_comments(findings, {"src/reports.py": PATCH})
+    assert plan["comments"] == []
+    assert plan["unanchored"] == [
+        {
+            "path": "src/reports.py",
+            "line": 99,
+            "severity": "high",
+            "rule": "sql.injection.raw_query",
+            "reason": "line_outside_diff",
+        }
+    ]
+
+
+def test_a_finding_past_the_inline_cap_is_reported_too():
+    """Invisible for a second reason is still invisible, so it is named the same way."""
+    findings = [
+        {
+            "fingerprint": f"fp-{i}",
+            "file_path": "src/reports.py",
+            "line_start": 3,
+            "severity": "medium",
+            "rule_id": "r",
+        }
+        for i in range(pr_scope.INLINE_COMMENT_CAP + 15)
+    ]
+    plan = run.plan_comments(findings, {"src/reports.py": PATCH})
+    assert len(plan["comments"]) == pr_scope.INLINE_COMMENT_CAP
+    assert len(plan["unanchored"]) == 15
+    assert {item["reason"] for item in plan["unanchored"]} == {"over_inline_cap"}
+
+
+def test_an_informational_finding_is_never_reported_as_unanchored():
+    """It is not being asked for, so listing it would restore the noise that was removed."""
+    findings = [
+        {
+            "fingerprint": "fp-info",
+            "file_path": "src/reports.py",
+            "line_start": 99,
+            "severity": "info",
+            "rule_id": "r",
+        }
+    ]
+    plan = run.plan_comments(findings, {"src/reports.py": PATCH})
+    assert plan["comments"] == []
+    assert plan["unanchored"] == []
+
+
+def test_one_arithmetic_serves_the_title_the_summary_and_the_body():
+    counts = {"critical": 22, "high": 10, "medium": 5, "low": 0, "info": 2}
+    totals = run.review_totals(counts, [{"x": 1}] * 16, [{"y": 1}] * 21)
+    assert totals["runtime"] == 37
+    assert totals["blocking"] == 32
+    assert totals["inline"] == 16
+    assert totals["unanchored"] == 21
+    assert totals["informational"] == 2
+    assert totals["inline"] + totals["unanchored"] == totals["runtime"]
+
+
 def test_inline_comments_are_capped_at_the_production_limit():
     findings = [
         {

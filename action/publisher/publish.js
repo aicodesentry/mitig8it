@@ -37,65 +37,166 @@ function service() {
 
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low'];
 
+// --- the numbers -----------------------------------------------------------------------
+//
+// One arithmetic for the whole review. On pygoat the September trial read four numbers for one
+// run: the check title said "32 critical/high findings", the check summary said "37 runtime
+// findings", the review body said "37 findings detected" and sixteen comments sat on the diff.
+// Every one was explicable and no two agreed, which leaves a reader reconstructing the sums
+// before they can trust any of them. The orchestrator now computes them once and sends them as
+// `totals`; nothing below derives a number of its own.
+
+function totalsOf(request) {
+  const totals = request.totals;
+  if (totals && typeof totals === 'object') return totals;
+  // An older orchestrator against a newer publisher: derive the same shape rather than render
+  // a review with holes in it.
+  const counts = request.counts || {};
+  const runtime = SEVERITY_ORDER.reduce((total, key) => total + (counts[key] || 0), 0);
+  const inline = (request.inline_comments || []).length;
+  const unanchored = (request.unanchored_findings || []).length;
+  return {
+    runtime,
+    critical: counts.critical || 0,
+    high: counts.high || 0,
+    medium: counts.medium || 0,
+    low: counts.low || 0,
+    informational: counts.info || 0,
+    blocking: (counts.critical || 0) + (counts.high || 0),
+    inline,
+    unanchored,
+  };
+}
+
+function plural(count, noun) {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+function breakdown(totals) {
+  return `${totals.critical} critical, ${totals.high} high, ${totals.medium} medium, ${totals.low} low`;
+}
+
 // --- the review body -------------------------------------------------------------------
 
-function severityTable(counts) {
+function severityTable(totals) {
   const rows = SEVERITY_ORDER
-    .filter((severity) => counts[severity] > 0)
-    .map((severity) => `| ${severity} | ${counts[severity]} |`);
+    .filter((severity) => totals[severity] > 0)
+    .map((severity) => `| ${severity} | ${totals[severity]} |`);
   if (rows.length === 0) return '';
   return ['', '| Severity | Count |', '| --- | --- |', ...rows, ''].join('\n');
 }
 
+// Where a reader can look at the code a finding names, pinned to the commit that was reviewed.
+// GITHUB_SERVER_URL is read rather than hardcoded because it differs on Enterprise Server, the
+// same reason GITHUB_GRAPHQL_URL is read below.
+function permalink(request, path, line) {
+  const server = String(process.env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/$/, '');
+  const encoded = String(path).split('/').map(encodeURIComponent).join('/');
+  return `${server}/${request.repository_full_name}/blob/${request.head_sha}/${encoded}#L${line}`;
+}
+
+// The findings with nowhere to go, named. GitHub will not accept an inline comment on a line
+// the pull request did not change, and pointing at the nearest changed line would point at the
+// wrong code, so the action does not try. What it used to do instead was count them and say
+// nothing: 28 of the trial's 93 findings, including twelve on pygoat and five criticals on
+// nodejs-goof, existed only as a number in a summary. A location and a link is the least that
+// makes one of them actionable.
+const UNANCHORED_HEADING = 'Findings on lines this pull request did not change';
+const UNANCHORED_ROW_CAP = 50;
+
+function unanchoredSection(request, totals) {
+  const findings = request.unanchored_findings || [];
+  if (!findings.length) return [];
+  const shown = findings.slice(0, UNANCHORED_ROW_CAP);
+  const lines = [
+    '',
+    `#### ${UNANCHORED_HEADING} (${totals.unanchored})`,
+    '',
+    'GitHub accepts an inline comment only on a line the pull request touches, and a comment on '
+    + 'the nearest line that it does touch would point at the wrong code. These are listed here '
+    + 'instead, against the commit that was reviewed.',
+    '',
+    '| Severity | Rule | Location |',
+    '| --- | --- | --- |',
+  ];
+  for (const finding of shown) {
+    const rule = finding.rule ? `\`${String(finding.rule).replace(/[`|]/g, '')}\`` : '-';
+    const location = `[${String(finding.path).replace(/[|]/g, '')}:${finding.line}](${permalink(request, finding.path, finding.line)})`;
+    lines.push(`| ${finding.severity || 'unknown'} | ${rule} | ${location} |`);
+  }
+  if (findings.length > shown.length) {
+    lines.push('');
+    lines.push(`${plural(findings.length - shown.length, 'further finding')} not listed here.`);
+  }
+  return lines;
+}
+
 function buildReviewBody(request) {
-  const { counts, findings, fixes } = request;
-  const runtime = SEVERITY_ORDER.reduce((total, key) => total + (counts[key] || 0), 0);
+  const totals = totalsOf(request);
+  const { fixes } = request;
   const lines = ['<!-- mitig8it-review -->'];
-  lines.push(runtime > 0
-    ? `### Mitig8it - ${runtime} finding${runtime === 1 ? '' : 's'} detected`
+  lines.push(totals.runtime > 0
+    ? `### Mitig8it - ${plural(totals.runtime, 'finding')} detected`
     : '### Mitig8it - no security issues found');
-  lines.push(severityTable(counts));
+  lines.push(severityTable(totals));
+
+  if (totals.runtime > 0) {
+    lines.push(totals.unanchored > 0
+      ? `${plural(totals.inline, 'finding')} annotated on the diff below; `
+        + `${totals.unanchored} on lines this pull request did not change, listed underneath.`
+      : `All ${plural(totals.runtime, 'finding')} are annotated on the diff below.`);
+  }
 
   // Counted, never annotated. An informational finding is a finding in test code: worth knowing
   // about, not worth a comment on the diff, because eighteen of them buried the three runtime
   // findings on the self-review. The summary is where they live, and it says they were not posted
   // so a reader is not left wondering why a count has no comments behind it.
-  if (counts.info > 0) {
-    lines.push(`${counts.info} informational finding${counts.info === 1 ? '' : 's'} in test code, not posted.`);
+  if (totals.informational > 0) {
+    lines.push(`${plural(totals.informational, 'informational finding')} in test code, not posted.`);
   }
 
   if (request.modelConfigured) {
-    lines.push(`Fixes were generated with model assistance. ${fixes} suggestion${fixes === 1 ? '' : 's'} attached.`);
+    lines.push(`Fixes were generated with model assistance. ${plural(fixes, 'suggestion')} attached.`);
   } else {
     // Stated on every run without a key, because a reader is entitled to know which half of the
     // product ran. Template repairs are deterministic; the agent loop never started.
     lines.push('No model key was configured, so only template fixes were produced and nothing left this runner.');
   }
 
+  lines.push(...unanchoredSection(request, totals));
+
   lines.push('');
-  lines.push(`<sub>Analyzed by <strong>Mitig8it</strong> running as a GitHub Action in this repository's own runner. ${findings} finding${findings === 1 ? '' : 's'} reviewed.</sub>`);
+  lines.push(`<sub>Analyzed by <strong>Mitig8it</strong> running as a GitHub Action in this repository's own runner. ${plural(totals.runtime, 'finding')} reported.</sub>`);
   return lines.filter((line) => line !== undefined).join('\n');
 }
 
 function checkRunSummary(request) {
-  const { counts } = request;
-  const blocking = (counts.critical || 0) + (counts.high || 0);
+  const totals = totalsOf(request);
   const parts = [
-    `Mitig8it found ${SEVERITY_ORDER.reduce((t, k) => t + (counts[k] || 0), 0)} runtime findings `
-    + `(${counts.critical || 0} critical, ${counts.high || 0} high, ${counts.medium || 0} medium, ${counts.low || 0} low).`,
+    `Mitig8it found ${plural(totals.runtime, 'runtime finding')} (${breakdown(totals)}).`,
   ];
-  if (counts.info > 0) parts.push(`${counts.info} informational finding${counts.info === 1 ? '' : 's'} in test code, not posted.`);
+  if (totals.runtime > 0) {
+    parts.push(totals.unanchored > 0
+      ? `${totals.inline} of them are annotated on the diff and ${totals.unanchored} are on lines `
+        + 'this pull request did not change, listed in the review body.'
+      : 'All of them are annotated on the diff.');
+  }
+  if (totals.informational > 0) {
+    parts.push(`${plural(totals.informational, 'informational finding')} in test code, not posted.`);
+  }
   // What the repository asked not to be reviewed is part of what the check reports: a reader
   // who sees no finding on a directory is entitled to know whether it was clean or skipped.
   const excluded = Number(request.excludedFiles || 0);
-  if (excluded > 0) parts.push(`${excluded} file${excluded === 1 ? '' : 's'} excluded by .mitig8it.yml.`);
+  if (excluded > 0) parts.push(`${plural(excluded, 'file')} excluded by .mitig8it.yml.`);
   return {
     // `fail-on: none` keeps a neutral conclusion so a security review never blocks a merge that
     // the repository did not ask it to block.
     conclusion: request.failConclusion,
-    title: blocking > 0
-      ? `${blocking} critical/high finding${blocking === 1 ? '' : 's'}`
-      : 'No blocking security findings',
+    // The same total the summary and the review body state, with the blocking share beside it
+    // rather than in place of it.
+    title: totals.runtime > 0
+      ? `${plural(totals.runtime, 'finding')}, ${totals.blocking} critical or high`
+      : 'No security findings',
     summary: parts.join(' '),
   };
 }

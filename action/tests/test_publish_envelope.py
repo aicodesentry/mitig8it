@@ -66,7 +66,16 @@ SECTIONS = [
 COUNTS = {"critical": 1, "high": 1, "medium": 0, "low": 0, "info": 0}
 
 
-def a_request(sections):
+NO_COUNTS = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+
+
+def a_request(sections, counts=None, findings=2, conclusion="failure"):
+    """The request as the orchestrator builds it.
+
+    `counts` is passed rather than patched afterwards, because the review's numbers are computed
+    once from it and travel as `totals`; a test that edited `counts` on the finished request
+    would be describing a state the orchestrator never produces.
+    """
     return run.build_publish_request(
         token="ghs-token",
         repository="acme/widgets",
@@ -75,12 +84,12 @@ def a_request(sections):
         base_sha=BASE,
         installation_id=42,
         actor_login="octocat",
-        counts=COUNTS,
-        findings=2,
+        counts=COUNTS if counts is None else counts,
+        findings=findings,
         fix_sections=sections,
         inline_comments=[],
         model_configured=False,
-        conclusion="failure",
+        conclusion=conclusion,
     )
 
 
@@ -192,14 +201,59 @@ def test_the_review_and_the_check_still_publish_when_there_are_no_fixes(tmp_path
     """Zero fixes skips the fix step entirely; nothing else about the publish changes."""
     if not publisher_harness.node_available():
         pytest.skip("node is not on PATH")
-    request = a_request([])
-    request["counts"] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-    request["findings"] = 0
-    request["failConclusion"] = "success"
+    request = a_request([], counts=NO_COUNTS, findings=0, conclusion="success")
     completed, recorded = run_publisher(tmp_path, request)
 
     assert completed.returncode == 0, completed.stderr
     assert [call["name"] for call in recorded] == ["review", "check"]
     check = next(call for call in recorded if call["name"] == "check")
-    assert check["title"] == "No blocking security findings"
+    assert check["title"] == "No security findings"
     assert check["conclusion"] == "success"
+
+
+def test_the_title_the_summary_and_the_review_body_state_one_total(tmp_path):
+    """Four numbers for one review is what a reader had to reconcile before trusting any.
+
+    On pygoat the trial read "32 critical/high findings" on the check, "37 runtime findings" in
+    the check summary, "37 findings detected" in the review body and counted sixteen comments.
+    """
+    if not publisher_harness.node_available():
+        pytest.skip("node is not on PATH")
+    counts = {"critical": 22, "high": 10, "medium": 5, "low": 0, "info": 2}
+    request = a_request([], counts=counts, findings=39)
+    request["inline_comments"] = []
+    request["unanchored_findings"] = [
+        {"path": "introduction/views.py", "line": 214, "severity": "critical",
+         "rule": "cwe-502.pickle-loads", "reason": "line_outside_diff"},
+    ]
+    request["totals"] = run.review_totals(counts, [], request["unanchored_findings"])
+    completed, recorded = run_publisher(tmp_path, request)
+
+    assert completed.returncode == 0, completed.stderr
+    check = next(call for call in recorded if call["name"] == "check")
+    review = next(call for call in recorded if call["name"] == "review")
+    assert "37 findings" in check["title"]
+    assert "32 critical or high" in check["title"]
+    assert "37 runtime findings" in check["summary"]
+    assert "37 findings detected" in review["body"]
+
+
+def test_a_finding_off_the_diff_is_named_in_the_review_body(tmp_path):
+    """28 of the trial's 93 findings existed only as a number. A number is not actionable."""
+    if not publisher_harness.node_available():
+        pytest.skip("node is not on PATH")
+    counts = {"critical": 1, "high": 0, "medium": 0, "low": 0, "info": 0}
+    request = a_request([], counts=counts, findings=1)
+    request["unanchored_findings"] = [
+        {"path": "app/routes/error.js", "line": 10, "severity": "critical",
+         "rule": "cwe-95.eval-injection", "reason": "line_outside_diff"},
+    ]
+    request["totals"] = run.review_totals(counts, [], request["unanchored_findings"])
+    completed, recorded = run_publisher(tmp_path, request)
+
+    assert completed.returncode == 0, completed.stderr
+    body = next(call for call in recorded if call["name"] == "review")["body"]
+    assert "Findings on lines this pull request did not change (1)" in body
+    assert "`cwe-95.eval-injection`" in body
+    assert f"https://github.com/acme/widgets/blob/{HEAD}/app/routes/error.js#L10" in body
+    assert "app/routes/error.js:10" in body

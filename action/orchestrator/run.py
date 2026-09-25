@@ -100,54 +100,126 @@ def assert_least_privilege(reader: github_api.GitHubReader) -> Dict[str, bool]:
     return permissions
 
 
-def build_inline_comments(
+SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def plan_comments(
     findings: Sequence[Dict[str, Any]],
     patches_by_path: Dict[str, str],
-) -> List[Dict[str, Any]]:
-    """One comment per runtime finding that can be anchored to a line the author touched.
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Where every runtime finding goes: on the diff, or into the review body by name.
 
-    A finding on a line the pull request did not change has nowhere to go: GitHub rejects the
-    comment, and posting it against the nearest changed line would point the reader at code that
-    is not the problem. Those findings stay in the summary count and out of the diff.
+    A finding on a line the pull request did not change cannot have an inline comment. GitHub
+    rejects it, and posting it against the nearest changed line would point the reader at code
+    that is not the problem. What the action used to do with those findings was nothing: they
+    stayed in the count and left the review. On nodejs-goof the trial saw six findings, five of
+    them critical, a check that said "6 critical/high findings", and not one sentence anywhere
+    naming a file or a line. Across ten repositories 28 of 93 findings existed only as a number.
 
-    An informational finding never gets one either. It is a finding in test code, downgraded
-    upstream, that cannot block the check and that the author is not being asked to fix. The
-    self-review posted eighteen of them across `services/*/tests` and they buried the runtime
-    findings the review existed to show. They are counted in the check summary and in the review
-    body instead, which says they were not posted.
+    So they are returned here too, and the publisher lists them in the review body under their
+    own heading, with a permalink each. A count a reader cannot act on is worse than no count:
+    it says something is wrong and refuses to say what.
+
+    An informational finding is still neither. It is a finding in test code, downgraded upstream,
+    that cannot block the check and that the author is not being asked to fix. The self-review
+    posted eighteen of them across `services/*/tests` and they buried the runtime findings the
+    review existed to show. They are counted in the check summary and in the review body instead,
+    which says they were not posted.
     """
-    comments: List[Dict[str, Any]] = []
+
+    def rank(item: Dict[str, Any]) -> tuple:
+        # No `info` key: an informational finding never reaches either list. An unknown severity
+        # still sorts last rather than first, so a malformed finding cannot displace a critical.
+        return (
+            SEVERITY_ORDER.get(item["severity"], 5),
+            item["path"],
+            item["line"],
+        )
+
+    anchored: List[Dict[str, Any]] = []
+    unanchored: List[Dict[str, Any]] = []
     for finding in findings:
         if analysis.is_informational(finding):
             continue
         path = str(finding.get("file_path") or "")
         line = int(finding.get("line_start") or 0)
+        severity = str(finding.get("severity") or "").lower()
         if not path or line <= 0:
             continue
-        if line not in pr_scope.reviewable_lines(patches_by_path.get(path, "")):
+        if line in pr_scope.reviewable_lines(patches_by_path.get(path, "")):
+            anchored.append(
+                {
+                    "path": path,
+                    "line": line,
+                    "body": render_finding_comment(finding),
+                    "fingerprint": comment_fingerprint(finding),
+                    "severity": severity,
+                }
+            )
             continue
-        comments.append(
+        unanchored.append(
             {
                 "path": path,
                 "line": line,
-                "body": render_finding_comment(finding),
-                "fingerprint": comment_fingerprint(finding),
-                "severity": str(finding.get("severity") or "").lower(),
+                "severity": severity,
+                "rule": str(finding.get("rule_id") or finding.get("title") or ""),
+                "reason": "line_outside_diff",
             }
         )
 
-    def rank(comment: Dict[str, Any]) -> tuple:
-        # No `info` key: an informational finding never reaches this list. An unknown severity
-        # still sorts last rather than first, so a malformed finding cannot displace a critical.
-        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-        return (
-            severity_order.get(comment["severity"], 5),
-            comment["path"],
-            comment["line"],
+    anchored.sort(key=rank)
+    # The cap is the app's. A finding past it is as invisible as one off the diff, so it is
+    # reported the same way rather than dropped for a second, different reason nobody is told.
+    over_cap = anchored[pr_scope.INLINE_COMMENT_CAP :]
+    for comment in over_cap:
+        unanchored.append(
+            {
+                "path": comment["path"],
+                "line": comment["line"],
+                "severity": comment["severity"],
+                "rule": "",
+                "reason": "over_inline_cap",
+            }
         )
+    unanchored.sort(key=rank)
+    return {
+        "comments": anchored[: pr_scope.INLINE_COMMENT_CAP],
+        "unanchored": unanchored,
+    }
 
-    comments.sort(key=rank)
-    return comments[: pr_scope.INLINE_COMMENT_CAP]
+
+def build_inline_comments(
+    findings: Sequence[Dict[str, Any]],
+    patches_by_path: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """The comments alone, for callers that do not care where the rest went."""
+    return plan_comments(findings, patches_by_path)["comments"]
+
+
+def review_totals(
+    counts: Dict[str, int],
+    comments: Sequence[Dict[str, Any]],
+    unanchored: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """The one set of numbers the check title, the check summary and the review body all use.
+
+    On pygoat the trial read four different numbers for one review: the check title said 32,
+    the check summary said 37, the review body said 37 and there were 16 comments on the diff.
+    Each was arithmetically explicable and no two agreed, so the reader had to reconstruct the
+    arithmetic to trust any of them. They are computed once here and rendered three times.
+    """
+    runtime = sum(int(counts.get(key, 0)) for key in ("critical", "high", "medium", "low"))
+    return {
+        "runtime": runtime,
+        "critical": int(counts.get("critical", 0)),
+        "high": int(counts.get("high", 0)),
+        "medium": int(counts.get("medium", 0)),
+        "low": int(counts.get("low", 0)),
+        "informational": int(counts.get("info", 0)),
+        "blocking": int(counts.get("critical", 0)) + int(counts.get("high", 0)),
+        "inline": len(comments),
+        "unanchored": len(unanchored),
+    }
 
 
 def active_fingerprints(findings: Sequence[Dict[str, Any]]) -> List[str]:
@@ -341,6 +413,7 @@ def build_publish_request(
     inline_comments: Sequence[Dict[str, Any]],
     model_configured: bool,
     conclusion: str,
+    unanchored_findings: Sequence[Dict[str, Any]] = (),
     excluded_files: int = 0,
     active_fingerprints: Sequence[str] = (),
     bot_login: str = "github-actions[bot]",
@@ -367,6 +440,12 @@ def build_publish_request(
         "modelConfigured": model_configured,
         "failConclusion": conclusion,
         "excludedFiles": int(excluded_files),
+        # One arithmetic, computed once, rendered by the publisher in three places. The
+        # publisher derives nothing of its own from `counts`.
+        "totals": review_totals(counts, inline_comments, unanchored_findings),
+        # Every finding that could not be anchored, so the review body can name it rather
+        # than leave the reader with a count and no location.
+        "unanchored_findings": list(unanchored_findings),
         # Every finding this run reported, not only the ones that could be anchored to a changed
         # line. A finding that exists but has nowhere to comment must not have its thread
         # resolved as though it had gone away.
@@ -521,7 +600,14 @@ def _run() -> int:
         log(f"{len(fix_sections)} fix suggestion(s) produced.")
 
     patches_by_path = {f["path"]: f.get("patch") or "" for f in scoped}
-    inline_comments = build_inline_comments(findings, patches_by_path)
+    plan = plan_comments(findings, patches_by_path)
+    inline_comments = plan["comments"]
+    unanchored = plan["unanchored"]
+    if unanchored:
+        log(
+            f"{len(unanchored)} finding(s) are on lines this pull request did not change; "
+            "they are listed in the review body rather than on the diff."
+        )
 
     conclusion = fail_conclusion(fail_on, counts)
     request = build_publish_request(
@@ -538,6 +624,7 @@ def _run() -> int:
         inline_comments=inline_comments,
         model_configured=model_configured,
         conclusion=conclusion,
+        unanchored_findings=unanchored,
         excluded_files=excluded_files,
         active_fingerprints=active_fingerprints(findings),
         # Asked of the token rather than assumed. `github-actions[bot]` is right only for the
