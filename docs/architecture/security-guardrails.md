@@ -30,6 +30,12 @@ Mitig8it enforces guardrails as a centralized control model, not per-service ad 
 ## 6) Analysis Guardrails
 - Large file/diff limits are enforced in analysis pipeline paths.
 - High-confidence findings only for inline PR comments.
+- No informational finding is posted inline. A finding in test code is downgraded to the
+  informational severity upstream, cannot block the check, and carries no fix the author is
+  asked to apply, so both the App and the Action report it as a count in the check run summary
+  and the review body ("N informational findings in test code, not posted") and annotate
+  nothing. The App retires the inline comments earlier runs left for one, by fingerprint, on
+  every analysis; a comment carrying a published verified fix is kept.
 
 ## 7) CI Guardrails
 - Secret scanning on every PR/push.

@@ -350,6 +350,71 @@ async function postInlineComment({ owner, repo, pr_number, installation_id, comm
   }
 }
 
+// The marker every finding comment carries, read back to learn which finding a comment
+// belongs to. `postInlineComment` writes it; this is the only place that parses one out.
+const FINDING_MARKER_PATTERN = /<!--\s*mitig8it-finding:([^\s>]+)\s*-->/;
+
+// The inline comments of findings the analysis no longer annotates. Informational
+// findings in test code are the case this exists for: the App used to post one per
+// finding and no longer does, so what earlier runs left on a pull request is a comment
+// with nothing behind it. The finding itself is still open and still counted in the
+// summary, so nothing marks it fixed; the comment is what has to go.
+//
+// Deleting the comment is what this service can do about a review thread: resolving one
+// is GraphQL-only and nothing here speaks GraphQL. Only this app's own comments are
+// touched, only ones whose marker names a fingerprint the caller passed, and never one
+// carrying a published verified fix, which is reviewer-visible work that housekeeping
+// must not take away.
+//
+// No head check, unlike the publishing writes: a fingerprint covers the file path and the
+// matched code, so whether a finding is informational does not change with the head, and
+// a run cannot retire a comment a newer run wants. The operation is idempotent, so a
+// caller that fails partway through is corrected by the next analysis.
+async function retireInlineComments({ owner, repo, pr_number, installation_id, fingerprints }) {
+  if (!owner || !repo || !pr_number || !installation_id) {
+    throw badRequest('owner, repo, pr_number and installation_id are required');
+  }
+  validateOwnerRepo(owner, repo);
+
+  const wanted = new Set((fingerprints || []).filter(Boolean).map(String));
+  if (wanted.size === 0) return { retired: 0, kept: 0 };
+
+  try {
+    const token = await githubIdentity.token(installation_id);
+    const botLogin = await githubIdentity.botLogin();
+    const doomed = [];
+    let kept = 0;
+
+    for (let page = 1; ; page += 1) {
+      const existing = await githubRequest('get',
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/comments?per_page=100&page=${page}`, token);
+      const comments = Array.isArray(existing.data) ? existing.data : [];
+      for (const comment of comments) {
+        if (botLogin && comment.user?.login !== botLogin) continue;
+        const body = String(comment.body || '');
+        const marker = FINDING_MARKER_PATTERN.exec(body);
+        if (!marker || !wanted.has(marker[1])) continue;
+        if (body.includes('<!-- mitig8it-fix:')) {
+          kept += 1;
+          continue;
+        }
+        doomed.push(comment.id);
+      }
+      if (comments.length < 100) break;
+    }
+
+    for (const commentId of doomed) {
+      await githubAnalysisWrite('delete',
+        `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${commentId}`, token);
+    }
+
+    return { retired: doomed.length, kept };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    throw externalError('Failed to retire inline comments', error);
+  }
+}
+
 // The one write that creates an inline review comment on the head commit. The analysis
 // and the verified fix publisher both post through it, so a finding comment created for
 // a verified fix has the same shape as one the analysis created. The publisher passes the
@@ -1188,6 +1253,7 @@ module.exports = {
   githubRestMutation,
   githubWriter,
   postInlineComment,
+  retireInlineComments,
   remediationVerificationCheckName,
   submitPullRequestReview,
   withPreservedFixBlocks,

@@ -259,22 +259,18 @@ function buildLimitationSummaryLine(limitations) {
   return `${clauses.join('; ')}.`;
 }
 
-function buildTestCodeSummaryLines({ testFilesScanned, infoFindings, infoCommentsOmitted }) {
+// Counted here, never annotated on the diff. The sentence says the findings were not
+// posted so a reader is not left hunting for comments behind a count, and it is the
+// sentence the Action prints for the same findings.
+function buildTestCodeSummaryLines({ testFilesScanned, infoFindings }) {
   const lines = [];
   if (testFilesScanned <= 0 && infoFindings <= 0) return lines;
 
   lines.push(
     `${severityIcon('info')} ${testFilesScanned} test file${testFilesScanned === 1 ? '' : 's'} scanned; `
-    + `${infoFindings} informational finding${infoFindings === 1 ? '' : 's'} in test code. `
+    + `${infoFindings} informational finding${infoFindings === 1 ? '' : 's'} in test code, not posted. `
     + 'Informational findings never block this check.'
   );
-  if (infoCommentsOmitted > 0) {
-    lines.push(
-      '',
-      `${infoCommentsOmitted} informational comment${infoCommentsOmitted === 1 ? ' was' : 's were'} `
-      + 'omitted from the inline annotations so runtime findings keep their place.'
-    );
-  }
   lines.push('');
   return lines;
 }
@@ -289,7 +285,6 @@ function buildReviewBody(findings, runId, options = {}) {
   const testCodeLines = buildTestCodeSummaryLines({
     testFilesScanned: Number(options.testFilesScanned || 0),
     infoFindings: infoFindings.length,
-    infoCommentsOmitted: Number(options.infoCommentsOmitted || 0),
   });
   const limitationLine = buildLimitationSummaryLine(options.limitations);
   const limitationLines = limitationLine ? [`${severityIcon('info')} ${limitationLine}`, ''] : [];
@@ -359,6 +354,10 @@ function buildReviewComment(finding, options = {}) {
     buildRepoAwareRemediation(finding, options.repoProfile || null)
     || finding.remediation
     || 'Apply input validation and secure handling.';
+  // Nothing sends an informational finding here any more: `explainInlineCommentDecision`
+  // refuses it before a comment is built. The branch stays because it is the wording this
+  // product puts on a test-code finding, and a renderer that silently dressed one up as
+  // blocking would be a worse thing to leave behind than an unreached branch.
   const inTestCode = isInfoFinding(finding);
   const scannerSeverity = originalSeverity(finding);
   const headline = inTestCode
@@ -496,17 +495,10 @@ function severityRank(severity) {
   return { critical: 4, high: 3, medium: 2, low: 1, info: 0 }[String(severity || '').toLowerCase()] || 0;
 }
 
-function isInfoComment(comment) {
-  return String(comment?.severity || '').toLowerCase() === INFORMATIONAL_SEVERITY;
-}
-
+// Every comment that reaches this comparator is a runtime finding's: an informational
+// finding is refused inline by `explainInlineCommentDecision` and never becomes one. The
+// informational tie-break that used to lead this function went with it.
 function compareReviewComments(a, b) {
-  // Runtime findings always come before informational test-code findings, so a
-  // comment cap drops informational comments first.
-  if (isInfoComment(a) !== isInfoComment(b)) {
-    return isInfoComment(a) ? 1 : -1;
-  }
-
   const pathCompare = String(a.path || '').localeCompare(String(b.path || ''));
   if (pathCompare !== 0) return pathCompare;
 
@@ -573,6 +565,15 @@ function explainInlineCommentDecision(finding) {
 
   if (finding?.is_baseline) {
     return { eligible: false, reason: 'baseline_finding' };
+  }
+
+  // A finding in test code is never annotated on the diff, whatever its evidence. It is
+  // reported as a count in the check summary and the review body, which say it was not
+  // posted. One self-review put eighteen of them across `services/*/tests` on a pull
+  // request whose point was three runtime findings, and they were what a reader had to
+  // dig through to reach them. A comment on test code with no fix behind it is noise.
+  if (isInfoFinding(finding)) {
+    return { eligible: false, reason: 'informational_test_code' };
   }
 
   const confidence = Number(finding?.confidence || 0);
@@ -656,6 +657,16 @@ function buildSurfaceDecisions({ files, findings }) {
       };
     }
 
+    // Decided before the diff is consulted, because being informational is why this
+    // finding is not annotated; whether its line happens to be reviewable is not.
+    if (isInfoFinding(finding)) {
+      return {
+        findingId,
+        surfaceDecision: 'summary_only',
+        surfaceReason: 'informational_test_code',
+      };
+    }
+
     const reviewableLines = reviewableLinesByFile.get(finding?.file_path);
     if (!reviewableLines) {
       return {
@@ -709,6 +720,7 @@ async function githubServiceRequest(path, payload) {
       '/internal/github/files/content': () => client.fetchFileContents(payload),
       '/internal/github/reviews/submit': () => client.submitPullRequestReview(payload),
       '/internal/github/comments/inline': () => client.postInlineComment(payload),
+      '/internal/github/comments/retire': () => client.retireInlineComments(payload),
       '/internal/github/check-runs': () => client.createCheckRun(payload),
     };
 
@@ -778,17 +790,15 @@ function dedupeInlineComments(reviewComments) {
   return deduped;
 }
 
-// Runtime findings keep their inline slots; informational comments are the
-// first to fall outside the cap, and the summary says how many were omitted.
+// The comments one review may carry, in priority order, and how many the cap left out.
+// All of them are runtime findings' now, so the cap costs a runtime comment whenever it
+// bites and the run says so in the log.
 function planInlineComments(reviewComments, cap = INLINE_COMMENT_CAP) {
   const deduped = dedupeInlineComments(prioritizeReviewComments(reviewComments));
-  const selected = deduped.slice(0, cap);
-  const omitted = deduped.slice(cap);
 
   return {
-    comments: selected,
-    infoOmitted: omitted.filter(isInfoComment).length,
-    runtimeOmitted: omitted.filter((comment) => !isInfoComment(comment)).length,
+    comments: deduped.slice(0, cap),
+    omitted: Math.max(0, deduped.length - cap),
   };
 }
 
@@ -831,6 +841,47 @@ async function postInlineCommentsIndividually({
   }
 
   return { attempted: dedupedComments.length, posted };
+}
+
+// An informational finding is still open and still reported, so nothing marks it fixed
+// and nothing else retires the comment an earlier version of this service left on the
+// diff for it. This does, by fingerprint, on every run: the finding is not annotated any
+// more, so neither is the pull request left carrying a comment that says it is.
+//
+// Housekeeping never fails a review that published. A failure is logged and the next
+// analysis of the pull request tries again.
+async function retireInformationalComments({ owner, repo, prNumber, installationId, findings, runId, tierLabel }) {
+  const fingerprints = (findings || [])
+    .filter(isInfoFinding)
+    .map((finding) => finding.fingerprint)
+    .filter(Boolean);
+  if (fingerprints.length === 0) return { retired: 0, kept: 0 };
+
+  try {
+    const result = await githubServiceRequest('/internal/github/comments/retire', {
+      owner,
+      repo,
+      pr_number: prNumber,
+      installation_id: installationId,
+      fingerprints,
+    });
+    logger.info(`${tierLabel}: informational inline comments retired`, {
+      runId,
+      prNumber,
+      candidates: fingerprints.length,
+      retired: Number(result?.retired || 0),
+      kept: Number(result?.kept || 0),
+    });
+    return result;
+  } catch (error) {
+    logger.warn('Failed to retire informational inline comments', {
+      runId,
+      prNumber,
+      candidates: fingerprints.length,
+      error: error.message,
+    });
+    return { retired: 0, kept: 0 };
+  }
 }
 
 function analysisServiceHeaders() {
@@ -1023,20 +1074,18 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
     }
 
     const inlinePlan = planInlineComments(reviewComments);
-    if (inlinePlan.infoOmitted > 0 || inlinePlan.runtimeOmitted > 0) {
+    if (inlinePlan.omitted > 0) {
       logger.info(`${tierLabel}: inline comment cap reached`, {
         runId,
         prNumber,
         cap: INLINE_COMMENT_CAP,
-        infoOmitted: inlinePlan.infoOmitted,
-        runtimeOmitted: inlinePlan.runtimeOmitted,
+        omitted: inlinePlan.omitted,
       });
     }
 
     const reviewBody = buildReviewBody(actionable, runId, {
       testFilesScanned,
-      infoCommentsOmitted: inlinePlan.infoOmitted,
-      inlineCount: inlinePlan.comments.filter((comment) => !isInfoComment(comment)).length,
+      inlineCount: inlinePlan.comments.length,
       limitations,
     });
 
@@ -1048,6 +1097,10 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
 
     const inlineResult = await postInlineCommentsIndividually({
       owner, repo, prNumber, installationId, commitSha, reviewComments, runId,
+    });
+
+    await retireInformationalComments({
+      owner, repo, prNumber, installationId, findings: actionable, runId, tierLabel,
     });
 
     if (inlineResult.attempted > inlineResult.posted) {
@@ -1272,8 +1325,7 @@ async function runAnalysisJob(payload) {
       if (testFilesScanned > 0 || infoCount > 0) {
         summaryLines.push(
           `${testFilesScanned} test file${testFilesScanned === 1 ? '' : 's'} scanned; `
-          + `${infoCount} informational finding${infoCount === 1 ? '' : 's'} in test code `
-          + '(never blocking).'
+          + `${infoCount} informational finding${infoCount === 1 ? '' : 's'} in test code, not posted.`
         );
       }
       // A limitation is a coverage note, never a reason to fail the check. Two disjoint

@@ -177,6 +177,20 @@ class GitHubGrpcClient {
     };
   }
 
+  async retireInlineComments(payload) {
+    const request = new githubPb.RetireInlineCommentsRequest();
+    request.setOwner(payload.owner || '');
+    request.setRepo(payload.repo || '');
+    request.setPrNumber(Number(payload.pr_number || 0));
+    request.setInstallationId(Number(payload.installation_id || 0));
+    request.setFingerprintsList(payload.fingerprints || []);
+    const response = await unary(this.client, 'retireInlineComments', request);
+    return {
+      retired: response.getRetired(),
+      kept: response.getKept(),
+    };
+  }
+
   async snapshotRemediation(payload) {
     const request = new githubPb.RemediationSnapshotRequest();
     request.setEnvelope(buildRemediationEnvelope(payload));
