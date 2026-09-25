@@ -222,7 +222,7 @@ Development-grade today:
 
 - All repair verification. `development_unverified` is the only level produced so far, on the local subprocess driver with no isolation.
 - The single-instance deployment: one instance, one concurrent request, per-instance SQLite state on ephemeral storage.
-- The evaluation corpus: 55 authored fixtures (43 supported repairs, 8 negatives, 4 adversarial) against the release manifest's requirement of 120 externally reviewed cases, with no external review signatures.
+- The evaluation corpus: 59 authored fixtures (46 supported repairs, 9 negatives, 4 adversarial) against the release manifest's requirement of 120 externally reviewed cases, with no external review signatures.
 - Observability. Traces, metrics, and alert rules are written and redacted, but no collector endpoint, scrape target, or alert rule is wired to a backend in any deploy workflow.
 - Retention, deletion, and restore procedures, which are documented but have never been exercised.
 

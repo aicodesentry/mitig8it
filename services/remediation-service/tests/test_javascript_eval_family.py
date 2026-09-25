@@ -128,8 +128,25 @@ class TestFunctionSite:
         assert (function.name, function.parameters, function.returns_directly) == ("applyRule", ("body", "row"), True)
         assert function.start_line == 2 and function.end_line == 5
 
-    def test_a_parameter_list_the_scan_cannot_line_up_is_refused(self):
+    def test_a_destructured_parameter_and_a_default_are_lined_up_rather_than_refused(self):
+        """This list used to be `function_parameters_not_plain_names`.
+
+        A destructured parameter binds its members, not itself, so `expression` is what the body
+        reads and what a proof has to put a payload in; a default is passed positionally like any
+        other name. `tests/test_destructured_parameters.py` has the rest.
+        """
         source = PARSER_JS.replace("(body, row)", "({ expression }, row = {})")
+        function = js_function_for_line(source, 4)
+        assert function.parameters == ("expression", "row")
+        assert [(p.name, p.members, p.has_default) for p in function.parameter_model] == [
+            (None, ("expression",), False),
+            ("row", (), True),
+        ]
+
+    @pytest.mark.parametrize("declared", ["({ a: { b } }, row)", "([first, second], row)", "({ a = 1 }, row)"])
+    def test_a_parameter_list_the_scan_cannot_line_up_is_still_refused(self, declared: str):
+        """Nested destructuring and array patterns are not modelled, so they are not guessed at."""
+        source = PARSER_JS.replace("(body, row)", declared)
         with pytest.raises(SiteError, match="function_parameters_not_plain_names"):
             js_function_for_line(source, 4)
 
