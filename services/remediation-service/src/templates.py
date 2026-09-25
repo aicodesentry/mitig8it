@@ -42,7 +42,7 @@ from .sites import (
     js_names_in,
     js_identifier_is_bound,
     js_module_binding,
-    js_path_join_in_scope,
+    js_path_site_in_scope,
     js_require_line,
     js_site_for_line,
     scope_lines_near,
@@ -765,9 +765,7 @@ def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | 
     # vulnerable-corpus run of 24 September 2026 collected 65 findings under that one reason.
     # Which sink this is decides whether the import matters, so the sink is found first.
     binding = js_module_binding(source, "path", "path")
-    join = js_path_join_in_scope(lines, site.start_line, site.end_line, line, (binding.name, "path"))
-    if join is None:
-        raise TemplateError("path_join_not_found_in_scope")
+    join = js_path_site_in_scope(lines, site.start_line, site.end_line, line, (binding.name, "path"))
     join_line = join.line
     rejection = _js_rejection(site)
     changes: list[dict[str, Any]] = []
@@ -793,9 +791,12 @@ def _js_traversal(snapshot: Snapshot, finding: FindingSnapshot, site: JsRoute | 
         target = next(name for name in ("target", "safeTarget", "resolvedTarget") if name not in taken)
         tail = [text.replace(join.text, target, 1)]
     module = binding.name
+    # A composed path arrives as string-typed expressions already, so wrapping it again would
+    # read as `String(String(name) + '.yml')`.
+    coerced = user_input if join.composed else f"String({user_input})"
     head = [
         f"{indent}const {base_name} = {module}.resolve({base});",
-        f"{indent}const {target} = {module}.resolve({base_name}, String({user_input}));",
+        f"{indent}const {target} = {module}.resolve({base_name}, {coerced});",
         f"{indent}if ({target} !== {base_name} && !{target}.startsWith({base_name} + {module}.sep)) {rejection}",
     ]
     last = max(join_line, line)

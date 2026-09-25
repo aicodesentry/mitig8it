@@ -235,7 +235,7 @@ def test_a_sink_with_no_join_is_refused_for_the_sink_not_for_the_import(request_
     )
     fallback = _template(request_payload, source, line=4)
     assert isinstance(fallback, TemplateFallback)
-    assert fallback.reason == "path_join_not_found_in_scope"
+    assert fallback.reason == "path_argument_is_constant"
 
 
 # --- the join call --------------------------------------------------------------------------

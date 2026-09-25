@@ -44,7 +44,7 @@ from .sites import (
     js_module_binding,
     js_module_constant,
     js_module_exports_name,
-    js_path_join_in_scope,
+    js_path_site_in_scope,
     js_site_for_line,
     module_directory,
     python_flask_app_name,
@@ -545,9 +545,7 @@ def _js_traversal_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRo
     lines = source.splitlines()
     line = _finding_line(finding)
     binding = js_module_binding(source, "path", "path")
-    found = js_path_join_in_scope(lines, site.start_line, site.end_line, line, (binding.name, "path"))
-    if found is None:
-        raise SiteError("path_join_not_found_in_scope")
+    found = js_path_site_in_scope(lines, site.start_line, site.end_line, line, (binding.name, "path"))
     join = (found.line, found.base, found.user_input)
     base = _js_base_expression(source, path, join[1])
     if isinstance(site, JsFunction) and site.kind == "handler":
@@ -807,9 +805,7 @@ def _js_module_scope_proof(snapshot: Snapshot, finding: FindingSnapshot, scope: 
         return _js_module_proof(snapshot, finding, scope, family, COMMAND_PAYLOAD, _JS_ARGV_ASSERTIONS[:-2])
     if family == PATH_CONTAINMENT:
         binding = js_module_binding(source, "path", "path")
-        join = js_path_join_in_scope(lines, scope.start_line, scope.end_line, _finding_line(finding), (binding.name, "path"))
-        if join is None:
-            raise SiteError("path_join_not_found_in_scope")
+        join = js_path_site_in_scope(lines, scope.start_line, scope.end_line, _finding_line(finding), (binding.name, "path"))
         return _js_module_traversal_proof(snapshot, finding, scope, _js_base_expression(source, path, join.base))
     raise SiteError("family_not_generated_at_module_scope")
 

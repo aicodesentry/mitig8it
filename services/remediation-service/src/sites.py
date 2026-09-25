@@ -817,6 +817,10 @@ class JsPathJoin:
     text: str
     base: str
     user_input: str
+    # True when the site is a string composition rather than a `path.join` call. Both halves are
+    # then already string-typed expressions, so a repair does not wrap them in `String(...)`
+    # again, and `text` is the sink's argument rather than a call.
+    composed: bool = False
 
 
 def _js_split_arguments(raw: str, blanked: str) -> list[str] | None:
@@ -880,6 +884,191 @@ def js_path_join_in_scope(lines: list[str], start_line: int, end_line: int, line
         if found:
             return JsPathJoin(number, found.text, found.base, found.user_input)
     return None
+
+
+# The calls whose first argument is a filesystem path. A receiver is required not to be `this`,
+# because `this.dialog.open(...)` and `this.snackBar.open(...)` are Angular components rather
+# than filesystem sinks and the quarantined `path.traversal.user_path` rule reports both.
+_JS_PATH_SINK_RE = re.compile(
+    r"(?<![\w$.])(?P<receiver>[\w$]+(?:\.[\w$]+)*\.)?(?P<callee>readFile|readFileSync|createReadStream|createWriteStream"
+    r"|writeFile|writeFileSync|appendFile|appendFileSync|sendFile|openSync|readdir|readdirSync|stat|statSync|lstat"
+    r"|existsSync|unlink|unlinkSync|open)\s*\("
+)
+
+
+def js_path_sink_argument(text: str) -> tuple[str, str] | None:
+    """`(call text, first argument)` for the filesystem call on a line, or None.
+
+    The composed-path shapes are only read out of a sink's first argument, never out of any
+    string on the line: `src/client/store/mcp-handler.js` in the vulnerable corpus builds a
+    user-facing message from a template literal three lines from its finding, and a scan that
+    took any composition would repair the message.
+    """
+    blanked = js_strip_strings(text)
+    for match in _JS_PATH_SINK_RE.finditer(blanked):
+        if (match.group("receiver") or "").startswith("this."):
+            continue
+        open_at = match.end() - 1
+        depth = 0
+        close_at = None
+        for index in range(open_at, len(blanked)):
+            if blanked[index] in "([{":
+                depth += 1
+            elif blanked[index] in ")]}":
+                depth -= 1
+                if depth == 0:
+                    close_at = index
+                    break
+        if close_at is None:
+            continue
+        arguments = _js_split_arguments(text[open_at + 1 : close_at], blanked[open_at + 1 : close_at])
+        if not arguments:
+            continue
+        return text[match.start() : close_at + 1], arguments[0]
+    return None
+
+
+def _js_concatenation_parts(expression: str) -> list[tuple[str, str]] | None:
+    """`'a/' + x + '.y'` and `` `a/${x}.y` `` as [('lit', 'a/'), ('expr', 'x'), ('lit', '.y')]."""
+    text = expression.strip()
+    blanked = js_strip_strings(text)
+    if text.startswith("`") and text.endswith("`") and blanked.count("`") == 2:
+        parts: list[tuple[str, str]] = []
+        index = 1
+        literal: list[str] = []
+        while index < len(text) - 1:
+            if text.startswith("${", index):
+                depth = 1
+                end = index + 2
+                while end < len(text) and depth:
+                    if text[end] == "{":
+                        depth += 1
+                    elif text[end] == "}":
+                        depth -= 1
+                    end += 1
+                if depth:
+                    return None
+                parts.append(("lit", "".join(literal)))
+                literal = []
+                parts.append(("expr", text[index + 2 : end - 1].strip()))
+                index = end
+                continue
+            literal.append(text[index])
+            index += 1
+        parts.append(("lit", "".join(literal)))
+        return [part for part in parts if part[0] == "expr" or part[1]]
+    operands = _js_split_top_level(text, blanked, "+")
+    if operands is None or len(operands) < 2:
+        return None
+    parts = []
+    for operand in operands:
+        quoted = re.fullmatch(r"(['\"])(?P<text>(?:(?!\1).)*)\1", operand)
+        parts.append(("lit", quoted.group("text")) if quoted else ("expr", operand))
+    return parts
+
+
+def _js_split_top_level(raw: str, blanked: str, separator: str) -> list[str] | None:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for index, ch in enumerate(blanked):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif ch == separator and depth == 0:
+            parts.append(raw[start:index].strip())
+            start = index + 1
+    if depth != 0:
+        return None
+    parts.append(raw[start:].strip())
+    return [part for part in parts if part]
+
+
+def js_composed_path(expression: str) -> tuple[str, str] | None:
+    """`(base, user input)` for a path built by concatenation or interpolation, or None.
+
+    The split is at the last path separator that a *literal* part carries, because that is the
+    last point the code itself fixed: everything up to it is the directory the repair contains
+    against, and everything after it is what a traversal payload arrives in.
+    `'./data/static/codefixes/' + key + '.info.yml'` splits after the literal directory;
+    `` `${base}/${name}` `` splits after the separator between the two.
+
+    A composition with no literal separator has no base to contain against, and one with no
+    expression after the separator has nothing untrusted in it. Both are None, and the caller
+    names which.
+    """
+    parts = _js_concatenation_parts(expression)
+    if not parts:
+        return None
+    split_at = None
+    for index, (kind, text) in enumerate(parts):
+        if kind == "lit" and "/" in text:
+            split_at = index
+    if split_at is None:
+        return None
+    literal = parts[split_at][1]
+    head, _, tail = literal.rpartition("/")
+    base_parts = [*parts[:split_at], ("lit", head + "/")]
+    input_parts = ([("lit", tail)] if tail else []) + list(parts[split_at + 1 :])
+    if not any(kind == "expr" for kind, _ in input_parts):
+        return None
+    return _js_render_parts(base_parts), _js_render_parts(input_parts)
+
+
+def _js_render_parts(parts: list[tuple[str, str]]) -> str:
+    rendered = [f"'{text}'" if kind == "lit" else f"String({text})" for kind, text in parts if kind == "expr" or text]
+    return " + ".join(rendered) if rendered else "''"
+
+
+_JS_PLAIN_REFERENCE_RE = re.compile(r"^[\w$]+(?:\.[\w$]+)*$")
+
+
+def js_path_site_in_scope(
+    lines: list[str], start_line: int, end_line: int, line: int, names: tuple[str, ...]
+) -> JsPathJoin:
+    """Where a path is built inside a scope, or a SiteError naming what the sink does instead.
+
+    Three shapes are repair sites: a `path.join`/`path.resolve` call, a concatenation of a base
+    directory and a value, and a template literal that interpolates one. The vulnerable corpus
+    carries all three, and before this the second and third were reported as a missing
+    `path.join` — which said the template could not find something the code never wrote.
+
+    What is left refuses by what the sink actually does, because those refusals are correct and
+    a reader needs to tell them apart from a gap:
+
+    * `path_argument_is_constant` for `fs.readFile('/proc/meminfo')`. There is no untrusted
+      component, so there is nothing to contain and no test that could fail before a repair.
+    * `path_argument_not_composed_in_scope` for `fs.createReadStream(target)`, where the path
+      arrives as one value built somewhere this scope does not show.
+    * `path_join_not_found_in_scope` when no filesystem sink is on any line of the scope, which
+      is what the quarantined `path.traversal.user_path` rule reports on Angular's
+      `dialog.open(...)` and on `new File(...)`.
+    """
+    found = js_path_join_in_scope(lines, start_line, end_line, line, names)
+    if found is not None:
+        return found
+    constant = False
+    uncomposed = False
+    for number in scope_lines_near(start_line, end_line, line):
+        sink = js_path_sink_argument(lines[number - 1])
+        if sink is None:
+            continue
+        _call, argument = sink
+        composed = js_composed_path(argument)
+        if composed is not None:
+            return JsPathJoin(number, argument, composed[0], composed[1], composed=True)
+        if re.fullmatch(r"(['\"])(?:(?!\1).)*\1", argument.strip()):
+            constant = True
+        elif _JS_PLAIN_REFERENCE_RE.match(argument.strip()):
+            uncomposed = True
+    if constant:
+        raise SiteError("path_argument_is_constant")
+    if uncomposed:
+        raise SiteError("path_argument_not_composed_in_scope")
+    raise SiteError("path_join_not_found_in_scope")
 
 
 def js_bound_names(source: str, module: str) -> tuple[str | None, set[str]]:
