@@ -13,9 +13,7 @@ survives that gets posted, as a GitHub suggestion block under the line it repair
 automatically, and the App holds no write access to your code: the suggestion becomes a commit when
 you click **Commit suggestion**, and there is no code path that could do it for you.
 
-![A Mitig8it review comment: a SQL injection finding on a diff line, a suggested change that
-parameterises the query, and a line saying the regression test failed on the original code and
-passed with the change](docs/assets/review-suggestion.png)
+![A Mitig8it review comment on a diff: a high-severity SQL injection finding, a suggested change that parameterises the query, and a line saying the regression test failed on the original code and passed with the change](docs/assets/review-suggestion.png)
 
 ## Try it
 
@@ -48,11 +46,11 @@ and baselines.
 
 Measured in September 2026. Every cell links to the run that produced it.
 
-| | | |
+| What | Measured | Read it as |
 | --- | --- | --- |
 | Precision of findings that post | [0.67 to 0.97](docs/validation/vulnerable-corpus-2026-09.md#precision-before-and-after) | 172 findings adjudicated by hand across 23 vulnerable repositories. 0.67 for everything the scanner produces, 0.97 for what posts once the five worst tier 1 rules are quarantined. |
 | Recall on labelled vulnerabilities | [0.40 to 0.58](docs/validation/vulnerable-corpus-2026-09.md#recall) | Of 171 labelled vulnerabilities, 100 produced a finding on the labelled line. This is the weak half. |
-| Findings on clean code | [165 pull requests](docs/validation/real-repo-replay-2026-09.md) | Merged pull requests from 11 public libraries, replayed to see what the pipeline says when there is nothing to find. |
+| Findings on clean code | [134 over 165 pull requests](docs/validation/real-repo-replay-2026-09.md) | Merged pull requests from 11 public libraries with no known vulnerability, 816 changed files. 30 of the 134 findings were read by hand and 29 were wrong, which is why five tier 1 rules are now quarantined. |
 | Tier 2 rules | [130, of which 124 post](docs/validation/tier2-coverage-2026-09.md) | Up from 25. Six are quarantined on their own measured precision. All written in-house, because [the public rule libraries forbid use in a paid service](docs/legal/third-party-rules.md). |
 | The Action on real repositories | [63 of 65 comments](docs/validation/action-trial-2026-09.md) | Installed on private copies of ten real repositories: 65 inline comments, 63 true positives, 1 false positive, 1 unsure. |
 | Evaluation corpus | [55 fixtures](benchmarks/remediation/README.md) | 43 repairs verified and 12 correct abstentions, under both the reference and engine-local adapters, with no unexpected failures. |
