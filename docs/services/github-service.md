@@ -9,6 +9,8 @@ Express service that isolates GitHub App operations from the API service.
 - Fetch pull request changed files.
 - Post or update Mitig8it PR summary comments.
 - Post inline review comments and suggestion blocks.
+- Retire the app's own inline comments for findings an analysis no longer annotates, by
+  fingerprint, keeping any that carry a published verified fix.
 - Create/update GitHub check runs.
 - Expose GitHub App health diagnostics.
 - Emit Prometheus metrics.
