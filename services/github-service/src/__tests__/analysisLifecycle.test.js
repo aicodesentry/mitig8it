@@ -76,6 +76,44 @@ test('a fix section is never carried onto another finding, and a moved head publ
  await expect(postInlineComment({owner:'owner',repo:'repo',pr_number:1,installation_id:1,commit_sha:'head-a',path:'a.py',line:1,body:'<!-- mitig8it-finding:fp1 -->\nnew text'})).rejects.toThrow(/superseded/i);
  expect(axios.mock.calls.every(([r]) => r.method === 'get')).toBe(true);
 });
+// The comments of findings a run no longer annotates. Informational findings in test code
+// are why this exists: the analysis stopped posting them, and what earlier runs left is a
+// comment with nothing behind it. The finding stays open, so nothing else removes it.
+const {retireInlineComments} = require('../services/githubInternalOperations');
+function reviewComments(comments) {
+ const remaining = [...comments];
+ axios.mockImplementation(async r => {
+  if (r.url.includes('/comments?')) return {data: /[?&]page=1(&|$)/.test(r.url) ? comments : []};
+  if (r.method === 'delete') { remaining.splice(remaining.findIndex(c => r.url.endsWith(`/${c.id}`)), 1); return {data:{}}; }
+  return {data:{head:{sha:'head-a'}}};
+ });
+ return remaining;
+}
+const ours = (id, body) => ({id, body, user:{type:'Bot',login:'fixture[bot]'}, path:'a.py'});
+test('the inline comment of a named finding is deleted and every other comment is left alone', async () => {
+ const remaining = reviewComments([
+  ours(1, '<!-- mitig8it-finding:fp-info -->\n**INFORMATIONAL - TEST CODE** - Hardcoded credential'),
+  ours(2, '<!-- mitig8it-finding:fp-runtime -->\nSQL injection'),
+  {id:3, body:'<!-- mitig8it-finding:fp-info -->\nsomeone else said this', user:{type:'User',login:'reviewer'}, path:'a.py'},
+ ]);
+ expect(await retireInlineComments({owner:'owner',repo:'repo',pr_number:1,installation_id:1,fingerprints:['fp-info']}))
+  .toEqual({retired:1, kept:0});
+ expect(remaining.map(c => c.id)).toEqual([2, 3]);
+});
+// A verified fix published under a finding is reviewer-visible work. Housekeeping does not
+// take it away, and says it did not.
+test('a comment carrying a published fix is kept', async () => {
+ const remaining = reviewComments([ours(1, `<!-- mitig8it-finding:fp-info -->\nold text\n\n${FIX_BLOCK}`)]);
+ expect(await retireInlineComments({owner:'owner',repo:'repo',pr_number:1,installation_id:1,fingerprints:['fp-info']}))
+  .toEqual({retired:0, kept:1});
+ expect(remaining.map(c => c.id)).toEqual([1]);
+});
+test('no fingerprints means no GitHub call at all', async () => {
+ axios.mockImplementation(async () => { throw new Error('no request may be made'); });
+ expect(await retireInlineComments({owner:'owner',repo:'repo',pr_number:1,installation_id:1,fingerprints:[]}))
+  .toEqual({retired:0, kept:0});
+ expect(axios).not.toHaveBeenCalled();
+});
 // A pull request over the cap is reviewed as far as the cap allows. Refusing it was the
 // one case where a developer got no review at all, and a partial review that says so is
 // worth more than nothing. The selection must be deterministic and must be declared.
