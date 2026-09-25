@@ -132,6 +132,11 @@ describe('gRPC request and response mapping', () => {
     response.setHeadSha(head);
     response.setBaseSha(base);
     response.setOmittedSourcePathsList(['src/other.js']);
+    const skippedSource = new githubPb.RemediationSkippedSource();
+    skippedSource.setPath('TestVuln.cs');
+    skippedSource.setCode('affected_source_missing');
+    skippedSource.setMessage('The finding source is unsupported or missing from the immutable tree.');
+    response.setSkippedList([skippedSource]);
 
     const { client, calls } = stubGrpcClient('snapshotRemediation', response);
     const result = await client.snapshotRemediation({ ...envelopeBody, finding_paths: ['services/accounts.js'] });
@@ -153,6 +158,10 @@ describe('gRPC request and response mapping', () => {
       head_sha: head,
       base_sha: base,
       omitted_source_paths: ['src/other.js'],
+      // A finding source the tree does not carry travels as a per-finding skip rather
+      // than as an error, so the snapshot still returns the sources it does carry.
+      skipped: [{ path: 'TestVuln.cs', code: 'affected_source_missing',
+        message: 'The finding source is unsupported or missing from the immutable tree.' }],
     });
   });
 
@@ -198,6 +207,8 @@ test('both transports return an identical snapshot object for the same reply', a
     head_sha: head,
     base_sha: base,
     omitted_source_paths: [],
+    skipped: [{ path: 'TestVuln.cs', code: 'affected_source_missing',
+      message: 'The finding source is unsupported or missing from the immutable tree.' }],
   };
   restInstance.post.mockResolvedValue({ data: restBody });
   const restResult = await new GitHubRemediationClient().snapshot({ ...envelopeBody, finding_paths: ['services/accounts.js'] });
@@ -217,6 +228,11 @@ test('both transports return an identical snapshot object for the same reply', a
   response.setHeadTreeOid(tree);
   response.setHeadSha(head);
   response.setBaseSha(base);
+  const skippedSource = new githubPb.RemediationSkippedSource();
+  skippedSource.setPath('TestVuln.cs');
+  skippedSource.setCode('affected_source_missing');
+  skippedSource.setMessage('The finding source is unsupported or missing from the immutable tree.');
+  response.setSkippedList([skippedSource]);
 
   process.env.INTERNAL_SERVICE_TRANSPORT = 'grpc';
   const { client: grpcClient } = stubGrpcClient('snapshotRemediation', response);

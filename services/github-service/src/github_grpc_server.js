@@ -253,6 +253,13 @@ const remediationService = {
       response.setHeadSha(result.head_sha || '');
       response.setBaseSha(result.base_sha || '');
       response.setOmittedSourcePathsList(result.omitted_source_paths || []);
+      response.setSkippedList((result.skipped || []).map(item => {
+        const message = new githubPb.RemediationSkippedSource();
+        message.setPath(item.path || '');
+        message.setCode(item.code || '');
+        message.setMessage(item.message || '');
+        return message;
+      }));
       return response;
     }
   ),

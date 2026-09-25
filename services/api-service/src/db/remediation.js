@@ -3,6 +3,7 @@ const { pool } = require('../config/database');
 const findingsDb = require('./findings');
 const findingOutcomes = require('./findingOutcomes');
 const metrics = require('../services/remediationMetrics');
+const languages = require('../services/remediationLanguages');
 
 const ACTIVE_STATES = new Set(['queued', 'snapshotting', 'retrieving', 'planning', 'generating', 'verifying']);
 const TERMINAL_STATES = new Set(['ready', 'cancelled', 'superseded', 'unsupported', 'inconclusive', 'failed', 'dead_letter']);
@@ -62,10 +63,16 @@ async function createJob({ pullRequestId, userId, findingIds, policy }) {
     const snapshots = await client.query(
       `SELECT finding_id, snapshot FROM analysis_run_findings WHERE analysis_run_id = $1`, [run.rows[0].id]
     );
-    const selected = snapshots.rows.filter((row) => !findingIds?.length || findingIds.includes(row.finding_id));
-    if (!selected.length || (findingIds?.length && selected.length !== new Set(findingIds).size)) {
+    const requested = snapshots.rows.filter((row) => !findingIds?.length || findingIds.includes(row.finding_id));
+    if (!requested.length || (findingIds?.length && requested.length !== new Set(findingIds).size)) {
       return { kind: 'unsupported', reason: 'findings_not_in_immutable_analysis_snapshot' };
     }
+    // A requested finding in a language no toolchain can check is skipped per finding, not
+    // taken into the job: one of them used to abort the snapshot for the whole selection.
+    const support = languages.partitionBySupportedLanguage(requested, (row) => row.snapshot?.file_path);
+    const skipped = support.unsupported.map((row) => languages.unsupportedLanguageSkip(row.finding_id));
+    if (!support.supported.length) return { kind: 'unsupported', reason: 'no_supported_findings', skipped };
+    const selected = support.supported;
     if (new Set(selected.map((row) => row.snapshot?.file_path).filter(Boolean)).size > Number(policy.max_files || 5)) {
       return { kind: 'unsupported', reason: 'selected_findings_exceed_file_limit' };
     }
@@ -73,22 +80,23 @@ async function createJob({ pullRequestId, userId, findingIds, policy }) {
     const insert = await client.query(
       `INSERT INTO remediation_jobs
        (installation_id, repository_id, pull_request_id, analysis_run_id, head_sha, base_sha,
-        selection_hash, finding_snapshot_ids, state, stage, deadline_at, policy_version, policy_manifest, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued','snapshotting',NOW() + ($9::int * INTERVAL '1 minute'),$10,$11,$12)
+        selection_hash, finding_snapshot_ids, state, stage, deadline_at, policy_version, policy_manifest, created_by, failure_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued','snapshotting',NOW() + ($9::int * INTERVAL '1 minute'),$10,$11,$12,$13)
        ON CONFLICT (repository_id, pull_request_id, analysis_run_id, head_sha, selection_hash, policy_version)
        WHERE state NOT IN ('cancelled','superseded','unsupported','inconclusive','failed','dead_letter')
        DO UPDATE SET updated_at = remediation_jobs.updated_at
        RETURNING *, (xmax = 0) AS created`,
       [pr.installation_id, pr.repository_id, pr.id, run.rows[0].id, pr.head_sha, pr.base_sha, selectionHash, selected.map((row) => row.finding_id),
-        policy.max_runtime_minutes, policy.version, JSON.stringify(policy), userId]
+        policy.max_runtime_minutes, policy.version, JSON.stringify(policy), userId, skipped.length ? JSON.stringify({ skipped }) : null]
     );
     const job = insert.rows[0];
     if (job.created) {
       await appendEvent(client, job, 'remediation.queued', { stage: 'snapshotting' });
       await audit(client, userId, job.repository_id, 'remediation.requested', 'remediation_job', job.id,
-        { pull_request_id: pr.id, head_sha: job.head_sha, selected_findings: selected.map((r) => r.finding_id) });
+        { pull_request_id: pr.id, head_sha: job.head_sha, selected_findings: selected.map((r) => r.finding_id),
+          skipped_findings: skipped.map((item) => item.finding_id) });
     }
-    return { kind: 'ok', job, created: job.created, snapshots: selected, pr };
+    return { kind: 'ok', job, created: job.created, snapshots: selected, skipped, pr };
   });
 }
 
@@ -131,8 +139,15 @@ async function createAutomaticJob({ pullRequestId, analysisRunId, policy }) {
           AND NOT (LOWER(COALESCE(f.severity, '')) = 'info' OR COALESCE((f.evidence_details->'extra'->>'in_test_code')::boolean, false))`,
       [run.rows[0].id]
     );
-    const rows = snapshots.rows.filter((row) => row.snapshot?.file_path);
-    if (!rows.length) return { kind: 'unsupported', reason: 'no_open_findings' };
+    const open = snapshots.rows.filter((row) => row.snapshot?.file_path);
+    if (!open.length) return { kind: 'unsupported', reason: 'no_open_findings' };
+    // Findings in a language no toolchain can check never enter the job: they are recorded
+    // as per-finding skips so they surface as `No automatic fix: unsupported_language` on
+    // the pull request, and the supported findings of the same analysis still get a repair.
+    const support = languages.partitionBySupportedLanguage(open, (row) => row.snapshot.file_path);
+    const skipped = support.unsupported.map((row) => languages.unsupportedLanguageSkip(row.finding_id));
+    const rows = support.supported;
+    if (!rows.length) return { kind: 'unsupported', reason: 'no_supported_findings', skipped };
     const rank = (row) => SEVERITY_RANK[String(row.snapshot?.severity || '').toLowerCase()] ?? 4;
     rows.sort((a, b) => rank(a) - rank(b) || String(a.snapshot.file_path).localeCompare(String(b.snapshot.file_path)));
     const maxFiles = Number(policy.max_files || 5);
@@ -146,22 +161,23 @@ async function createAutomaticJob({ pullRequestId, analysisRunId, policy }) {
     const insert = await client.query(
       `INSERT INTO remediation_jobs
        (installation_id, repository_id, pull_request_id, analysis_run_id, head_sha, base_sha,
-        selection_hash, finding_snapshot_ids, state, stage, deadline_at, policy_version, policy_manifest, created_by, origin)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued','snapshotting',NOW() + ($9::int * INTERVAL '1 minute'),$10,$11,NULL,'automatic')
+        selection_hash, finding_snapshot_ids, state, stage, deadline_at, policy_version, policy_manifest, created_by, origin, failure_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued','snapshotting',NOW() + ($9::int * INTERVAL '1 minute'),$10,$11,NULL,'automatic',$12)
        ON CONFLICT (repository_id, pull_request_id, analysis_run_id, head_sha, selection_hash, policy_version)
        WHERE state NOT IN ('cancelled','superseded','unsupported','inconclusive','failed','dead_letter')
        DO UPDATE SET updated_at = remediation_jobs.updated_at
        RETURNING *, (xmax = 0) AS created`,
       [pr.installation_id, pr.repository_id, pr.id, run.rows[0].id, pr.head_sha, pr.base_sha, selectionHash, selected.map((row) => row.finding_id),
-        policy.max_runtime_minutes, policy.version, JSON.stringify(policy)]
+        policy.max_runtime_minutes, policy.version, JSON.stringify(policy), skipped.length ? JSON.stringify({ skipped }) : null]
     );
     const job = insert.rows[0];
     // The same selection already queued by a user is that user's job, not a new one.
     if (!job.created) return { kind: 'exists', job };
     await appendEvent(client, job, 'remediation.queued', { stage: 'snapshotting', origin: 'automatic' });
     await audit(client, null, job.repository_id, 'remediation.requested', 'remediation_job', job.id,
-      { pull_request_id: pr.id, head_sha: job.head_sha, origin: 'automatic', selected_findings: selected.map((r) => r.finding_id) });
-    return { kind: 'ok', job, created: true, selected: selected.map((row) => row.finding_id) };
+      { pull_request_id: pr.id, head_sha: job.head_sha, origin: 'automatic', selected_findings: selected.map((r) => r.finding_id),
+        skipped_findings: skipped.map((item) => item.finding_id) });
+    return { kind: 'ok', job, created: true, selected: selected.map((row) => row.finding_id), skipped };
   });
 }
 
@@ -279,11 +295,19 @@ function manifestDigestFor(job, candidates) {
 
 // Findings the job was generated for, from the immutable analysis snapshot, so the
 // preview can name each finding beside its recommended fix.
+// The findings this job speaks for: the ones it selected, plus the ones it recorded as
+// skipped. A skipped finding is not in `finding_snapshot_ids` (an unsupported language is
+// decided before the selection is fixed, and a missing source is dropped from it), but the
+// pull request still needs its title, path and fingerprint to publish the `No automatic fix`
+// line under it and to name it in the residual report.
 async function findingSnapshots(client, job) {
   if (!job?.analysis_run_id) return [];
+  const skippedIds = (Array.isArray(job.failure_reason?.skipped) ? job.failure_reason.skipped : [])
+    .map((item) => item?.finding_id).filter(Boolean);
+  const wanted = [...new Set([...(job.finding_snapshot_ids || []), ...skippedIds])];
   const rows = await client.query(
     `SELECT finding_id, snapshot FROM analysis_run_findings WHERE analysis_run_id=$1 AND finding_id = ANY($2::uuid[])`,
-    [job.analysis_run_id, job.finding_snapshot_ids || []]
+    [job.analysis_run_id, wanted]
   );
   return rows.rows.map((row) => ({
     id: row.finding_id, title: row.snapshot?.title || null, file_path: row.snapshot?.file_path || null,
@@ -536,6 +560,39 @@ async function completeStage(job, options) {
   return applied;
 }
 
+// A skip the control plane decided itself, before or around the repair call, is part of the
+// job's account of what it did and must survive the completion that replaces
+// `failure_reason` wholesale with the repair service's own reason. The repair service's
+// entry for the same finding wins, so nothing is reported twice.
+function mergeCarriedSkips(existing, reason) {
+  const carried = (Array.isArray(existing?.skipped) ? existing.skipped : []).filter((item) => languages.CARRIED_SKIP_STAGES.has(item?.stage));
+  if (!carried.length) return reason || null;
+  const reported = Array.isArray(reason?.skipped) ? reason.skipped : [];
+  const seen = new Set(reported.map((item) => String(item?.finding_id)));
+  return { ...(reason || {}), skipped: [...reported, ...carried.filter((item) => !seen.has(String(item.finding_id)))] };
+}
+
+// Skips found while the job was being prepared rather than by the repair service: a
+// finding whose source the immutable tree does not carry. Written when they are found so
+// the record outlives the attempt, and deduplicated by finding so a retry adds nothing.
+async function recordSkippedFindings(job, skips) {
+  const additions = (Array.isArray(skips) ? skips : []).filter((item) => item?.finding_id);
+  if (!additions.length) return [];
+  return scopedTransaction({ tenantId: job.installation_id, worker: true }, async (client) => {
+    const current = await client.query('SELECT failure_reason FROM remediation_jobs WHERE id=$1 FOR UPDATE', [job.id]);
+    const existing = Array.isArray(current.rows[0]?.failure_reason?.skipped) ? current.rows[0].failure_reason.skipped : [];
+    const seen = new Set(existing.map((item) => String(item?.finding_id)));
+    const added = additions.filter((item) => !seen.has(String(item.finding_id)));
+    if (!added.length) return existing;
+    const merged = [...existing, ...added];
+    await client.query(
+      `UPDATE remediation_jobs SET failure_reason=jsonb_set(COALESCE(failure_reason,'{}'::jsonb),'{skipped}',$2::jsonb,true),
+         updated_at=NOW() WHERE id=$1`, [job.id, JSON.stringify(merged)]
+    );
+    return merged;
+  });
+}
+
 async function completeStageTransaction(job, { state, stage, outcome, candidates = [], verification, reason, outputDigest, stagePath = [], evidence = [] }) {
   return scopedTransaction({ tenantId: job.installation_id, worker: true }, async (client) => {
     const current = await client.query(`SELECT * FROM remediation_jobs WHERE id=$1 FOR UPDATE`, [job.id]);
@@ -567,12 +624,13 @@ async function completeStageTransaction(job, { state, stage, outcome, candidates
     // `recordAttempt` used, so the evidence and the attempt it belongs to agree.
     await persistEvidence(client, row, Number(row.attempt_count) + 1, evidence);
     const consumesAttempt = ATTEMPT_CONSUMING_STATES.has(state);
+    const persistedReason = mergeCarriedSkips(row.failure_reason, reason);
     const changed = await client.query(
       `UPDATE remediation_jobs SET state=$1, stage=$2, state_version=$3, lease_owner=NULL, lease_expires_at=NULL,
        attempt_count=attempt_count + ($7::int), failure_reason=$4, updated_at=NOW(),
        next_attempt_at=CASE WHEN $1='queued' THEN NOW() + (LEAST(attempt_count + 1, 6) * INTERVAL '30 seconds') ELSE NOW() END
        WHERE id=$5 AND fencing_token=$6`,
-      [state, stage, nextVersion, reason ? JSON.stringify(reason) : null, row.id, job.fencing_token, consumesAttempt ? 1 : 0]
+      [state, stage, nextVersion, persistedReason ? JSON.stringify(persistedReason) : null, row.id, job.fencing_token, consumesAttempt ? 1 : 0]
     );
     if (!changed.rowCount) return false;
     const eventJob = { ...row, state_version: nextVersion };
@@ -1216,7 +1274,7 @@ module.exports = {
   getEvidenceForUser, MAX_EVIDENCE_PAYLOAD_BYTES,
   claimNextJob, claimJobById, recordAttempt, heartbeat, deferForExternalExecution, reserveUsage, settleUsage, budgetSnapshot,
   usageCost, releaseStrandedReservations,
-  completeStage, cancelJob, getActionForUser,
+  completeStage, cancelJob, getActionForUser, recordSkippedFindings, mergeCarriedSkips,
   updateAction, enterChecking, completeAction, appendEvent, audit,
   reclaimExpiredLeases, redispatchStuckOutbox, quarantineExhaustedJobs,
   listActionsAwaitingVerification, supersedeForHeadChange, supersedeForBranchPush,
