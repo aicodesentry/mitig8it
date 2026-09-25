@@ -102,7 +102,7 @@ def test_a_named_import_binds_members_but_not_a_namespace():
     binding = js_module_binding("import { join, sep } from 'node:path';\n", "path", "path")
     assert not binding.present
     assert binding.members == frozenset({"join", "sep"})
-    assert binding.import_line == "import path from 'node:path'"
+    assert binding.import_line == "import path from 'node:path';"
 
 
 def test_a_require_in_a_comment_does_not_count_as_a_binding():
@@ -113,9 +113,17 @@ def test_a_require_in_a_comment_does_not_count_as_a_binding():
 def test_the_module_style_decides_how_a_missing_import_is_written():
     """An inserted `require` in an ESM module is a syntax error waiting to happen."""
     esm = js_module_binding("import fs from 'node:fs';\n", "path", "path")
-    assert esm.style == "esm" and esm.import_line == "import path from 'node:path'"
+    assert esm.style == "esm" and esm.import_line == "import path from 'node:path';"
     commonjs = js_module_binding("const fs = require('fs');\n", "path", "path")
-    assert commonjs.style == "commonjs" and commonjs.import_line == "const path = require('node:path')"
+    assert commonjs.style == "commonjs" and commonjs.import_line == "const path = require('node:path');"
+
+
+def test_an_inserted_import_matches_the_file_s_own_semicolon_style():
+    """Juice Shop writes `import fs from 'node:fs'` with no semicolon; the fixtures use one."""
+    without = js_module_binding("import fs from 'node:fs'\nimport config from 'config'\n", "path", "path")
+    assert without.import_line == "import path from 'node:path'"
+    with_ = js_module_binding("import fs from 'node:fs';\n", "path", "path")
+    assert with_.import_line == "import path from 'node:path';"
 
 
 def test_an_export_statement_alone_makes_a_file_esm():
@@ -152,7 +160,7 @@ def test_a_commonjs_module_without_the_import_gets_one_in_the_same_patch(request
         for line in change["replacement_lines"]
         if line not in change["original_lines"]
     ]
-    assert "const path = require('node:path')" in inserted
+    assert "const path = require('node:path');" in inserted
     assert any("path.resolve(BASE)" in line for line in inserted)
     assert any("path.sep" in line for line in inserted)
 
@@ -169,7 +177,7 @@ def test_an_esm_module_without_the_import_gets_the_import_form(request_payload):
         for line in change["replacement_lines"]
         if line not in change["original_lines"]
     ]
-    assert "import path from 'node:path'" in inserted
+    assert "import path from 'node:path';" in inserted
     assert not any("require(" in line for line in inserted)
 
 

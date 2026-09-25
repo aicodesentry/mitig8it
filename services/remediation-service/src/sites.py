@@ -751,7 +751,7 @@ class JsModuleBinding:
 # `import x from 'm'` and `export ...` are the two statements that make a file a module Node
 # loads as ESM regardless of extension, and a file that carries either is one an inserted
 # `const x = require(...)` would break.
-_JS_ESM_MARKER_RE = re.compile(r"^\s*(?:import\s+[^(]|import\s*\{|import\s+['\"]|export\s+(?:default|const|let|var|function|class|\{|\*))", re.M)
+_JS_ESM_MARKER_RE = re.compile(r"^\s*(?:import\s+[^(]|import\s*\{|import\s+['\"]|export\s+(?:default|const|let|var|function|class|\{|\*))", re.MULTILINE)
 _JS_MODULE_IMPORT_RE = re.compile(
     r"^\s*import\s+(?:(?P<default>[A-Za-z_$][\w$]*)|\*\s*as\s+(?P<star>[A-Za-z_$][\w$]*)|\{(?P<named>[^}]*)\})"
     r"(?:\s*,\s*(?:\{(?P<also>[^}]*)\}|\*\s*as\s+(?P<star2>[A-Za-z_$][\w$]*)))?\s+from\s+['\"](?:node:)?(?P<module>[^'\"]+)['\"]"
@@ -839,7 +839,7 @@ def js_identifier_is_bound(source: str, name: str) -> bool:
         rf",\s*{escaped}\s*[,)]\s*(?:=>|\{{)",
         rf"catch\s*\(\s*{escaped}\s*\)",
     )
-    return any(re.search(pattern, stripped, re.M) for pattern in patterns)
+    return any(re.search(pattern, stripped, re.MULTILINE) for pattern in patterns)
 
 
 def js_module_binding(source: str, module: str, preferred: str) -> JsModuleBinding:

@@ -753,6 +753,14 @@ reach; the before column below is this run's own measurement of the base branch.
 | Findings with neither | 202 | 162 | 158 | **153** |
 | Candidates produced and verified end to end | 8 | | | **8** |
 
+The end-to-end row is the replay's own remediation stage, run once on each branch over the one
+cache. Those two runs did not see quite the same findings: the scanner reported 2442 findings on
+the first and 2393 on the second, differing in three repositories with identical fetch
+limitations, so the difference is the scanner's own run-to-run variation rather than anything in
+this branch. That is exactly why the two halves are measured by calling the generators directly
+over one fixed set of findings instead, and it is worth knowing that an end-to-end comparison
+across two replays carries that much noise.
+
 **The template patch count has more than doubled and the corpus is still verified at 8.** That is
 the third time this measurement has said it, and the reason is now a different one. It is no
 longer that the refusals moved down to the next obstacle: 49 findings gained a patch and only two
@@ -895,8 +903,8 @@ than the repair. The seed suite is 59 fixtures under both adapters with no unexp
 
 | Suite | Command | Result |
 | --- | --- | --- |
-| analysis-service | `python -m pytest tests -q` in `services/analysis-service/src` | 1373 passed, 1 skipped, on the integration branch |
-| remediation-service | `python -m pytest tests -q` in `services/remediation-service` | 577 passed on this branch, 506 on the integration branch. Fails by one (`test_python_harness.py`) in an interpreter that has Flask installed, which is pre-existing and environment-dependent |
+| analysis-service | `python -m pytest tests -q` in `services/analysis-service/src` | 1391 passed, 1 skipped, on this branch |
+| remediation-service | `python -m pytest tests -q` in `services/remediation-service` | 578 passed on this branch, 506 on the integration branch. Fails by one (`test_python_harness.py`) in an interpreter that has Flask installed, which is pre-existing and environment-dependent |
 | tier 2 precision benchmark | `python -m pytest tests/test_tier2_precision_benchmark.py -q` | 140 passed, on the integration branch |
 | remediation benchmark | `benchmarks/remediation/evaluate.py --suite seed` and `--adapter engine-local` | 59 cases, 46 repairs verified, 13 safe abstentions, no unexpected failures under either adapter |
 | sandbox harness spec | `node --test-reporter=tap services/remediation-service/tests/harness_spec.js` | 16 passed |
