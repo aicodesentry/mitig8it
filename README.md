@@ -55,12 +55,14 @@ The repair service classifies a finding into one of five families from its CWE a
 | `sql_parameterization` | yes | yes |
 | `command_arguments` | yes | yes |
 | `path_containment` | yes | yes |
-| `hardcoded_credential` | no | yes |
-| `code_injection_eval` | no | yes |
+| `hardcoded_credential` | yes | yes |
+| `code_injection_eval` | yes | yes |
 
-The two Python-only families are limited by the Node harness, which records no environment reads and stubs no `eval`.
+All five are supported for both languages. The last two were Python-only until the Node harness learned to record environment reads and to record every way a string becomes code without running it.
 
-For every supported finding the service first writes both halves of the repair itself, before any model call. `src/sites.py` derives the enclosing Express route or Python function or Flask view over the exact snapshot, falling back to the enclosing function or method and then to module scope, where the sink runs at import and a proof drives it by setting what the module reads before loading it; `src/proofs.py` emits one harness regression test from that site, and `src/templates.py` attempts a deterministic hunk for the family. TypeScript is loaded by Node's own type stripper, so a `.ts` module needs no toolchain in the sandbox. Template hunks are verified exactly like a model proposal and are charged zero input and output tokens. Only findings the template pass did not prove reach the model, which receives the same service-written proof.
+For every supported finding the service first writes both halves of the repair itself, before any model call. `src/sites.py` derives the enclosing Express route or Python function or Flask view over the exact snapshot, falling back to the enclosing function or method and then to module scope, where the sink runs at import and a proof drives it by setting what the module reads before loading it; `src/proofs.py` emits one harness regression test from that site, and `src/templates.py` attempts a deterministic hunk for the family. TypeScript is loaded by Node's own type stripper, so a `.ts` module needs no toolchain in the sandbox. A proof is written only for a module the sandbox can actually load: the closure of what an import pulls in has to be Node built-ins, the harness fakes, and repository files, and a package the sandbox has no copy of refuses the finding rather than producing a test that would fail on the original and the repaired tree alike. Template hunks are verified exactly like a model proposal and are charged zero input and output tokens. Only findings the template pass did not prove reach the model, which receives the same service-written proof.
+
+On the 23-repository vulnerable corpus of September 2026, 249 findings are in a supported family with their file in the snapshot: 62 get a template patch, 16 get a proof, 8 have both, and all 8 verify end to end. `docs/validation/pairs-2026-09.md` measures each pair on the original tree and the patched tree and says what the remaining constraint is: 84 findings get no proof because their module imports a package the dependency-free sandbox has no copy of.
 
 ### When the service abstains
 
@@ -71,6 +73,7 @@ Per-finding skips are reported in the job's `skipped` list and surface as the `N
 | `unsupported_rule_family` | The finding is outside the five families, or the family is not repaired for that language yet. |
 | `rule_family_disabled` | The family is not in `REMEDIATION_ALLOWED_RULE_FAMILIES_JSON`. |
 | `affected_source_missing` | The affected file is absent from the snapshot. |
+| `protected_path` | Policy will not change that file, so no repair of it could be applied: a test directory, a lock file, a CI or infrastructure path. Asked before either half is generated. |
 | `unsupported_language` | The file extension is neither JavaScript nor Python. |
 | `pg_dependency_not_proven` | A JavaScript SQL repair whose snapshot has no `package.json` declaring `pg`. |
 | `shell_pipeline_unsupported` | The process call carries a pipe or `shell: true`. |

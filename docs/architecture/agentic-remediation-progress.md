@@ -186,6 +186,8 @@ A disposable staging GitHub repository with branch protection and the app's veri
 
 Path containment now reaches the shapes real code writes: the `node:path` binding is read in every import style, the import is added when a file has none, a path built by concatenation or interpolation is a repair site, and a destructured, defaulted or rest parameter no longer stops a proof; on the vulnerable corpus that is 82 template patches against 34, 40 proofs against 37, and 26 complete pairs against 24, with `path_module_not_required` and `function_parameters_not_plain_names` both gone.
 
+Measuring each complete pair on both trees ([pairs-2026-09.md](../validation/pairs-2026-09.md)) then showed that 17 of the 18 that did not verify never reached the proof's first assertion, so a file policy will not change and a module whose import closure the sandbox cannot supply are both refused before either half is written: the corpus pair count is 8 instead of 26 and all 8 verify, and the constraint the corpus now names is that a dependency-free sandbox can only load a dependency-free module.
+
 The same engine now also runs inside a GitHub Action, in the customer's own runner with the workflow's own token and no database, producing the same `development_unverified` candidates through the same local subprocess driver; see [GitHub Action](../getting-started/github-action.md).
 
 Full specification: [implementation plan](agentic-remediation-implementation-plan.md).

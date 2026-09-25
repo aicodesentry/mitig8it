@@ -899,14 +899,52 @@ reads: the original writes `/srv/docs/../../etc/passwd` verbatim where a `path.j
 normalized it, and asserting on the literal string would have measured the sink's spelling rather
 than the repair. The seed suite is 59 fixtures under both adapters with no unexpected failures.
 
+## After the pairs measurement
+
+The section above ended by naming the proof as the binding constraint and the next measurement as
+"why a pair that exists does not verify". That measurement is
+`docs/validation/pairs-2026-09.md`, which runs each complete pair's proof against the original
+tree and against the patched tree and records the two outcomes separately. The short version:
+
+**Seventeen of the eighteen pairs that did not verify never reached the proof's first
+assertion.** Ten were in a file policy will not let the service change, which
+`build_patch_bundle` refused after both halves had been built; seven could not load the module
+the proof names, because its import closure reaches a package the sandbox has no copy of or
+TypeScript syntax the stripper refuses. The eighteenth reached its assertions holding a Django
+request object it had been handed a string for. Not one fails on a payload the original already
+rejects, a repair that changed a return value, a handler called with the wrong shape, a module
+with side effects at import, or a sandbox limit.
+
+All of those are now refused before the work is done, with a reason that names the cause, and the
+pair count says what it claims to:
+
+| | Before | After |
+| --- | ---: | ---: |
+| Findings the template builds a patch for | 75 | **62** |
+| Findings the service writes a proof for | 35 | **16** |
+| Findings with both halves | 26 | **8** |
+| Candidates produced and verified end to end | 8 | **8** |
+
+The reach did not grow, and this time that is not the story: the count fell to the eight pairs
+that were real, and **all eight verify**. The before column here is 75 and 35 where the section
+above reported 82 and 40, because the pairs instrument gives each repair a 500-file snapshot
+spent nearest the finding rather than the replay batch's own slice; both columns were measured
+with the one instrument over the one cache, so the comparison within that page is exact.
+
+`dependency_not_available_in_sandbox` is now the largest reason a finding gets no proof, at 84.
+Every one of the eight pairs that verify is a module with no imports beyond the standard library:
+five Node configuration objects and three Django settings files. The binding constraint the
+corpus now points at is narrower than "the proof" and larger than any refusal left in the engine:
+**a dependency-free sandbox can only load a dependency-free module.**
+
 ## Suites
 
 | Suite | Command | Result |
 | --- | --- | --- |
 | analysis-service | `python -m pytest tests -q` in `services/analysis-service/src` | 1391 passed, 1 skipped, on this branch |
-| remediation-service | `python -m pytest tests -q` in `services/remediation-service` | 578 passed on this branch, 506 on the integration branch. Fails by one (`test_python_harness.py`) in an interpreter that has Flask installed, which is pre-existing and environment-dependent |
+| remediation-service | `python -m pytest tests -q` in `services/remediation-service` | 591 passed on this branch, 506 on the integration branch. Fails by one (`test_python_harness.py`) in an interpreter that has Flask installed, which is pre-existing and environment-dependent |
 | tier 2 precision benchmark | `python -m pytest tests/test_tier2_precision_benchmark.py -q` | 140 passed, on the integration branch |
 | remediation benchmark | `benchmarks/remediation/evaluate.py --suite seed` and `--adapter engine-local` | 59 cases, 46 repairs verified, 13 safe abstentions, no unexpected failures under either adapter |
-| sandbox harness spec | `node --test-reporter=tap services/remediation-service/tests/harness_spec.js` | 16 passed |
+| sandbox harness spec | `node --test-reporter=tap services/remediation-service/tests/harness_spec.js` | 18 passed |
 | remediation benchmark harness | `python -m pytest benchmarks/remediation/tests -q` | 23 passed |
 | replay self-test | `scripts/replay/selftest.py` | ok: findings=2 candidates=2 verified=2 agent_needed=0 |
