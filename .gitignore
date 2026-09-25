@@ -86,6 +86,13 @@ build/
 # Benchmark results (generated)
 benchmarks/results/*.json
 
+# Replay harness cache (downloaded repositories and GitHub responses)
+scripts/replay/.cache/
+
+# Virtualenvs created by `make deps`
+.venv/
+**/.venv/
+
 # Misc
 .cache/
 .temp/
