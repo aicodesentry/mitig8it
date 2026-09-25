@@ -28,6 +28,16 @@ STUB_OPERATIONS = r"""
 const fs = require('fs');
 const statePath = process.env.MITIG8IT_STUB_STATE;
 
+// Every operation costs at least one GitHub round trip, and the publishing phase is bounded by
+// how many of them a run makes rather than by anything it computes. The stub answers instantly,
+// which makes a correctness test fast and a timing measurement meaningless, so a latency can be
+// asked for when what is being measured is the number of round trips.
+const LATENCY_MS = Number(process.env.MITIG8IT_STUB_LATENCY_MS || 0);
+function roundTrip() {
+  if (LATENCY_MS <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, LATENCY_MS));
+}
+
 function load() {
   try { return JSON.parse(fs.readFileSync(statePath, 'utf8')); }
   catch { return { comments: [], calls: [], nextId: 1, botLogin: 'github-actions[bot]' }; }
@@ -42,14 +52,42 @@ function validateEnvelope(payload) {
   if (!/^[0-9a-f]{64}$/i.test(digest)) throw new Error('manifest_digest must be a SHA-256 digest');
 }
 
+// The fix blocks an existing comment carries are kept when its finding text is re-rendered.
+// Copied from githubInternalOperations.js, which is what the publisher calls in production.
+const FIX_BLOCK_PATTERN = /\n*<!-- mitig8it-fix:[^>]+ -->[\s\S]*?<!-- \/mitig8it-fix:[^>]+ -->/g;
+function stripFixBlocks(body) { return String(body || '').replace(FIX_BLOCK_PATTERN, '').replace(/\s+$/, ''); }
+
 module.exports = {
+  withPreservedFixBlocks: (nextBody, existingBody) => {
+    const preserved = (String(existingBody || '').match(FIX_BLOCK_PATTERN) || [])
+      .map((block) => block.replace(/^\n+/, '')).filter(Boolean);
+    if (!preserved.length) return nextBody;
+    return `${stripFixBlocks(nextBody)}\n\n${preserved.join('\n\n')}`;
+  },
+
+  // A review carries its own inline comments now, so the stub creates them the way GitHub
+  // does: one review, one timeline entry, every comment in it.
   submitPullRequestReview: async (p) => {
-    const state = load(); record(state, 'review', { body: p.body }); save(state); return { review_id: 1 };
+    await roundTrip();
+    const state = load();
+    for (const comment of p.comments || []) {
+      state.comments.push({
+        id: state.nextId, path: comment.path, line: comment.line, body: comment.body,
+        user: { login: state.botLogin },
+      });
+      state.nextId += 1;
+    }
+    record(state, 'review', { body: p.body, comments: (p.comments || []).length });
+    save(state);
+    return { review_id: 1, comments_posted: (p.comments || []).length };
   },
 
   // The contract postInlineComment documents: find my own comment for this finding on this
   // path, edit it, and only create when there is none.
   postInlineComment: async (p) => {
+    // The real one reads the pull request and then pages its comment list before it writes.
+    await roundTrip();
+    await roundTrip();
     const state = load();
     const marker = String(p.body).match(/<!-- mitig8it-finding:[^>]+ -->/)?.[0];
     if (marker) {
@@ -81,6 +119,7 @@ module.exports = {
   },
 
   createCheckRun: async (p) => {
+    await roundTrip();
     const state = load();
     record(state, 'check', { title: p.title, conclusion: p.conclusion, summary: p.summary });
     save(state);
@@ -95,9 +134,10 @@ STUB_IDENTITY = "'use strict';\nmodule.exports = { useProvider: () => {} };\n"
 class Publisher:
     """One fake repository the publisher can be run against more than once."""
 
-    def __init__(self, root: Path, graphql_url: str | None = None):
+    def __init__(self, root: Path, graphql_url: str | None = None, latency_ms: int = 0):
         self.root = root
         self.graphql_url = graphql_url
+        self.latency_ms = latency_ms
         services = root / "github-service/src/services"
         services.mkdir(parents=True, exist_ok=True)
         (services / "githubInternalOperations.js").write_text(STUB_OPERATIONS, encoding="utf-8")
@@ -132,6 +172,8 @@ class Publisher:
         }
         if self.graphql_url:
             env["GITHUB_GRAPHQL_URL"] = self.graphql_url
+        if self.latency_ms:
+            env["MITIG8IT_STUB_LATENCY_MS"] = str(self.latency_ms)
         return subprocess.run(
             ["node", str(PUBLISHER), str(request_path)],
             capture_output=True,

@@ -301,6 +301,9 @@ async function ourReviewThreads({ graphql, owner, repo, prNumber, botLogin, coun
       threads.push({
         id: node.id,
         commentId: node.comments?.nodes?.[0]?.id || null,
+        // The body is carried so publishing can tell an unchanged comment from a changed one
+        // without asking GitHub for the comment list again, once per finding.
+        body: String(node.comments?.nodes?.[0]?.body || ''),
         isResolved: Boolean(node.isResolved),
         fingerprint,
       });
@@ -319,43 +322,53 @@ function selectStaleThreads(threads, activeFingerprints) {
   return threads.filter((thread) => !thread.isResolved && !active.has(thread.fingerprint));
 }
 
-async function reconcileReviewThreads(request, { graphql }) {
+// Everything the publish needs to know about what this pull request already carries, from one
+// walk of its review threads: which findings already have a comment of ours and what that
+// comment says, and which of our threads the current run no longer reports.
+async function surveyReviewThreads(request, { graphql }) {
   const [owner, repo] = request.repository_full_name.split('/');
   // Every number the run needs to explain itself: how many threads the pull request has, how
   // many carry our marker, and what became of the stale ones. A reconciliation that matches
   // nothing now says so out loud instead of looking like a run with nothing to do.
-  const outcome = { seen: 0, ours: 0, stale: 0, resolved: 0, minimized: 0, failed: 0, errors: [] };
+  const counters = {
+    seen: 0, ours: 0, stale: 0, resolved: 0, minimized: 0, retired: 0, kept: 0, failed: 0, errors: [],
+  };
   const threads = await ourReviewThreads({
     graphql,
     owner,
     repo,
     prNumber: request.pr_number,
     botLogin: request.bot_login,
-    counters: outcome,
+    counters,
   });
-  outcome.ours = threads.length;
+  counters.ours = threads.length;
   const stale = selectStaleThreads(threads, request.active_fingerprints);
-  outcome.stale = stale.length;
+  counters.stale = stale.length;
+  return { counters, threads, stale, byFingerprint: new Map(threads.map((t) => [t.fingerprint, t])) };
+}
+
+async function reconcileReviewThreads(survey, { graphql }) {
+  const { counters, stale } = survey;
   for (const thread of stale) {
     try {
       await graphql(RESOLVE_MUTATION, { id: thread.id });
-      outcome.resolved += 1;
+      counters.resolved += 1;
     } catch (error) {
       if (!thread.commentId) {
-        outcome.failed += 1;
-        outcome.errors.push(`thread ${thread.fingerprint}: ${error.message}`);
+        counters.failed += 1;
+        counters.errors.push(`thread ${thread.fingerprint}: ${error.message}`);
         continue;
       }
       try {
         await graphql(MINIMIZE_MUTATION, { id: thread.commentId });
-        outcome.minimized += 1;
+        counters.minimized += 1;
       } catch (fallbackError) {
-        outcome.failed += 1;
-        outcome.errors.push(`thread ${thread.fingerprint}: ${error.message}; ${fallbackError.message}`);
+        counters.failed += 1;
+        counters.errors.push(`thread ${thread.fingerprint}: ${error.message}; ${fallbackError.message}`);
       }
     }
   }
-  return outcome;
+  return counters;
 }
 
 // --- publishing ------------------------------------------------------------------------
@@ -376,25 +389,81 @@ async function publish(request, { fetchImpl, graphql } = {}) {
     installation_id: request.installation_id,
     commit_sha: request.head_sha,
   };
-  const results = { review: null, inline: [], fixes: null, check: null, threads: null, errors: [] };
+  const results = {
+    review: null, inline: [], fixes: null, check: null, threads: null,
+    posted: 0, edited: 0, unchanged: 0, errors: [],
+  };
 
-  // 1. The summary review. REQUEST_CHANGES would demand a dismissal from a human before merge,
-  // which an action installed by five lines of YAML has not earned, so the action always
-  // comments and lets `fail-on` carry the blocking decision.
+  // 1. What the pull request already carries, in one walk of its review threads. This is the
+  // same listing the stale-thread reconciliation needs, read once and used for both: which
+  // findings already have a comment of ours, what those comments say, and which of our threads
+  // this run no longer reports.
+  //
+  // Without GraphQL the survey is absent and every comment goes through `postInlineComment`,
+  // which is slower and correct. Degrading into the old path is better than degrading into a
+  // duplicate comment.
+  let survey = null;
+  let graphqlClient = null;
+  try {
+    graphqlClient = graphql || createGraphQLClient({ token: request.token, fetchImpl });
+    survey = await surveyReviewThreads(request, { graphql: graphqlClient });
+  } catch (error) {
+    results.threads = {
+      seen: 0, ours: 0, stale: 0, resolved: 0, minimized: 0, retired: 0, kept: 0,
+      failed: 0, errors: [], unavailable: error.message,
+    };
+  }
+
+  // 2. Sort the comments into the three things that can be true of one: it is new, it is on the
+  // pull request already and says something different, or it is on the pull request already and
+  // says exactly what this run would write.
+  const inline = request.inline_comments || [];
+  const fresh = [];
+  const changed = [];
+  for (const comment of inline) {
+    const existing = survey?.byFingerprint.get(comment.fingerprint) || null;
+    if (!survey) {
+      changed.push(comment);
+      continue;
+    }
+    if (!existing) {
+      fresh.push(comment);
+      continue;
+    }
+    // What `postInlineComment` would write, computed with the service's own function, so a
+    // comment carrying a published fix is compared against the body that keeps the fix.
+    const next = operations.withPreservedFixBlocks(comment.body, existing.body);
+    if (next === existing.body) {
+      results.unchanged += 1;
+      continue;
+    }
+    changed.push(comment);
+  }
+
+  // 3. One review: the summary body and every new comment, in a single event.
+  //
+  // Each new comment used to be its own POST to /pulls/{n}/comments, and GitHub wraps each of
+  // those in a review of its own. juice-shop's pull request ended up with 28 "github-actions
+  // reviewed" entries in its timeline for 26 comments, and publishing was the slowest phase of
+  // the job: 39 of its 209 seconds. REQUEST_CHANGES would demand a dismissal from a human
+  // before merge, which an action installed by five lines of YAML has not earned, so the event
+  // stays COMMENT and `fail-on` carries the blocking decision.
   try {
     results.review = await operations.submitPullRequestReview({
       ...base,
       body: buildReviewBody(request),
       event: 'COMMENT',
-      comments: [],
+      comments: fresh.map((comment) => ({ path: comment.path, line: comment.line, body: comment.body })),
     });
+    results.posted = fresh.length;
+    for (const comment of fresh) results.inline.push({ path: comment.path, line: comment.line, comment_id: 0 });
   } catch (error) {
     results.errors.push(`review: ${error.message}`);
   }
 
-  // 2. One inline comment per finding, each carrying its fingerprint marker so a re-run edits
-  // the comment it wrote last time instead of stacking a new one beside it.
-  for (const comment of request.inline_comments || []) {
+  // 4. The comments that already exist and have changed, edited in place by their marker. This
+  // is a PATCH and creates no review, so the timeline stays at one entry per run.
+  for (const comment of changed) {
     try {
       const posted = await operations.postInlineComment({
         ...base,
@@ -402,13 +471,14 @@ async function publish(request, { fetchImpl, graphql } = {}) {
         line: comment.line,
         body: comment.body,
       });
+      results.edited += 1;
       results.inline.push({ path: comment.path, line: comment.line, comment_id: posted.comment_id });
     } catch (error) {
       results.errors.push(`inline ${comment.path}:${comment.line}: ${error.message}`);
     }
   }
 
-  // 2b. Threads this action opened for findings that are no longer reported. Without this the
+  // 5. Threads this action opened for findings that are no longer reported. Without this the
   // pull request only ever grows: the finding that went away keeps its open thread, and the
   // fingerprint carries the line number, so any push that shifts a line retires every marker at
   // once and the whole previous run is orphaned. Failing here is reported and never fatal: a
@@ -419,14 +489,12 @@ async function publish(request, { fetchImpl, graphql } = {}) {
   // and a token is not guaranteed to be allowed to do it; failing the job over it would throw
   // away a review that published perfectly. The counters below carry the failure instead, and
   // the orchestrator states it on the one summary line it logs.
-  try {
-    const client = graphql || createGraphQLClient({ token: request.token, fetchImpl });
-    results.threads = await reconcileReviewThreads(request, { graphql: client });
-  } catch (error) {
-    results.threads = {
-      seen: 0, ours: 0, stale: 0, resolved: 0, minimized: 0, failed: 0, errors: [],
-      unavailable: error.message,
-    };
+  if (survey) {
+    try {
+      results.threads = await reconcileReviewThreads(survey, { graphql: graphqlClient });
+    } catch (error) {
+      results.threads = { ...survey.counters, unavailable: error.message };
+    }
   }
 
   // 3. Suggestion blocks under the finding comments, rendered by the service's own builder so
@@ -499,6 +567,8 @@ module.exports = {
   normalizeLogin,
   reconcileReviewThreads,
   selectStaleThreads,
+  surveyReviewThreads,
   threadFingerprint,
+  UNANCHORED_HEADING,
   CHECK_RUN_NAME,
 };

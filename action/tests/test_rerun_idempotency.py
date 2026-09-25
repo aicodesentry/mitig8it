@@ -90,13 +90,17 @@ def test_a_second_run_edits_resolves_and_creates_without_duplicating(publisher, 
     Run one reports `stays` and `goes`. Run two reports `stays` (with different text) and
     `arrives`. The result must be: the comment for `stays` edited in place, the thread for
     `goes` resolved, one comment created for `arrives`, and nothing duplicated.
+
+    A new comment travels inside the review now, so it is not a `create` call. An existing one
+    whose text changed is still edited in place by its marker.
     """
     first = [finding("fp-stays", line=12), finding("fp-goes", path="src/cmd.js", line=13)]
     completed = publisher.run(a_request(first))
     assert completed.returncode == 0, completed.stderr
 
-    created = [call for call in publisher.calls() if call["name"] == "create"]
-    assert len(created) == 2
+    reviews = [call for call in publisher.calls() if call["name"] == "review"]
+    assert len(reviews) == 1 and reviews[0]["comments"] == 2
+    assert [call for call in publisher.calls() if call["name"] == "create"] == []
     assert len(publisher.state()["comments"]) == 2
 
     # GitHub opens a thread per comment. The fake is told about the ones the first run created.
@@ -113,20 +117,91 @@ def test_a_second_run_edits_resolves_and_creates_without_duplicating(publisher, 
 
     calls = publisher.calls()
     edits = [call for call in calls if call["name"] == "edit"]
-    creates = [call for call in calls if call["name"] == "create"]
+    reviews = [call for call in calls if call["name"] == "review"]
 
     assert [call["marker"] for call in edits] == [marker("fp-stays")]
     assert edits[0]["changed"] is True
-    assert [call["marker"] for call in creates] == [marker("fp-arrives")]
+    assert len(reviews) == 1 and reviews[0]["comments"] == 1
 
     # Three findings were ever reported, so there are exactly three comments: no duplicates.
     bodies = [comment["body"] for comment in publisher.state()["comments"]]
     assert len(bodies) == 3
     assert sum(1 for body in bodies if marker("fp-stays") in body) == 1
+    assert sum(1 for body in bodies if marker("fp-arrives") in body) == 1
 
     resolved = graphql.resolved_bodies()
     assert len(resolved) == 1 and marker("fp-goes") in resolved[0]
     assert [body for body in graphql.open_bodies() if marker("fp-stays") in body]
+
+
+def test_one_review_carries_every_new_comment(publisher, graphql):
+    """juice-shop's timeline showed 28 "github-actions reviewed" entries for 26 comments.
+
+    Each inline comment was its own POST to `/pulls/{n}/comments`, and GitHub wraps every one of
+    those in a review of its own. It was also the slowest phase of the job: 39 of juice-shop's
+    209 seconds went on publishing.
+    """
+    findings = [finding(f"fp-{index}", line=12 + (index % 3)) for index in range(26)]
+    completed = publisher.run(a_request(findings))
+
+    assert completed.returncode == 0, completed.stderr
+    calls = publisher.calls()
+    assert [call["name"] for call in calls] == ["review", "check"]
+    assert calls[0]["comments"] == 26
+    assert len(publisher.state()["comments"]) == 26
+    results = json.loads(completed.stdout)
+    assert results["posted"] == 26
+    assert results["edited"] == 0
+
+
+def test_a_converged_rerun_writes_nothing_at_all(publisher, graphql):
+    """The second run on an unchanged head has nothing to say and must not say it again.
+
+    The trial confirmed the comment ids and their `updated_at` did not move, but each unchanged
+    comment still cost a pull request read and a comment listing. The thread survey already
+    carries the body, so an unchanged comment is now recognised without asking again.
+    """
+    findings = [finding("fp-one", line=12), finding("fp-two", path="src/cmd.js", line=13)]
+    completed = publisher.run(a_request(findings))
+    assert completed.returncode == 0, completed.stderr
+    for comment in publisher.state()["comments"]:
+        graphql.add_thread(comment["body"])
+    publisher.clear_calls()
+
+    completed = publisher.run(a_request(findings))
+
+    assert completed.returncode == 0, completed.stderr
+    results = json.loads(completed.stdout)
+    assert results["unchanged"] == 2
+    assert results["posted"] == 0
+    assert results["edited"] == 0
+    assert [call["name"] for call in publisher.calls()] == ["review", "check"]
+    assert publisher.calls()[0]["comments"] == 0
+    assert len(publisher.state()["comments"]) == 2
+
+
+def test_a_comment_carrying_a_published_fix_is_left_alone(publisher, graphql):
+    """A fix block under a finding comment is reviewer-visible work, not text to overwrite."""
+    findings = [finding("fp-one", line=12)]
+    completed = publisher.run(a_request(findings))
+    assert completed.returncode == 0, completed.stderr
+
+    state = publisher.state()
+    fixed = (
+        state["comments"][0]["body"]
+        + "\n\n<!-- mitig8it-fix:cand-1 -->\n```suggestion\nsafe()\n```\n<!-- /mitig8it-fix:cand-1 -->"
+    )
+    state["comments"][0]["body"] = fixed
+    publisher.state_path.write_text(json.dumps(state), encoding="utf-8")
+    graphql.add_thread(fixed)
+    publisher.clear_calls()
+
+    completed = publisher.run(a_request(findings))
+
+    assert completed.returncode == 0, completed.stderr
+    results = json.loads(completed.stdout)
+    assert results["unchanged"] == 1, "the fix block must not make an unchanged comment look changed"
+    assert publisher.state()["comments"][0]["body"] == fixed
 
 
 def test_a_third_run_with_no_findings_resolves_everything_it_had_open(publisher, graphql):
@@ -228,8 +303,9 @@ def test_a_thread_that_can_be_neither_resolved_nor_minimized_is_reported(tmp_pat
             "Review threads: 1 seen, 1 with our marker, 0 resolved, 0 minimized, 1 failed."
         )
         assert "First failure: thread fp-old:" in line
-        # The review and the check still published.
-        assert [call["name"] for call in publisher.calls()] == ["review", "create", "check"]
+        # The review, carrying the new comment, and the check still published.
+        assert [call["name"] for call in publisher.calls()] == ["review", "check"]
+        assert publisher.calls()[0]["comments"] == 1
     finally:
         server.stop()
 
@@ -296,8 +372,10 @@ def test_a_thread_left_by_an_informational_finding_is_resolved(publisher, graphq
     assert completed.returncode == 0, completed.stderr
     resolved = graphql.resolved_bodies()
     assert len(resolved) == 1 and marker("fp-info") in resolved[0]
-    created = [call["marker"] for call in publisher.calls() if call["name"] == "create"]
-    assert created == [marker("fp-runtime")], "no comment is created for an informational finding"
+    bodies = [comment["body"] for comment in publisher.state()["comments"]]
+    assert len(bodies) == 1 and marker("fp-runtime") in bodies[0], (
+        "no comment is created for an informational finding"
+    )
 
 
 # --- the pieces, without a subprocess ----------------------------------------------------------
