@@ -1,0 +1,82 @@
+name: False positive
+description: A rule fired on code that is not vulnerable.
+labels: ["false positive"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most useful report we receive. A rule with at least three adjudicated findings
+        and precision below 0.8 is quarantined, so a finding you judge here goes straight into the
+        measurement that decides whether the rule keeps posting.
+
+        The posting policy and how a rule is measured: CONTRIBUTING.md, "Adding a rule".
+
+  - type: input
+    id: rule-id
+    attributes:
+      label: Rule id
+      description: >
+        Exactly as the comment shows it, for example null.pointer.deref or
+        opengrep.cwe-79.js-html-string-interpolated. It is on the finding comment and in the check
+        run details.
+    validations:
+      required: true
+
+  - type: textarea
+    id: snippet
+    attributes:
+      label: The code it fired on
+      description: >
+        The line it flagged plus enough around it to judge. Redact your own values; the shape is
+        what matters. If the file is public, a permalink to the line is better than a paste.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: language
+    attributes:
+      label: Language and file extension
+      description: For example TypeScript, .ts. Template files matter here, so say .ejs or .jinja2 if that is what it is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why-wrong
+    attributes:
+      label: Why it is wrong
+      description: >
+        What makes this code safe. This is the part we cannot work out for ourselves, and it is
+        what turns the report into an adjudication. "The value is a literal from a config file two
+        lines up, never request input" is exactly the right level of detail.
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-it-said
+    attributes:
+      label: What the comment said
+      description: The title, description and remediation text as posted.
+      render: text
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: How often
+      description: A rule that is wrong once and a rule that is wrong everywhere are different defects.
+      options:
+        - Once
+        - A few times in one repository
+        - On most files of a kind
+        - Every pull request
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: public
+    attributes:
+      label: Can we use this in the corpus
+      options:
+        - label: >
+            This snippet may be added to benchmarks/tier1-precision or benchmarks/tier2-precision
+            as a suppression case, so the rule cannot start matching it again.
