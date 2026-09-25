@@ -82,7 +82,7 @@ test('one automatic job is queued for the open findings of the completed head, w
     ['INSERT INTO remediation_jobs', (text, params) => ({ rowCount: 1, rows: [{ id: 'job-1', created: true, state_version: 1, installation_id: 42, repository_id: 'repo-1', head_sha: HEAD, finding_snapshot_ids: params[7] }] })],
   ]);
   const result = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: PR, analysisRunId: RUN });
-  expect(result).toEqual({ enqueued: true, job_id: 'job-1', findings: 2 });
+  expect(result).toEqual({ enqueued: true, job_id: 'job-1', findings: 2, skipped: 0 });
   expect(calls.some((call) => call.text.includes("set_config('app.remediation_worker', '1', true)"))).toBe(true);
   expect(calls.some((call) => call.text.includes("set_config('app.user_id'"))).toBe(false);
   const insert = calls.find((call) => call.text.includes('INSERT INTO remediation_jobs'));

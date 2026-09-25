@@ -28,8 +28,10 @@ router.post('/pull-requests/:pullRequestId/remediations', authenticateToken, asy
     policy.assertGenerationEnabled();
     const created = await remediationDb.createJob({ pullRequestId: req.params.pullRequestId, userId: req.user.user_id, findingIds: req.body?.finding_ids, policy: policy.getPolicy() });
     if (created.kind === 'not_found') return res.status(404).json({ error: 'Pull request not found or repository is inactive' });
-    if (created.kind === 'unsupported') return res.status(422).json({ error: 'Remediation request is unsupported', code: created.reason });
-    return res.status(202).json({ job: statusShape(created.job), accepted: true, replay: !created.created });
+    if (created.kind === 'unsupported') return res.status(422).json({ error: 'Remediation request is unsupported', code: created.reason, skipped: created.skipped || [] });
+    // Requested findings the repair toolchain cannot check are not in the job; they are
+    // reported here and recorded on the job so they also reach the pull request.
+    return res.status(202).json({ job: statusShape(created.job), accepted: true, replay: !created.created, skipped: created.skipped || [] });
   } catch (error) { return next(error); }
 });
 

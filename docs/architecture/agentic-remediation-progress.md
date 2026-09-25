@@ -194,4 +194,6 @@ Installing the corpus repositories' own dependencies into the verification works
 
 The same engine now also runs inside a GitHub Action, in the customer's own runner with the workflow's own token and no database, producing the same `development_unverified` candidates through the same local subprocess driver; see [GitHub Action](../getting-started/github-action.md).
 
+An unsupported language is now a per-finding skip everywhere it is decided rather than a job-wide failure: the control plane selects only findings whose file a repair toolchain can check and records the rest as `unsupported_language` on the job, the snapshot drops a finding path the immutable tree does not carry instead of refusing the whole request, and a failed stage records the underlying error and code rather than only "Repair stage could not be completed safely". On pull request 135 of nebullii/test-only, where 24 C# and Java findings shared a job with 9 JavaScript and Python ones, this is the difference between no fix at all and fixes for the 9.
+
 Full specification: [implementation plan](agentic-remediation-implementation-plan.md).
