@@ -13,6 +13,7 @@ const {
   fetchPullRequestFiles,
   fetchRemediationSnapshot,
   postInlineComment,
+  retireInlineComments,
   submitPullRequestReview,
 } = require('./services/githubInternalOperations');
 
@@ -166,6 +167,16 @@ function toPostInlineCommentPayload(request) {
     path: request.getPath(),
     line: request.getLine(),
     body: request.getBody(),
+  };
+}
+
+function toRetireInlineCommentsPayload(request) {
+  return {
+    owner: request.getOwner(),
+    repo: request.getRepo(),
+    pr_number: request.getPrNumber(),
+    installation_id: request.getInstallationId(),
+    fingerprints: request.getFingerprintsList(),
   };
 }
 
@@ -392,6 +403,16 @@ const githubService = {
       response.setCommentId(Number(result.comment_id || 0));
       response.setUrl(result.url || '');
       response.setSuccess(Boolean(result.success));
+      return response;
+    }
+  ),
+
+  retireInlineComments: unary(
+    async (request) => retireInlineComments(toRetireInlineCommentsPayload(request)),
+    (result) => {
+      const response = new githubPb.RetireInlineCommentsResponse();
+      response.setRetired(Number(result.retired || 0));
+      response.setKept(Number(result.kept || 0));
       return response;
     }
   ),
