@@ -726,8 +726,8 @@ def load(target, stubs=None, real=(), env=None, argv=None, rows=None, stdout="",
     for directory in (os.path.dirname(path), ROOT):
         if directory not in sys.path:
             sys.path.insert(0, directory)
-    name = os.path.splitext(os.path.basename(path))[0]
     before = set(sys.modules)
+    name = _package_name(path)
     sys.modules.pop(name, None)
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -737,6 +737,37 @@ def load(target, stubs=None, real=(), env=None, argv=None, rows=None, stdout="",
     finally:
         _loaded_names.extend(sorted((set(sys.modules) - before) | {name}))
     return module
+
+
+def _package_name(path):
+    """The dotted name to load `path` under, registering the packages its own imports need.
+
+    A module inside a package uses a relative import to reach its siblings, and Python resolves
+    that against `__package__`. Loaded by its bare basename it has none, so the module did not
+    load at all, which is a proof that cannot fail on the vulnerable code any more than it can
+    pass on the repaired one. The directories between the repository root and the module are
+    registered as packages here, with `__path__` set so the relative import resolves.
+
+    Each one is a synthetic package: its own `__init__.py` is deliberately not executed, because
+    the harness loads exactly the module the proof names and nothing else. A directory whose
+    name is not an identifier has no dotted name, so that module keeps the bare one.
+    """
+    stem = os.path.splitext(os.path.basename(path))[0]
+    relative = os.path.relpath(os.path.dirname(path), ROOT)
+    parts = [] if relative in (".", "") else relative.split(os.sep)
+    if not parts or not all(part.isidentifier() for part in parts) or not stem.isidentifier():
+        return stem
+    directory = ROOT
+    for index, part in enumerate(parts):
+        directory = os.path.join(directory, part)
+        dotted = ".".join(parts[: index + 1])
+        existing = sys.modules.get(dotted)
+        if existing is None or not hasattr(existing, "__path__"):
+            package = types.ModuleType(dotted)
+            package.__path__ = [directory]
+            package.__package__ = dotted
+            sys.modules[dotted] = package
+    return ".".join(parts + [stem])
 
 
 class Call:
