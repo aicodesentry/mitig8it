@@ -176,14 +176,88 @@ def render(summaries: list[dict[str, Any]], detail: bool, baseline: dict[str, in
     return "\n".join(lines)
 
 
+def _cell(text: Any) -> str:
+    """One table cell: no pipes, no newlines, bounded."""
+    return str(text if text is not None else "").replace("|", "/").replace("\n", " ")[:160] or "-"
+
+
+def _tree_outcome(variant: dict[str, Any]) -> str:
+    """What the proof did on one tree, as a table reads it."""
+    if not variant:
+        return "not run"
+    if variant.get("completed") is not True:
+        return f"did not run ({variant.get('reason_code') or 'unknown'})"
+    return str(variant.get("status") or "unknown")
+
+
+def pair_rows(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        row
+        for document in documents
+        for record in document.get("records") or []
+        for row in ((record.get("pairs") or {}).get("rows") or [])
+    ]
+
+
+def render_pairs(documents: list[dict[str, Any]]) -> str:
+    """The per-pair table: every finding that has both halves, and what its proof did on each tree.
+
+    A pair verifies only when its proof fails on the original tree and passes on the patched one,
+    so both outcomes are reported rather than one verdict.
+    """
+    rows = [row for row in pair_rows(documents) if row.get("pair")]
+    lines = [
+        "| Repository | Path | Family | Original | Patched | Verifier reason |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in sorted(rows, key=lambda item: (item["repo"], item["path"], item.get("line_start") or 0)):
+        pair = row["pair"]
+        lines.append(
+            f"| `{_cell(row['repo'])}` | `{_cell(row['path'])}:{_cell(row.get('line_start'))}` "
+            f"| `{_cell(row['family'])}` | {_cell(_tree_outcome(pair.get('original') or {}))} "
+            f"| {_cell(_tree_outcome(pair.get('patched') or {}))} "
+            f"| {'verified' if pair.get('verified') else '`' + _cell(pair.get('verifier_reason')) + '`'} |"
+        )
+    totals: Counter[str] = Counter()
+    for document in documents:
+        for record in document.get("records") or []:
+            for key, value in (((record.get("pairs") or {}).get("counts")) or {}).items():
+                totals[key] += int(value)
+    reach = [
+        "",
+        "| | Count |",
+        "| --- | ---: |",
+        f"| Supported-family findings whose file the snapshot carries | {totals['supported']} |",
+        f"| Findings the template builds a patch for | {totals['patch']} |",
+        f"| Findings the service writes a proof for | {totals['proof']} |",
+        f"| Findings with both halves | {totals['both']} |",
+        f"| Pairs that verify end to end | {totals['verified']} |",
+    ]
+    return "\n".join(lines + reach)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("results", nargs="+", help="per-repository JSON result files")
     parser.add_argument("--out", help="write the markdown here instead of stdout")
     parser.add_argument("--detail", action="store_true", help="also break down rules, limitations and exceptions")
+    parser.add_argument("--pairs", action="store_true",
+                        help="render the per-pair table from a `replay.py --pairs` result file instead")
     parser.add_argument("--baseline", nargs="*", default=None,
                         help="result files from an earlier run; the table then shows exceptions before and after")
     args = parser.parse_args()
+
+    if args.pairs:
+        documents = [json.loads(Path(path).read_text(encoding="utf-8")) for path in sorted(args.results)]
+        text = render_pairs(documents)
+        if args.out:
+            out = Path(args.out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(text + "\n", encoding="utf-8")
+            print(f"wrote {out}")
+        else:
+            print(text)
+        return 0
 
     summaries = []
     for path in sorted(args.results):
