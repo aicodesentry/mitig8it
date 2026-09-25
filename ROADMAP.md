@@ -16,7 +16,7 @@ An item moves off this page only with a merged pull request or a recorded live c
 | Real-repository validation | Precision is there, recall is not: 0.58 of labelled lines, and lower again for what actually posts. The gap by class is in [docs/validation/vulnerable-corpus-2026-09.md](docs/validation/vulnerable-corpus-2026-09.md). |
 | Tier 1 posting policy | Five rules producing almost all false positives are quarantined. The measured-precision gate that decides posting generally is not finished. |
 | Tier 2 coverage | 25 rules to 130, all written in-house. Full OWASP-class coverage across JavaScript, TypeScript, Python and templates is not reached. |
-| Evaluation corpus | 55 fixtures passing under both adapters, against a release manifest asking for 120 externally reviewed cases, 20 supported per family, 30 negatives, 30 adversarial. No family reaches 20 and there are no external review signatures. |
+| Evaluation corpus | 59 fixtures passing under both adapters, against a release manifest asking for 120 externally reviewed cases, 20 supported per family, 30 negatives, 30 adversarial. No family reaches 20 and there are no external review signatures. |
 
 ## Trust
 

@@ -17,7 +17,11 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ANALYSIS_SRC = REPO_ROOT / "services" / "analysis-service" / "src"
-REMEDIATION_ROOT = REPO_ROOT / "services" / "remediation-service"
+# A before-and-after measurement runs one fixed finding set through two versions of the
+# remediation service, so the service source is a setting rather than a constant. It is the
+# working tree's own unless REPLAY_REMEDIATION_ROOT names another checkout of it; nothing else
+# about the run changes, so the two columns differ only in the service under measurement.
+REMEDIATION_ROOT = Path(os.environ.get("REPLAY_REMEDIATION_ROOT") or (REPO_ROOT / "services" / "remediation-service"))
 
 # The replay never calls a model: triage is switched off through the service's own flag.
 os.environ.setdefault("LLM_TRIAGE_ENABLED", "false")
@@ -173,6 +177,43 @@ def load_remediation_modules() -> dict[str, Any]:
         "language_of_path": language_of_path,
         "rule_family": rule_family,
     }
+
+
+def load_pair_modules() -> dict[str, Any]:
+    """The two generators and the verification path, for the per-pair measurement.
+
+    The engine calls exactly these: `generate_proof` and `generate_template` decide the two
+    halves, `static_gate` decides which findings ever reach them, and `build_patch_bundle` plus
+    `Verifier` are what turns a pair into a run on both trees. Nothing here re-implements any
+    of it, so a pair measured here is the pair the engine would have built.
+    """
+    modules = load_remediation_modules()
+    from src.gates import static_gate  # noqa: PLC0415
+    from src.patches import PatchPolicyError, build_patch_bundle  # noqa: PLC0415
+
+    try:
+        from src.patches import path_forbidden  # noqa: PLC0415
+    except ImportError:
+        # The base branch refuses a forbidden path inside `build_patch_bundle` instead of
+        # exporting the question, so a measurement of it sees the refusal one step later.
+        path_forbidden = None
+    from src.proofs import GeneratedProof, generate_proof  # noqa: PLC0415
+    from src.retrieval import Snapshot, SnapshotError  # noqa: PLC0415
+    from src.templates import TemplateFallback, generate_template  # noqa: PLC0415
+
+    modules.update({
+        "Snapshot": Snapshot,
+        "SnapshotError": SnapshotError,
+        "GeneratedProof": GeneratedProof,
+        "TemplateFallback": TemplateFallback,
+        "PatchPolicyError": PatchPolicyError,
+        "build_patch_bundle": build_patch_bundle,
+        "generate_proof": generate_proof,
+        "generate_template": generate_template,
+        "static_gate": static_gate,
+        "path_forbidden": path_forbidden,
+    })
+    return modules
 
 
 def _snapshot_files(modules: dict[str, Any], payload: dict[str, Any], required_path: str) -> list[dict[str, str]]:
@@ -362,12 +403,307 @@ def _repair_one(
     }
 
 
+# --- pairs ----------------------------------------------------------------------------------
+
+# How much of a check's captured output a pair row keeps. The driver already bounds the output
+# and keeps its own tail; this is the tail of that tail, so a table row stays readable.
+PAIR_OUTPUT_TAIL_CHARS = 1200
+
+
+def _pair_check_record(evidence: dict[str, Any], check_id: str) -> dict[str, Any]:
+    """One check's baseline and candidate outcome, as the sandbox evidence carries them."""
+    for result in evidence.get("checks") or []:
+        if isinstance(result, dict) and result.get("check_id") == check_id:
+            return result
+    return {}
+
+
+def _pair_variant(result: dict[str, Any], variant: str) -> dict[str, Any]:
+    outcome = result.get(variant) if isinstance(result.get(variant), dict) else {}
+    tail = outcome.get("output_tail")
+    return {
+        "completed": outcome.get("completed"),
+        # `failed` on the original tree and `passed` on the patched tree is what a pair has to
+        # show; anything else is why it does not verify.
+        "status": outcome.get("status"),
+        "exit_code": outcome.get("exit_code"),
+        "reason_code": outcome.get("reason_code"),
+        "output_tail": str(tail)[-PAIR_OUTPUT_TAIL_CHARS:] if tail else None,
+    }
+
+
+# A snapshot the remediation service will accept: `max_snapshot_files` is 500 by default, and a
+# corpus tree is far larger than that. The budget is spent nearest the finding first, because
+# what a proof needs from the rest of the tree is the module its subject imports and the root
+# manifest that proves a dependency, both of which are near it or at the root.
+PAIR_SNAPSHOT_MAX_FILES = 400
+PAIR_ROOT_FILES = ("package.json", "requirements.txt", "setup.py", "pyproject.toml")
+# `max_file_bytes` in the default policy. A file over it is refused by the snapshot, so it is
+# left out here rather than failing the whole request; a finding in one is skipped outright.
+PAIR_MAX_FILE_BYTES = 512_000
+
+
+def _pair_snapshot_files(modules: dict[str, Any], payload: dict[str, Any], required_path: str) -> list[dict[str, str]]:
+    """The affected file, the root manifests, then the rest by directory distance from it."""
+    by_path = {
+        item["path"]: item.get("content", "")
+        for item in payload["files"]
+        if item.get("content") and len(item["content"].encode("utf-8")) <= PAIR_MAX_FILE_BYTES
+    }
+    if required_path not in by_path:
+        return []
+    home = required_path.rsplit("/", 1)[0] if "/" in required_path else ""
+
+    def distance(path: str) -> tuple[int, str]:
+        directory = path.rsplit("/", 1)[0] if "/" in path else ""
+        shared = 0
+        for left, right in zip(home.split("/"), directory.split("/")):
+            if left != right:
+                break
+            shared += 1
+        return (-shared, path)
+
+    first = [required_path] + [name for name in PAIR_ROOT_FILES if name in by_path]
+    ordered = first + sorted((path for path in by_path if path not in first), key=distance)
+    files: list[dict[str, str]] = []
+    total = 0
+    for path in ordered:
+        content = by_path[path]
+        size = len(content.encode("utf-8"))
+        if files and (len(files) >= PAIR_SNAPSHOT_MAX_FILES or total + size > SNAPSHOT_BYTE_BUDGET):
+            continue
+        files.append({"path": path, "content": content, "sha": modules["git_blob_sha1"](content.encode("utf-8"))})
+        total += size
+    return files
+
+
+def _pair_request(modules: dict[str, Any], payload: dict[str, Any], finding: dict[str, Any], index: int) -> Any:
+    files = _pair_snapshot_files(modules, payload, finding["file_path"])
+    if not files:
+        return None
+    entries = [modules["GitTreeEntry"](path=item["path"], mode="100644", type="blob", sha=item["sha"]) for item in files]
+    return modules["RepairRequest"].model_validate({
+        "schema_version": "v1",
+        "job_id": f"pairs-{payload['repo'].replace('/', '-')}-{index}",
+        "tenant_id": "replay",
+        "repository_id": payload["repo"],
+        "head_sha": payload["head_sha"],
+        "base_sha": payload["base_sha"],
+        "head_tree_oid": modules["compute_tree_oid"](entries),
+        "tree_entries": [entry.model_dump() for entry in entries],
+        "tree_truncated": False,
+        "findings": [_finding_snapshot_payload(finding, index)],
+        "files": files,
+        "profile": {"source": "pairs_measurement"},
+        "policy": {
+            "policy_version": "replay-pairs-v1",
+            "input_usd_per_million_tokens": 1.0,
+            "output_usd_per_million_tokens": 1.0,
+            "allow_development_verification": True,
+            "verification_checks": [],
+            "max_tool_calls": 4,
+            "max_attempts": 1,
+            "max_spend_usd": 0.0,
+            # With the install on, the loadability gate stops refusing a package the
+            # repository's own manifest declares, because the workspace will carry it.
+            "install_dependencies": bool(payload.get("install_dependencies")),
+        },
+        "versions": {"replay": "replay-pairs-v1", "retriever": "v1", "verifier": "v1"},
+    })
+
+
+def _measure_pair(modules: dict[str, Any], request: Any, snapshot: Any, template: Any, proof: Any) -> dict[str, Any]:
+    """Runs one finding's proof against the original tree and against its templated repair.
+
+    This is the engine's own template pass narrowed to one finding: the same bundle builder, the
+    same verifier, the same local sandbox. What it adds is that the two tree outcomes are
+    reported separately instead of collapsing into one verdict, because the question here is
+    which of the two a pair fails on.
+    """
+    import asyncio  # noqa: PLC0415
+
+    try:
+        bundle = modules["build_patch_bundle"](request, snapshot, template.changes, [proof.spec()])
+    except modules["PatchPolicyError"] as exc:
+        return {"verified": False, "verifier_reason": f"patch_policy:{exc.code}", "limitations": [], "original": {}, "patched": {}}
+
+    broker = modules["InProcessSandboxBroker"](modules["LocalSubprocessDriver"]())
+    verification = asyncio.run(modules["Verifier"](broker).verify(request, snapshot, bundle))
+    evidence = verification.evidence if isinstance(verification.evidence, dict) else {}
+    finding_id = request.findings[0].stable_id
+    check_id = verification.regression_checks.get(finding_id)
+    result = _pair_check_record(evidence, check_id) if check_id else {}
+    unproven = {item.get("finding_id"): item for item in verification.unproven_findings}
+    verdict = unproven.get(finding_id) or {}
+    return {
+        "verified": finding_id in verification.proven_finding_ids,
+        "status": verification.status,
+        "verifier_reason": verdict.get("code") or verification.reason_code,
+        "verifier_message": verdict.get("message"),
+        "verification_level": verification.verification_level,
+        "limitations": [str(item)[:200] for item in verification.limitations],
+        "proof_path": proof.path,
+        # The proof and the repair themselves, because a pair that does not verify is diagnosed
+        # by reading them side by side and nothing else in the record carries them.
+        "proof_content": proof.content,
+        "proof_description": proof.description,
+        "patch_description": template.description,
+        "patch_changes": template.changes,
+        "check_argv": list(result.get("argv") or []),
+        "original": _pair_variant(result, "baseline"),
+        "patched": _pair_variant(result, "candidate"),
+    }
+
+
+# One repository's dependencies are installed once and every one of its workspaces is pointed at
+# the result. A pair materializes the workspace twice per check and a repository has dozens of
+# pairs, so installing per workspace here would cost hours per repository and measure nothing the
+# one install does not. The service itself installs per workspace, which is the isolation this
+# measurement gives up in order to be runnable.
+DEPENDENCY_INSTALL_TIMEOUT_SECONDS = 600
+DEPENDENCY_INSTALL_MAX_BYTES = 4_000_000_000
+INSTALL_MARKER = ".mitig8it-dependencies.json"
+
+
+def install_repository_dependencies(payload: dict[str, Any]) -> dict[str, Any]:
+    """Installs the pinned tree's declared dependencies and tells the local driver where they are.
+
+    The install is the remediation service's own `install_dependencies`, so what is measured here
+    is what `policy.install_dependencies` does rather than a harness approximation of it. The
+    result is cached beside the tree by the lockfile digest, because a rerun over the same cache
+    must not pay for the same `npm ci` again.
+    """
+    from src.sandbox.dependencies import (  # noqa: PLC0415
+        DEPENDENCY_ROOTS_ENV,
+        NODE_MODULES,
+        VENV_DIRECTORY,
+        install_dependencies,
+    )
+
+    tree = Path(payload["dependency_tree"])
+    marker = tree / INSTALL_MARKER
+    if marker.is_file():
+        record = json.loads(marker.read_text(encoding="utf-8"))
+        record["cached"] = True
+    else:
+        started = time.perf_counter()
+        result = install_dependencies(tree, DEPENDENCY_INSTALL_TIMEOUT_SECONDS, DEPENDENCY_INSTALL_MAX_BYTES)
+        record = result.as_dict()
+        record["site_packages"] = list(result.site_packages)
+        record["cached"] = False
+        record["wall_ms"] = int((time.perf_counter() - started) * 1000)
+        marker.write_text(json.dumps(record), encoding="utf-8")
+
+    roots: dict[str, Any] = {}
+    if (tree / NODE_MODULES).is_dir():
+        roots[NODE_MODULES] = str(tree / NODE_MODULES)
+    site_packages = [item for item in (record.get("site_packages") or []) if Path(item).is_dir()]
+    if not site_packages:
+        site_packages = [str(path) for path in sorted((tree / VENV_DIRECTORY).glob("lib/python*/site-packages"))]
+    if site_packages:
+        roots["site_packages"] = site_packages
+    record["roots"] = roots
+    if roots:
+        os.environ[DEPENDENCY_ROOTS_ENV] = json.dumps(roots)
+    return record
+
+
+def run_pairs(payload: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
+    """Both halves per finding, and the two tree outcomes for every finding that has both.
+
+    The reach counts (a template patch, a service proof, both) come from calling the two
+    generators over the same fixed finding set, which is the only way to compare them without
+    the scanner's run-to-run variation in the way. A finding with both halves then has its proof
+    run on the original tree and on the patched tree.
+    """
+    modules = load_pair_modules()
+    install: dict[str, Any] = {"dependencies_installed": False}
+    if payload.get("install_dependencies") and payload.get("dependency_tree"):
+        install = install_repository_dependencies(payload)
+    by_path = {item["path"]: item.get("content", "") for item in payload["files"] if item.get("content")}
+
+    rows: list[dict[str, Any]] = []
+    counts = {"supported": 0, "patch": 0, "proof": 0, "both": 0, "verified": 0}
+    exceptions: list[dict[str, Any]] = []
+
+    for index, finding in enumerate(findings):
+        path = finding.get("file_path") or ""
+        shim = _FindingShim(finding)
+        family = modules["rule_family"](shim)
+        language = modules["language_of_path"](path)
+        if not family or not language or not modules["family_supported"](family, language):
+            continue
+        if path not in by_path:
+            continue
+        counts["supported"] += 1
+
+        row: dict[str, Any] = {
+            "repo": payload["repo"],
+            "ref": payload["head_sha"],
+            "path": path,
+            "line_start": finding.get("line_start"),
+            "rule_id": finding.get("rule_id"),
+            "family": family,
+            "language": language,
+        }
+        try:
+            request = _pair_request(modules, payload, finding, index)
+            if request is None:
+                row["skipped"] = "head_content_unavailable"
+                rows.append(row)
+                continue
+            snapshot = modules["Snapshot"](request)
+            snapshot_finding = request.findings[0]
+            if modules["path_forbidden"] is not None and modules["path_forbidden"](path, request):
+                row["skipped"] = "protected_path"
+                rows.append(row)
+                continue
+            gate = modules["static_gate"](snapshot, snapshot_finding, family, language)
+            if gate is not None:
+                row["skipped"] = f"static_gate:{gate[0]}"
+                rows.append(row)
+                continue
+            proof = modules["generate_proof"](snapshot, snapshot_finding, family, language)
+            template = modules["generate_template"](snapshot, snapshot_finding, family, language)
+            has_proof = isinstance(proof, modules["GeneratedProof"])
+            has_patch = not isinstance(template, modules["TemplateFallback"])
+            row["proof"] = "yes" if has_proof else f"no:{proof.reason}"
+            row["patch"] = "yes" if has_patch else f"no:{template.reason}"
+            counts["patch"] += int(has_patch)
+            counts["proof"] += int(has_proof)
+            if not (has_patch and has_proof):
+                rows.append(row)
+                continue
+            counts["both"] += 1
+            started = time.perf_counter()
+            row["pair"] = _measure_pair(modules, request, snapshot, template, proof)
+            row["pair"]["duration_ms"] = int((time.perf_counter() - started) * 1000)
+            counts["verified"] += int(bool(row["pair"]["verified"]))
+        except BaseException as exc:  # noqa: BLE001 - a measurement records every failure shape.
+            row["error"] = {"type": type(exc).__name__, "message": str(exc)[:500]}
+            exceptions.append({"path": path, "rule_id": finding.get("rule_id"),
+                               "error_type": type(exc).__name__, "traceback": traceback.format_exc()[-4000:]})
+        rows.append(row)
+
+    return {"counts": counts, "rows": rows, "exceptions": exceptions, "install": install}
+
+
 # --- entry point ----------------------------------------------------------------------------
 
 
 def main() -> int:
     payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     out_path = Path(sys.argv[2])
+
+    if payload.get("mode") == "pairs":
+        result = _stage("pairs", lambda: run_pairs(payload, payload["findings"]))
+        out_path.write_text(json.dumps({
+            "repo": payload["repo"],
+            "ref": payload["head_sha"],
+            "pairs": result.get("value") if result["ok"] else None,
+            "pairs_stage": _strip(result),
+        }), encoding="utf-8")
+        return 0
 
     started = time.perf_counter()
     analysis = run_analysis(payload)

@@ -232,6 +232,43 @@ def test_an_unknown_query_helper_is_ambiguous(request_payload):
     assert static_gate(snapshot, _finding(file_path="text.py", line_start=7, line_end=7), SQL_PARAMETERIZATION, PYTHON)[0] == "ambiguous_query_api"
 
 
+def test_a_view_whose_input_is_a_framework_request_is_refused_rather_than_called_with_a_string(request_payload):
+    """pygoat's `ssti_lab(request)`, the last pair of the 2026-09 corpus that did not verify.
+
+    A Django view carries no route the site model recognizes, so the proof called it directly and
+    put the traversal payload where the request object belongs. `request.user.is_authenticated`
+    is falsy on a string, the view returned a redirect, and the proof failed on the repaired tree
+    exactly as it failed on the vulnerable one. There is no fake Django request to supply.
+    """
+    from src.proofs import ProofFallback, generate_proof  # noqa: PLC0415 - local to this case.
+
+    view = (
+        "import os\n\n"
+        "def ssti_lab(request):\n"
+        "    if request.method == 'POST':\n"
+        "        name = request.POST['blog']\n"
+        "        dirname = os.path.dirname(__file__)\n"
+        "        return open(os.path.join(dirname, name))\n"
+    )
+    snapshot = _snapshot(request_payload, [("views.py", view)])
+    finding = _finding(file_path="views.py", line_start=7, line_end=7)
+    proof = generate_proof(snapshot, finding, PATH_CONTAINMENT, PYTHON)
+    assert isinstance(proof, ProofFallback)
+    assert proof.reason == "request_object_not_constructible"
+
+    # A parameter that really is a plain value still drives a proof, method calls and all.
+    helper = (
+        "import os\n\n"
+        "def read(name):\n"
+        "    safe = name.strip()\n"
+        "    dirname = os.path.dirname(__file__)\n"
+        "    return open(os.path.join(dirname, safe))\n"
+    )
+    snapshot = _snapshot(request_payload, [("views.py", helper)])
+    proof = generate_proof(snapshot, _finding(file_path="views.py", line_start=6, line_end=6), PATH_CONTAINMENT, PYTHON)
+    assert not isinstance(proof, ProofFallback), getattr(proof, "reason", None)
+
+
 def test_a_python_shell_pipeline_is_skipped(request_payload):
     piped = "import subprocess\n\ndef f(name):\n    return subprocess.run('grep ' + name + ' log | head', shell=True)\n"
     snapshot = _snapshot(request_payload, [("app.py", piped)])

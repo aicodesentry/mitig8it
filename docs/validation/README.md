@@ -9,6 +9,7 @@ produced it. Nothing in this directory is an estimate.
 | [real-repo-replay-2026-09.md](real-repo-replay-2026-09.md) | What the pipeline says on 165 merged pull requests from 11 public repositories that have no known vulnerability in them. |
 | [tier2-coverage-2026-09.md](tier2-coverage-2026-09.md) | The widening of the AST rule set, what it found on that same clean corpus, and which rules are allowed to post as a result. |
 | [action-trial-2026-09.md](action-trial-2026-09.md) | The GitHub Action installed on private copies of ten real repositories and read as their maintainer would read it. |
+| [pairs-2026-09.md](pairs-2026-09.md) | Why a repair pair that exists does not verify: each complete pair's proof run against the original tree and the patched tree, what the two outcomes said, and what installing the repository's own dependencies changed. |
 
 Two more documents belong to the same record without being measurements:
 [../legal/third-party-rules.md](../legal/third-party-rules.md) is why every rule in the tree is
@@ -46,8 +47,8 @@ Benchmark                         Cases  Pass  Fail  Pass rate  Precision  Cover
 --------------------------------  -----  ----  ----  ---------  ---------  --------  ----------  -----------------------------
 tier 1 precision gate             88     88    0     1.00       -          -         -           from 38 adjudicated findings
 tier 2 precision gate             140    140   0     1.00       -          -         -           from 138 adjudicated findings
-remediation corpus, reference     55     55    0     1.00       1.00       1.00      1.00        43 verified, 12 abstained
-remediation corpus, engine-local  55     55    0     1.00       1.00       1.00      1.00        43 verified, 12 abstained
+remediation corpus, reference     59     59    0     1.00       1.00       1.00      1.00        46 verified, 13 abstained
+remediation corpus, engine-local  59     59    0     1.00       1.00       1.00      1.00        46 verified, 13 abstained
 
 Precision, coverage and abstention are the remediation corpus's own definitions:
   precision   independently correct repairs / repairs the engine verified
@@ -70,11 +71,11 @@ was judged wrong and still find what was judged right. A rule change that breaks
 fails here. The measured precision of the rules themselves is the 0.67 to 0.97 range in the corpus
 document, not this column.
 
-The remediation corpus rows are 55 authored fixtures against a release manifest that asks for 120
+The remediation corpus rows are 59 authored fixtures against a release manifest that asks for 120
 externally reviewed cases. The reference adapter replays the checked-in repair, so its 1.00 says
 the fixtures and the grader agree with each other. The engine-local adapter runs the real pipeline
 against a scripted provider replaying that fixture's reviewed repair, so its 1.00 says the pipeline
-carries a finding from intake to a verified candidate. Neither measures a model, and 55 authored
+carries a finding from intake to a verified candidate. Neither measures a model, and 59 authored
 cases cannot establish a rate. Both adapters verify in the local subprocess sandbox, so every
 candidate is `development_unverified`.
 

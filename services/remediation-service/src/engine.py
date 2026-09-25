@@ -15,7 +15,14 @@ from .gates import UNSUPPORTED_LANGUAGE_MESSAGE, static_gate
 from .git_tree import GitTreeError, compute_tree_oid, validate_snapshot_tree
 from .grouping import group_findings_by_language
 from .models import Candidate, FindingSnapshot, RepairPolicy, RepairRequest, RepairResponse, VerificationSummary
-from .patches import PatchBundle, PatchPolicyError, build_patch_bundle, bundles_conflict, combine_patch_bundles
+from .patches import (
+    PatchBundle,
+    PatchPolicyError,
+    build_patch_bundle,
+    bundles_conflict,
+    combine_patch_bundles,
+    path_forbidden,
+)
 from .proofs import GeneratedProof, generate_proof
 from .retrieval import Snapshot, SnapshotError
 from .sandbox import BrokerConfigurationError, create_sandbox_broker
@@ -41,6 +48,10 @@ BUDGET_EXHAUSTED_MESSAGE = (
 # this many verification attempts, funded from what the job has left.
 RETRY_ATTEMPTS = 2
 RETRY_SOURCE = "retry"
+PROTECTED_PATH_MESSAGE = (
+    "Policy will not change this file, so no repair of it could be applied. It is a test "
+    "directory, a lock file, or a CI or infrastructure path."
+)
 
 
 # The family decides support here and is named to the model by the agent loop.
@@ -815,6 +826,11 @@ class RepairEngine:
                     skipped.append({"finding_id": finding_id, "code": "rule_family_disabled", "message": "The repair family is disabled by policy."})
                 elif not finding.affected_path or finding.affected_path not in snapshot.paths:
                     skipped.append({"finding_id": finding_id, "code": "affected_source_missing", "message": "The exact affected source file is absent from the snapshot."})
+                elif path_forbidden(finding.affected_path, request):
+                    # Policy will not change this file, so no patch built for it could ever be
+                    # applied. Asking here rather than at `build_patch_bundle` is what keeps a
+                    # template and a proof from being produced for a repair that cannot ship.
+                    skipped.append({"finding_id": finding_id, "code": "protected_path", "message": PROTECTED_PATH_MESSAGE})
                 elif language is None:
                     skipped.append({"finding_id": finding_id, "code": "unsupported_language", "message": UNSUPPORTED_LANGUAGE_MESSAGE})
                 elif not family_supported(family, language):

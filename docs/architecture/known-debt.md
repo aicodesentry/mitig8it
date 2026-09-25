@@ -162,12 +162,52 @@ and `method_receiver_not_supported`, the last of which grew because a site the s
 reach turns out to hang off a receiver the proof cannot construct.
 `docs/validation/vulnerable-corpus-2026-09.md` has the full before and after.
 
-**The reach still does not convert.** Three consecutive rounds of removing the binding
-constraint have moved the template count from 25 to 82 and the end-to-end verified count not at
-all. Both halves land together for 26 of 249 findings, and the gap between 82 patches and 26
-pairs is the proof side: a patch with no test that fails before it is never shipped, by design.
-The next thing worth measuring is not another refusal but why a pair that exists does not
-verify.
+**A dependency-free sandbox can only load a dependency-free module.** The reach work is done and
+what it ran into is named. `docs/validation/pairs-2026-09.md` ran each complete pair's proof
+against the original tree and the patched tree separately, and seventeen of the eighteen that did
+not verify never reached the proof's first assertion. Ten were in a file policy will not let the
+service change; seven could not load the module the proof names, because its import closure
+reaches a package the sandbox has no copy of. All of those are now refused with a reason before
+the work is done, and the pair count fell from 26 to 8, of which all 8 verify.
+
+What is left is one number: **84 findings get no proof because
+`dependency_not_available_in_sandbox`.** Every pair that does verify is a module with no imports
+beyond the standard library, five Node configuration objects and three Django settings files, and
+that is the only shape a sandbox with no `node_modules` and no site-packages can load. Faking the
+packages does not scale, and the pairs page shows the arithmetic: one entry module reaches
+fourteen packages, another twenty-five, juice-shop's between eleven and fifty-six, and the
+overlap between any two is four pieces of Express middleware sitting in front of two different
+ORMs.
+
+Closing it is a decision about the sandbox rather than another refusal to remove: install the
+repository's dependencies into the verification workspace, or carry `node_modules` and the
+snapshot's site-packages into it, with the checks still on a network they cannot reach. Both are
+larger than anything in that round, both carry a real supply-chain question, and neither should
+start before someone measures what share of the 84 a dependency install would actually reach.
+
+**Measured, and decided against.** The "With dependencies installed" section of
+`docs/validation/pairs-2026-09.md` installed them and re-ran the pairs. On a fresh set of scans
+the same refusal stood at 81. The install reached 17 of the 23 repositories and 1.7 GB of disk,
+**80 of the 81 modules became loadable**, 7 of them produced a complete pair, and **0 verified**:
+the count of verified pairs stayed at 8. The bar set before the measurement was 20. What the
+install converts is the refusal reason and not the outcome, so the 81 become 73 findings that
+name a site a proof cannot drive, 7 pairs that still fail at load for other reasons, and 1 with
+no template. A production install would be the one step of a verification run that reaches a
+package registry, over a tree chosen by whoever opened the pull request; that is not worth buying
+for nothing, so it was not built. `policy.install_dependencies` exists, defaults false, and is
+implemented for the development-only local driver that the measurement runs on;
+`services/remediation-service/contracts/repair-v1.md` says so under "Installed dependencies".
+
+**The constraint this leaves is the proof, not the sandbox.** With loadability removed, the
+largest single reason a finding gets no proof is `module_scope_source_not_controllable` at 40 of
+the 81, 29 of them in dicebear alone: a secret at module scope in a file the proof cannot make
+the module read differently. Three smaller things the same measurement named, each with a row in
+that page's table of the seven pairs: the harness's own `global.Function` recorder breaks a real
+package that builds a wrapper with `new Function` at import (`depd`, under `express` and
+`body-parser`); the harness's `registerHooks` resolver redirects a relative specifier to its
+TypeScript source but does not answer for the entry module, so a `.ts` subject loaded through the
+ES module loader raises `ERR_MODULE_NOT_FOUND` on itself; and an installed `@angular` puts files
+in the closure that Node's strip-only mode cannot parse.
 
 **Three rules the corpus could not decide.** `xss.unsafe_html_render` (16 findings, 2
 adjudicated, 0.50), `auth.bypass.missing_check` (8 findings, 1 adjudicated, 0.00) and

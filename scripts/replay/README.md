@@ -33,6 +33,11 @@ $PY scripts/replay/summarize.py results-after/*.json --baseline results-before/*
 $PY scripts/replay/score.py results/*.json --labels benchmarks/vulnerable-corpus/labels.json \
     --adjudications benchmarks/vulnerable-corpus/adjudications.json --out /tmp/score.md
 
+# both repair halves over the findings of earlier snapshot runs, and every complete pair's
+# proof run against the original tree and against the patched one
+$PY scripts/replay/replay.py --pairs --results results/*.json --out /tmp/pairs.json
+$PY scripts/replay/summarize.py --pairs /tmp/pairs.json --out /tmp/pairs.md
+
 # prove the harness itself reaches the engine
 $PY scripts/replay/selftest.py
 ```
@@ -122,6 +127,46 @@ computed only over adjudicated findings: the ones a label confirms plus the ones
 hand. `--emit-queue` writes the reading list (every finding on a labelled line under an
 unexpected class, plus a seeded random sample of the unlabelled) and `--adjudications` reads
 the verdicts back.
+
+## Pairs mode
+
+`--pairs --results <snapshot result files>` answers the question the reach tables leave open:
+for a finding that has **both** a template patch and a service-generated proof, does that proof
+actually verify, and if not, which of the two trees does it fail on.
+
+It runs no scanner. It reads the findings out of earlier snapshot results and joins them back to
+the same pinned tree, so one expensive scan serves any number of these runs, and then calls the
+engine's own pieces per finding: `static_gate` decides whether the finding is attempted at all,
+`generate_proof` and `generate_template` decide the two halves, and a finding that has both gets
+a real `build_patch_bundle` and a real `Verifier` run over the local sandbox. Nothing is
+re-implemented, so a pair measured here is the pair the engine would have built.
+
+What each pair records is the whole point: the proof's outcome **on the original tree** and **on
+the patched tree** separately, each one's exit code and output tail, the verifier's reason, and
+the limitations attached to the run. A pair verifies only when its proof fails on the original
+and passes on the patched tree; every other combination is a distinct defect, and collapsing
+them into one verdict is what hid them before.
+
+The snapshot a pair runs against is not the whole tree: the remediation service accepts 500
+files and the corpus trees are far larger, so the budget is spent nearest the finding first,
+after the affected file and the root manifests. What a proof needs from the rest of the tree is
+the module its subject imports and the manifest that proves a dependency, and both are there.
+The manifests are read whatever their extension: `walk_analysable_files` answers the scanner's
+question and `package.json` is not an analysable extension, so until this was fixed the root
+manifests the worker's `PAIR_ROOT_FILES` names never actually arrived.
+
+`--with-dependencies` installs each repository's declared dependencies before the pairs run and
+lets the sandbox workspace see them. The install is the remediation service's own
+`src/sandbox/dependencies.py`, so what is measured is what `policy.install_dependencies` does:
+`npm ci --ignore-scripts` from the lockfile the repository carries, `pip install
+--only-binary=:all:` into a venv beside the tree, under a ten-minute cap per repository, with
+network only for that step. It runs in the worker, once per repository, and caches its result in
+a marker beside the cached tree, so a rerun over the same cache costs no `npm ci`; the local
+driver is then pointed at the installed tree through `SANDBOX_LOCAL_DEPENDENCY_ROOTS` and links
+it into each workspace. The service installs per workspace instead, which is the isolation this
+gives up in order to be runnable over hundreds of workspaces. Each record carries its
+repository's install under `pairs.install`, and `summarize.py --pairs` renders it as a table.
+Deleting `--cache` removes the installed trees with it.
 
 ## Caveats
 

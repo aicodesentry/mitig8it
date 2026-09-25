@@ -20,6 +20,14 @@ from functools import lru_cache
 from pathlib import Path, PurePath
 from typing import Any
 
+from .dependencies import (
+    DEPENDENCY_ROOTS_ENV,
+    InstallRecord,
+    attach_dependency_roots,
+    dependency_roots_from_env,
+    install_dependencies,
+    python_path_value,
+)
 from .execution import aggregate_outcome, build_evidence, output_tail, parse_scanner_findings
 from .runner import materialize_tree
 
@@ -33,6 +41,18 @@ LOCAL_DRIVER_WARNING = (
 
 VERIFICATION_LEVEL = "development_unverified"
 MAX_CAPTURED_CHARS = 200_000
+
+# This driver has no network isolation at any point, so an install it runs is not "network for
+# one step": it is a host subprocess on a host network, like every check it runs. The limitation
+# says so rather than letting `dependencies_installed` read as the isolated driver's property.
+LOCAL_INSTALL_LIMITATION = (
+    "dependencies were installed by the development-only local driver, which has no network "
+    "isolation to lift for the install step or to restore afterwards"
+)
+PREINSTALLED_LIMITATION = (
+    f"dependencies came from a tree installed outside this run and named by {DEPENDENCY_ROOTS_ENV}; "
+    "no install ran here and no lockfile digest was taken"
+)
 
 # The service test harness (sandbox/harness.js) compiles TypeScript with Node's own type
 # stripper and installs its resolver through `module.registerHooks`. Both arrived in Node 22:
@@ -176,8 +196,39 @@ class LocalSubprocessDriver:
             "runtime_class": "local-subprocess",
         }
 
-    def _run_variant(self, payload: dict[str, Any], variant: str, check: dict[str, Any], budget_seconds: float) -> dict[str, Any]:
+    def _provide_dependencies(
+        self, payload: dict[str, Any], repository: Path, remaining: float, installs: list[InstallRecord],
+    ) -> tuple[str, ...]:
+        """Puts the repository's dependencies in the workspace, if it is to have any.
+
+        Two ways in, and the evidence tells them apart. A tree installed outside this run and
+        named by `SANDBOX_LOCAL_DEPENDENCY_ROOTS` is linked in: that is the measurement harness,
+        which installs each repository once and materializes hundreds of workspaces against it.
+        Otherwise policy decides, and the install runs here, in this workspace, before any check.
+        """
+        roots = dependency_roots_from_env()
+        if roots:
+            site_packages = attach_dependency_roots(repository, roots)
+            installs.append(InstallRecord(installed=True, reason_code="preinstalled_tree_attached",
+                                          site_packages=site_packages))
+            return site_packages
+        policy = payload["execution_policy"]
+        if not policy.get("install_dependencies"):
+            return ()
+        timeout = min(float(policy.get("dependency_install_timeout_seconds") or 600), max(1.0, remaining))
+        record = install_dependencies(repository, int(timeout), int(policy.get("max_dependency_install_bytes") or 0))
+        installs.append(record)
+        if not record.installed:
+            logger.warning("the sandbox dependency install did not complete",
+                           extra={"reason_code": record.reason_code})
+        return record.site_packages
+
+    def _run_variant(
+        self, payload: dict[str, Any], variant: str, check: dict[str, Any], budget_seconds: float,
+        installs: list[InstallRecord] | None = None,
+    ) -> dict[str, Any]:
         started = time.monotonic()
+        installs = installs if installs is not None else []
         if budget_seconds <= 0:
             return self._incomplete(started, "job_deadline_exceeded")
         if PurePath(str(check["argv"][0])).name in NODE_EXECUTABLE_NAMES:
@@ -201,21 +252,30 @@ class LocalSubprocessDriver:
         except (ValueError, OSError) as error:
             shutil.rmtree(workspace, ignore_errors=True)
             return self._incomplete(started, f"materializer_failed:{type(error).__name__}")
+        # Dependencies are provided while the snapshot is being materialized, before the first
+        # check argv runs, exactly as the isolated drivers do it.
+        site_packages = self._provide_dependencies(
+            payload, repository, budget_seconds - (time.monotonic() - started), installs,
+        )
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(workspace / "no-home"),
+            "CI": "true",
+            "NO_COLOR": "1",
+            "NODE_OPTIONS": "--disable-proto=throw",
+            # Python checks: no .pyc litter in the workspace, no site customization.
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+        python_path = python_path_value(site_packages)
+        if python_path:
+            environment["PYTHONPATH"] = python_path
         timeout = max(0.1, min(float(check["timeout_seconds"]), budget_seconds))
         try:
             completed = subprocess.run(  # noqa: S603 - fixed argv from the trusted control plane.
                 list(check["argv"]),
                 cwd=repository,
-                env={
-                    "PATH": os.environ.get("PATH", ""),
-                    "HOME": str(workspace / "no-home"),
-                    "CI": "true",
-                    "NO_COLOR": "1",
-                    "NODE_OPTIONS": "--disable-proto=throw",
-                    # Python checks: no .pyc litter in the workspace, no site customization.
-                    "PYTHONDONTWRITEBYTECODE": "1",
-                    "PYTHONNOUSERSITE": "1",
-                },
+                env=environment,
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
@@ -260,13 +320,34 @@ class LocalSubprocessDriver:
     def execute(self, payload: dict[str, Any], deadline_seconds: int) -> dict[str, Any]:
         started = time.monotonic()
         records: list[dict[str, Any]] = []
+        installs: list[InstallRecord] = []
         for check in payload["execution_policy"]["commands"]:
             record: dict[str, Any] = {"check_id": check["check_id"], "kind": check["kind"], "argv": list(check["argv"])}
             for variant in ("baseline", "candidate"):
                 remaining = deadline_seconds - (time.monotonic() - started)
-                record[variant] = self._run_variant(payload, variant, check, remaining)
+                record[variant] = self._run_variant(payload, variant, check, remaining, installs)
             records.append(record)
-        return {"outcome": aggregate_outcome(records), "checks": records}
+        return {"outcome": aggregate_outcome(records), "checks": records,
+                "dependencies": self._dependency_evidence(installs)}
+
+    def _dependency_evidence(self, installs: list[InstallRecord]) -> dict[str, Any]:
+        """One summary over every workspace's install, because every workspace installs the same.
+
+        A workspace is built per check and per variant, so an install runs once for each. They
+        resolve from the same lockfiles and so produce the same digest; a run where one of them
+        failed is reported as not installed, with that failure's reason, because a check that ran
+        without its dependencies is exactly the case this must not hide.
+        """
+        if not installs:
+            return {"dependencies_installed": False}
+        failed = next((record for record in installs if not record.installed), None)
+        chosen = failed or installs[0]
+        evidence = chosen.as_dict()
+        evidence["workspaces"] = len(installs)
+        evidence["limitations"] = [
+            PREINSTALLED_LIMITATION if chosen.reason_code == "preinstalled_tree_attached" else LOCAL_INSTALL_LIMITATION
+        ]
+        return evidence
 
     def cancel(self, request_digest: str) -> None:
         """Local checks are synchronous subprocesses bounded by their timeout; nothing outlives them."""

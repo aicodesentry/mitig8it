@@ -77,26 +77,39 @@ a finding, and recall is the weaker half of the measurement.
 Insisting on the proof costs coverage, and it has cost more of it than it looks like it should.
 The September 2026 run over 23 vulnerable repositories is the record.
 
-Of 1819 findings, 245 were in a supported repair family with the file available. Of those:
+Of 1819 findings, 249 were in a supported repair family with the file available. Of those:
 
 | | Findings |
 | --- | ---: |
-| The template can write a patch for | 33 |
-| The service can write a proof for | 37 |
-| Both, so a deterministic candidate is possible | 23 |
+| The template can write a patch for | 62 |
+| The service can write a proof for | 16 |
+| Both, so a deterministic candidate is possible | 8 |
 | Verified end to end | **8** |
 
-Two obstacles were removed over this period. The templates used to need an enclosing Express route
-and then an enclosing function; they now fall back to module scope. TypeScript used to be
-unloadable in the sandbox; it now loads through Node's own type stripper. Between them those
-changes cleared 249 refusals. The end-to-end count went from 8 to 8, both times.
+Three obstacles were removed over this period. The templates used to need an enclosing Express
+route and then an enclosing function; they now fall back to module scope. TypeScript used to be
+unloadable in the sandbox; it now loads through Node's own type stripper. Path containment now
+reaches the shapes real code writes. Between them those changes more than doubled the patch count.
+The end-to-end count went from 8 to 8 every time.
 
 That is the honest headline and it is the useful one. The refusals moved down to the next obstacle
-rather than disappearing, and the constraint is the proof, not the patch. The largest single group
-is 60 findings refused as `module_scope_source_not_controllable`: the sink runs at import and the
-value reaching it comes from a call no test can set, so there is no test that fails before the fix.
-Refusing those 60 is the correct answer, not a gap. A proof that cannot fail before the fix proves
-nothing after it.
+rather than disappearing, and the constraint is the proof, not the patch.
+[../validation/pairs-2026-09.md](../validation/pairs-2026-09.md) then ran each complete pair's
+proof against the original tree and the patched tree separately, and found that seventeen of the
+eighteen pairs that did not verify never reached the proof's first assertion: ten were in a file
+policy will not let the service change, and seven could not load the module the proof names. All
+of those are now refused with a reason before either half is written, which is why the pair count
+above is 8 rather than 26, and why all 8 of them verify. A pair count that only counts pairs is
+worth more than a larger one that does not.
+
+What that leaves is one number. 84 findings get no proof because
+`dependency_not_available_in_sandbox`: the module the proof would load imports a package a sandbox
+with no `node_modules` and no site-packages has no copy of. Installing the repositories' own
+dependencies was measured before being built, and it made 80 of those modules loadable and
+verified none of them, so it was not built. With loadability set aside, the largest remaining
+reason is `module_scope_source_not_controllable`: the sink runs at import and the value reaching it
+comes from a call no test can set, so there is no test that fails before the fix. Refusing those is
+the correct answer, not a gap. A proof that cannot fail before the fix proves nothing after it.
 
 The eight that do verify are all `hardcoded_credential`.
 
@@ -104,9 +117,9 @@ The GitHub Action trial on ten real repositories says the same thing from the us
 comments posted, 63 of them true positives, and one fix in the whole trial. The report is
 [../validation/action-trial-2026-09.md](../validation/action-trial-2026-09.md).
 
-The authored corpus tells you something different and smaller. 55 fixtures pass under both
+The authored corpus tells you something different and smaller. 59 fixtures pass under both
 adapters with no unexpected failures, which says the fixtures, the grader and the pipeline agree
-with each other. It is not a measurement of repair quality, and 55 authored cases cannot establish
+with each other. It is not a measurement of repair quality, and 59 authored cases cannot establish
 a rate. [../../benchmarks/remediation/README.md](../../benchmarks/remediation/README.md) says so at
 more length.
 

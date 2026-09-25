@@ -157,6 +157,37 @@ def body():
 h.run(body)
 ''')
 
+# A module inside a package that reaches a sibling through a relative import. pygoat's
+# `introduction/views.py` is this shape, and the proof for its path finding failed on both trees
+# with `attempted relative import with no known parent package` before the harness gave the
+# module a package to be relative to.
+write("introduction/forms.py", '''SAFE_NAME = "report.txt"
+''')
+write("introduction/__init__.py", '''raise AssertionError("the package __init__ must not run")
+''')
+write("introduction/models.py", '''from django.contrib.auth.forms import UserCreationForm
+from django import forms
+
+
+class NewUserForm(UserCreationForm):
+    email = forms.EmailField(required=True)
+
+    class Meta:
+        fields = ("username", "email")
+''')
+write("introduction/views.py", '''import os
+
+from .forms import SAFE_NAME
+from .models import NewUserForm
+
+BASE = os.path.dirname(os.path.abspath(__file__))
+
+
+def read(name):
+    with open(os.path.join(BASE, name)) as handle:
+        return handle.read()
+''')
+
 spec = importlib.util.spec_from_file_location("harness", os.path.join(ROOT, ".mitig8it", "harness.py"))
 h = importlib.util.module_from_spec(spec)
 sys.modules["harness"] = h
@@ -280,6 +311,21 @@ class HarnessSpec(unittest.TestCase):
         self.assertTrue(hasattr(real_json, "dumps"))
         with self.assertRaises(h.HarnessAssertion):
             h.load("services/missing.py")
+
+    def test_a_module_inside_a_package_resolves_its_own_relative_imports(self):
+        m = h.load("introduction/views.py")
+        self.assertEqual(m.SAFE_NAME, "report.txt")
+        self.assertEqual(m.__name__, "introduction.views")
+        # pygoat's shape: a sibling module subclasses something it imported from a package the
+        # sandbox does not carry, so the stub for it has to be usable as a base class.
+        self.assertTrue(isinstance(m.NewUserForm, type))
+        self.assertIn("django", h.stubbed)
+        self.assertIn("stub", repr(m.NewUserForm()))
+        # The package is synthetic: its __init__ would have raised had the harness run it.
+        self.assertEqual(sys.modules["introduction"].__path__, [os.path.join(ROOT, "introduction")])
+        # The next load clears it, so one proof cannot see the module another one imported.
+        h.load("services/vulnerable.py")
+        self.assertNotIn("introduction.views", sys.modules)
 
     def test_runner_exit_semantics(self):
         env = {"PATH": os.environ.get("PATH", ""), "PYTHONDONTWRITEBYTECODE": "1"}

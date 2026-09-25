@@ -7,7 +7,7 @@ file, `.mitig8it/harness.js`, next to the generated tests in both the baseline a
 workspace. It is evidence infrastructure, not part of the repair: it is never a patch, never a
 manifest entry, and a proposal that writes to it is rejected as `harness_path_protected`.
 
-Source: `services/remediation-service/src/sandbox/harness.js` (Node 22 LTS, built-ins only, under 28 KB).
+Source: `services/remediation-service/src/sandbox/harness.js` (Node 22 LTS, built-ins only, under 32 KB).
 
 ## TypeScript
 
@@ -28,9 +28,39 @@ and the harness's require hook do: an extension-less relative specifier, a direc
 `index.ts`, and the `.js` specifier a TypeScript project writes for a `.ts` source (`./config.js`
 for `config.ts`, `.cjs` for `.cts`, `.mjs` for `.mts`) all resolve to the TypeScript file. A
 module written with `import`/`export` is loaded by the ES module loader, which does not consult
-the require hook, so its imports resolve through `module.registerHooks` instead; the built-in
-fakes reach a CommonJS module only, and an ES module that imports `express` or `pg` fails to
-load rather than running against the real package, which is not installed.
+the require hook, so its imports resolve through `module.registerHooks` instead.
+
+## ES modules and the fakes
+
+The same `module.registerHooks` pair serves the fakes to the ES module loader. A faked specifier
+resolves to a synthetic module whose source reads the live fake object and re-exports it, as the
+default export and under every name the fake carries, its prototype chain included, so both
+`import express from 'express'` and `import { Pool } from 'pg'` get the recorder a CommonJS
+module would have got. `load(..., { stubs })` and `{ real }` apply the same way.
+
+Two limits are worth knowing. The ES module registry caches a module for the life of the
+process, so a second `load()` that supplies a *different* stub for the same specifier does not
+re-evaluate it; a test that needs two different stubs for one name needs two processes. And
+nothing is auto-stubbed: a package the harness does not fake is a package the sandbox does not
+have, so the module fails to load and the proof fails on both trees rather than passing against
+something invented. That is the honest outcome, and on a real application's entry module it is
+the common one, because a proof has to load the module's whole import closure.
+
+## What a proof's module may reach
+
+Because of that, the service decides before it writes a proof whether the module can load at
+all, over the closure the load actually pulls in: every static `import`, and every `require`
+whose statement begins at column 0, followed through relative specifiers inside the snapshot. A
+`require` inside a function body runs when that function is called, which a proof need never do,
+so it is not counted.
+
+A specifier in that closure has to be a Node built-in or one of the fakes above; anything else
+refuses the finding as `dependency_not_available_in_sandbox:<package>`. A TypeScript file
+anywhere in the closure is checked for the three constructs strip-only mode refuses, so an
+`enum` two relative imports away refuses as `typescript_syntax_not_strippable:enum` rather than
+ending in a bare `SyntaxError` on both trees. A relative specifier the snapshot does not carry is
+neither followed nor refused: the snapshot is a budgeted slice of the tree, and its absence says
+nothing about the repository.
 
 One shape loads under `tsc` and not here: an interface imported as an ordinary value binding
 (`import { Settings, settings } from './config'`). Strip-only mode cannot tell which name was a
