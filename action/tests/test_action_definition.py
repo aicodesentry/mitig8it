@@ -235,3 +235,57 @@ def test_the_marker_is_registered():
     """An unregistered marker is silently a no-op under strict settings and a warning otherwise."""
     ini = (REPO_ROOT / "action/pytest.ini").read_text(encoding="utf-8")
     assert "repo_definition:" in ini
+
+
+# --- the Node runtime ----------------------------------------------------------------------
+
+REMEDIATION_DOCKERFILE = REPO_ROOT / "services/remediation-service/Dockerfile"
+
+NODE_ARGS = ("NODE_VERSION", "NODE_SHA256_X64", "NODE_SHA256_ARM64")
+
+
+def node_args(path):
+    """The three pinned Node build arguments of a Dockerfile, by name."""
+    values = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line.startswith("ARG "):
+            continue
+        name, _, value = line[4:].partition("=")
+        if name.strip() in NODE_ARGS:
+            values[name.strip()] = value.strip()
+    return values
+
+
+def test_the_action_pins_the_remediation_service_s_node():
+    """The repair engine's sandbox harness decides this version, so one of them cannot choose.
+
+    The harness loads its generated proofs through `module.stripTypeScriptTypes` and resolves
+    their imports through `module.registerHooks`, which arrived in Node 22.6 and 22.15. The
+    action's image pinned 20 while claiming in a comment to match the remediation service, and
+    the result was that every JavaScript and TypeScript verification refused to run inside it:
+    the September 2026 trial produced zero fixes on four JavaScript repositories. Comparing the
+    two files is what stops a bump on one side turning that back on.
+    """
+    action_args = node_args(DOCKERFILE)
+    service_args = node_args(REMEDIATION_DOCKERFILE)
+    assert set(service_args) == set(NODE_ARGS), (
+        f"{REMEDIATION_DOCKERFILE} no longer declares {NODE_ARGS}"
+    )
+    assert action_args == service_args, (
+        "action/Dockerfile and services/remediation-service/Dockerfile must pin the same Node: "
+        f"{action_args} against {service_args}"
+    )
+
+
+def test_the_image_proves_the_node_features_the_sandbox_harness_needs():
+    """A pin is a claim; the probe in the build is what makes it a fact."""
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    for feature in (
+        "stripTypeScriptTypes",
+        "registerHooks",
+        "--experimental-strip-types",
+    ):
+        assert feature in dockerfile, (
+            f"the image no longer proves {feature} is available at build time"
+        )

@@ -1082,11 +1082,22 @@ rules:
         cookie set deliberately is not a finding. Re-enable it once the pattern is anchored
         to `res.cookie` or a session middleware call.
 
+  # The match is the `secret:` property, not the call that contains it. A pattern that matched
+  # the whole `session({ ... })` expression reported the line the call opens on, so nodejs-goof
+  # `app.js:42` read "Session signing secret is a literal. Read it from process.env instead"
+  # while pointing at `app.use(session({`; the literal was on line 43. The remediation service
+  # already worked around it: `js_literal_assignment_in_span` in
+  # services/remediation-service/src/sites.py re-finds the literal inside the finding's range and
+  # names this rule while doing so. Anchoring it here is the fix that workaround was waiting for.
   - id: cwe-798.js-session-secret-literal
     patterns:
       - pattern-either:
-        - pattern: 'session({ ..., secret: "$VALUE", ... })'
-        - pattern: 'cookieSession({ ..., secret: "$VALUE", ... })'
+        - patterns:
+          - pattern-inside: 'session({ ... })'
+          - pattern: 'secret: "$VALUE"'
+        - patterns:
+          - pattern-inside: 'cookieSession({ ... })'
+          - pattern: 'secret: "$VALUE"'
         - pattern: cookieParser("$VALUE")
       - metavariable-regex:
           metavariable: $VALUE

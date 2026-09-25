@@ -13,6 +13,11 @@
     "comment_stripping": "The line is a comment, so the rule never sees it.",
     "prose_path_scope": "The file is prose, and a rule that recognizes the shape of executable code does not run there."
   },
+  "case_fields": {
+    "snippet": "The added lines of the hunk, which is all a case needs when the region it measures is self-contained.",
+    "file": "Optional. The whole file at the head revision, when the hunk alone cannot be classified: a hunk that begins inside a Python docstring reads as code unless the file shows where the docstring opened. `snippet` must appear in `file` at `hunk_start`.",
+    "hunk_start": "Optional, and required with `file`: the new-side line number the snippet begins at."
+  },
   "false_positives": [
     {
       "id": "fp.null.method-chain.sequelize-oracle",
@@ -198,6 +203,38 @@
       "expected": "no_finding",
       "suppressed_by": "prose_path_scope",
       "evidence": "Replay observation 3, severity high. Prose-path scoping (PR 440) landed alongside the rule re-anchoring (PR 441), so the gap this case recorded is closed: `History.md` is prose and `auth.bypass.missing_check` does not run there."
+    },
+    {
+      "id": "fp.redirect.docstring-code-block.flask",
+      "language": "python",
+      "path": "src/flask/views.py",
+      "file": [
+        "class MethodView(View):",
+        "    \"\"\"Dispatches request methods to the corresponding instance methods.",
+        "",
+        "    For example, if you implement a ``get`` method, it will be used to",
+        "    handle ``GET`` requests.",
+        "",
+        "    .. code-block:: python",
+        "",
+        "        class CounterAPI(MethodView):",
+        "            def get(self):",
+        "                return str(session.get(\"counter\", 0))",
+        "",
+        "            def post(self):",
+        "                session[\"counter\"] = session.get(\"counter\", 0) + 1",
+        "                return redirect(url_for(\"counter\"))",
+        "    \"\"\"",
+        "",
+        "    def dispatch_request(self, **kwargs):",
+        "        return None"
+      ],
+      "hunk_start": 15,
+      "snippet": ["                return redirect(url_for(\"counter\"))"],
+      "rule_id": "redirect.open",
+      "expected": "no_finding",
+      "suppressed_by": "comment_stripping",
+      "evidence": "The only false positive of the September 2026 action trial (docs/validation/action-trial-2026-09.md, item 7). `src/flask/views.py:158` was flagged \"Potential open redirect\" on a line inside a `.. code-block:: python` example in the `MethodView` docstring, which redirects to a hard-coded endpoint and is not executable code. Prose scoping keeps rules off documentation files, not documentation regions; the comment stripper knew about docstrings but was scanning each hunk on its own, and this hunk opens well below the docstring's own quotes. Given the file at the head revision it now classifies the line as prose."
     }
   ],
   "true_positives": [
