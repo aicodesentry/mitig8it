@@ -70,7 +70,7 @@ const liveSurface = [
 
 const trustItems = [
   { icon: FileDiff, text: 'Reads only the diff and the files it depends on' },
-  { icon: KeyRound, text: 'Secrets redacted before any model call' },
+  { icon: KeyRound, text: 'Model calls see only the changed files and their dependents' },
   { icon: Braces, text: 'JavaScript and Python today; more families staged' },
 ]
 
