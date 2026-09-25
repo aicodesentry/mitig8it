@@ -23,12 +23,17 @@ async function enqueueForCompletedAnalysis({ pullRequestId, analysisRunId }) {
       });
       return { enqueued: true, job_id: created.job.id, findings: created.selected.length, skipped };
     }
+    // `skipped` is reported only where it carries something: on a queued job, and on the
+    // refusal that is entirely about skipped findings. Every other refusal (an existing
+    // job for this head, an exhausted budget, no completed analysis) has no skip list to
+    // report, so it keeps the shape it has always had rather than a constant zero.
     if (created.reason === 'no_supported_findings') {
       logger.info('No automatic remediation job queued after analysis: every open finding is in a language no repair toolchain can check', {
         pull_request_id: pullRequestId, analysis_run_id: analysisRunId, skipped_unsupported_language: skipped,
       });
+      return { enqueued: false, reason: created.reason, job_id: null, skipped };
     }
-    return { enqueued: false, reason: created.reason || created.kind, job_id: created.job?.id || null, skipped };
+    return { enqueued: false, reason: created.reason || created.kind, job_id: created.job?.id || null };
   } catch (error) {
     logger.error('Automatic remediation job could not be queued', {
       pull_request_id: pullRequestId, analysis_run_id: analysisRunId, error: error.message,

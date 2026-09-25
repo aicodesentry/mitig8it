@@ -102,7 +102,7 @@ test('an existing automatic job for the head means nothing is inserted, whatever
     ["origin = 'automatic'", { rowCount: 1, rows: [{ id: 'job-0', state: 'unsupported' }] }],
   ]);
   const result = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: PR, analysisRunId: RUN });
-  expect(result).toEqual({ enqueued: false, reason: 'exists', job_id: 'job-0', skipped: 0 });
+  expect(result).toEqual({ enqueued: false, reason: 'exists', job_id: 'job-0' });
   expect(calls.some((call) => call.text.includes('INSERT INTO remediation_jobs'))).toBe(false);
 });
 
