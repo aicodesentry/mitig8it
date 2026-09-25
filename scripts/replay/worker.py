@@ -17,7 +17,11 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ANALYSIS_SRC = REPO_ROOT / "services" / "analysis-service" / "src"
-REMEDIATION_ROOT = REPO_ROOT / "services" / "remediation-service"
+# A before-and-after measurement runs one fixed finding set through two versions of the
+# remediation service, so the service source is a setting rather than a constant. It is the
+# working tree's own unless REPLAY_REMEDIATION_ROOT names another checkout of it; nothing else
+# about the run changes, so the two columns differ only in the service under measurement.
+REMEDIATION_ROOT = Path(os.environ.get("REPLAY_REMEDIATION_ROOT") or (REPO_ROOT / "services" / "remediation-service"))
 
 # The replay never calls a model: triage is switched off through the service's own flag.
 os.environ.setdefault("LLM_TRIAGE_ENABLED", "false")
@@ -186,6 +190,13 @@ def load_pair_modules() -> dict[str, Any]:
     modules = load_remediation_modules()
     from src.gates import static_gate  # noqa: PLC0415
     from src.patches import PatchPolicyError, build_patch_bundle  # noqa: PLC0415
+
+    try:
+        from src.patches import path_forbidden  # noqa: PLC0415
+    except ImportError:
+        # The base branch refuses a forbidden path inside `build_patch_bundle` instead of
+        # exporting the question, so a measurement of it sees the refusal one step later.
+        path_forbidden = None
     from src.proofs import GeneratedProof, generate_proof  # noqa: PLC0415
     from src.retrieval import Snapshot, SnapshotError  # noqa: PLC0415
     from src.templates import TemplateFallback, generate_template  # noqa: PLC0415
@@ -200,6 +211,7 @@ def load_pair_modules() -> dict[str, Any]:
         "generate_proof": generate_proof,
         "generate_template": generate_template,
         "static_gate": static_gate,
+        "path_forbidden": path_forbidden,
     })
     return modules
 
@@ -528,6 +540,12 @@ def _measure_pair(modules: dict[str, Any], request: Any, snapshot: Any, template
         "verification_level": verification.verification_level,
         "limitations": [str(item)[:200] for item in verification.limitations],
         "proof_path": proof.path,
+        # The proof and the repair themselves, because a pair that does not verify is diagnosed
+        # by reading them side by side and nothing else in the record carries them.
+        "proof_content": proof.content,
+        "proof_description": proof.description,
+        "patch_description": template.description,
+        "patch_changes": template.changes,
         "check_argv": list(result.get("argv") or []),
         "original": _pair_variant(result, "baseline"),
         "patched": _pair_variant(result, "candidate"),
@@ -577,6 +595,10 @@ def run_pairs(payload: dict[str, Any], findings: list[dict[str, Any]]) -> dict[s
                 continue
             snapshot = modules["Snapshot"](request)
             snapshot_finding = request.findings[0]
+            if modules["path_forbidden"] is not None and modules["path_forbidden"](path, request):
+                row["skipped"] = "protected_path"
+                rows.append(row)
+                continue
             gate = modules["static_gate"](snapshot, snapshot_finding, family, language)
             if gate is not None:
                 row["skipped"] = f"static_gate:{gate[0]}"

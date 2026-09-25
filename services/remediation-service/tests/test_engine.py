@@ -8,7 +8,7 @@ from src.engine import RepairEngine
 from src.git_tree import compute_tree_oid
 from src.models import GitTreeEntry, RepairRequest
 from src.verification import Verifier
-from tests.conftest import regression_test_spec, whole_file_change
+from tests.conftest import regression_test_spec, renamed_payload, whole_file_change
 
 
 class ScriptedProvider:
@@ -105,6 +105,19 @@ async def test_engine_abstains_for_unsupported_finding(request_payload):
     response = await RepairEngine().repair(RepairRequest.model_validate(request_payload))
     assert response.state == "unsupported"
     assert response.reason["code"] == "unsupported_rule_family"
+
+
+@pytest.mark.asyncio
+async def test_engine_abstains_before_generating_anything_for_a_file_policy_will_not_change(request_payload):
+    # The shape of ten of juice-shop's and electerm's findings in the 2026-09 corpus: a
+    # credential in a file under `test/`. Both generators used to produce a patch and a proof
+    # for it, and only `build_patch_bundle` refused, so a pair that policy could never let ship
+    # was counted beside the pairs that failed on their merits.
+    payload = renamed_payload(request_payload, "src/db.ts", "test/api/db.ts")
+    response = await RepairEngine().repair(RepairRequest.model_validate(payload))
+    assert response.state == "unsupported"
+    assert response.reason["code"] == "protected_path"
+    assert [entry["code"] for entry in response.skipped] == ["protected_path"]
 
 
 @pytest.mark.asyncio
