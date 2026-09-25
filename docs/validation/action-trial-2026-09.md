@@ -413,6 +413,220 @@ sanity check. And the suggestion geometry for a multi-region fix has no example 
 every fix the trial produced was a single line, so a two-region fix has only the parity test
 behind it until one appears in a real repository.
 
+## Re-run on the fixed Action
+
+The same ten private repositories, the same pull requests, one commit each changing the workflow
+to `uses: aicodesentry/mitig8it/action@fix/action-trial-findings`. Then a second commit changing
+one README line, and a third commit on two of them. Twenty-three runs, all `success`.
+
+The previous section listed what a re-run would have to show. Eleven of the fourteen fixes are
+confirmed, two are half done, and one cannot be confirmed because nothing in this corpus exercises
+it. Against that, the re-run found three regressions, three rough edges in the surfaces the fixes
+added, and two pre-existing false positives that the new listing made visible for the first time.
+
+Two deviations from the brief, both forced by what the fixed Action produced. The suggestion
+block was applied on **pygoat**, not nodejs-goof, because `pygoat/settings.py:25` is the only
+suggestion block in the trial: no fix was produced on any JavaScript repository, so nodejs-goof
+had nothing to click. nodejs-goof still got its third commit, fixing `views/index.ejs:20` by hand,
+which is what tests thread retirement there. Neither commit went through GitHub's **Commit
+suggestion** button, which `gh api` cannot press; the suggested text was written by hand, byte for
+byte. The button would have added a `Co-authored-by:` trailer naming the comment's author, and
+these commits have none. That is the only difference between them and a clicked suggestion.
+
+### Before and after
+
+Duration and build are the first run on each ref, which pays a cold layer cache both times; the
+fix changes the Dockerfile, so the cache key changed and the first run on the fixed Action built
+from scratch again. The README commit then built in 37 to 59 seconds.
+
+| Repository | Findings before → after | Inline comments | Named, not inline | Suggestions | Verified | Check conclusion | Duration | Build | Recall |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |
+| nodegoat | 6 → 6 | 4 → 4 | 0 → 2 | 0 → 0 | 0 → 0 | neutral → neutral | 114s → 117s | 89s → 88s | 4/15 → 4/15 |
+| juice-shop | 27 → 27 | 26 → 26 | 0 → 1 | 0 → 0 | 0 → 0 | neutral → neutral | 209s → 143s | 110s → 85s | 24/43 → 24/43 |
+| pygoat | 37 → 33 | 16 → 13 | 0 → 20 | 0 → 1 | 1 → 1 | neutral → neutral | 137s → 140s | 85s → 112s | 14/25 → 13/25 |
+| nodejs-goof | 9 → 8 | 8 → 7 | 0 → 1 | 0 → 0 | 0 → 0 | neutral → neutral | 130s → 151s | 99s → 108s | 8/16 → 8/16 |
+| dvna | 12 → 12 | 10 → 11 | 0 → 1 | 0 → 0 | 0 → 0 | neutral → neutral | 126s → 126s | 88s → 85s | 10/14 → 11/14 |
+| express | 1 → 1 | 0 → 0 | 0 → 1 | 0 → 0 | 0 → 0 | neutral → neutral | 110s → 118s | 89s → 86s | not labelled |
+| fastify | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | neutral → **success** | 111s → 114s | 89s → 81s | not labelled |
+| flask | 1 → **0** | 1 → **0** | 0 → 0 | 0 → 0 | 0 → 0 | neutral → **success** | 113s → 130s | 93s → 86s | not labelled |
+| got | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | neutral → **success** | 155s → 129s | 111s → 87s | not labelled |
+| sequelize | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | neutral → **success** | 127s → 108s | 103s → 80s | not labelled |
+| **total** | **93 → 87** | **65 → 61** | **0 → 26** | **0 → 1** | **1 → 1** | | | | **60/113 → 60/113** |
+
+Adjudication of the 61 inline comments: 60 true positives, 0 false positives, 1 unsure, the same
+`routes/fileUpload.ts:109` as before. The image is 772 MB, up from 745 MB.
+
+The two counts that matter most both check out on every repository: **inline plus named equals the
+summary total** on all ten (6=4+2, 27=26+1, 33=13+20, 8=7+1, 12=11+1, 1=0+1, and 0 for the four
+quiet ones), and **each run adds exactly one review event** to the pull request timeline, against
+26 for 26 comments before.
+
+nodejs-goof's before column is not quite like for like: the first trial ended by fixing
+`views/admin.ejs:17`, so this re-run started one finding down.
+
+### What is now right
+
+**Item 1, the suggestion block.** pygoat `pygoat/settings.py:25` renders as a real
+` ```suggestion ` block containing `SECRET_KEY = os.environ["SECRET_KEY"]`, with the Verified line
+underneath and the evidence and limitations in a `<details>`. It applied cleanly. This is the
+column that was 0 out of 1 before and is now 1 out of 1.
+
+**Item 2, findings with nowhere to go.** Every one of the 26 is named, with severity, rule and a
+permalink to the reviewed sha. I opened four of the permalinks and they resolve. This turned 28
+invisible numbers into 26 readable rows and immediately paid for itself: nodejs-goof
+`app.js:84`, `console.log('token: ' + token)` on a line holding a real secret, was invisible
+before and is a true positive.
+
+**Item 3, one set of numbers.** The check title, the check summary and the review body now agree
+everywhere. pygoat, which showed 32, 37 and 37 with 16 comments, now reads "33 findings, 31
+critical or high" on the title and the same 33 on both the summary and the body.
+
+**Item 5, one review per run.** Confirmed on all ten and on all three rounds. juice-shop's
+publishing phase is no longer visible as a distinct cost in the job: its whole job fell from 209s
+to 143s with the build about the same.
+
+**Item 6, the md5 duplicates.** pygoat `introduction/mitre.py:161` and `introduction/views.py:1026`
+now carry one critical comment each, with `Supporting detections: crypto.weak.hash, ...` folded
+into it. dvna's `md5(req.query.login)` correctly kept its own `crypto.weak.hash` comment, which is
+the distinction the fix claimed to draw.
+
+**Item 7, the docstring false positive.** flask reports nothing at all. It was the trial's only
+false positive and it is gone.
+
+**Item 8, the check conclusion.** fastify, flask, got and sequelize now conclude `success` with
+the title "No security findings". express stays `neutral` on one medium, which is the stated rule.
+
+**Item 11, the 403.** No `GET /user` 403, and no 4xx or 5xx status in any of the thirty logs.
+
+**Item 12, scope.** Every run reports "N files analysed, 2 read as a patch only (the scanner has
+no deep rules for those file types)".
+
+**Item 13, the anchor.** `cwe-798.js-session-secret-literal` moved from the `app.use(session({`
+line to the `secret:` property: nodejs-goof `app.js` went from 42 to 43, and on dvna it now fires
+at `server.js:24` where it did not fire at all before. That is a labelled line the first trial
+missed, and it is the one recall gain in the whole re-run.
+
+**Item 14, stale threads.** Deleted, not minimized, and counted. nodejs-goof's re-run after the
+hand fix logged `7 seen, 7 with our marker, 0 resolved, 1 retired, 0 kept for a published fix, 0
+failed`, and the `views/index.ejs:20` thread is gone from the pull request rather than sitting
+collapsed and unresolved. flask's old false-positive comment was retired the same way on the first
+fixed run.
+
+**Convergence, on nine of ten.** The README-only commit created nothing, edited nothing and
+deleted nothing on nodegoat, juice-shop, nodejs-goof, dvna, express, fastify, flask, got and
+sequelize.
+
+### What is still wrong
+
+**1. A true positive was lost.** pygoat `introduction/views.py:963`,
+`ssrf.untrusted_url_fetch`, CWE-918, on `response = requests.get(url)` two lines below
+`url = request.POST["url"]`. It is a corpus-labelled line, the previous Action reported it, and the
+fixed Action does not: its comment was deleted, it is not in the "did not change" list, and the
+total fell accordingly. I eliminated the obvious suspect: running `parse_patch_entries` from this
+branch over the real patch and the real head file gives byte-identical `scan_text` for line 963
+with and without the head content, so the new whole-file comment mask is not blanking it. The
+cause is elsewhere in the branch and is worth finding before merge, because this is the only
+labelled line the fixes cost. *Fix:* start from `services/analysis-service/src/main.py`
+`pattern_findings`, which now passes `content` into every rule's scan options, and from the
+clustering that `canonicalize_internal_type` feeds.
+
+**2. The findings are not stable between runs on identical code.** pygoat did not converge: the
+README-only commit **deleted** the `introduction/views.py:291` comment and **rewrote** two others.
+The rewrites say why. `pygoat/settings.py:25` changed its fix marker from
+`sha256:fd7f59c4...` to `sha256:ab437627...` and its evidence digest from `sha256:1c59d` to
+`sha256:d6075` with the suggestion text identical, so a fix comment is rewritten on every run
+forever. `introduction/views.py:1026` lost `auth.weak_password_hash` from its supporting
+detections between two runs over the same file. Together with the lost SSRF finding, that is three
+results that vary run to run, all in the one repository with a large Python file and the only fix.
+*Fix:* make the fix digest a function of the fix, not of the run, in the remediation evidence
+that `action/orchestrator/remediation.py` reads; sort the supporting-detection list; and log per
+file whether head content was used, so a fallback is visible rather than silent.
+
+**3. The thread survey under-counts on the run that changes most.** pygoat's first fixed run
+logged `12 seen, 12 with our marker, 0 resolved, 0 retired, 0 kept for a published fix, 0 failed`
+while 16 of its own comments existed at the start of the run and 4 of them disappeared during it.
+Every other repository's numbers reconcile exactly. The one line a maintainer has to trust about
+what happened to their threads said nothing happened. *Fix:* count the comments removed by a
+fingerprint change under `retired` too, in the reconciliation in `action/publisher/publish.js`.
+
+**4. Item 4 is half done.** The duplicated description is gone; the duplicated remediation is not.
+40 of 61 comments still end with `Remediation:` followed by the exact words of the bold title. The
+dedupe compares the remediation against the description, and when the description has already been
+dropped for repeating the title there is nothing left for it to match. *Fix:* compare the
+remediation against the title as well, in `render_finding_comment` in
+`action/orchestrator/run.py`.
+
+**5. A new grammar bug in the new sentence.** "1 are on lines this pull request did not change"
+appears on juice-shop, nodejs-goof, dvna and express, four of the ten. The plural fix reached
+"1 finding" and not this. *Fix:* same sentence builder in `action/orchestrator/run.py`.
+
+**6. The new section is not folded the way the comments are.** 17 of pygoat's 20 rows are
+`opengrep.cwe-352.py-csrf-exempt`, one per decorator. The fold that collapsed the md5 pair does not
+apply here, so the section that exists to make findings readable is, on the repository with the
+most of them, one rule repeated seventeen times. *Fix:* roll identical rules up to one row naming
+the line count, in the review body builder.
+
+**7. The anchor fix reached one rule and not its siblings.** Three rows point at the enclosing
+call rather than the property: nodegoat `config/env/all.js:5` and `config/env/development.js:1`
+(both `module.exports = {`, where the credentials are on lines 8, 9 and 6) and dvna `server.js:23`
+(`app.use(session({`, where the insecure cookie is on line 27). Two of those also duplicate an
+inline comment that has the line right, so the same weakness is reported twice at two different
+line numbers, which is why the duplicate fold does not catch them. *Fix:* apply the item 13 change
+to `cwe-798.js-credential-config-key` and `cwe-614.js-session-cookie-insecure`.
+
+**8. Two false positives are now visible that were invisible before.** express
+`lib/response.js:814` is `redirect.open` on `res.redirect = function redirect(url) {`, which is
+express's own definition of the redirect primitive. juice-shop `lib/xml.ts:38` is
+`code.injection.eval` on `vm.runInContext('libxml2.XmlDocument.fromString(data, { option })', ...)`,
+whose script is a constant string; three lines above it, the real XXE that the corpus labels at
+`lib/xml.ts:35` is still missed. Naming the hidden findings did not create these, it revealed
+them, and the honest reading of the trial's precision is now 60 true positives and 1 unsure on the
+diff, plus 2 false positives among the 26 named elsewhere. *Fix:* exclude a `vm.runInContext` whose
+script argument is a literal from `code.injection.eval`, and a redirect helper's own definition
+from `redirect.open`.
+
+**9. Item 10 cannot be confirmed.** No `stripTypeScriptTypes` ERROR line appears in any log, which
+is the weak half of the evidence. The strong half is missing: still **zero fixes on all four
+JavaScript and TypeScript repositories**, including findings in the `command_arguments` family
+(nodejs-goof `routes/index.js:174`, dvna `core/appHandler.js:39`) and `path_containment`
+(nodejs-goof `routes/index.js:270`). The Node pin may well be right; nothing in this trial
+exercises it. *Fix:* none proposed. Point the repair engine at one of those four findings in CI
+and assert a candidate comes out, or the pin stays unverified.
+
+**10. A fix that was applied still reads as an open critical finding.** After the suggestion was
+committed, pygoat logged `0 resolved, 0 retired, 1 kept for a published fix` and the finding left
+the count, 33 to 31. The comment stays, by design, but it is unchanged: a critical header, "Framework
+signing key is a literal. Read it from the environment", and a suggestion block whose content is
+now identical to the line it sits on. A maintainer reading that pull request sees an open critical
+finding on `SECRET_KEY = os.environ["SECRET_KEY"]`, and clicking Commit suggestion again would
+produce an empty commit. Keeping the comment is right; keeping it word for word is not. *Fix:* when
+a comment is kept for a published fix, replace its body with a line saying the fix was applied and
+drop the suggestion block, in the retirement path in `action/publisher/publish.js`.
+
+### Would I keep it installed now
+
+**fastify, got, sequelize:** yes, without reservation. Three clean repositories, three green
+checks, nothing posted, one review event per run, and a job that costs about a minute once the
+layer cache is warm. There is nothing to weigh against it.
+
+**flask, express:** yes. flask's only false positive is gone and it now passes green. express
+reports one finding and, now that findings are named, I can see it is a false positive on
+express's own `res.redirect`, which is a five-second dismissal rather than the unanswerable "1
+finding" it used to be.
+
+**nodegoat, juice-shop, dvna, nodejs-goof:** yes. 47 of the 48 comments on these four are true
+positives and the 48th is the one I cannot call either way, the anchors are better than they were, stale threads now disappear instead of
+lingering, and the findings that cannot be commented on are listed with working links. The
+outstanding complaint is that none of them ever gets a fix, so the product is a very good reader
+and not yet a writer on JavaScript.
+
+**pygoat:** not yet, and it is the one repository where the fixes made things worse as well as
+better. It is the only repository that produced a clickable fix, and it is also the one that lost
+a true positive, that rewrites comments on a commit that changed only the README, and whose thread
+summary did not describe what the run did to its own comments. Until findings are stable between
+runs on identical code I would not want this posting to a repository I maintain, because a review
+that changes its mind without the code changing teaches maintainers to stop reading it.
+
 ## Repositories to delete
 
 Ten private repositories under `nebullii`, all disposable:
