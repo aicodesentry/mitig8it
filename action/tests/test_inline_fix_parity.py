@@ -10,6 +10,10 @@ The Node module cannot simply be required: remediationInlineFixes.js pulls in th
 database layer and its logger. The functions are extracted from its source by name and evaluated
 on their own instead, which also means a rename fails here loudly rather than silently testing
 nothing.
+
+The tests that read that source are marked `repo_definition`: comparing two files of this
+repository is an assertion about the repository, and the image has no reason to carry the
+api-service module. The tests that only exercise the port run everywhere, including in the image.
 """
 from __future__ import annotations
 
@@ -159,6 +163,7 @@ CASES = [
 ]
 
 
+@pytest.mark.repo_definition
 def test_compute_regions_matches_the_api_service():
     expected = node_regions(CASES)
     for case, want in zip(CASES, expected, strict=True):
@@ -166,6 +171,7 @@ def test_compute_regions_matches_the_api_service():
         assert got == want["regions"], f"computeRegions differs on {case!r}"
 
 
+@pytest.mark.repo_definition
 def test_primary_region_matches_the_api_service():
     expected = node_regions(CASES)
     for case, want in zip(CASES, expected, strict=True):
@@ -197,6 +203,7 @@ def test_a_two_region_fix_keeps_the_finding_region_and_carries_the_rest():
     assert "require('child_process')" in "\n".join(extras[0]["replacement_lines"])
 
 
+@pytest.mark.repo_definition
 def test_max_aligned_lines_matches_the_api_service():
     source = INLINE_FIXES_JS.read_text(encoding="utf-8")
     line = next(
@@ -205,6 +212,7 @@ def test_max_aligned_lines_matches_the_api_service():
     assert int(line.split("=")[1].strip().rstrip(";")) == inline_fixes.MAX_ALIGNED_LINES
 
 
+@pytest.mark.repo_definition
 def test_max_diff_chars_matches_the_api_service():
     source = INLINE_FIXES_JS.read_text(encoding="utf-8")
     line = next(line for line in source.splitlines() if line.startswith("const MAX_DIFF_CHARS = "))
