@@ -137,6 +137,23 @@ describe('analysis run queue', () => {
       running: 1,
       failed: 2,
       oldest_pending_seconds: 90,
+      seconds_since_last_start: null,
+    });
+  });
+
+  test('reports how long ago a run last started when one has', async () => {
+    pool.query.mockResolvedValueOnce({
+      rows: [{
+        pending: '1',
+        running: '0',
+        failed: '0',
+        oldest_pending_seconds: '700',
+        seconds_since_last_start: '900',
+      }],
+    });
+
+    await expect(analysisRuns.getQueueStats()).resolves.toMatchObject({
+      seconds_since_last_start: 900,
     });
   });
 });

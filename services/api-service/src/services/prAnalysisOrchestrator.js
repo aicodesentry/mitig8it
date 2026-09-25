@@ -1,6 +1,8 @@
 const { pool } = require('../config/database');
 const axios = require('axios');
 const logger = require('../utils/logger');
+const requestContext = require('../utils/requestContext');
+const analysisMetrics = require('./analysisMetrics');
 const { AnalysisGrpcClient } = require('../clients/analysisGrpcClient');
 const { GitHubGrpcClient } = require('../clients/githubGrpcClient');
 const { calculateFingerprint, normalizeFinding } = require('./findingUtils');
@@ -10,9 +12,25 @@ const analysisRunsDb = require('../db/analysisRuns');
 const repositoriesDb = require('../db/repositories');
 const remediationAutoGenerate = require('./remediationAutoGenerate');
 
-const TIER2_SUPPORTED_EXTENSIONS = new Set([
+// Mirrors CODE_EXTENSIONS and TEMPLATE_EXTENSIONS in
+// services/analysis-service/src/opengrep_runner.py, and the same two sets in
+// scripts/replay/prodfilters.py. Template files are scanned in the scanner's `generic`
+// mode by template_coverage.yml, not by a language parser.
+// services/analysis-service/src/tests/test_supported_extension_parity.py fails if the
+// three copies disagree.
+const TIER2_CODE_EXTENSIONS = [
   '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rb', '.php',
   '.cs', '.c', '.cpp', '.h', '.hpp', '.rs', '.swift', '.kt',
+];
+
+const TIER2_TEMPLATE_EXTENSIONS = [
+  '.html', '.htm', '.ejs', '.erb', '.hbs', '.handlebars', '.mustache',
+  '.dust', '.njk', '.jinja', '.jinja2', '.j2', '.twig', '.vue', '.svelte', '.pug',
+];
+
+const TIER2_SUPPORTED_EXTENSIONS = new Set([
+  ...TIER2_CODE_EXTENSIONS,
+  ...TIER2_TEMPLATE_EXTENSIONS,
 ]);
 
 function markdownEscape(text) {
@@ -177,6 +195,70 @@ function didTier3MeaningfullyChangeFindings(previousFindings, nextFindings) {
   return false;
 }
 
+// The scanner reports a file it could only parse partially, or gave up on after
+// a timeout, as a limitation rather than as a failed scan. Everything else in
+// the pull request was analysed normally, so the run says which files were not
+// and carries on. A limitation never turns the check run red on its own.
+const LIMITATION_LABELS = {
+  partial_parse: 'partially analysed',
+  not_analyzed: 'not fully analysed',
+};
+
+function normalizeLimitations(limitations) {
+  if (!Array.isArray(limitations)) return [];
+  const byKey = new Map();
+  for (const limitation of limitations) {
+    if (!limitation || typeof limitation !== 'object') continue;
+    const path = typeof limitation.path === 'string' ? limitation.path : '';
+    if (!path) continue;
+    const kind = LIMITATION_LABELS[limitation.kind] ? limitation.kind : 'not_analyzed';
+    const key = `${path}::${kind}`;
+    if (byKey.has(key)) continue;
+    const line = Number(limitation.line);
+    byKey.set(key, {
+      path,
+      kind,
+      type: typeof limitation.type === 'string' ? limitation.type : '',
+      message: typeof limitation.message === 'string' ? limitation.message.slice(0, 200) : '',
+      line: Number.isFinite(line) && line > 0 ? line : null,
+    });
+  }
+  return [...byKey.values()];
+}
+
+// "cwe-vul.py (lexical error at line 127)" - enough for a reader to open the
+// file and see why the scanner stopped there.
+function describeLimitation(limitation) {
+  const name = limitation.path.split('/').pop() || limitation.path;
+  const reason = (limitation.type || LIMITATION_LABELS[limitation.kind]).toLowerCase();
+  const detail = [reason, limitation.line ? `at line ${limitation.line}` : '']
+    .filter(Boolean)
+    .join(' ');
+  return detail ? `${name} (${detail})` : name;
+}
+
+function buildLimitationSummaryLine(limitations) {
+  const normalized = normalizeLimitations(limitations);
+  if (normalized.length === 0) return '';
+
+  const partial = normalized.filter((limitation) => limitation.kind === 'partial_parse');
+  const skipped = normalized.filter((limitation) => limitation.kind !== 'partial_parse');
+  const clauses = [];
+  if (partial.length > 0) {
+    clauses.push(
+      `${partial.length} file${partial.length === 1 ? '' : 's'} partially analysed: `
+      + partial.map(describeLimitation).join(', ')
+    );
+  }
+  if (skipped.length > 0) {
+    clauses.push(
+      `${skipped.length} file${skipped.length === 1 ? '' : 's'} not fully analysed: `
+      + skipped.map(describeLimitation).join(', ')
+    );
+  }
+  return `${clauses.join('; ')}.`;
+}
+
 function buildTestCodeSummaryLines({ testFilesScanned, infoFindings, infoCommentsOmitted }) {
   const lines = [];
   if (testFilesScanned <= 0 && infoFindings <= 0) return lines;
@@ -209,6 +291,8 @@ function buildReviewBody(findings, runId, options = {}) {
     infoFindings: infoFindings.length,
     infoCommentsOmitted: Number(options.infoCommentsOmitted || 0),
   });
+  const limitationLine = buildLimitationSummaryLine(options.limitations);
+  const limitationLines = limitationLine ? [`${severityIcon('info')} ${limitationLine}`, ''] : [];
 
   if (total === 0) {
     return [
@@ -218,6 +302,7 @@ function buildReviewBody(findings, runId, options = {}) {
       'This PR passed all security checks.',
       '',
       ...testCodeLines,
+      ...limitationLines,
       `<sub>Run \`${runId.slice(0, 8)}\`</sub>`,
     ].join('\n');
   }
@@ -235,6 +320,7 @@ function buildReviewBody(findings, runId, options = {}) {
     `| **${counts.critical || 0}** | **${counts.high || 0}** | **${counts.medium || 0}** | **${counts.low || 0}** |`,
     '',
     ...testCodeLines,
+    ...limitationLines,
     placement.sentence,
     '',
     `<sub>Analyzed by <strong>Mitig8it</strong> · Run \`${runId.slice(0, 8)}\` · ${placement.short}</sub>`,
@@ -308,6 +394,51 @@ function buildReviewComment(finding, options = {}) {
 
 const extractReviewableLines = validatorPrivate.extractReviewableLines;
 const extractReviewableLineSpans = validatorPrivate.extractReviewableLineSpans;
+
+// `.mitig8it.yml` in the repository under review. Reading it here, before the files reach any
+// scanner, is what makes an exclusion mean "never analysed" rather than "analysed and hidden".
+const repositoryConfig = require('./repositoryConfig');
+
+// The file lives at the repository root of the head commit. It is fetched through the same
+// content path the tier 2 enrichment uses, and an absent file is the common case rather than an
+// error: `fetchFileContents` simply returns nothing for it.
+async function loadRepositoryExclusions({ repositoryFullName, installationId, commitSha }) {
+  let text = null;
+  try {
+    const response = await githubServiceRequest('/internal/github/files/content', {
+      repository_full_name: repositoryFullName,
+      installation_id: installationId,
+      ref: commitSha,
+      paths: [repositoryConfig.CONFIG_FILENAME],
+    });
+    for (const file of response?.files || []) {
+      if (file?.path === repositoryConfig.CONFIG_FILENAME && typeof file.content === 'string') text = file.content;
+    }
+  } catch (_error) {
+    // A repository that has no such file, or a content read that failed, reviews everything. It
+    // is the safe direction: the alternative is a run that silently reviewed nothing.
+    return { exclusions: new repositoryConfig.Exclusions(), problem: null };
+  }
+  if (text === null) return { exclusions: new repositoryConfig.Exclusions(), problem: null };
+  try {
+    return { exclusions: repositoryConfig.parse(text), problem: null };
+  } catch (error) {
+    return { exclusions: new repositoryConfig.Exclusions(), problem: `${error.message}; nothing was excluded` };
+  }
+}
+
+// { kept, excluded } over the changed-file entries the adapter returned.
+function applyExclusions(files, exclusions) {
+  const source = Array.isArray(files) ? files : [];
+  if (!exclusions || exclusions.empty) return { kept: source, excluded: [] };
+  const kept = [];
+  const excluded = [];
+  for (const file of source) {
+    if (exclusions.matches(String(file?.path || ''))) excluded.push(file);
+    else kept.push(file);
+  }
+  return { kept, excluded };
+}
 
 function fileExtension(path) {
   const match = String(path || '').toLowerCase().match(/(\.[^./]+)$/);
@@ -595,7 +726,7 @@ async function githubServiceRequest(path, payload) {
 
   const requestConfig = {
     timeout: 45000,
-    headers: { 'x-internal-secret': internalSecret },
+    headers: { 'x-internal-secret': internalSecret, ...requestContext.toHeaders() },
   };
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -712,6 +843,7 @@ function analysisServiceHeaders() {
 
   return {
     'x-internal-secret': internalSecret,
+    ...requestContext.toHeaders(),
   };
 }
 
@@ -815,7 +947,9 @@ async function persistAndFilter({ findings, files, runId, pullRequestId, reposit
   }
 
   const activeFingerprints = persisted.map((f) => f.fingerprint);
-  await findingsDb.markFixed({ repositoryId, pullRequestId, activeFingerprints });
+  await findingsDb.markFixed({
+    repositoryId, pullRequestId, activeFingerprints, analysisRunId: runId, commitSha,
+  });
 
   const postSuppression = await applySuppressions(persisted, repositoryId);
   await persistSurfaceDecisions(buildSurfaceDecisions({ files, findings: postSuppression }));
@@ -824,7 +958,7 @@ async function persistAndFilter({ findings, files, runId, pullRequestId, reposit
   return { actionable, shouldMarkBaselineSet, findingRows: postSuppression };
 }
 
-async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, installationId, commitSha, runId, tierLabel, repoProfile }) {
+async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, installationId, commitSha, runId, tierLabel, repoProfile, limitations }) {
   const counts = summarizeFindings(actionable).counts;
   const highOrCritical = blockingCount(counts);
   const testFilesScanned = countTestCodeFiles(files);
@@ -903,6 +1037,7 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
       testFilesScanned,
       infoCommentsOmitted: inlinePlan.infoOmitted,
       inlineCount: inlinePlan.comments.filter((comment) => !isInfoComment(comment)).length,
+      limitations,
     });
 
     reviewResp = await submitReviewWithFallback({
@@ -968,6 +1103,34 @@ function transientRetryDelayMs(priorRetries) {
   return Math.min(RETRY_BACKOFF_CAP_MS, RETRY_BACKOFF_STEP_MS * (priorRetries + 1));
 }
 
+// A metric label must come from a closed set. `triggered_by` is written by our own
+// inserts today, but a future value must degrade to one extra series, not to one
+// series per value anyone ever writes.
+const KNOWN_TRIGGERS = new Set(['webhook', 'auto_retry', 'manual', 'api']);
+
+function triggerLabel(payload) {
+  const trigger = String(payload?.triggered_by || 'unknown');
+  return KNOWN_TRIGGERS.has(trigger) ? trigger : 'other';
+}
+
+// The reason an operator acts on, not the message they would have to read. Each value
+// points at a different owner: our analysis tiers, GitHub, the network, or a bug.
+function failureReason(error, { analysisResultProduced }) {
+  const message = String(error?.message || '');
+  if (message.startsWith('Incomplete analysis response')) return 'analysis_incomplete';
+  if (message.startsWith('Invalid GitHub file response')) return 'github_files_invalid';
+  if (message.startsWith('Inline finding publication incomplete')) return 'publication_incomplete';
+  if (isTransientInfrastructureError(error)) return 'infrastructure';
+  return analysisResultProduced ? 'publication_failed' : 'unhandled';
+}
+
+function observeFindingsPosted(counts = {}) {
+  for (const severity of ['critical', 'high', 'medium', 'low', 'info']) {
+    const count = Number(counts[severity] || 0);
+    if (count > 0) analysisMetrics.findingsPosted.labels(severity).inc(count);
+  }
+}
+
 async function runAnalysisJob(payload) {
   const {
     analysis_run_id: runId,
@@ -981,13 +1144,24 @@ async function runAnalysisJob(payload) {
   } = payload;
   const [owner, repo] = repositoryFullName.split('/');
   const analysisPayload = { repository_full_name: repositoryFullName, pull_request_number: prNumber, commit_sha: commitSha };
+  const startedAt = process.hrtime.bigint();
+  const elapsedSeconds = () => Number(process.hrtime.bigint() - startedAt) / 1e9;
+  analysisMetrics.runsStarted.labels(triggerLabel(payload)).inc();
 
   let allFindings = [];
   let files = [];
+  let excludedFileCount = 0;
+  // Limitations the run must state rather than hide. `file_cap`: a pull request over the
+  // adapter's cap is reviewed as far as the cap allows, and the check summary says how many of
+  // how many files that was. `path_exclusion`: the repository's own `.mitig8it.yml` kept files
+  // out of the analysis, and the summary says how many, so silence about a directory is never
+  // mistaken for a clean bill of health.
+  let analysisLimitations = [];
   let tier2Files = [];
   let lastCounts = {};
   let lastHighOrCritical = 0;
   let testFilesScanned = 0;
+  let limitations = [];
   let reviewResp = {};
   let checkRunResp = {};
   let shouldMarkBaselineSet = false;
@@ -1005,6 +1179,28 @@ async function runAnalysisJob(payload) {
     });
     if (!Array.isArray(filesResp?.files)) throw new Error('Invalid GitHub file response');
     files = filesResp.files;
+    if (filesResp.limitation?.message) {
+      analysisLimitations = [filesResp.limitation];
+      logger.warn('Analysis run is limited', {
+        runId, kind: filesResp.limitation.kind, message: filesResp.limitation.message,
+      });
+    }
+
+    // Excluded before enrichment, so the content of an excluded file is never even fetched.
+    const { exclusions, problem: configProblem } = await loadRepositoryExclusions({
+      repositoryFullName, installationId, commitSha,
+    });
+    if (configProblem) logger.warn('Repository configuration was not used', { runId, message: configProblem });
+    const exclusionResult = applyExclusions(files, exclusions);
+    excludedFileCount = exclusionResult.excluded.length;
+    files = exclusionResult.kept;
+    const exclusionLimitation = repositoryConfig.exclusionLimitation(excludedFileCount);
+    if (exclusionLimitation) {
+      analysisLimitations = [...analysisLimitations, exclusionLimitation];
+      logger.info('Paths were excluded by repository configuration', {
+        runId, excluded: excludedFileCount,
+      });
+    }
     tier2Files = await enrichFilesForTier2({
       files,
       repositoryFullName,
@@ -1021,6 +1217,15 @@ async function runAnalysisJob(payload) {
     const tier1 = await requiredTier('/analyze/pr/tier1', { ...analysisPayload, files }, 30000);
     const tier2 = await requiredTier('/analyze/pr/tier2', { ...analysisPayload, files: tier2Files }, 60000);
     allFindings = [...tier1.findings, ...tier2.findings];
+    // A file the scanner could only parse partially is a gap in coverage, not a
+    // failed scan. The run reports it instead of implying complete analysis.
+    limitations = normalizeLimitations([
+      ...(tier1.analysis_limitations || []),
+      ...(tier2.analysis_limitations || []),
+    ]);
+    if (limitations.length > 0) {
+      logger.warn('Analysis reported coverage limitations', { runId, prNumber, limitations });
+    }
     let repoProfile = {};
     try {
       const profile = await repositoriesDb.getProfile(repositoryId);
@@ -1045,7 +1250,7 @@ async function runAnalysisJob(payload) {
     await findingsDb.snapshotRun(runId, final.findingRows);
     const result = await postReviewToGitHub({
       actionable: final.actionable, files, owner, repo, prNumber, installationId, commitSha, runId,
-      tierLabel: 'Tier 3', repoProfile,
+      tierLabel: 'Tier 3', repoProfile, limitations,
     });
     reviewResp = result.reviewResp;
     lastCounts = result.counts;
@@ -1071,6 +1276,16 @@ async function runAnalysisJob(payload) {
           + '(never blocking).'
         );
       }
+      // A limitation is a coverage note, never a reason to fail the check. Two disjoint
+      // sources reach the summary. `analysisLimitations` is run-scoped and carries no
+      // path: a pull request over the adapter's file cap is reviewed as far as the cap
+      // allows, and the summary says how many of how many files that was. `limitations`
+      // is per file: the scanner could not fully read one file, or hit a ceiling on it.
+      // A partial review says so on the check itself, because reporting a clean result
+      // on a pull request the run only partly read would be the dishonest outcome.
+      for (const limitation of analysisLimitations) summaryLines.push(`${limitation.message}.`);
+      const limitationLine = buildLimitationSummaryLine(limitations);
+      if (limitationLine) summaryLines.push(limitationLine);
       checkRunResp = await githubServiceRequest('/internal/github/check-runs', {
         owner, repo, installation_id: installationId, head_sha: commitSha,
         // Informational findings never contribute to the conclusion.
@@ -1088,7 +1303,12 @@ async function runAnalysisJob(payload) {
       filesAnalyzed: files.length,
       checkRunId: checkRunResp.check_run_id,
       reviewId: reviewResp.review_id,
+      limitations,
     });
+
+    analysisMetrics.runsCompleted.inc();
+    analysisMetrics.runDuration.labels('completed').observe(elapsedSeconds());
+    observeFindingsPosted(lastCounts);
 
     if (shouldMarkBaselineSet) {
       await analysisRunsDb.markBaselineSet(repositoryId);
@@ -1129,6 +1349,11 @@ async function runAnalysisJob(payload) {
           attempt: priorRetries + 1, maxRetries: MAX_AUTOMATIC_ANALYSIS_RETRIES,
           delayMs, retryRunId: requeued?.id || null,
         });
+        // Counted apart from a terminal failure. The review has not failed for the
+        // author yet, and the failure-ratio alert must not fire on work that is
+        // still on its way to succeeding.
+        analysisMetrics.runsFailed.labels('transient_retried').inc();
+        analysisMetrics.runDuration.labels('retried').observe(elapsedSeconds());
         // The queue poller picks the retry up once not_before elapses.
         return;
       } catch (requeueError) {
@@ -1138,8 +1363,11 @@ async function runAnalysisJob(payload) {
       }
     }
 
+    const reason = failureReason(error, { analysisResultProduced });
+    analysisMetrics.runsFailed.labels(reason).inc();
+    analysisMetrics.runDuration.labels('failed').observe(elapsedSeconds());
     logger.error('PR analysis orchestration failed', {
-      runId, repositoryId, error: error.message, automaticRetries: priorRetries,
+      runId, repositoryId, reason, error: error.message, automaticRetries: priorRetries,
     });
     await analysisRunsDb.markFailed(runId, error.message);
     try {
@@ -1155,6 +1383,7 @@ async function runAnalysisJob(payload) {
 }
 
 let analysisQueueTimer = null;
+let analysisQueueGaugeTimer = null;
 let analysisQueueDrainScheduled = false;
 let activeAnalysisWorkers = 0;
 
@@ -1178,17 +1407,36 @@ async function processQueuedAnalysisRun() {
     return { processed: false };
   }
 
-  logger.info('Claimed queued analysis run', {
-    runId: payload.analysis_run_id,
-    repositoryId: payload.repository_id,
-    prNumber: payload.pull_request_number,
-  });
+  // The queue breaks the request scope: the process that claims a run is usually not
+  // the one that took the webhook. Re-establishing the context from the row is what
+  // keeps a review's logs joined to the delivery that asked for it.
+  return requestContext.runWith(
+    { delivery_id: payload.delivery_id, analysis_run_id: payload.analysis_run_id },
+    async () => {
+      logger.info('Claimed queued analysis run', {
+        runId: payload.analysis_run_id,
+        repositoryId: payload.repository_id,
+        prNumber: payload.pull_request_number,
+      });
 
+      try {
+        await runAnalysisJob(payload);
+        return { processed: true, runId: payload.analysis_run_id };
+      } finally {
+        await payload.releaseLease?.();
+      }
+    }
+  );
+}
+
+// The queue gauges the stall alert reads. Observed on its own slow cadence rather than
+// on the poll interval: one extra aggregate query a minute, not one every five seconds.
+async function observeAnalysisQueue() {
   try {
-    await runAnalysisJob(payload);
-    return { processed: true, runId: payload.analysis_run_id };
-  } finally {
-    await payload.releaseLease?.();
+    analysisMetrics.observeQueue(await analysisRunsDb.getQueueStats());
+  } catch (error) {
+    // A gauge that cannot be refreshed goes stale; it must never stop the workers.
+    logger.warn('Analysis queue gauge refresh failed', { error: error.message });
   }
 }
 
@@ -1237,12 +1485,24 @@ function startAnalysisQueueWorker(intervalMs = Number(process.env.ANALYSIS_QUEUE
 
   notifyAnalysisQueued();
   analysisQueueTimer = setInterval(notifyAnalysisQueued, safeIntervalMs);
+
+  observeAnalysisQueue();
+  const gaugeIntervalMs = Number(process.env.ANALYSIS_QUEUE_GAUGE_INTERVAL_MS || 60000);
+  analysisQueueGaugeTimer = setInterval(
+    observeAnalysisQueue,
+    Number.isFinite(gaugeIntervalMs) && gaugeIntervalMs > 0 ? gaugeIntervalMs : 60000
+  );
+  if (typeof analysisQueueGaugeTimer.unref === 'function') analysisQueueGaugeTimer.unref();
+
   return analysisQueueTimer;
 }
 
 function triggerAnalysisJob(payload) {
+  // The context is captured here, where the caller's is still in scope, so the
+  // background run logs under the delivery that triggered it.
+  const inherited = { delivery_id: payload.delivery_id, analysis_run_id: payload.analysis_run_id };
   setImmediate(() => {
-    runAnalysisJob(payload).catch((error) => {
+    requestContext.runWith(inherited, () => runAnalysisJob(payload)).catch((error) => {
       logger.error('Unhandled analysis background failure', {
         runId: payload.analysis_run_id,
         error: error.message,
@@ -1255,9 +1515,16 @@ module.exports = {
   callAnalysisTier,
   triggerAnalysisJob,
   notifyAnalysisQueued,
+  observeAnalysisQueue,
   processQueuedAnalysisRun,
   startAnalysisQueueWorker,
   __private: {
+    applyExclusions,
+    loadRepositoryExclusions,
+    buildLimitationSummaryLine,
+    failureReason,
+    observeFindingsPosted,
+    triggerLabel,
     buildReviewBody,
     buildReviewComment,
     buildTier2FilePayload,
@@ -1275,6 +1542,7 @@ module.exports = {
     explainInlineCommentDecision,
     isInfoFinding,
     isTestCodePath,
+    normalizeLimitations,
     normalizeSuggestionPatch,
     planInlineComments,
     prioritizeReviewComments,

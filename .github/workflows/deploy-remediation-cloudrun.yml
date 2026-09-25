@@ -1,12 +1,21 @@
 # Deploy the repair (remediation) service to Cloud Run as a single instance.
 #
-# WARNING: this deployment runs untrusted repository checks inside the service container.
-# With SANDBOX_BROKER_MODE=inprocess the local subprocess driver executes a repository's own
-# commands (for example `node tests/verify.js`) in this container, with no kernel, network, or
-# filesystem isolation and no separate broker trust boundary. Every result it produces is
-# labelled `development_unverified`. Use this only for repositories the operator owns and has
-# enrolled as test repositories. It is not a production verification path, and nothing it
-# reports may justify setting SANDBOX_NETWORK_POLICY_ATTESTED or SANDBOX_NODE_LIMITS_ATTESTED.
+# WARNING: with SANDBOX_DRIVER=local this deployment runs untrusted repository checks inside the
+# service container. The local subprocess driver executes a repository's own commands (for
+# example `node tests/verify.js`) in this container, with no kernel, network, or filesystem
+# isolation and no separate broker trust boundary. Every result it produces is labelled
+# `development_unverified`. Use it only for repositories the operator owns and has enrolled as
+# test repositories. It is not a production verification path, and nothing it reports may
+# justify setting SANDBOX_NETWORK_POLICY_ATTESTED or SANDBOX_NODE_LIMITS_ATTESTED.
+#
+# `local` is the default of the sandbox_driver input below, so an ordinary push to main never
+# changes which sandbox is in use. Selecting `cloud_run_job` runs each check in a separate
+# Cloud Run job container with its own unprivileged user and a denied network, and evidence is
+# then labelled `isolated_job`. That is a real sandbox and still not the production level: it
+# has no read-only root filesystem and no gVisor runtime class, and this deployment still has
+# no broker trust boundary. Do not select it before completing every step of
+# docs/runbooks/sandbox-cloud-run-job.md, including the smoke test that proves the job's own
+# probes came back denied. Neither driver justifies either attestation flag.
 #
 # Configuration this deployment sets (see docs/runbooks/remediation.md). No secret value is
 # embedded here; every credential is a Secret Manager reference resolved by Cloud Run.
@@ -17,6 +26,9 @@
 #     GAR_REPOSITORY                     Artifact Registry repository, shared with the API image
 #     GCP_WORKLOAD_IDENTITY_PROVIDER     preferred auth; falls back to secrets.GCP_SA_KEY
 #     GCP_SERVICE_ACCOUNT_EMAIL          service account impersonated by workload identity
+#     SANDBOX_JOB_NAME                   Cloud Run job created by infrastructure/remediation/terraform
+#     SANDBOX_BUCKET                     snapshots bucket (<prefix>-snapshots)
+#     SANDBOX_RESULTS_BUCKET             results bucket (<prefix>-results); optional, derived when unset
 #
 #   Plain environment variables set on the service
 #     REMEDIATION_EXECUTION_BACKEND=local      development-only SQLite/file execution store
@@ -24,11 +36,16 @@
 #     REMEDIATION_WORKER_INPROCESS=true        the durable worker loop runs in this process
 #     REMEDIATION_WORKER_POLL_SECONDS=2        worker idle poll interval
 #     SANDBOX_BROKER_MODE=inprocess            no separate broker deployment
-#     SANDBOX_DRIVER=local                     local subprocess driver
-#     SANDBOX_LOCAL_WORKSPACE_ROOT=/tmp/sandbox     scratch root for check workspaces
+#     SANDBOX_DRIVER                           local (default) or cloud_run_job, from the input
+#     SANDBOX_LOCAL_WORKSPACE_ROOT=/tmp/sandbox     scratch root for local check workspaces
 #     SANDBOX_NETWORK_POLICY_ATTESTED=false    must stay false for this deployment
 #     SANDBOX_NODE_LIMITS_ATTESTED=false       must stay false for this deployment
 #     OTEL_SERVICE_NAME=remediation-service    tracing is inert unless an OTLP endpoint is set
+#
+#   Set only when SANDBOX_DRIVER=cloud_run_job
+#     SANDBOX_JOB_NAME, SANDBOX_JOB_REGION, SANDBOX_JOB_PROJECT
+#     SANDBOX_BUCKET, SANDBOX_RESULTS_BUCKET
+#     SANDBOX_IMAGE_DIGEST                 the full registry/image@sha256:... this run pushed
 #
 #   Secret Manager references set on the service (--set-secrets, latest version)
 #     REMEDIATION_SERVICE_INTERNAL_SECRET  codesentry-remediation-internal-secret
@@ -56,12 +73,30 @@ on:
       - 'services/remediation-service/**'
       - '.github/workflows/deploy-remediation-cloudrun.yml'
   workflow_dispatch:
+    inputs:
+      sandbox_driver:
+        description: 'Which sandbox runs repository checks. cloud_run_job requires docs/runbooks/sandbox-cloud-run-job.md to have been completed, smoke test included.'
+        type: choice
+        options: [local, cloud_run_job]
+        default: local
+        required: false
+      environment:
+        description: 'Which environment to deploy'
+        type: choice
+        options: [production, staging]
+        default: production
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        default: production
 
 permissions:
   contents: read
 
 concurrency:
-  group: cloudrun-deploy-${{ github.workflow }}
+  # Staging and production are separate services and must not queue behind each other.
+  group: cloudrun-deploy-${{ github.workflow }}-${{ inputs.environment || 'production' }}
   cancel-in-progress: false
 
 jobs:
@@ -70,8 +105,29 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      # A push to main is never a request to change the sandbox, so it takes the default.
+      SANDBOX_DRIVER: ${{ inputs.sandbox_driver || 'local' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      # Everything downstream reads $SERVICE and $SECRET_SUFFIX, so the difference
+      # between production and staging lives in exactly one step.
+      - name: Resolve environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENVIRONMENT="${{ inputs.environment || 'production' }}"
+          case "$ENVIRONMENT" in
+            production) SUFFIX="" ;;
+            staging) SUFFIX="-staging" ;;
+            *) echo "Unknown environment: $ENVIRONMENT" >&2; exit 1 ;;
+          esac
+          {
+            echo "ENVIRONMENT=$ENVIRONMENT"
+            echo "SECRET_SUFFIX=$SUFFIX"
+            echo "SERVICE=codesentry-remediation${SUFFIX}"
+          } >> "$GITHUB_ENV"
 
       - name: Authenticate to Google Cloud (Workload Identity)
         if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
@@ -90,6 +146,24 @@ jobs:
         with:
           project_id: '${{ vars.GCP_PROJECT_ID }}'
 
+      # Refuse early rather than deploying a service configured for a sandbox this installation
+      # has not provisioned. The driver would fail closed at construction, but it would do so
+      # after the deploy replaced a working revision.
+      - name: Assert the Cloud Run job sandbox is provisioned before selecting it
+        if: env.SANDBOX_DRIVER == 'cloud_run_job'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${{ vars.SANDBOX_JOB_NAME }}" ] || missing+=("vars.SANDBOX_JOB_NAME")
+          [ -n "${{ vars.SANDBOX_BUCKET }}" ] || missing+=("vars.SANDBOX_BUCKET")
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "SANDBOX_DRIVER=cloud_run_job needs ${missing[*]}. Run infrastructure/remediation/terraform with enable_cloud_run_job_sandbox=true and follow docs/runbooks/sandbox-cloud-run-job.md." >&2
+            exit 1
+          fi
+          gcloud run jobs describe '${{ vars.SANDBOX_JOB_NAME }}' \
+            --region '${{ vars.GCP_REGION }}' --project '${{ vars.GCP_PROJECT_ID }}' >/dev/null
+
       - name: Reset Docker auth
         run: |
           rm -f "$HOME/.docker/config.json"
@@ -104,7 +178,9 @@ jobs:
         run: |
           set -euo pipefail
           SHORT="${GITHUB_SHA:0:12}"
-          echo "IMAGE=us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/remediation:remediation-${SHORT}" >> "$GITHUB_ENV"
+          REGISTRY="us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}"
+          echo "IMAGE=${REGISTRY}/remediation:remediation-${SHORT}" >> "$GITHUB_ENV"
+          echo "JOB_IMAGE=${REGISTRY}/remediation-job:remediation-job-${SHORT}" >> "$GITHUB_ENV"
 
       - name: Build repair image
         run: |
@@ -118,11 +194,69 @@ jobs:
         run: |
           docker push "$IMAGE"
 
+      # The sandbox job image is the same Dockerfile with RUNTIME_UID=0: its entrypoint has to
+      # drop the repository's check to the separate unprivileged `sandboxcheck` user, and only a
+      # process that starts as root can change uid. Cloud Run cannot override a container's
+      # user, so the difference lives in the image. The job's own command
+      # (`python3 -m src.sandbox.job_entrypoint`) is set by Terraform and is not changed here.
+      - name: Build and push the sandbox job image
+        if: env.SANDBOX_DRIVER == 'cloud_run_job'
+        run: |
+          docker build --build-arg RUNTIME_UID=0 \
+            -f ./services/remediation-service/Dockerfile -t "$JOB_IMAGE" ./services/remediation-service
+          docker run --rm --entrypoint id "$JOB_IMAGE" -u sandboxcheck
+          docker push "$JOB_IMAGE"
+
+      # The driver compares the digest each task reads back from the Cloud Run Admin API against
+      # SANDBOX_IMAGE_DIGEST and refuses the run on any disagreement, so the job and the service
+      # have to be pointed at the same digest in that order: update the job first, then deploy
+      # the service with the digest that update produced.
+      - name: Point the sandbox job at the new digest
+        if: env.SANDBOX_DRIVER == 'cloud_run_job'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIGEST=$(gcloud artifacts docker images describe "$JOB_IMAGE" \
+            --project '${{ vars.GCP_PROJECT_ID }}' --format='value(image_summary.digest)')
+          PINNED="${JOB_IMAGE%:*}@${DIGEST}"
+          gcloud run jobs update '${{ vars.SANDBOX_JOB_NAME }}' \
+            --image "$PINNED" \
+            --region '${{ vars.GCP_REGION }}' --project '${{ vars.GCP_PROJECT_ID }}'
+          echo "SANDBOX_IMAGE_DIGEST=${PINNED}" >> "$GITHUB_ENV"
+
+      - name: Compose the service environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          VARS="REMEDIATION_EXECUTION_BACKEND=local"
+          VARS="${VARS},REMEDIATION_LOCAL_STATE_DIR=/tmp/remediation"
+          VARS="${VARS},REMEDIATION_WORKER_INPROCESS=true"
+          VARS="${VARS},REMEDIATION_WORKER_POLL_SECONDS=2"
+          VARS="${VARS},SANDBOX_BROKER_MODE=inprocess"
+          VARS="${VARS},SANDBOX_DRIVER=${SANDBOX_DRIVER}"
+          VARS="${VARS},SANDBOX_LOCAL_WORKSPACE_ROOT=/tmp/sandbox"
+          VARS="${VARS},SANDBOX_NETWORK_POLICY_ATTESTED=false"
+          VARS="${VARS},SANDBOX_NODE_LIMITS_ATTESTED=false"
+          VARS="${VARS},OTEL_SERVICE_NAME=remediation-service"
+          VARS="${VARS},DEPLOY_ENVIRONMENT=${ENVIRONMENT}"
+          if [ "${SANDBOX_DRIVER}" = "cloud_run_job" ]; then
+            VARS="${VARS},SANDBOX_JOB_NAME=${{ vars.SANDBOX_JOB_NAME }}"
+            VARS="${VARS},SANDBOX_JOB_REGION=${{ vars.GCP_REGION }}"
+            VARS="${VARS},SANDBOX_JOB_PROJECT=${{ vars.GCP_PROJECT_ID }}"
+            VARS="${VARS},SANDBOX_BUCKET=${{ vars.SANDBOX_BUCKET }}"
+            VARS="${VARS},SANDBOX_IMAGE_DIGEST=${SANDBOX_IMAGE_DIGEST}"
+            if [ -n "${{ vars.SANDBOX_RESULTS_BUCKET }}" ]; then
+              VARS="${VARS},SANDBOX_RESULTS_BUCKET=${{ vars.SANDBOX_RESULTS_BUCKET }}"
+            fi
+          fi
+          echo "SERVICE_ENV_VARS=${VARS}" >> "$GITHUB_ENV"
+
       # One instance, one concurrent request: the local execution store is a per-instance
-      # SQLite file and the local sandbox driver runs checks on this container's CPU.
+      # SQLite file. With SANDBOX_DRIVER=local the sandbox also runs checks on this container's
+      # CPU; with cloud_run_job the checks run elsewhere and this container only waits on them.
       - name: Deploy repair service
         run: |
-          gcloud run deploy codesentry-remediation \
+          gcloud run deploy "$SERVICE" \
             --image "$IMAGE" \
             --region '${{ vars.GCP_REGION }}' \
             --no-cpu-throttling \
@@ -134,22 +268,12 @@ jobs:
             --memory 1Gi \
             --cpu 1 \
             --timeout 900 \
-            --update-env-vars "\
-              REMEDIATION_EXECUTION_BACKEND=local,\
-              REMEDIATION_LOCAL_STATE_DIR=/tmp/remediation,\
-              REMEDIATION_WORKER_INPROCESS=true,\
-              REMEDIATION_WORKER_POLL_SECONDS=2,\
-              SANDBOX_BROKER_MODE=inprocess,\
-              SANDBOX_DRIVER=local,\
-              SANDBOX_LOCAL_WORKSPACE_ROOT=/tmp/sandbox,\
-              SANDBOX_NETWORK_POLICY_ATTESTED=false,\
-              SANDBOX_NODE_LIMITS_ATTESTED=false,\
-              OTEL_SERVICE_NAME=remediation-service" \
+            --update-env-vars "$SERVICE_ENV_VARS" \
             --set-secrets "\
-              REMEDIATION_SERVICE_INTERNAL_SECRET=codesentry-remediation-internal-secret:latest,\
-              REPAIR_LLM_BASE_URL=codesentry-repair-llm-base-url:latest,\
-              REPAIR_LLM_API_KEY=codesentry-repair-llm-api-key:latest,\
-              REPAIR_LLM_MODEL=codesentry-repair-llm-model:latest" \
+              REMEDIATION_SERVICE_INTERNAL_SECRET=codesentry-remediation-internal-secret${SECRET_SUFFIX}:latest,\
+              REPAIR_LLM_BASE_URL=codesentry-repair-llm-base-url${SECRET_SUFFIX}:latest,\
+              REPAIR_LLM_API_KEY=codesentry-repair-llm-api-key${SECRET_SUFFIX}:latest,\
+              REPAIR_LLM_MODEL=codesentry-repair-llm-model${SECRET_SUFFIX}:latest" \
             --port 8002 \
             --no-allow-unauthenticated
 
@@ -157,9 +281,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          URL=$(gcloud run services describe codesentry-remediation \
+          URL=$(gcloud run services describe "$SERVICE" \
             --region '${{ vars.GCP_REGION }}' \
             --project '${{ vars.GCP_PROJECT_ID }}' \
             --format='value(status.url)')
           TOKEN=$(gcloud auth print-identity-token --audiences="$URL")
           curl -sfS --connect-timeout 15 --max-time 45 -H "Authorization: Bearer ${TOKEN}" "${URL}/health"
+
+      - name: State which sandbox this revision uses
+        shell: bash
+        run: |
+          if [ "${SANDBOX_DRIVER}" = "cloud_run_job" ]; then
+            echo "SANDBOX_DRIVER=cloud_run_job. Checks run in ${{ vars.SANDBOX_JOB_NAME }} at ${SANDBOX_IMAGE_DIGEST}." >> "$GITHUB_STEP_SUMMARY"
+            echo "Evidence is labelled isolated_job: a real sandbox, with no read-only root filesystem and no gVisor runtime class." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "SANDBOX_DRIVER=local. Repository checks run inside this service container with no isolation." >> "$GITHUB_STEP_SUMMARY"
+            echo "Every result is labelled development_unverified and satisfies no isolation gate." >> "$GITHUB_STEP_SUMMARY"
+          fi

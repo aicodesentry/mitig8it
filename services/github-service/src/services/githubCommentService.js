@@ -1,4 +1,5 @@
 const axios = require('axios');
+const logger = require('../utils/logger');
 
 class GitHubCommentService {
   /**
@@ -22,7 +23,7 @@ class GitHubCommentService {
 
       return response.data;
     } catch (error) {
-      console.error(`[ERROR] Failed to post comment on line ${lineNumber}:`, error.response?.data || error.message);
+      logger.error(`[ERROR] Failed to post comment on line ${lineNumber}:`, error.response?.data || error.message);
       throw error;
     }
   }
@@ -45,7 +46,7 @@ class GitHubCommentService {
 
       return response.data;
     } catch (error) {
-      console.error('[ERROR] Failed to post summary comment:', error.response?.data || error.message);
+      logger.error('[ERROR] Failed to post summary comment:', error.response?.data || error.message);
       throw error;
     }
   }
@@ -64,7 +65,7 @@ class GitHubCommentService {
       });
       return response.data;
     } catch (error) {
-      console.error('[ERROR] Failed to update summary comment:', error.response?.data || error.message);
+      logger.error('[ERROR] Failed to update summary comment:', error.response?.data || error.message);
       throw error;
     }
   }

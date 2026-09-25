@@ -4,6 +4,7 @@ const githubGrpc = require('../grpc/generated/github_grpc_pb');
 const commonPb = require('../grpc/generated/common_pb');
 const { createGrpcClientConfig } = require('./grpcConnection');
 const { changedFileToPlain } = require('./grpcConverters');
+const requestContext = require('../utils/requestContext');
 
 // The GitHub service reports the originating internal HTTP status in this trailing
 // metadata entry, because gRPC collapses the 409 and 422 that callers branch on into
@@ -12,7 +13,7 @@ const OPERATION_STATUS_METADATA_KEY = 'x-operation-status';
 
 // Remediation callers were written against the REST client and read error.response.status
 // and the axios-style string error.code. Rebuilding that exact shape here keeps
-// remediationWorkflow, remediationActionWorker, mergeController and routes/remediation
+// remediationWorkflow, remediationVerificationCheck and routes/remediation
 // classifying failures the same way on either transport.
 const GRPC_STATUS_TO_HTTP = new Map([
   [grpc.status.INVALID_ARGUMENT, { status: 400 }],
@@ -47,7 +48,10 @@ function toRemediationTransportError(error) {
 function unary(client, method, request, timeoutMs = 45000) {
   return new Promise((resolve, reject) => {
     const deadline = new Date(Date.now() + timeoutMs);
-    client[method](request, { deadline }, (error, response) => {
+    // The delivery and run identifiers ride along on every call, so the github
+    // service's log lines for this work join the API's without a manual argument.
+    const metadata = requestContext.toGrpcMetadata(grpc.Metadata);
+    client[method](request, metadata, { deadline }, (error, response) => {
       if (error) {
         reject(error);
         return;
@@ -113,7 +117,14 @@ class GitHubGrpcClient {
     request.setCommitSha(payload.commit_sha || '');
     request.setInstallationId(Number(payload.installation_id || 0));
     const response = await unary(this.client, 'fetchPullRequestFiles', request);
-    return { files: response.getFilesList().map(changedFileToPlain) };
+    const limitation = response.getLimitation();
+    return {
+      files: response.getFilesList().map(changedFileToPlain),
+      // An unset message reads as an empty kind, which is not a limitation.
+      ...(limitation && limitation.getKind()
+        ? { limitation: { kind: limitation.getKind(), message: limitation.getMessage() } }
+        : {}),
+    };
   }
 
   async fetchFileContents(payload) {
@@ -166,35 +177,6 @@ class GitHubGrpcClient {
     };
   }
 
-  async authorizeRemediation(payload) {
-    const request = new githubPb.RemediationAuthorizeRequest();
-    request.setEnvelope(buildRemediationEnvelope(payload));
-    const response = await remediationUnary(this.client, 'authorizeRemediation', request);
-    return {
-      state: response.getState(),
-      installation_active: response.getInstallationActive(),
-      repository_granted: response.getRepositoryGranted(),
-      actor_write_permission: response.getActorWritePermission(),
-      head_sha: response.getHeadSha(),
-      base_sha: response.getBaseSha(),
-      head_branch: response.getHeadBranch(),
-      base_branch: response.getBaseBranch(),
-    };
-  }
-
-  async prepareRemediation(payload) {
-    const request = new githubPb.RemediationPrepareRequest();
-    request.setEnvelope(buildRemediationEnvelope(payload));
-    const response = await remediationUnary(this.client, 'prepareRemediation', request);
-    return {
-      state: response.getState(),
-      operation_id: response.getOperationId(),
-      branch: response.getBranch(),
-      expected_head_oid: response.getExpectedHeadOid(),
-      marker: response.getMarker(),
-    };
-  }
-
   async snapshotRemediation(payload) {
     const request = new githubPb.RemediationSnapshotRequest();
     request.setEnvelope(buildRemediationEnvelope(payload));
@@ -216,125 +198,6 @@ class GitHubGrpcClient {
       head_sha: response.getHeadSha(),
       base_sha: response.getBaseSha(),
       omitted_source_paths: response.getOmittedSourcePathsList(),
-    };
-  }
-
-  async commitRemediation(payload) {
-    const request = new githubPb.RemediationCommitRequest();
-    request.setEnvelope(buildRemediationEnvelope(payload));
-    request.setBranch(payload.branch || '');
-    request.setExpectedHeadOid(payload.expected_head_oid || '');
-    request.setVerifiedTreeOid(payload.verified_tree_oid || '');
-    request.setCommitMessage(payload.commit_message || '');
-    request.setChangesList((payload.changes || []).map((change) => {
-      const message = new githubPb.RemediationFileChange();
-      message.setPath(change.path || '');
-      message.setContentsBase64(change.contents_base64 || '');
-      return message;
-    }));
-    const response = await remediationUnary(this.client, 'commitRemediation', request);
-    return {
-      state: response.getState(),
-      operation_id: response.getOperationId(),
-      commit_sha: response.getCommitSha(),
-      tree_oid: response.getTreeOid(),
-      reason: response.getReason(),
-    };
-  }
-
-  async reconcileRemediation(payload) {
-    const request = new githubPb.RemediationReconcileRequest();
-    request.setEnvelope(buildRemediationEnvelope(payload));
-    request.setVerifiedTreeOid(payload.verified_tree_oid || '');
-    const response = await remediationUnary(this.client, 'reconcileRemediation', request);
-    return {
-      state: response.getState(),
-      operation_id: response.getOperationId(),
-      commit_sha: response.getCommitSha(),
-      tree_oid: response.getTreeOid(),
-      reason: response.getReason(),
-    };
-  }
-
-  async mergeRemediation(payload) {
-    const request = new githubPb.RemediationMergeRequest();
-    request.setEnvelope(buildRemediationEnvelope(payload));
-    request.setExpectedHeadSha(payload.expected_head_sha || '');
-    request.setExpectedBaseSha(payload.expected_base_sha || '');
-    request.setMergeMethod(payload.merge_method || '');
-    request.setVerificationCheckName(payload.verification_check_name || '');
-    const response = await remediationUnary(this.client, 'mergeRemediation', request);
-    return {
-      state: response.getState(),
-      operation_id: response.getOperationId(),
-      commit_sha: response.getCommitSha(),
-      reason: response.getReason(),
-    };
-  }
-
-  async cancelScheduledMerge(payload) {
-    const request = new githubPb.CancelScheduledMergeRequest();
-    request.setEnvelope(buildRemediationEnvelope(payload));
-    request.setPullNumber(Number(payload.pull_number || 0));
-    request.setExpectedHeadSha(payload.expected_head_sha || '');
-    const response = await remediationUnary(this.client, 'cancelScheduledMerge', request);
-    return {
-      state: response.getState(),
-      operation_id: response.getOperationId(),
-      head_sha: response.getHeadSha(),
-      merged: response.getMerged(),
-      reason: response.getReason(),
-    };
-  }
-
-  async readMergeEligibility(payload) {
-    const request = new githubPb.MergeEligibilityRequest();
-    request.setEnvelope(buildRemediationEnvelope(payload));
-    request.setPullNumber(Number(payload.pull_number || 0));
-    request.setExpectedHeadSha(payload.expected_head_sha || '');
-    request.setVerificationCheckName(payload.verification_check_name || '');
-    const response = await remediationUnary(this.client, 'readMergeEligibility', request);
-    const reviews = response.getReviews();
-    return {
-      eligible: response.getEligible(),
-      blockers: response.getBlockersList(),
-      required_checks: response.getRequiredChecksList().map((check) => ({
-        context: check.getContext(),
-        app_id: check.getAppId(),
-      })),
-      check_runs: response.getCheckRunsList().map((check) => ({
-        id: check.getId(),
-        name: check.getName(),
-        app_id: check.getAppId(),
-        status: check.getStatus(),
-        conclusion: check.getConclusion(),
-      })),
-      reviews: {
-        required: reviews ? reviews.getRequired() : 0,
-        approvals: reviews ? reviews.getApprovals() : 0,
-        changes_requested: reviews ? reviews.getChangesRequested() : false,
-      },
-      protection_source: response.getProtectionSource(),
-      mergeable_state: response.getMergeableState(),
-      head_sha: response.getHeadSha(),
-      base_sha: response.getBaseSha(),
-      verification_check_name: response.getVerificationCheckName(),
-    };
-  }
-
-  async readPullRequestHead(payload) {
-    const request = new githubPb.PullRequestHeadRequest();
-    request.setEnvelope(buildRemediationEnvelope(payload));
-    request.setPullNumber(Number(payload.pull_number || 0));
-    const response = await remediationUnary(this.client, 'readPullRequestHead', request);
-    return {
-      head_sha: response.getHeadSha(),
-      base_sha: response.getBaseSha(),
-      state: response.getState(),
-      draft: response.getDraft(),
-      merged: response.getMerged(),
-      mergeable_state: response.getMergeableState(),
-      fork: response.getFork(),
     };
   }
 

@@ -13,7 +13,8 @@ const analysisGrpc = require('../src/grpc/generated/analysis_grpc_pb');
 const githubGrpc = require('../src/grpc/generated/github_grpc_pb');
 const githubPb = require('../src/grpc/generated/github_pb');
 const commonPb = require('../src/grpc/generated/common_pb');
-const { buildAnalyzeRequest, buildTriageRequest } = require('../src/clients/analysisGrpcClient');
+const analysisPb = require('../src/grpc/generated/analysis_pb');
+const { buildAnalyzeRequest, buildTriageRequest, analyzeResponseToPlain } = require('../src/clients/analysisGrpcClient');
 
 const analysisService = analysisGrpc.AnalysisServiceService;
 const githubService = githubGrpc.GitHubServiceService;
@@ -192,5 +193,51 @@ describe('test-code markers survive the wire format', () => {
     const plain = findingToPlain(commonPb.Finding.deserializeBinary(message.serializeBinary()));
 
     expect(plain.evidence_details.extra).toBeUndefined();
+  });
+});
+
+describe('analysis limitations cross the gRPC boundary', () => {
+  function limitation({ path, kind, type, message, line }) {
+    const entry = new commonPb.AnalysisLimitation();
+    entry.setPath(path);
+    entry.setKind(kind);
+    entry.setType(type);
+    entry.setMessage(message);
+    if (line) entry.setLine(line);
+    return entry;
+  }
+
+  test('a partially parsed file reaches the orchestrator as a plain object', () => {
+    const response = new analysisPb.AnalyzePullRequestResponse();
+    response.setTier(2);
+    response.setAnalysisLimitationsList([
+      limitation({
+        path: 'services/cwe-vul.py',
+        kind: 'partial_parse',
+        type: 'Lexical error',
+        message: 'unrecognized symbol in string',
+        line: 127,
+      }),
+      limitation({ path: 'services/huge.ts', kind: 'not_analyzed', type: 'Timeout', message: 'timed out' }),
+    ]);
+
+    const restored = analysisPb.AnalyzePullRequestResponse.deserializeBinary(response.serializeBinary());
+
+    expect(analyzeResponseToPlain(restored).analysis_limitations).toEqual([
+      {
+        path: 'services/cwe-vul.py',
+        kind: 'partial_parse',
+        type: 'Lexical error',
+        message: 'unrecognized symbol in string',
+        line: 127,
+      },
+      { path: 'services/huge.ts', kind: 'not_analyzed', type: 'Timeout', message: 'timed out', line: null },
+    ]);
+  });
+
+  test('a response without limitations maps to an empty list', () => {
+    const response = new analysisPb.AnalyzePullRequestResponse();
+    const restored = analysisPb.AnalyzePullRequestResponse.deserializeBinary(response.serializeBinary());
+    expect(analyzeResponseToPlain(restored).analysis_limitations).toEqual([]);
   });
 });

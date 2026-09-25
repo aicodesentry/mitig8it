@@ -1,42 +1,84 @@
 {
-  "hosting": {
-    "site": "codesentry-260311-9f2b",
-    "public": "frontend/dist",
-    "ignore": [
-      "firebase.json",
-      "**/.*",
-      "**/node_modules/**"
-    ],
-    "rewrites": [
-      {
-        "source": "/auth/callback",
-        "destination": "/index.html"
-      },
-      {
-        "source": "/auth{,/**}",
-        "run": {
-          "serviceId": "codesentry-api",
-          "region": "us-central1"
+  "hosting": [
+    {
+      "target": "production",
+      "public": "frontend/dist",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        {
+          "source": "/auth/callback",
+          "destination": "/index.html"
+        },
+        {
+          "source": "/auth{,/**}",
+          "run": {
+            "serviceId": "codesentry-api",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/api{,/**}",
+          "run": {
+            "serviceId": "codesentry-api",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/health",
+          "run": {
+            "serviceId": "codesentry-api",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "**",
+          "destination": "/index.html"
         }
-      },
-      {
-        "source": "/api{,/**}",
-        "run": {
-          "serviceId": "codesentry-api",
-          "region": "us-central1"
+      ]
+    },
+    {
+      "target": "staging",
+      "public": "frontend/dist",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        {
+          "source": "/auth/callback",
+          "destination": "/index.html"
+        },
+        {
+          "source": "/auth{,/**}",
+          "run": {
+            "serviceId": "codesentry-api-staging",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/api{,/**}",
+          "run": {
+            "serviceId": "codesentry-api-staging",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "/health",
+          "run": {
+            "serviceId": "codesentry-api-staging",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "**",
+          "destination": "/index.html"
         }
-      },
-      {
-        "source": "/health",
-        "run": {
-          "serviceId": "codesentry-api",
-          "region": "us-central1"
-        }
-      },
-      {
-        "source": "**",
-        "destination": "/index.html"
-      }
-    ]
-  }
+      ]
+    }
+  ]
 }

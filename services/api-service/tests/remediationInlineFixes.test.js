@@ -9,7 +9,7 @@ jest.mock('../src/db/remediation', () => ({
 }));
 jest.mock('../src/db/findings', () => ({ listByAnalysisRun: jest.fn(async () => []) }));
 jest.mock('../src/services/githubRemediationClient', () => ({ GitHubRemediationClient: jest.fn(() => ({})) }));
-jest.mock('../src/services/mergeController', () => ({ evaluateForPullRequest: jest.fn(), publishVerificationCheck: jest.fn(), evaluateForAction: jest.fn() }));
+jest.mock('../src/services/remediationVerificationCheck', () => ({ publishVerificationCheck: jest.fn() }));
 jest.mock('../src/utils/logger', () => ({ warn: jest.fn(), error: jest.fn(), info: jest.fn() }));
 
 const remediationDb = require('../src/db/remediation');
@@ -342,4 +342,175 @@ test('the outbox routes remediation.ready to the publication and records refusal
   remediationDb.jobPublishContext.mockResolvedValue(context());
   publish.mockRejectedValueOnce(Object.assign(new Error('ECONNREFUSED'), { code: 'ECONNREFUSED' }));
   await expect(handler({ aggregate_id: JOB })).rejects.toThrow('ECONNREFUSED');
+});
+
+// The outcome log entry a publication produces. One row per finding the published
+// candidate covers, and nothing at all for a finding no candidate repaired.
+describe('publishedFixOutcomes', () => {
+  const JOB_ROW = {
+    id: JOB, repository_id: 'r-1', installation_id: 42, pull_request_id: 'pr-1', head_sha: HEAD,
+  };
+  const finding = (id, overrides = {}) => ({
+    id, fingerprint: `${id}`.padEnd(64, '0'), rule_id: 'sql-injection', cwe_id: 'CWE-89',
+    severity: 'high', confidence: 0.9, category: 'injection', repository_id: 'r-1',
+    installation_id: 42, pull_request_id: 'pr-1', ...overrides,
+  });
+
+  test('records one fix_published per finding the candidate covers', () => {
+    const outcomes = inline.publishedFixOutcomes({
+      job: JOB_ROW,
+      findings: [finding('f-1'), finding('f-2')],
+      sections: [{ candidate_id: 'c-1', finding_ids: ['f-1', 'f-2'] }],
+    });
+
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes[0]).toMatchObject({
+      findingId: 'f-1', outcome: 'fix_published', source: 'remediation',
+      candidateId: 'c-1', externalId: 'c-1', jobId: JOB, repositoryId: 'r-1',
+      installationId: 42, pullRequestId: 'pr-1', commitSha: HEAD, ruleId: 'sql-injection',
+    });
+  });
+
+  test('a section with no candidate is a skipped finding and publishes nothing', () => {
+    expect(inline.publishedFixOutcomes({
+      job: JOB_ROW,
+      findings: [finding('f-1')],
+      sections: [{ candidate_id: '', finding_ids: ['f-1'] }],
+    })).toEqual([]);
+  });
+
+  test('the same finding under the same candidate is recorded once', () => {
+    const outcomes = inline.publishedFixOutcomes({
+      job: JOB_ROW,
+      findings: [finding('f-1')],
+      sections: [
+        { candidate_id: 'c-1', finding_ids: ['f-1'] },
+        { candidate_id: 'c-1', finding_ids: ['f-1'] },
+      ],
+    });
+    expect(outcomes).toHaveLength(1);
+  });
+
+  test('the same finding under two candidates is recorded once per candidate', () => {
+    const outcomes = inline.publishedFixOutcomes({
+      job: JOB_ROW,
+      findings: [finding('f-1')],
+      sections: [
+        { candidate_id: 'c-1', finding_ids: ['f-1'] },
+        { candidate_id: 'c-2', finding_ids: ['f-1'] },
+      ],
+    });
+    expect(outcomes.map((outcome) => outcome.candidateId)).toEqual(['c-1', 'c-2']);
+  });
+
+  test('a finding with no snapshot behind it is skipped rather than recorded blank', () => {
+    expect(inline.publishedFixOutcomes({
+      job: JOB_ROW, findings: [], sections: [{ candidate_id: 'c-1', finding_ids: ['f-9'] }],
+    })).toEqual([]);
+  });
+});
+
+// Two analysis tiers can prove the same flaw on the same line, and each proven candidate
+// used to publish its own suggestion. GitHub applies one suggestion per line, so a group
+// of proven candidates on overlapping lines now publishes one and the rest say which
+// comment carries the fix.
+const CANDIDATE_A = '11111111-1111-4111-8111-111111111111';
+const CANDIDATE_B = '22222222-2222-4222-8222-222222222222';
+const ALT_FIXED = ORIGINAL.replace('db.query(`SELECT * FROM orders WHERE id = ${id}`)', "db.query('SELECT * FROM orders WHERE id = ?', [id])");
+const LINE_FOUR_FIXED = ORIGINAL.replace('  return rows[0];', '  return rows[0] || null;');
+const WIDE_FIXED = ORIGINAL
+  .replace('db.query(`SELECT * FROM orders WHERE id = ${id}`)', "db.query('SELECT * FROM orders WHERE id = $1', [id])")
+  .replace('  return rows[0];', '  return rows[0] || null;');
+
+function provenCandidate(id, findingId, replacement, overrides = {}) {
+  const base = candidate();
+  return candidate({
+    id,
+    finding_snapshot_ids: [findingId],
+    preview: { ...base.preview, changes: [{ path: 'services/orders.js', original: ORIGINAL, replacement, unified_diff: '--- a/services/orders.js\n+++ b/services/orders.js\n@@ -3 +3 @@\n-  old\n+  new' }] },
+    ...overrides,
+  });
+}
+
+const SQL_FINDINGS = [
+  { id: 'f1', title: 'SQL injection', rule_id: 'sql.injection.raw_query', severity: 'high', file_path: 'services/orders.js', line_start: 3, line_end: 3, fingerprint: 'fp-sql' },
+  { id: 'f5', title: 'SQL injection', rule_id: 'opengrep.cwe-89.sql-template-literal', severity: 'high', file_path: 'services/orders.js', line_start: 3, line_end: 3, fingerprint: 'fp-sql-2' },
+];
+const NO_SKIPPED = { failure_reason: { skipped: [] } };
+
+function sameLineContext(candidates, findings = SQL_FINDINGS) {
+  return context({ job: { ...context().job, ...NO_SKIPPED }, candidates, findings });
+}
+
+test('two proven candidates that write the same text on the same line publish one suggestion', () => {
+  const sections = inline.buildSections(sameLineContext([
+    provenCandidate(CANDIDATE_A, 'f1', FIXED),
+    provenCandidate(CANDIDATE_B, 'f5', FIXED),
+  ]));
+
+  expect(sections).toHaveLength(2);
+  expect(sections[0]).toMatchObject({
+    finding_fingerprint: 'fp-sql', candidate_id: CANDIDATE_A, covered_by: '', superseded_by: '',
+    hunk: { start_line: 3, end_line: 3 }, finding_ids: ['f1', 'f5'],
+  });
+  // The loser renders through the covered section, whose text names the comment that
+  // carries the fix, and it carries no hunk, so no second suggestion is published.
+  expect(sections[1]).toMatchObject({
+    finding_fingerprint: 'fp-sql-2', candidate_id: CANDIDATE_A, covered_by: 'sql.injection.raw_query',
+    superseded_by: '', hunk: null, extra_hunks: [], unified_diff: '', finding_ids: ['f1', 'f5'],
+  });
+  expect(sections.filter((section) => section.hunk)).toHaveLength(1);
+});
+
+test('a proven candidate that would write different text on the same line records what superseded it', () => {
+  const sections = inline.buildSections(sameLineContext([
+    provenCandidate(CANDIDATE_A, 'f1', FIXED),
+    provenCandidate(CANDIDATE_B, 'f5', ALT_FIXED),
+  ]));
+
+  expect(sections.filter((section) => section.hunk)).toHaveLength(1);
+  expect(sections[1]).toMatchObject({ finding_fingerprint: 'fp-sql-2', covered_by: 'sql.injection.raw_query', hunk: null });
+  expect(sections[1].superseded_by)
+    .toBe('sql.injection.raw_query: its verified fix replaces the same lines with different text, and GitHub accepts one suggestion per line.');
+});
+
+test('two proven candidates on different lines both keep their suggestion', () => {
+  const findings = [SQL_FINDINGS[0], { ...SQL_FINDINGS[1], line_start: 4, line_end: 4 }];
+  const sections = inline.buildSections(sameLineContext([
+    provenCandidate(CANDIDATE_A, 'f1', FIXED),
+    provenCandidate(CANDIDATE_B, 'f5', LINE_FOUR_FIXED),
+  ], findings));
+
+  expect(sections).toHaveLength(2);
+  expect(sections.map((section) => [section.finding_fingerprint, section.candidate_id, section.covered_by, section.hunk?.start_line])).toEqual([
+    ['fp-sql', CANDIDATE_A, '', 3],
+    ['fp-sql-2', CANDIDATE_B, '', 4],
+  ]);
+});
+
+test('the candidate that keeps the suggestion does not depend on the order the candidates arrive in', () => {
+  const a = provenCandidate(CANDIDATE_A, 'f1', FIXED);
+  const b = provenCandidate(CANDIDATE_B, 'f5', ALT_FIXED);
+  const forward = inline.buildSections(sameLineContext([a, b]));
+  const reversed = inline.buildSections(sameLineContext([b, a]));
+  const carrying = (sections) => sections.find((section) => section.hunk);
+
+  // Equal on every other ground, the lower candidate id wins, whichever order they arrive in.
+  expect(carrying(forward)).toMatchObject({ candidate_id: CANDIDATE_A, finding_fingerprint: 'fp-sql' });
+  expect(carrying(reversed)).toMatchObject({ candidate_id: CANDIDATE_A, finding_fingerprint: 'fp-sql' });
+
+  // A hunk that covers the whole group's lines wins over one that covers part of it, and
+  // a sandbox-verified fix wins over a development-verified one, before the id decides.
+  const wide = provenCandidate(CANDIDATE_B, 'f5', WIDE_FIXED);
+  const wideFindings = [SQL_FINDINGS[0], { ...SQL_FINDINGS[1], line_start: 3, line_end: 4 }];
+  expect(carrying(inline.buildSections(sameLineContext([a, wide], wideFindings)))).toMatchObject({ candidate_id: CANDIDATE_B });
+  const verified = provenCandidate(CANDIDATE_B, 'f5', ALT_FIXED, { verification_level: 'independent_sandbox' });
+  expect(carrying(inline.buildSections(sameLineContext([a, verified])))).toMatchObject({ candidate_id: CANDIDATE_B });
+});
+
+test('groupByOverlap puts transitively overlapping hunks in one group and leaves disjoint ones apart', () => {
+  const entry = (start, end) => ({ range: { start, end } });
+  const shape = (groups) => groups.map((group) => [group.start, group.end, group.items.length]);
+  expect(shape(inline.groupByOverlap([entry(10, 10), entry(3, 4), entry(4, 9)]))).toEqual([[3, 9, 2], [10, 10, 1]]);
+  expect(shape(inline.groupByOverlap([entry(3, 3), entry(5, 5)]))).toEqual([[3, 3, 1], [5, 5, 1]]);
 });

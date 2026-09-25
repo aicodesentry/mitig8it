@@ -7,6 +7,8 @@ All project Markdown documentation, except the root [README](../README.md), live
 - [Local Development](getting-started/local-dev.md)
 - [Environment Variables](getting-started/environment.md)
 - [GitHub App Setup](getting-started/github-app.md)
+- [GitHub Action](getting-started/github-action.md)
+- [Repository Configuration](getting-started/configuration.md)
 
 ## Architecture
 
@@ -18,12 +20,14 @@ All project Markdown documentation, except the root [README](../README.md), live
 
 ## Runbooks
 
+- [Observability](runbooks/observability.md)
 - [Remediation Operations](runbooks/remediation.md)
 
 ## Deployment
 
 - [CI/CD Pipeline](deployment/ci-cd-pipeline.md)
 - [Cloud Run and Firebase](deployment/cloud-run-firebase.md)
+- [Staging Environment](deployment/staging.md)
 - [P0 Rollout](deployment/p0-rollout.md)
 - [P1 Rollout](deployment/p1-rollout.md)
 

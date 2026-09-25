@@ -1,0 +1,59 @@
+{
+  "schema_version": "v1",
+  "id": "js-credential-db-password-001",
+  "repository_id": "fixture-js-warehouse-ae",
+  "split": "holdout",
+  "family": "hardcoded_credential",
+  "kind": "supported",
+  "expected_state": "ready",
+  "source": "app.js",
+  "reference_repair": "expected/app.js",
+  "finding": {
+    "id": "js-credential-db-password-1",
+    "rule_id": "cwe-798.hardcoded-secret-js",
+    "cwe_id": "CWE-798",
+    "category": "hardcoded secrets",
+    "message": "The warehouse database password is a literal in the exported config object.",
+    "path": "app.js",
+    "line_start": 6,
+    "line_end": 6
+  },
+  "trusted_fixture_test": {
+    "runtime": "node",
+    "path": "tests/verify.js",
+    "timeout_seconds": 5
+  },
+  "budget": {
+    "max_tool_calls": 20,
+    "max_attempts": 3,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 120000,
+    "max_cost_usd": 2.0
+  },
+  "verification_checks": [
+    {
+      "check_id": "exploit",
+      "kind": "exploit",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--exploit"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "failed",
+      "expected_candidate": "passed"
+    },
+    {
+      "check_id": "behavior",
+      "kind": "behavior",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--behavior"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    }
+  ]
+}

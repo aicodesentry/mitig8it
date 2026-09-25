@@ -2,6 +2,8 @@ const express = require('express');
 const { pool } = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
 const findingsDb = require('../db/findings');
+const findingOutcomes = require('../db/findingOutcomes');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -93,6 +95,28 @@ router.post('/suppressions', authenticateToken, async (req, res) => {
       JSON.stringify({ reason, fingerprint: resolvedFingerprint, notes: notes || null }),
     ]
   );
+
+  // A suppression is fingerprint-based, so every finding that carries the fingerprint in
+  // this repository is suppressed by it and every one of them is recorded. The outcome
+  // log never blocks the suppression itself.
+  try {
+    const suppressed = await pool.query(
+      'SELECT * FROM findings WHERE repository_id = $1 AND fingerprint = $2',
+      [repository_id, resolvedFingerprint]
+    );
+    await findingOutcomes.recordOutcomesForFindings(null, suppressed.rows, {
+      outcome: 'suppressed',
+      source: 'suppression',
+      reason: findingOutcomes.normalizeDismissalReason(reason),
+      actorLogin: req.user.github_username || null,
+      externalId: suppression.rows[0].id,
+      details: { notes: notes || null, expires_at: expires_at || null },
+    });
+  } catch (error) {
+    logger.error('Suppression outcome could not be recorded', {
+      suppression_id: suppression.rows[0].id, error: error.message,
+    });
+  }
 
   res.status(201).json({ suppression: suppression.rows[0] });
 });

@@ -11,6 +11,7 @@
     "test:integration:access": "NODE_ENV=test node --test tests/integration/access.integration.js",
     "test:integration:lifecycle": "NODE_ENV=test node --test tests/integration/lifecycle.integration.js",
     "test:integration:remediation": "NODE_ENV=test node --test tests/integration/remediation.integration.js",
+    "test:integration:purge": "NODE_ENV=test node --test tests/integration/installation-purge.integration.js",
     "test:integration:transport": "NODE_ENV=test node --test tests/integration/analysis-transport.integration.js",
     "db:migrate": "node src/scripts/runMigrations.js",
     "db:verify": "node src/scripts/verifyMigrations.js"
@@ -31,7 +32,8 @@
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.21.0",
-    "prom-client": "^15.1.2"
+    "prom-client": "^15.1.2",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "ajv": "^8.20.0",

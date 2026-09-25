@@ -1,5 +1,8 @@
 const crypto = require('crypto');
 const { pool } = require('../config/database');
+const findingsDb = require('./findings');
+const findingOutcomes = require('./findingOutcomes');
+const metrics = require('../services/remediationMetrics');
 
 const ACTIVE_STATES = new Set(['queued', 'snapshotting', 'retrieving', 'planning', 'generating', 'verifying']);
 const TERMINAL_STATES = new Set(['ready', 'cancelled', 'superseded', 'unsupported', 'inconclusive', 'failed', 'dead_letter']);
@@ -334,11 +337,14 @@ async function getEvidenceForUser(jobId, userId) {
 const FALLBACK_ACTOR_SQL = `(SELECT fu.github_username FROM repository_access ra JOIN users fu ON fu.id = ra.user_id
           WHERE ra.repository_id = j.repository_id AND fu.github_username IS NOT NULL
           ORDER BY CASE ra.role WHEN 'admin' THEN 0 WHEN 'write' THEN 1 ELSE 2 END, ra.created_at LIMIT 1)`;
+// A job belonging to an uninstalled installation is never claimed: its data is being
+// deleted, so running it would write rows the purge has already passed.
 const CLAIM_SQL = `WITH candidate AS (
          SELECT id, created_by FROM remediation_jobs
           WHERE state = ANY($1::text[]) AND next_attempt_at <= NOW()
             AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
             AND ($4::uuid IS NULL OR id = $4::uuid)
+            AND installation_id IN (SELECT id FROM installations WHERE deleted_at IS NULL)
           ORDER BY next_attempt_at, created_at FOR UPDATE SKIP LOCKED LIMIT 1
        ) UPDATE remediation_jobs j SET lease_owner=$2, lease_expires_at=NOW()+($3::int * INTERVAL '1 second'),
           fencing_token=j.fencing_token+1, updated_at=NOW()
@@ -520,7 +526,17 @@ async function persistEvidence(client, row, attempt, records) {
   }
 }
 
-async function completeStage(job, { state, stage, outcome, candidates = [], verification, reason, outputDigest, stagePath = [], evidence = [] }) {
+// Counted after the transaction commits and only when the compare-and-swap actually
+// moved the row, so a rolled back or fenced-out completion never shows up as an ending.
+async function completeStage(job, options) {
+  const applied = await completeStageTransaction(job, options);
+  if (applied && TERMINAL_STATES.has(options.state)) {
+    metrics.jobTerminalStates.labels(options.state).inc();
+  }
+  return applied;
+}
+
+async function completeStageTransaction(job, { state, stage, outcome, candidates = [], verification, reason, outputDigest, stagePath = [], evidence = [] }) {
   return scopedTransaction({ tenantId: job.installation_id, worker: true }, async (client) => {
     const current = await client.query(`SELECT * FROM remediation_jobs WHERE id=$1 FOR UPDATE`, [job.id]);
     const row = current.rows[0];
@@ -630,77 +646,72 @@ async function cancelJob(jobId, userId, reason = 'cancelled_by_user') {
   });
 }
 
-const WRITER_LEASE_SECONDS = 600;
-
-// One logical writer per pull request. The row is claimed in the same transaction as
-// the action insert, so a second concurrent apply cannot start a parallel write.
-async function acquireWriterLease(client, row, userId) {
-  const result = await client.query(
-    `INSERT INTO remediation_writer_leases (pull_request_id, installation_id, repository_id, owner_id, expires_at)
-     VALUES ($1,$2,$3,$4,NOW() + ($5::int * INTERVAL '1 second'))
-     ON CONFLICT (pull_request_id) DO UPDATE
-       SET owner_id=EXCLUDED.owner_id, acquired_at=NOW(), action_id=NULL, expires_at=EXCLUDED.expires_at
-     WHERE remediation_writer_leases.expires_at < NOW()
-     RETURNING *`,
-    [row.pull_request_id, row.installation_id, row.repository_id, userId, WRITER_LEASE_SECONDS]
-  );
-  return result.rows[0] || null;
+// GitHub's "Commit suggestion" button commits under the developer's identity and
+// co-authors the commit to the app that posted the suggestion. The push webhook sees
+// that trailer and records an `observed_apply` action: a lightweight, after-the-fact
+// note that a published fix reached the branch. It is what the residual report and the
+// verification check hang off, exactly as the removed in-app apply action used to be.
+// Nothing here writes to GitHub; the commit already exists.
+function appBotCoAuthorPattern() {
+  const slug = (process.env.GITHUB_APP_SLUG || 'mitig8it').toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^\\s*co-authored-by:\\s*${slug}\\[bot\\]`, 'im');
 }
 
-async function releaseWriterLease(client, pullRequestId, actionId) {
-  await client.query(
-    `DELETE FROM remediation_writer_leases WHERE pull_request_id=$1 AND ($2::uuid IS NULL OR action_id=$2::uuid)`,
-    [pullRequestId, actionId || null]
-  );
+function commitAppliesPublishedFix(message) {
+  return typeof message === 'string' && appBotCoAuthorPattern().test(message);
 }
 
-async function createAction(job, userId, payload, actorLogin) {
-  return requestScope(userId, async (client) => {
-    const current = await client.query(`SELECT * FROM remediation_jobs WHERE id=$1 FOR UPDATE`, [job.id]);
-    const row = current.rows[0];
-    if (!row || row.state !== 'ready') return { kind: 'not_ready' };
-    // RLS WITH CHECK on the new tables requires an explicit tenant context.
-    await client.query("SELECT set_config('app.tenant_id', $1, true)", [String(row.installation_id)]);
-    const payloadHash = hash(payload);
-    const existing = await client.query(`SELECT * FROM remediation_actions WHERE actor_id=$1 AND repository_id=$2 AND idempotency_key=$3`, [userId,row.repository_id,payload.idempotency_key]);
-    if (existing.rowCount) return existing.rows[0].payload_hash === payloadHash ? { kind: 'ok', action: existing.rows[0], replay: true } : { kind: 'conflict' };
-    const preview = await getPreviewWithinTransaction(client, row);
-    if (payload.head_sha !== row.head_sha || payload.base_sha !== row.base_sha) return { kind: 'stale' };
-    const selection = selectCandidates(row, preview.candidates, payload.candidate_ids);
-    if (selection.kind !== 'ok') return selection;
-    if (payload.manifest_digest !== selection.manifestDigest) return { kind: 'manifest_mismatch' };
-    const wanted = selection.candidates.map((c) => c.id);
-    const lease = await acquireWriterLease(client, row, userId);
-    if (!lease) return { kind: 'writer_busy' };
-    const insert = await client.query(
-      `INSERT INTO remediation_actions (job_id,installation_id,repository_id,pull_request_id,actor_id,actor_login,action_type,head_sha,base_sha,batch_manifest_digest,candidate_ids,idempotency_key,payload_hash,state)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'requested') RETURNING *`,
-      [row.id,row.installation_id,row.repository_id,row.pull_request_id,userId,actorLogin,payload.merge_when_ready ? 'apply_and_merge':'apply',row.head_sha,row.base_sha,selection.manifestDigest,wanted,payload.idempotency_key,payloadHash]
+// One observed action per commit, per pull request. `idempotency_key` carries the
+// commit sha, so a redelivered push webhook records nothing new.
+async function recordObservedApply({ client, repositoryGithubId, branch, commitSha, commitMessage, actorLogin }) {
+  if (!commitAppliesPublishedFix(commitMessage) || !commitSha) return [];
+  return withClient(client, async (db) => {
+    const located = await db.query(
+      `SELECT pr.id AS pull_request_id, pr.repository_id, r.installation_id
+         FROM pull_requests pr JOIN repositories r ON r.id = pr.repository_id
+        WHERE r.github_id = $1 AND pr.head_branch = $2 AND pr.state = 'open'`,
+      [repositoryGithubId, branch]
     );
-    const action=insert.rows[0];
-    await client.query(`UPDATE remediation_writer_leases SET action_id=$1 WHERE pull_request_id=$2`, [action.id, row.pull_request_id]);
-    // The action row and its dispatch event commit together; the worker never
-    // discovers an action that was not durably recorded.
-    const actionEvent = JSON.stringify({ job_id: row.id, head_sha: row.head_sha, manifest_digest: selection.manifestDigest });
-    await client.query(
-      `INSERT INTO workflow_events (aggregate_id,aggregate_type,installation_id,repository_id,sequence,event_type,payload)
-       VALUES ($1,'remediation_action',$2,$3,1,'remediation.action.requested',$4) ON CONFLICT (aggregate_id, sequence) DO NOTHING`,
-      [action.id, row.installation_id, row.repository_id, actionEvent]
-    );
-    await client.query(
-      `INSERT INTO workflow_outbox (aggregate_id,installation_id,repository_id,event_sequence,event_type,payload)
-       VALUES ($1,$2,$3,1,'remediation.action.requested',$4) ON CONFLICT (aggregate_id, event_sequence) DO NOTHING`,
-      [action.id, row.installation_id, row.repository_id, actionEvent]
-    );
-    if (payload.merge_when_ready) await client.query(`INSERT INTO merge_intents (action_id,installation_id,repository_id,actor_id,approved_manifest_digest,approved_head_sha,approved_base_sha,expires_at,state) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()+INTERVAL '24 hours','waiting_for_application')`, [action.id,row.installation_id,row.repository_id,userId,selection.manifestDigest,row.head_sha,row.base_sha]);
-    await audit(client,userId,row.repository_id,'remediation.apply.requested','remediation_action',action.id,{job_id:row.id,head_sha:row.head_sha,manifest_digest:selection.manifestDigest,candidate_ids:wanted,merge_when_ready:Boolean(payload.merge_when_ready)});
-    return { kind:'ok',action };
+    const recorded = [];
+    for (const pr of located.rows) {
+      if (pr.installation_id == null) continue;
+      await db.query("SELECT set_config('app.tenant_id', $1, true)", [String(pr.installation_id)]);
+      await db.query("SELECT set_config('app.remediation_worker', '1', true)");
+      // The job whose published fixes this commit could be applying: the most recent one
+      // that reached `ready` for this pull request.
+      const job = await db.query(
+        `SELECT * FROM remediation_jobs WHERE pull_request_id = $1 AND state = 'ready'
+          ORDER BY updated_at DESC LIMIT 1`,
+        [pr.pull_request_id]
+      );
+      const row = job.rows[0];
+      if (!row) continue;
+      const candidates = await db.query(
+        `SELECT * FROM remediation_candidates WHERE job_id = $1 ORDER BY candidate_version`, [row.id]
+      );
+      const applicable = candidates.rows.filter((candidate) => !candidate.rejection_reason);
+      if (!applicable.length) continue;
+      const digest = manifestDigestFor(row, applicable);
+      const idempotencyKey = `observed:${commitSha}`;
+      const inserted = await db.query(
+        `INSERT INTO remediation_actions (job_id,installation_id,repository_id,pull_request_id,actor_id,actor_login,
+           action_type,head_sha,base_sha,batch_manifest_digest,candidate_ids,idempotency_key,payload_hash,state,observed_commit_sha)
+         SELECT $1,$2,$3,$4,$5,$6,'observed_apply',$7,$8,$9,$10,$11,$12,'applied',$13
+          WHERE NOT EXISTS (
+            SELECT 1 FROM remediation_actions WHERE pull_request_id = $4 AND idempotency_key = $11)
+         RETURNING *`,
+        [row.id, pr.installation_id, pr.repository_id, pr.pull_request_id, row.requested_by || null,
+          actorLogin || 'unknown', row.head_sha, row.base_sha, digest,
+          applicable.map((candidate) => candidate.id), idempotencyKey, hash({ commit_sha: commitSha }), commitSha]
+      );
+      if (!inserted.rowCount) continue;
+      const action = inserted.rows[0];
+      await audit(db, null, pr.repository_id, 'remediation.apply.observed', 'remediation_action', action.id,
+        { commit_sha: commitSha, job_id: row.id, actor_login: actorLogin || null, candidate_ids: action.candidate_ids });
+      recorded.push(action);
+    }
+    return recorded;
   });
-}
-
-async function getPreviewWithinTransaction(client, job) {
-  const candidates = await client.query(`SELECT * FROM remediation_candidates WHERE job_id=$1 ORDER BY candidate_version`, [job.id]);
-  return { candidates: candidates.rows, manifestDigest: manifestDigestFor(job, candidates.rows) };
 }
 
 // Resolves a requested subset against the job's stored candidates. One candidate is
@@ -729,50 +740,53 @@ async function getActionForUser(actionId, userId) {
   });
 }
 
-async function cancelMerge(actionId, userId) {
-  return requestScope(userId, async (client) => {
-    const result = await client.query(
-      `UPDATE merge_intents SET state='cancelled', cancellation_reason='cancelled_by_user', updated_at=NOW()
-        WHERE action_id=$1 AND state = ANY($2::text[]) RETURNING *`,
-      [actionId, ['waiting_for_application','waiting_for_checks','eligible','reconciling']]
-    );
-    if (result.rowCount) await audit(client, userId, result.rows[0].repository_id, 'remediation.merge.cancelled', 'merge_intent', result.rows[0].id, {});
-    return result.rows[0] || null;
-  });
-}
+// Every finding the action's candidates repair, recorded as applied the moment the
+// commit exists. The key is the action, so the later completion replays onto the same
+// rows instead of counting the apply twice. Recorded on the action's own transaction.
+async function recordAppliedOutcomes(client, action) {
+  if (!action?.job_id || !Array.isArray(action.candidate_ids) || !action.candidate_ids.length) return 0;
+  const job = await client.query(
+    `SELECT id, installation_id, repository_id, pull_request_id, analysis_run_id, finding_snapshot_ids
+       FROM remediation_jobs WHERE id=$1`, [action.job_id]);
+  const jobRow = job.rows[0];
+  if (!jobRow) return 0;
+  const candidates = await client.query(
+    `SELECT id, finding_snapshot_ids FROM remediation_candidates WHERE id = ANY($1::uuid[]) AND job_id=$2`,
+    [action.candidate_ids, action.job_id]);
+  const snapshots = await findingSnapshots(client, jobRow);
+  const bySnapshotId = new Map(snapshots.map((finding) => [String(finding.id), finding]));
+  const rows = await findingsDb.listByIds(snapshots.map((finding) => finding.id), client);
+  const byFindingId = new Map(rows.map((finding) => [String(finding.id), finding]));
 
-async function claimAction(actionId) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN'); await client.query("SELECT set_config('app.remediation_worker', '1', true)");
-    const result = await client.query(
-      `WITH candidate AS (SELECT id FROM remediation_actions WHERE state IN ('requested','reconciling')
-         AND ($1::uuid IS NULL OR id = $1::uuid) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
-       UPDATE remediation_actions a SET state=CASE WHEN a.state='reconciling' THEN 'reconciling' ELSE 'revalidating' END, updated_at=NOW()
-       FROM candidate WHERE a.id=candidate.id RETURNING a.*`, [actionId || null]
-    );
-    await client.query('COMMIT'); return result.rows[0] || null;
-  } catch (error) { try { await client.query('ROLLBACK'); } catch (_) { /* ignored */ } throw error; } finally { client.release(); }
-}
-
-async function claimNextAction(_workerId) { return claimAction(null); }
-async function claimActionById(actionId) { return claimAction(actionId); }
-
-async function actionMaterial(action) {
-  return scopedTransaction({ tenantId: action.installation_id, worker: true }, async (client) => {
-    const job = await client.query(`SELECT j.*,r.full_name AS repository_full_name,pr.pr_number FROM remediation_jobs j JOIN repositories r ON r.id=j.repository_id JOIN pull_requests pr ON pr.id=j.pull_request_id WHERE j.id=$1`, [action.job_id]);
-    const candidates = await client.query(`SELECT * FROM remediation_candidates WHERE id = ANY($1::uuid[]) AND job_id=$2 ORDER BY candidate_version`, [action.candidate_ids, action.job_id]);
-    // The manifest is recomputed over the consented subset in persisted order, from the
-    // stored rows, so a replaced candidate or a different subset changes the digest.
-    const all = await client.query(`SELECT id, artifact_digest, rejection_reason FROM remediation_candidates WHERE job_id=$1 ORDER BY candidate_version`, [action.job_id]);
-    const jobRow = job.rows[0] || null;
-    const manifestDigest = manifestDigestFor(jobRow, candidates.rows);
-    // The combined tree is what the repair service verified for the whole batch; a single
-    // candidate carries its own verified tree in its file manifest.
-    const combined = await client.query(`SELECT candidate_tree_sha FROM verification_runs WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1`, [action.job_id]);
-    return { job: jobRow, candidates: candidates.rows, manifestDigest, orderedCandidateIds: candidates.rows.map((c) => c.id),
-      fullBatch: candidates.rowCount === all.rowCount, combinedTreeOid: combined.rows[0]?.candidate_tree_sha || null };
-  });
+  let recorded = 0;
+  const seen = new Set();
+  for (const candidate of candidates.rows) {
+    for (const findingId of candidate.finding_snapshot_ids || []) {
+      const key = String(findingId);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // The live row when it still exists, the immutable snapshot otherwise.
+      const finding = byFindingId.get(key) || bySnapshotId.get(key);
+      if (!finding?.fingerprint) continue;
+      const id = await findingOutcomes.recordOutcome(client, {
+        ...findingOutcomes.identityOf(finding),
+        findingId,
+        repositoryId: jobRow.repository_id,
+        installationId: jobRow.installation_id,
+        pullRequestId: jobRow.pull_request_id,
+        outcome: 'applied_in_app',
+        source: 'remediation',
+        actorLogin: action.actor_login || null,
+        candidateId: candidate.id,
+        actionId: action.id,
+        jobId: jobRow.id,
+        commitSha: action.observed_commit_sha || null,
+        externalId: action.id,
+      });
+      if (id) recorded += 1;
+    }
+  }
+  return recorded;
 }
 
 const TERMINAL_ACTION_STATES = new Set(['applied', 'completed', 'cancelled', 'superseded', 'blocked', 'failed', 'rejected']);
@@ -796,6 +810,7 @@ async function updateAction(action, state, fields = {}) {
           WHERE action_id=$1 AND state='waiting_for_application'`,
         [action.id, fields.commitSha]
       );
+      await recordAppliedOutcomes(client, result.rows[0]);
     }
     return result.rows[0] || null;
   });
@@ -852,22 +867,16 @@ async function completeAction(actionId, { headSha } = {}) {
     const updated = await client.query(
       `UPDATE remediation_actions SET state='completed', updated_at=NOW() WHERE id=$1 RETURNING *`, [row.id]
     );
-    await releaseWriterLease(client, row.pull_request_id, row.id);
-    // The merge controller learns about completion through the same durable outbox the
-    // rest of the workflow uses; the periodic sweep remains the backup.
+    // The residual report and the verification check learn about completion through the
+    // same durable outbox the rest of the workflow uses; the reconciler is the backup.
     await appendActionEvent(client, row, 'remediation.action.completed',
       { head_sha: row.verification_head_sha || row.observed_commit_sha, analysis_run_id: row.verification_analysis_run_id });
     await audit(client, null, row.repository_id, 'remediation.action.completed', 'remediation_action', row.id,
       { commit_sha: row.observed_commit_sha, analysis_run_id: row.verification_analysis_run_id });
+    // Replays onto the rows the apply already wrote; it is here so an action that
+    // reached completion without passing through this process still records the apply.
+    await recordAppliedOutcomes(client, updated.rows[0]);
     return updated.rows[0];
-  });
-}
-
-// Audit-only denial record for a refused write. It never changes workflow state.
-async function recordApplyDenial(userId, job, reason, details = {}) {
-  return requestScope(userId, async (client) => {
-    await audit(client, userId, job.repository_id, 'remediation.apply.denied', 'remediation_job', job.id,
-      { reason, head_sha: job.head_sha, ...details });
   });
 }
 
@@ -906,21 +915,6 @@ async function redispatchStuckOutbox(stuckSeconds = 300, limit = 100) {
   });
 }
 
-async function listStaleReconcilingActions(staleSeconds = 300, limit = 20) {
-  return scopedTransaction({ worker: true }, async (client) => {
-    const result = await client.query(
-      `SELECT a.*, j.head_sha AS job_head_sha, r.full_name AS repository_full_name, pr.pr_number
-         FROM remediation_actions a
-         JOIN remediation_jobs j ON j.id=a.job_id
-         JOIN repositories r ON r.id=a.repository_id
-         JOIN pull_requests pr ON pr.id=a.pull_request_id
-        WHERE a.state='reconciling' AND a.updated_at < NOW() - ($1::int * INTERVAL '1 second')
-        ORDER BY a.updated_at LIMIT $2`, [staleSeconds, limit]
-    );
-    return result.rows;
-  });
-}
-
 async function quarantineExhaustedJobs(limit = 50) {
   return scopedTransaction({ worker: true }, async (client) => {
     const result = await client.query(
@@ -939,23 +933,6 @@ async function quarantineExhaustedJobs(limit = 50) {
       await audit(client, null, row.repository_id, 'remediation.dead_letter', 'remediation_job', row.id,
         { reason: 'max_attempts_exceeded', attempts: row.attempt_count });
     }
-    return result.rows.map((row) => row.id);
-  });
-}
-
-async function expireMergeIntents(limit = 100) {
-  return scopedTransaction({ worker: true }, async (client) => {
-    const result = await client.query(
-      `UPDATE merge_intents SET state='expired', cancellation_reason='expired', updated_at=NOW()
-        WHERE id IN (
-          SELECT id FROM merge_intents
-           WHERE expires_at < NOW() AND state = ANY($1::text[])
-           ORDER BY expires_at LIMIT $2
-        ) RETURNING id`,
-      // A merging intent is never expired: an in-flight merge is settled by reading
-      // authoritative GitHub state, not by declaring a timeout.
-      [['waiting_for_application', 'waiting_for_checks', 'eligible', 'blocked', 'reconciling'], limit]
-    );
     return result.rows.map((row) => row.id);
   });
 }
@@ -1040,58 +1017,6 @@ async function supersedeForBranchPush({ client, repositoryGithubId, branch, newH
   });
 }
 
-// A hint is an append-only observation. A merge controller consumes it later; nothing
-// here decides anything about a merge.
-async function recordMergeReevaluationHint(pullRequestRef, reason) {
-  const { client, pullRequestId, repositoryGithubId, prNumber, headSha } = pullRequestRef || {};
-  return withClient(client, async (db) => {
-    const located = await db.query(
-      `SELECT pr.id, pr.repository_id, r.installation_id FROM pull_requests pr
-         JOIN repositories r ON r.id=pr.repository_id
-        WHERE ($1::uuid IS NOT NULL AND pr.id=$1::uuid)
-           OR ($2::bigint IS NOT NULL AND r.github_id=$2::bigint AND (
-                 ($3::int IS NOT NULL AND pr.pr_number=$3::int)
-                 OR ($4::text IS NOT NULL AND pr.head_sha=$4::text)))
-        LIMIT 20`,
-      [pullRequestId || null, repositoryGithubId || null, prNumber ?? null, headSha || null]
-    );
-    const recorded = [];
-    for (const row of located.rows) {
-      if (row.installation_id == null) continue;
-      const sequence = await db.query(
-        `SELECT COALESCE(MAX(sequence),0)+1 AS next FROM workflow_events WHERE aggregate_id=$1`, [row.id]
-      );
-      const inserted = await db.query(
-        `INSERT INTO workflow_events (aggregate_id, aggregate_type, installation_id, repository_id, sequence, event_type, payload)
-         VALUES ($1,'pull_request',$2,$3,$4,'remediation.merge.reevaluate',$5)
-         ON CONFLICT (aggregate_id, sequence) DO NOTHING RETURNING id`,
-        [row.id, row.installation_id, row.repository_id, Number(sequence.rows[0].next), JSON.stringify({ reason, head_sha: headSha || null })]
-      );
-      if (!inserted.rowCount) continue;
-      // The event is the record; the outbox row is its delivery. Both share the
-      // aggregate sequence, so a duplicate webhook cannot dispatch twice.
-      await db.query(
-        `INSERT INTO workflow_outbox (aggregate_id, installation_id, repository_id, event_sequence, event_type, payload)
-         VALUES ($1,$2,$3,$4,'remediation.merge.reevaluate',$5)
-         ON CONFLICT (aggregate_id, event_sequence) DO NOTHING`,
-        [row.id, row.installation_id, row.repository_id, Number(sequence.rows[0].next), JSON.stringify({ reason, head_sha: headSha || null })]
-      );
-      recorded.push(row.id);
-    }
-    return recorded;
-  });
-}
-
-
-// --- Merge controller persistence ------------------------------------------------
-// A merge intent is never advanced by a blind UPDATE. Every transition compares and
-// swaps state_version, so a stale evaluator can never publish a decision.
-
-const NON_TERMINAL_MERGE_STATES = Object.freeze([
-  'waiting_for_application', 'waiting_for_checks', 'eligible', 'merging', 'blocked', 'reconciling',
-]);
-
-// One append-only event plus its outbox delivery for a remediation action aggregate.
 async function appendActionEvent(client, action, eventType, payload) {
   const sequence = await client.query(
     `SELECT COALESCE(MAX(sequence),0)+1 AS next FROM workflow_events WHERE aggregate_id=$1`, [action.id]
@@ -1112,105 +1037,6 @@ async function appendActionEvent(client, action, eventType, payload) {
   return true;
 }
 
-const MERGE_INTENT_CONTEXT_SQL = `
-  SELECT mi.*,
-         a.state AS action_state, a.actor_login, a.job_id, a.pull_request_id, a.candidate_ids,
-         a.head_sha AS action_head_sha, a.base_sha AS action_base_sha,
-         a.observed_commit_sha, a.observed_tree_oid, a.batch_manifest_digest, a.idempotency_key,
-         a.verification_analysis_run_id, a.verification_head_sha,
-         a.verification_check_status, a.verification_check_conclusion, a.verification_check_head_sha,
-         r.full_name AS repository_full_name, r.is_active AS repository_active,
-         pr.pr_number, pr.state AS pull_request_state,
-         i.status AS installation_status
-    FROM merge_intents mi
-    JOIN remediation_actions a ON a.id = mi.action_id
-    JOIN repositories r ON r.id = mi.repository_id
-    JOIN pull_requests pr ON pr.id = a.pull_request_id
-    JOIN installations i ON i.id = mi.installation_id`;
-
-async function mergeIntentContext(intentId) {
-  return scopedTransaction({ worker: true }, async (client) => {
-    const result = await client.query(`${MERGE_INTENT_CONTEXT_SQL} WHERE mi.id=$1`, [intentId]);
-    return result.rows[0] || null;
-  });
-}
-
-// The polling backup. It returns the least recently evaluated non-terminal intents so
-// a lost webhook can never strand a merge decision.
-async function listEvaluableMergeIntents({ staleSeconds = 300, limit = 25 } = {}) {
-  return scopedTransaction({ worker: true }, async (client) => {
-    const result = await client.query(
-      `SELECT id FROM merge_intents
-        WHERE state = ANY($1::text[])
-          AND (last_evaluated_at IS NULL OR last_evaluated_at < NOW() - ($2::int * INTERVAL '1 second'))
-        ORDER BY last_evaluated_at NULLS FIRST LIMIT $3`,
-      [[...NON_TERMINAL_MERGE_STATES], staleSeconds, limit]
-    );
-    return result.rows.map((row) => row.id);
-  });
-}
-
-async function listMergeIntentIdsForPullRequest(pullRequestId) {
-  return scopedTransaction({ worker: true }, async (client) => {
-    const result = await client.query(
-      `SELECT mi.id FROM merge_intents mi JOIN remediation_actions a ON a.id=mi.action_id
-        WHERE a.pull_request_id=$1 AND mi.state = ANY($2::text[]) ORDER BY mi.created_at`,
-      [pullRequestId, [...NON_TERMINAL_MERGE_STATES]]
-    );
-    return result.rows.map((row) => row.id);
-  });
-}
-
-async function mergeIntentIdForAction(actionId) {
-  return scopedTransaction({ worker: true }, async (client) => {
-    const result = await client.query(`SELECT id FROM merge_intents WHERE action_id=$1`, [actionId]);
-    return result.rows[0]?.id || null;
-  });
-}
-
-// Compare-and-swap on state_version. A null return means another evaluator already
-// moved this intent; the caller must re-read rather than retry its own decision.
-async function transitionMergeIntent(intent, state, fields = {}) {
-  return scopedTransaction({ tenantId: intent.installation_id, worker: true }, async (client) => {
-    const result = await client.query(
-      `UPDATE merge_intents SET state=$2, state_version=state_version+1,
-         blockers=COALESCE($3::jsonb, blockers),
-         merge_attempts=merge_attempts + $4::int,
-         external_operation_id=COALESCE($5, external_operation_id),
-         observed_merge_sha=COALESCE($6, observed_merge_sha),
-         applied_sha=COALESCE($7, applied_sha),
-         cancellation_reason=COALESCE($8, cancellation_reason),
-         latest_policy_checks=COALESCE($9::jsonb, latest_policy_checks),
-         last_evaluated_at=NOW(), updated_at=NOW()
-       WHERE id=$1 AND state_version=$10::bigint RETURNING *`,
-      [intent.id, state, fields.blockers ? JSON.stringify(fields.blockers) : null,
-        fields.attempt ? 1 : 0, fields.operationId || null, fields.observedMergeSha || null,
-        fields.appliedSha || null, fields.reason || null,
-        fields.checks ? JSON.stringify(fields.checks) : null, String(intent.state_version)]
-    );
-    if (!result.rowCount) return null;
-    await audit(client, null, intent.repository_id, `remediation.merge.${state}`, 'merge_intent', intent.id,
-      { blockers: fields.blockers || null, reason: fields.reason || null, observed_merge_sha: fields.observedMergeSha || null });
-    return result.rows[0];
-  });
-}
-
-// Records the outcome of an evaluation that did not change state. It still fences on
-// state_version so two evaluators cannot interleave their blocker lists.
-async function recordMergeEvaluation(intent, { blockers = [], checks = null } = {}) {
-  return scopedTransaction({ tenantId: intent.installation_id, worker: true }, async (client) => {
-    const result = await client.query(
-      `UPDATE merge_intents SET state_version=state_version+1, blockers=$2::jsonb,
-         latest_policy_checks=COALESCE($3::jsonb, latest_policy_checks), last_evaluated_at=NOW(), updated_at=NOW()
-       WHERE id=$1 AND state_version=$4::bigint RETURNING *`,
-      [intent.id, JSON.stringify(blockers), checks ? JSON.stringify(checks) : null, String(intent.state_version)]
-    );
-    return result.rows[0] || null;
-  });
-}
-
-// The fresh analysis for the applied head. An analysis that has not completed is
-// inconclusive, never a pass.
 async function blockingFindingsForAction(action) {
   return scopedTransaction({ tenantId: action.installation_id, worker: true }, async (client) => {
     if (!action.verification_analysis_run_id) return { analysisState: 'missing', blocking: null };
@@ -1390,16 +1216,15 @@ module.exports = {
   getEvidenceForUser, MAX_EVIDENCE_PAYLOAD_BYTES,
   claimNextJob, claimJobById, recordAttempt, heartbeat, deferForExternalExecution, reserveUsage, settleUsage, budgetSnapshot,
   usageCost, releaseStrandedReservations,
-  completeStage, cancelJob, createAction, getActionForUser, cancelMerge, claimNextAction, claimActionById, actionMaterial,
-  updateAction, enterChecking, completeAction, appendEvent, audit, recordApplyDenial,
-  reclaimExpiredLeases, redispatchStuckOutbox, listStaleReconcilingActions, quarantineExhaustedJobs, expireMergeIntents,
-  listActionsAwaitingVerification, supersedeForHeadChange, supersedeForBranchPush, recordMergeReevaluationHint,
-  releaseWriterLease,
-  NON_TERMINAL_MERGE_STATES, mergeIntentContext, listEvaluableMergeIntents, listMergeIntentIdsForPullRequest,
-  mergeIntentIdForAction, transitionMergeIntent, recordMergeEvaluation, blockingFindingsForAction,
+  completeStage, cancelJob, getActionForUser,
+  updateAction, enterChecking, completeAction, appendEvent, audit,
+  reclaimExpiredLeases, redispatchStuckOutbox, quarantineExhaustedJobs,
+  listActionsAwaitingVerification, supersedeForHeadChange, supersedeForBranchPush,
+  commitAppliesPublishedFix, recordObservedApply, blockingFindingsForAction,
   recordVerificationCheck, listActionsNeedingVerificationCheck, actionCheckContext, recordRepairMemoryObservation,
   getCandidateForFeedback,
   manifestDigestFor, selectCandidates, markCandidatesAfterApply, appliedReportForAction,
   recordResidualComment, listActionsNeedingResidualComment,
   createAutomaticJob, jobPublishContext, recordInlineFixesPublished, readyJobsWithPublishedInlineFixes,
+  recordAppliedOutcomes,
 };

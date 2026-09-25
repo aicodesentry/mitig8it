@@ -1,0 +1,33 @@
+name: Mitig8it self-review
+
+# Mitig8it reviewing its own pull requests, with the action as anyone else would install it.
+# This is the public dogfood: if the action is noisy, slow or wrong, it is noisy, slow or wrong
+# here first, in the open, on the repository the authors read every day.
+#
+# `fail-on: none` for the same reason it is the default: a review earns the right to block a
+# merge by being trusted, not by being installed.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+concurrency:
+  group: self-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Security review
+    runs-on: ubuntu-latest
+    # A pull request from a fork gets a read-only token, so the review would have nowhere to
+    # post. It is skipped rather than left to fail on every contribution.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: ./action
+        with:
+          fail-on: none

@@ -38,8 +38,8 @@ function stubGrpcClient(method, response, error = null) {
   const calls = [];
   const client = new GitHubGrpcClient('localhost:50051');
   client.client = {
-    [method]: (request, options, callback) => {
-      calls.push({ request, options });
+    [method]: (request, metadata, options, callback) => {
+      calls.push({ request, metadata, options });
       callback(error, response);
     },
   };
@@ -78,17 +78,13 @@ describe('transport selection', () => {
   test('INTERNAL_SERVICE_TRANSPORT=grpc delegates every remediation method to the gRPC client', async () => {
     process.env.INTERNAL_SERVICE_TRANSPORT = 'grpc';
     const grpcClient = {};
+    // Only reads, comments and check runs remain. The App holds no write access to
+    // repository contents, so there is no commit, merge or apply pre-flight method.
     const methods = [
-      ['authorize', 'authorizeRemediation'],
-      ['prepare', 'prepareRemediation'],
       ['snapshot', 'snapshotRemediation'],
-      ['commit', 'commitRemediation'],
-      ['reconcile', 'reconcileRemediation'],
-      ['merge', 'mergeRemediation'],
       ['createCheckRun', 'createRemediationCheckRun'],
-      ['cancelScheduledMerge', 'cancelScheduledMerge'],
-      ['readMergeEligibility', 'readMergeEligibility'],
-      ['readPullRequestHead', 'readPullRequestHead'],
+      ['publishComment', 'publishRemediationComment'],
+      ['publishFindingFixSections', 'publishFindingFixSections'],
     ];
     for (const [, rpc] of methods) grpcClient[rpc] = jest.fn(async () => ({ rpc }));
 
@@ -160,83 +156,6 @@ describe('gRPC request and response mapping', () => {
     });
   });
 
-  test('commit sends the branch, tree and base64 changes and returns the REST commit shape', async () => {
-    const response = new githubPb.RemediationCommitResponse();
-    response.setState('applied');
-    response.setOperationId(envelopeBody.action_id);
-    response.setCommitSha(commit);
-    response.setTreeOid(tree);
-
-    const { client, calls } = stubGrpcClient('commitRemediation', response);
-    const result = await client.commitRemediation({
-      ...envelopeBody,
-      branch: 'repair-branch',
-      expected_head_oid: head,
-      verified_tree_oid: tree,
-      commit_message: 'Apply verified remediation',
-      changes: [{ path: 'services/accounts.js', contents_base64: 'Y29uc3Qgc2FmZSA9IHRydWU7Cg==' }],
-    });
-
-    const request = calls[0].request;
-    expect(request.getBranch()).toBe('repair-branch');
-    expect(request.getExpectedHeadOid()).toBe(head);
-    expect(request.getVerifiedTreeOid()).toBe(tree);
-    expect(request.getCommitMessage()).toBe('Apply verified remediation');
-    expect(request.getChangesList().map((change) => [change.getPath(), change.getContentsBase64()]))
-      .toEqual([['services/accounts.js', 'Y29uc3Qgc2FmZSA9IHRydWU7Cg==']]);
-    expect(result).toEqual({
-      state: 'applied', operation_id: envelopeBody.action_id, commit_sha: commit, tree_oid: tree, reason: '',
-    });
-  });
-
-  test('merge sends the expected revisions and returns the REST merge shape', async () => {
-    const response = new githubPb.RemediationMergeResponse();
-    response.setState('reconciling');
-    response.setOperationId(envelopeBody.action_id);
-    response.setReason('github_merge_outcome_ambiguous');
-
-    const { client, calls } = stubGrpcClient('mergeRemediation', response);
-    const result = await client.mergeRemediation({
-      ...envelopeBody,
-      expected_head_sha: head,
-      expected_base_sha: base,
-      merge_method: 'squash',
-      verification_check_name: 'Mitig8it Remediation Verification',
-    });
-
-    const request = calls[0].request;
-    expect(request.getExpectedHeadSha()).toBe(head);
-    expect(request.getExpectedBaseSha()).toBe(base);
-    expect(request.getMergeMethod()).toBe('squash');
-    expect(request.getVerificationCheckName()).toBe('Mitig8it Remediation Verification');
-    expect(result).toEqual({
-      state: 'reconciling', operation_id: envelopeBody.action_id, commit_sha: '', reason: 'github_merge_outcome_ambiguous',
-    });
-  });
-
-  test('authorize returns the booleans and branches the apply pre-flight reads', async () => {
-    const response = new githubPb.RemediationAuthorizeResponse();
-    response.setState('authorized');
-    response.setInstallationActive(true);
-    response.setRepositoryGranted(true);
-    response.setActorWritePermission(true);
-    response.setHeadSha(head);
-    response.setBaseSha(base);
-    response.setHeadBranch('feature-branch');
-    response.setBaseBranch('main');
-
-    const { client } = stubGrpcClient('authorizeRemediation', response);
-    await expect(client.authorizeRemediation(envelopeBody)).resolves.toEqual({
-      state: 'authorized',
-      installation_active: true,
-      repository_granted: true,
-      actor_write_permission: true,
-      head_sha: head,
-      base_sha: base,
-      head_branch: 'feature-branch',
-      base_branch: 'main',
-    });
-  });
 });
 
 describe('gRPC failures keep the REST error shape', () => {
@@ -247,16 +166,16 @@ describe('gRPC failures keep the REST error shape', () => {
     ['FAILED_PRECONDITION carrying 422', grpc.status.FAILED_PRECONDITION, 422, 422],
     ['INVALID_ARGUMENT', grpc.status.INVALID_ARGUMENT, 400, 400],
   ])('%s becomes error.response.status %s', async (_name, code, status, expected) => {
-    const { client } = stubGrpcClient('prepareRemediation', null, grpcError(code, { status }));
-    await expect(client.prepareRemediation(envelopeBody)).rejects.toMatchObject({
+    const { client } = stubGrpcClient('snapshotRemediation', null, grpcError(code, { status }));
+    await expect(client.snapshotRemediation(envelopeBody)).rejects.toMatchObject({
       response: { status: expected },
       message: 'Remediation action is superseded',
     });
   });
 
   test('a FAILED_PRECONDITION without metadata still reads as 409', async () => {
-    const { client } = stubGrpcClient('prepareRemediation', null, grpcError(grpc.status.FAILED_PRECONDITION));
-    await expect(client.prepareRemediation(envelopeBody)).rejects.toMatchObject({ response: { status: 409 } });
+    const { client } = stubGrpcClient('snapshotRemediation', null, grpcError(grpc.status.FAILED_PRECONDITION));
+    await expect(client.snapshotRemediation(envelopeBody)).rejects.toMatchObject({ response: { status: 409 } });
   });
 
   test('transport faults stay retryable for remediationWorkflow', async () => {

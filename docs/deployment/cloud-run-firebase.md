@@ -100,12 +100,50 @@ The API deploy workflow also reads `codesentry-database-url` before deployment s
 API service deploys with:
 
 - `NODE_ENV=production`
+- `DEPLOY_ENVIRONMENT=production` or `staging`
+- `METRICS_LOOPBACK_ENABLED=true` and `METRICS_LOOPBACK_PORT=9091`
 - `FRONTEND_URL=${CODESENTRY_FRONTEND_URL}`
 - `GITHUB_SERVICE_URL=${CODESENTRY_GH_SERVICE_URL}`
 - `ANALYSIS_SERVICE_URL=${CODESENTRY_ANALYSIS_URL}`
 - `GITHUB_CALLBACK_URL=${CODESENTRY_FRONTEND_URL}/auth/github/callback`
 - `GITHUB_APP_SLUG=mitig8it`
 - `GITHUB_SERVICE_INTERNAL_SECRET=${CODESENTRY_INTERNAL_SECRET}`
+
+The API is a two-container service. Alongside the application container (`app`) runs
+the Google Managed Service for Prometheus sidecar (`collector`), which scrapes the
+loopback metrics listener every 30 seconds. See
+[runbooks/observability.md](../runbooks/observability.md) for the one-time setup the
+sidecar needs and what it costs to skip it.
+
+### Keeping the API warm
+
+The API deploys with `--min-instances 1` by default, controlled by the
+`api_min_instances` workflow input. Set it to `0` on a `workflow_dispatch` run to go
+back to scale-to-zero.
+
+The API also warms itself at start-up: it opens the database pool with a real query and,
+in parallel, pings the github and analysis services and pre-mints their Cloud Run
+identity tokens. Without that, the first webhook after an idle period paid for each of
+those cold starts one after another. The warm-up is not awaited and never fails
+start-up; where a downstream is still cold, the orchestrator's existing retry on a
+transient failure still covers it.
+
+**What the warm instance costs.** Order of magnitude, not a quote. The API runs with
+Cloud Run's default 1 vCPU and 512 MiB and deploys with `--no-cpu-throttling`, so a
+minimum instance is billed for CPU and memory continuously, about 730 hours a month:
+
+| Resource | Rate (us-central1, tier 1) | Month at 1 instance |
+| --- | --- | --- |
+| vCPU, always allocated | ~$0.0000180 per vCPU-second | ~$47 |
+| Memory, always allocated | ~$0.0000020 per GiB-second | ~$3 |
+| | | **~$50/month** |
+
+Call it fifty dollars a month, and treat anything between forty and sixty as the same
+answer. Two minimum instances double it. Staging deploys with `api_min_instances: 0`,
+so an idle staging environment adds nothing.
+
+Check the current rates before budgeting: Cloud Run pricing changes, the free tier
+covers part of this, and committed-use discounts apply.
 
 GitHub service deploys with:
 
@@ -134,7 +172,7 @@ Remediation service deploys in single-instance development mode with `--max-inst
 
 There is no separate worker Deployment and no separate broker in this mode; the durable worker runs as an asyncio task in the same process and the broker is in-process over the local subprocess driver. No `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so tracing is inert. The execution store is a per-instance SQLite file under `/tmp` and does not survive a revision or an instance replacement. Every result carries `development_unverified`, which the API presents only when `REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION=true`.
 
-The remediation feature flags (`REMEDIATION_ENABLED`, `REMEDIATION_GENERATE_ENABLED`, `REMEDIATION_PUBLISH_ENABLED`, `REMEDIATION_APPLY_ENABLED`, `REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION`, `REMEDIATION_SERVICE_URL`, `REMEDIATION_SERVICE_AUDIENCE`) are set on the API service out of band, not by any workflow. The full list is in [the remediation runbook](../runbooks/remediation.md).
+The remediation feature flags (`REMEDIATION_ENABLED`, `REMEDIATION_GENERATE_ENABLED`, `REMEDIATION_PUBLISH_ENABLED`, `REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION`, `REMEDIATION_SERVICE_URL`, `REMEDIATION_SERVICE_AUDIENCE`) are set on the API service out of band, not by any workflow. The full list is in [the remediation runbook](../runbooks/remediation.md).
 
 ## Database Migrations
 
@@ -193,7 +231,8 @@ The endpoint returns current queue stats and requires `x-internal-secret`. Keep 
 
 - Keep Cloud Run service URLs aligned with the GitHub App callback and webhook configuration.
 - Keep `CODESENTRY_INTERNAL_SECRET` consistent across API, GitHub service, and analysis service.
-- Metrics endpoints require `x-internal-secret` in production, but nothing scrapes them. `infrastructure/prometheus/prometheus.yml` targets Docker Compose hostnames only, and the Grafana Agent config under `infrastructure/grafana-agent/` is referenced by no workflow and no compose service. There is no metrics collection and no trace export in the deployment today.
-- Every Cloud Run service scales to zero. No deploy workflow passes `--no-cpu-throttling` or a non-zero `--min-instances`, so CPU is allocated during request handling only and a cold start precedes the first request after an idle period. Cloud Scheduler wakes the analysis queue, which is what keeps queued work moving despite this.
+- The API's metrics are collected. A managed Prometheus sidecar in the same instance scrapes a loopback listener every 30 seconds and writes to Cloud Monitoring, where the alert policies in `infrastructure/monitoring/` read them; the public `/metrics` route still requires `x-internal-secret`. The github and analysis services are still unscraped, and there is still no trace export: no deploy workflow sets `OTEL_EXPORTER_OTLP_ENDPOINT`.
+- The API keeps one instance warm by default and runs with `--no-cpu-throttling`. The github, analysis and remediation services still scale to zero, so the first call into them after an idle period pays a cold start; the API's start-up warm-up pings them so that cost is paid before the first webhook rather than during it. Cloud Scheduler still wakes the analysis queue.
+- A staging environment exists in the workflows but not in the cloud. `deploy-staging.yml` deploys every service to a `-staging` name on a push to the `staging` branch; the secrets, database branch, GitHub App and Firebase site it needs are one-time owner steps in [staging.md](staging.md).
 - The API and frontend are public; GitHub, analysis, and remediation Cloud Run services use `--no-allow-unauthenticated`. The GitHub and analysis workflows grant the API runtime service account `roles/run.invoker` themselves; the remediation workflow does not, so that binding must be created out of band.
 - Rotate GitHub App private keys, OAuth secrets, webhook secrets, JWT secret, encryption key, and internal service secret through GitHub/GCP secret stores, not code.

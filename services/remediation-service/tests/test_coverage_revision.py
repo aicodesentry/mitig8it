@@ -23,20 +23,27 @@ from tests.conftest import git_blob, regression_test_spec, whole_file_change
 from tests.test_agent_budget import SettlingCheckpointStore
 from tests.test_engine import PassingBroker, ScriptedProvider
 
+# Three findings on three methods of one class. A method is the one site the service declines to
+# write a proof for (`method_receiver_not_supported`: it would have to construct a receiver), and
+# without a proof the template pass is skipped too. That is what leaves a model pass to exercise,
+# which is the whole subject of this module: the coverage revision only engages when the model is
+# the one writing the tests.
 SOURCE = (
     "const { Pool } = require('pg');\n"
     "const { exec } = require('child_process');\n"
     "const fs = require('fs');\n"
-    "function loadUser(db, id) {\n"
-    "  return db.query(`SELECT * FROM users WHERE id = ${id}`);\n"
+    "class Reports {\n"
+    "  loadUser(db, id) {\n"
+    "    return db.query(`SELECT * FROM users WHERE id = ${id}`);\n"
+    "  }\n"
+    "  render(id, cb) {\n"
+    "    return exec(`render --order ${id}`, cb);\n"
+    "  }\n"
+    "  download(name, cb) {\n"
+    "    return fs.readFile('/srv/reports/' + name, cb);\n"
+    "  }\n"
     "}\n"
-    "function render(id, cb) {\n"
-    "  return exec(`render --order ${id}`, cb);\n"
-    "}\n"
-    "function download(name, cb) {\n"
-    "  return fs.readFile('/srv/reports/' + name, cb);\n"
-    "}\n"
-    "module.exports = { loadUser, render, download, Pool };\n"
+    "module.exports = { Reports, Pool };\n"
 )
 SQL_FIXED = SOURCE.replace("db.query(`SELECT * FROM users WHERE id = ${id}`)", "db.query('SELECT * FROM users WHERE id = $1', [id])")
 ALL_FIXED = (
@@ -46,9 +53,9 @@ ALL_FIXED = (
 )
 MANIFEST = '{"dependencies":{"pg":"8.13.0"}}\n'
 FINDINGS = [
-    {"snapshot_id": "f-sql", "rule_id": "js.sql-injection", "cwe_id": "CWE-89", "file_path": "src/app.js", "line_start": 5, "line_end": 5},
-    {"snapshot_id": "f-exec", "rule_id": "js.command-injection", "cwe_id": "CWE-78", "file_path": "src/app.js", "line_start": 8, "line_end": 8},
-    {"snapshot_id": "f-path", "rule_id": "js.path-traversal", "cwe_id": "CWE-22", "file_path": "src/app.js", "line_start": 11, "line_end": 11},
+    {"snapshot_id": "f-sql", "rule_id": "js.sql-injection", "cwe_id": "CWE-89", "file_path": "src/app.js", "line_start": 6, "line_end": 6},
+    {"snapshot_id": "f-exec", "rule_id": "js.command-injection", "cwe_id": "CWE-78", "file_path": "src/app.js", "line_start": 9, "line_end": 9},
+    {"snapshot_id": "f-path", "rule_id": "js.path-traversal", "cwe_id": "CWE-22", "file_path": "src/app.js", "line_start": 12, "line_end": 12},
 ]
 CANDIDATE_TAIL = "harness: HarnessAssertion: command ran through a shell: render --order x; id\n"
 
@@ -76,7 +83,7 @@ def _propose(replacement: str, finding_ids: list[str], *, path: str = "src/app.j
             "hypothesis": "Untrusted input reaches a sink without parameterization or containment.",
             "intended_behavior": "Preserve the documented behavior for legitimate input.",
             "assumptions": ["pg positional parameters are available"],
-            "citations": [{"path": path, "line_start": 1, "line_end": 13}],
+            "citations": [{"path": path, "line_start": 1, "line_end": 15}],
             "changes": [whole_file_change(path, original, replacement)],
             "regression_tests": [_test(finding_id) for finding_id in finding_ids],
         },
@@ -109,9 +116,10 @@ class SelectiveBroker(PassingBroker):
         self.runs.append([check["check_id"] for check in evidence["checks"]])
         for check in evidence["checks"]:
             argv = check["argv"]
-            if not (check["kind"] == "exploit" and argv[0] == "node" and argv[1].startswith(".mitig8it/regression/")):
+            # The test path is the last argument: `node` takes the type-stripping flags first.
+            if not (check["kind"] == "exploit" and argv[0] == "node" and argv[-1].startswith(".mitig8it/regression/")):
                 continue
-            finding_id = argv[1].rsplit("/", 1)[-1].removesuffix(".test.js")
+            finding_id = argv[-1].rsplit("/", 1)[-1].removesuffix(".test.js")
             if finding_id in self.still_failing:
                 check["baseline"] = {"completed": True, "status": "failed", "output_tail": CANDIDATE_TAIL}
                 check["candidate"] = {"completed": True, "status": "failed", "output_tail": CANDIDATE_TAIL}
@@ -156,9 +164,9 @@ async def test_the_task_prompt_names_every_finding_with_family_and_lines_and_the
     _, provider = await _run(_payload(request_payload), [_abstain()], SelectiveBroker(set()))
     task = json.loads(provider.seen[0][1]["content"])
     assert [(f["id"], f["family"], f["path"], f["line_start"], f["line_end"]) for f in task["findings"]] == [
-        ("f-sql", "sql_parameterization", "src/app.js", 5, 5),
-        ("f-exec", "command_arguments", "src/app.js", 8, 8),
-        ("f-path", "path_containment", "src/app.js", 11, 11),
+        ("f-sql", "sql_parameterization", "src/app.js", 6, 6),
+        ("f-exec", "command_arguments", "src/app.js", 9, 9),
+        ("f-path", "path_containment", "src/app.js", 12, 12),
     ]
     assert "one regression test per finding" in task["coverage"] and "not_repaired" in task["coverage"]
 
@@ -197,8 +205,8 @@ async def test_a_partial_proof_is_revised_once_and_the_revision_proves_the_rest(
     revision = _tool_result(provider.seen[2], "verify-1")["coverage_revision"]
     assert revision["proven_finding_ids"] == ["f-sql"]
     assert [(item["finding_id"], item["family"], item["line_start"]) for item in revision["unproven"]] == [
-        ("f-exec", "command_arguments", 8),
-        ("f-path", "path_containment", 11),
+        ("f-exec", "command_arguments", 9),
+        ("f-path", "path_containment", 12),
     ]
     assert "h.assert.argv(h.child_process.calls[0], payload)" in revision["unproven"][0]["assertion"]
     assert "h.assert.inside(h.fs.reads, base, { payload })" in revision["unproven"][1]["assertion"]
@@ -332,7 +340,7 @@ async def test_a_model_that_abstains_after_the_revision_request_ships_the_proven
 
 @pytest.mark.asyncio
 async def test_a_run_that_exhausts_its_tool_budget_mid_revision_ships_the_proven_subset(request_payload):
-    read = ProviderAction("read_file", {"path": "src/app.js", "line_start": 1, "line_end": 13}, call_id="read")
+    read = ProviderAction("read_file", {"path": "src/app.js", "line_start": 1, "line_end": 15}, call_id="read")
     actions = [_propose(SQL_FIXED, ["f-sql"]), _verify("verify-1"), read, read, read, read, read, read]
     response, _ = await _run(_payload(request_payload, max_tool_calls=6), actions, SelectiveBroker({"f-sql"}))
     assert response.state == "ready", response.reason
@@ -343,7 +351,7 @@ async def test_a_run_that_exhausts_its_tool_budget_mid_revision_ships_the_proven
 @pytest.mark.asyncio
 async def test_eviction_keeps_the_revision_request_in_the_working_set(request_payload):
     reads = [
-        ProviderAction("read_file", {"path": "src/app.js", "line_start": 1, "line_end": 13}, call_id=f"read-{index}", output_tokens=64)
+        ProviderAction("read_file", {"path": "src/app.js", "line_start": 1, "line_end": 15}, call_id=f"read-{index}", output_tokens=64)
         for index in range(6)
     ]
     actions = [_propose(SQL_FIXED, ["f-sql"]), _verify("verify-1"), *reads, _abstain()]
@@ -379,10 +387,12 @@ async def test_the_checkpoint_carries_the_revision_state_and_the_best_candidate(
 
 # --- end to end across files -----------------------------------------------------------------------
 
-DB_SOURCE = "function loadUser(db, id) {\n  return db.query(`SELECT * FROM users WHERE id = ${id}`);\n}\nmodule.exports = { loadUser };\n"
+# Methods again, for the reason the module SOURCE gives: no service proof, so no template pass,
+# so the model is the one that has to cover both files.
+DB_SOURCE = "class Store {\n  loadUser(db, id) {\n    return db.query(`SELECT * FROM users WHERE id = ${id}`);\n  }\n}\nmodule.exports = { Store };\n"
 DB_FIXED = DB_SOURCE.replace("db.query(`SELECT * FROM users WHERE id = ${id}`)", "db.query('SELECT * FROM users WHERE id = $1', [id])")
-CMD_SOURCE = "const { exec } = require('child_process');\nfunction render(id, cb) {\n  return exec(`render --order ${id}`, cb);\n}\nmodule.exports = { render };\n"
-CMD_FIXED = "const { execFile } = require('child_process');\nfunction render(id, cb) {\n  return execFile('render', ['--order', id], cb);\n}\nmodule.exports = { render };\n"
+CMD_SOURCE = "const { exec } = require('child_process');\nclass Renderer {\n  render(id, cb) {\n    return exec(`render --order ${id}`, cb);\n  }\n}\nmodule.exports = { Renderer };\n"
+CMD_FIXED = CMD_SOURCE.replace("const { exec } = require('child_process');", "const { execFile } = require('child_process');").replace("exec(`render --order ${id}`, cb)", "execFile('render', ['--order', id], cb)")
 
 
 @pytest.mark.asyncio
@@ -390,15 +400,15 @@ async def test_two_findings_across_files_in_one_group_are_both_proven_after_a_re
     """The command finding's trace names the SQL file, so the two findings form one group; the
     first proposal patches only the SQL file and the revision adds the command file."""
     findings = [
-        {"snapshot_id": "f-sql", "rule_id": "js.sql-injection", "cwe_id": "CWE-89", "file_path": "src/db.js", "line_start": 2, "line_end": 2},
+        {"snapshot_id": "f-sql", "rule_id": "js.sql-injection", "cwe_id": "CWE-89", "file_path": "src/db.js", "line_start": 3, "line_end": 3},
         {
             "snapshot_id": "f-exec",
             "rule_id": "js.command-injection",
             "cwe_id": "CWE-78",
             "file_path": "src/cmd.js",
-            "line_start": 3,
-            "line_end": 3,
-            "trace": [{"path": "src/db.js", "line": 2}, {"path": "src/cmd.js", "line": 3}],
+            "line_start": 4,
+            "line_end": 4,
+            "trace": [{"path": "src/db.js", "line": 3}, {"path": "src/cmd.js", "line": 4}],
         },
     ]
     files = [("src/db.js", DB_SOURCE), ("src/cmd.js", CMD_SOURCE), ("package.json", MANIFEST)]
@@ -408,7 +418,7 @@ async def test_two_findings_across_files_in_one_group_are_both_proven_after_a_re
         "propose_patch",
         {
             **first.arguments,
-            "citations": [{"path": "src/db.js", "line_start": 1, "line_end": 4}, {"path": "src/cmd.js", "line_start": 1, "line_end": 5}],
+            "citations": [{"path": "src/db.js", "line_start": 1, "line_end": 6}, {"path": "src/cmd.js", "line_start": 1, "line_end": 7}],
             "changes": [whole_file_change("src/db.js", DB_SOURCE, DB_FIXED), whole_file_change("src/cmd.js", CMD_SOURCE, CMD_FIXED)],
             "regression_tests": [_test("f-sql"), _test("f-exec")],
         },
@@ -461,7 +471,7 @@ async def test_a_finding_on_the_same_lines_as_a_proven_one_is_named_co_located(r
     """Two scanner rules on one line: the second finding is fixed by the same hunk and needs only
     a copy of the test under its own id, which the revision says outright."""
     findings = FINDINGS + [
-        {"snapshot_id": "f-path-2", "rule_id": "js.express-path-join-traversal", "cwe_id": "CWE-22", "file_path": "src/app.js", "line_start": 11, "line_end": 11},
+        {"snapshot_id": "f-path-2", "rule_id": "js.express-path-join-traversal", "cwe_id": "CWE-22", "file_path": "src/app.js", "line_start": 12, "line_end": 12},
     ]
     actions = [
         _propose(ALL_FIXED, ["f-sql", "f-exec", "f-path"]),

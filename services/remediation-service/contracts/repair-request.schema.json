@@ -286,6 +286,11 @@
           "title": "Allow Development Verification",
           "type": "boolean"
         },
+        "allow_isolated_job_verification": {
+          "default": true,
+          "title": "Allow Isolated Job Verification",
+          "type": "boolean"
+        },
         "allowed_rule_families": {
           "items": {
             "enum": [

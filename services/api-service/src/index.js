@@ -7,6 +7,8 @@ const logger = require('./utils/logger');
 const { startTelemetry, shutdownTelemetry } = require('./utils/telemetry');
 const { createApp } = require('./app');
 const { ensureDatabaseSchema } = require('./services/schemaBootstrap');
+const { startMetricsServer } = require('./metricsServer');
+const { warmUp } = require('./services/warmup');
 
 const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET'];
 if (process.env.NODE_ENV === 'production') {
@@ -31,12 +33,28 @@ async function start() {
     logger.info('API service started', { port: PORT });
   });
 
+  // The managed Prometheus sidecar scrapes this loopback listener; the public
+  // /metrics route stays gated by the internal secret.
+  const metricsServer = startMetricsServer();
+
+  // Deliberately not awaited: readiness must not wait on a peer service, and the
+  // warm-up is an optimisation, not a precondition for serving.
+  if (process.env.NODE_ENV !== 'test') {
+    warmUp().catch((error) => logger.warn('Warm-up failed', { error: error.message }));
+  }
+
   // Start background profile worker (processes one repo per minute)
+  let stopPurgeLoop = null;
   if (process.env.NODE_ENV !== 'test') {
     const { startWorkerLoop } = require('./services/profileWorker');
     const { startAnalysisQueueWorker } = require('./services/prAnalysisOrchestrator');
+    const { startPurgeLoop } = require('./services/installationPurge');
     startWorkerLoop(60000);
     startAnalysisQueueWorker();
+    // Deleting the data of an uninstalled installation must not depend on the
+    // remediation control plane being enabled, so this runs whether or not the
+    // reconciler does. Both call the same locked, idempotent purge.
+    stopPurgeLoop = startPurgeLoop();
   }
 
   // Single-instance deployments run the remediation control-plane loop inside the API
@@ -50,6 +68,12 @@ async function start() {
 
   const shutdown = async () => {
     logger.info('API service shutting down');
+    if (stopPurgeLoop) {
+      try { stopPurgeLoop(); } catch (error) {
+        logger.error('Installation purge loop stop failed', { error: error.message });
+      }
+      stopPurgeLoop = null;
+    }
     if (stopRemediationWorker) {
       try {
         stopRemediationWorker();
@@ -58,6 +82,7 @@ async function start() {
       }
       stopRemediationWorker = null;
     }
+    if (metricsServer) metricsServer.close();
     server.close(async () => {
       await shutdownTelemetry();
       await pool.end();

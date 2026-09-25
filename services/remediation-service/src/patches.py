@@ -20,7 +20,7 @@ from .models import FilePatch, RepairRequest
 from .retrieval import Snapshot, SnapshotError
 from .retrieval.snapshot import validate_repo_path
 from .families import PYTHON, language_of_path
-from .sandbox.harness import HARNESS_PATH, PYTHON_HARNESS_PATH, is_harness_path
+from .sandbox.harness import HARNESS_PATH, PYTHON_HARNESS_MODULES, PYTHON_HARNESS_PATH, is_harness_path
 
 
 class PatchPolicyError(ValueError):
@@ -49,8 +49,24 @@ NODE_BUILTIN_MODULES = frozenset(
 )
 
 NODE_SYNTAX_SUFFIXES = {".js", ".cjs", ".mjs"}
+# TypeScript parses with the type stripper rather than `node --check`, which reads every file
+# as JavaScript and so rejects the first annotation it meets.
+TYPESCRIPT_SYNTAX_SUFFIXES = {".ts", ".cts", ".mts"}
+# How this service runs TypeScript, in one place, because the in-process candidate check here and
+# the sandbox checks in `verification.checks` have to agree. `--experimental-strip-types` is a
+# no-op from Node 22.18, where stripping became the default, and is passed anyway so the flag set
+# does not depend on the patch version the image happens to carry. The warning is disabled
+# because every check's output tail is evidence, and an unconditional experimental notice is not.
+NODE_TYPESCRIPT_FLAGS = ("--experimental-strip-types", "--disable-warning=ExperimentalWarning")
+# `node --check` parses as JavaScript and never strips, so it rejects every annotated file.
+# `stripTypeScriptTypes` is the parse-only equivalent: it fails on a syntax error and on the
+# constructs strip-only mode cannot handle, and it runs nothing.
+TYPESCRIPT_SYNTAX_PROGRAM = (
+    "require('node:module').stripTypeScriptTypes("
+    "require('node:fs').readFileSync(process.argv[1], 'utf8'), { mode: 'strip' })"
+)
 PYTHON_SYNTAX_SUFFIXES = {".py"}
-SYNTAX_CHECKED_SUFFIXES = NODE_SYNTAX_SUFFIXES | PYTHON_SYNTAX_SUFFIXES
+SYNTAX_CHECKED_SUFFIXES = NODE_SYNTAX_SUFFIXES | TYPESCRIPT_SYNTAX_SUFFIXES | PYTHON_SYNTAX_SUFFIXES
 APPLICATION_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".py"}
 
 # Agent-generated regression tests live in a dedicated directory that no repository file may
@@ -246,21 +262,31 @@ def python_local_modules(snapshot: Snapshot) -> set[str]:
 
 
 def _reject_missing_python_dependencies(
-    path: str, original: str, replacement: str, snapshot: Snapshot, *, allow_declared: bool = True
+    path: str,
+    original: str,
+    replacement: str,
+    snapshot: Snapshot,
+    *,
+    allow_declared: bool = True,
+    allow_harness_modules: bool = False,
 ) -> None:
     introduced = {python_top_level(item) for item in python_module_specifiers(replacement) - python_module_specifiers(original)}
     if not introduced:
         return
     local = python_local_modules(snapshot)
     allowed = python_declared_dependencies(snapshot) if allow_declared else set()
+    harness_modules = PYTHON_HARNESS_MODULES if allow_harness_modules else frozenset()
     for name in sorted(introduced):
         if name in PYTHON_STDLIB_MODULES or name in local or name == "harness" or name.lower() in allowed:
+            continue
+        if name in harness_modules:
             continue
         raise PatchPolicyError(
             f"missing_dependency:{name}",
             f"{name!r} is not in the Python standard library, no module of that name is in the snapshot, "
             f"and no requirements file or pyproject in the snapshot declares it. Nothing is installed in "
             f"the sandbox, so a regression test must import only the standard library, repository modules, "
+            f"the drivers the harness fakes ({', '.join(sorted(PYTHON_HARNESS_MODULES))}), "
             f"and the service harness at {PYTHON_HARNESS_PATH} (import harness as h). "
             + PYTHON_BEHAVIOR_TEST_GUIDANCE,
         )
@@ -307,16 +333,35 @@ MAX_SYNTAX_DIAGNOSTIC_CHARS = 600
 
 
 def _reject_missing_dependencies(
-    path: str, original: str, replacement: str, snapshot: Snapshot, *, allow_declared: bool = True
+    path: str,
+    original: str,
+    replacement: str,
+    snapshot: Snapshot,
+    *,
+    allow_declared: bool = True,
+    allow_harness_modules: bool = False,
 ) -> None:
     """Rejects a specifier the sandbox cannot resolve.
 
     An application file may import what package.json declares: the repository installs it. A
     generated regression test may not, because the sandbox installs nothing, so for tests only
     Node built-ins, relative paths, and the service harness resolve.
+
+    `allow_harness_modules` is the one widening, and it is for generated Python tests only: the
+    Python harness installs fakes for a fixed set of drivers before it loads the module under
+    test, so a test that imports one of them gets the harness's recorded fake rather than a
+    missing module. An application patch never gets this, because a driver the harness fakes in
+    the sandbox is still a real dependency the deployment has to install.
     """
     if language_of_path(path) == PYTHON:
-        _reject_missing_python_dependencies(path, original, replacement, snapshot, allow_declared=allow_declared)
+        _reject_missing_python_dependencies(
+            path,
+            original,
+            replacement,
+            snapshot,
+            allow_declared=allow_declared,
+            allow_harness_modules=allow_harness_modules,
+        )
         return
     introduced = {
         root
@@ -349,14 +394,20 @@ def _syntax_check(path: str, replacement: str) -> str | None:
     suffix = PurePosixPath(path).suffix.lower()
     if suffix in PYTHON_SYNTAX_SUFFIXES:
         return _python_syntax_check(path, replacement)
-    if suffix not in NODE_SYNTAX_SUFFIXES:
-        return f"syntax check skipped for {path}: only .js, .cjs, .mjs, and .py are parsed"
+    typescript = suffix in TYPESCRIPT_SYNTAX_SUFFIXES
+    if suffix not in NODE_SYNTAX_SUFFIXES and not typescript:
+        return f"syntax check skipped for {path}: only .js, .cjs, .mjs, .ts, .cts, .mts, and .py are parsed"
     with tempfile.TemporaryDirectory(prefix="mitig8it-syntax-") as directory:
         target = Path(directory) / f"candidate{suffix}"
         target.write_text(replacement, encoding="utf-8")
+        argv = (
+            ["node", *NODE_TYPESCRIPT_FLAGS, "-e", TYPESCRIPT_SYNTAX_PROGRAM, str(target)]
+            if typescript
+            else ["node", "--check", str(target)]
+        )
         try:
             completed = subprocess.run(  # noqa: S603 - fixed argv, no shell, temporary file only.
-                ["node", "--check", str(target)],
+                argv,
                 cwd=directory,
                 env={"PATH": __import__("os").environ.get("PATH", ""), "NO_COLOR": "1"},
                 stdin=subprocess.DEVNULL,
@@ -376,7 +427,9 @@ def _syntax_check(path: str, replacement: str) -> str | None:
             )
             raise PatchPolicyError(
                 f"candidate_syntax_invalid:{path}",
-                f"The patched {path} does not parse under `node --check`. Node reports:\n"
+                f"The patched {path} does not parse under "
+                + ("Node's TypeScript type stripper" if typescript else "`node --check`")
+                + ". Node reports:\n"
                 f"{diagnostic.strip()[:MAX_SYNTAX_DIAGNOSTIC_CHARS]}\n"
                 "The line number is in the patched file. Re-read that range and send hunks whose "
                 "replacement_lines leave the file balanced.",
@@ -743,7 +796,7 @@ def build_generated_tests(
                 "The test reads a file as text and never requires a repository module, so it proves "
                 "nothing about behavior. " + BEHAVIOR_TEST_GUIDANCE,
             )
-        _reject_missing_dependencies(path, "", content, snapshot, allow_declared=False)
+        _reject_missing_dependencies(path, "", content, snapshot, allow_declared=False, allow_harness_modules=True)
         limitation = _syntax_check(path, content)
         if limitation:
             limitations.append(limitation)

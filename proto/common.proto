@@ -104,6 +104,18 @@ message Finding {
   string fingerprint = 27;
 }
 
+// One thing the analysis could not do completely. A file the scanner could
+// only parse partially, or one it gave up on after a timeout, still leaves the
+// rest of the analysis sound, so the run reports the gap instead of failing.
+message AnalysisLimitation {
+  string path = 1;
+  string kind = 2;
+  string message = 3;
+  int32 line = 4;
+  // The scanner's own error tag, for example "Lexical error" or "Timeout".
+  string type = 5;
+}
+
 message ReviewComment {
   string path = 1;
   int32 line = 2;

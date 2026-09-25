@@ -5,24 +5,10 @@ const { notifyAnalysisQueued } = require('../services/prAnalysisOrchestrator');
 const logger = require('../utils/logger');
 const installationsDb = require('../db/installations');
 const remediationDb = require('../db/remediation');
+const findingThreadEvents = require('../services/findingThreadEvents');
+const installationPurge = require('../services/installationPurge');
 
 const router = express.Router();
-
-// Events that only hint that a merge decision may need re-evaluation. They record an
-// append-only observation; a merge controller consumes it later. Nothing here decides.
-const MERGE_HINT_EVENTS = new Set(['check_run', 'check_suite', 'status', 'pull_request_review']);
-
-function mergeHintReference(event, payload) {
-  const repositoryGithubId = payload.repository?.id || null;
-  if (!repositoryGithubId) return null;
-  if (event === 'pull_request_review') {
-    return { repositoryGithubId, prNumber: payload.pull_request?.number ?? null, headSha: payload.pull_request?.head?.sha || null };
-  }
-  if (event === 'status') return { repositoryGithubId, headSha: payload.sha || null };
-  const container = event === 'check_run' ? payload.check_run : payload.check_suite;
-  const linked = Array.isArray(container?.pull_requests) ? container.pull_requests[0] : null;
-  return { repositoryGithubId, prNumber: linked?.number ?? null, headSha: container?.head_sha || null };
-}
 
 function getBodyBuffer(req) {
   if (Buffer.isBuffer(req.body)) return req.body;
@@ -71,6 +57,23 @@ router.post('/github', async (req, res) => {
           payload.installation,
           payload.action === 'deleted' ? 'deleted' : payload.action === 'suspend' ? 'suspended' : 'active'
         );
+        if (payload.action === 'deleted') {
+          // Mark the installation now: every worker and reconciler query skips a marked
+          // installation, so nothing else runs for data that is about to be deleted.
+          // The purge itself happens after the grace period, from the reconciler.
+          const marked = await installationPurge.markInstallationDeleted(client, payload.installation.id);
+          logger.info('Installation uninstalled; data purge scheduled', {
+            installationId: payload.installation.id, purge_after: marked?.purge_after || null,
+          });
+        } else if (payload.action === 'created' || payload.action === 'unsuspend') {
+          // A reinstall of the same GitHub installation id inside the grace period is
+          // the owner changing their mind. Cancel the purge rather than delete their data.
+          if (await installationPurge.cancelScheduledPurge(client, payload.installation.id)) {
+            logger.info('Reinstall within the grace period cancelled the scheduled data purge', {
+              installationId: payload.installation.id,
+            });
+          }
+        }
       }
 
       if (event === 'installation_repositories' && payload.installation?.id) {
@@ -239,10 +242,10 @@ router.post('/github', async (req, res) => {
           if (repoResult.rows[0].is_active) {
             const run = await client.query(
               `INSERT INTO analysis_runs
-                (repository_id, pull_request_id, pr_number, commit_sha, status, triggered_by)
-               VALUES ($1, $2, $3, $4, 'pending', 'webhook')
+                (repository_id, pull_request_id, pr_number, commit_sha, status, triggered_by, delivery_id)
+               VALUES ($1, $2, $3, $4, 'pending', 'webhook', $5)
                RETURNING id`,
-              [repoId, prResult.rows[0].id, pr.number, pr.head.sha]
+              [repoId, prResult.rows[0].id, pr.number, pr.head.sha, deliveryId]
             );
 
             analysisPayload = {
@@ -265,19 +268,51 @@ router.post('/github', async (req, res) => {
 
       // A branch push moves the head of every open pull request from that branch.
       if (event === 'push' && payload.repository?.id && typeof payload.ref === 'string' && payload.ref.startsWith('refs/heads/') && payload.after) {
+        const branch = payload.ref.slice('refs/heads/'.length);
         await remediationDb.supersedeForBranchPush({
           client, repositoryGithubId: payload.repository.id,
-          branch: payload.ref.slice('refs/heads/'.length), newHeadSha: payload.after, reason: 'head_changed',
+          branch, newHeadSha: payload.after, reason: 'head_changed',
         });
       }
 
-      if (MERGE_HINT_EVENTS.has(event)) {
-        const reference = mergeHintReference(event, payload);
-        if (reference) {
-          await remediationDb.recordMergeReevaluationHint(
-            { client, ...reference },
-            `${event}${payload.action ? `.${payload.action}` : ''}`
-          );
+      // A reviewer resolving the bot's thread, or replying "not an issue" to it, is a
+      // decision about a finding. Both land in the outcome log on the same transaction
+      // as the delivery marker, so a redelivery records nothing twice.
+      if (event === 'pull_request_review_thread') {
+        await findingThreadEvents.handleReviewThread(client, payload);
+      }
+
+      if (event === 'pull_request_review_comment') {
+        await findingThreadEvents.handleReviewComment(client, payload);
+      }
+
+      // "Commit suggestion" applies a published fix without the workspace ever seeing
+      // it. Only the push carries the commits; a pull_request synchronize payload has
+      // none, which is why nothing is read from it here.
+      //
+      // The pushed commits are scanned once and the one scan feeds both records. A
+      // commit that names the app as a co-author is an outcome against every finding
+      // whose fix was published, which is what the apply and residual rates are
+      // computed from, and an observed apply action against the job that published it,
+      // which is what the residual report and the verification check hang off now that
+      // the app never commits anything itself.
+      if (event === 'push') {
+        const suggestionCommits = findingThreadEvents.commitSuggestionCommits(payload);
+        if (suggestionCommits.length) {
+          await findingThreadEvents.handleCommitSuggestions(client, payload, { commits: suggestionCommits });
+
+          const pushRef = String(payload.ref || '');
+          if (payload.repository?.id && pushRef.startsWith('refs/heads/')) {
+            const pushBranch = pushRef.slice('refs/heads/'.length);
+            for (const commit of suggestionCommits) {
+              if (!commit?.id) continue;
+              await remediationDb.recordObservedApply({
+                client, repositoryGithubId: payload.repository.id, branch: pushBranch,
+                commitSha: commit.id, commitMessage: commit.message,
+                actorLogin: commit.author?.username || payload.pusher?.name || payload.sender?.login || null,
+              });
+            }
+          }
         }
       }
 

@@ -10,9 +10,9 @@
   "reference_repair": "expected/app.js",
   "finding": {
     "id": "command-1",
-    "rule_id": "cwe-78.shell-command",
+    "rule_id": "cwe-78.child-process-exec",
     "cwe_id": "CWE-78",
-    "category": "command",
+    "category": "command injection",
     "path": "app.js",
     "line_start": 2,
     "line_end": 2

@@ -128,6 +128,10 @@ async function claimNextQueuedRun(staleAfterMinutes = 20) {
            candidate.pr_number AS pull_request_number
          FROM analysis_runs candidate
          JOIN repositories candidate_repo ON candidate_repo.id = candidate.repository_id
+         -- An uninstalled installation's data is being deleted; never analyse for it.
+         JOIN installations candidate_installation
+           ON candidate_installation.id = candidate_repo.installation_id
+          AND candidate_installation.deleted_at IS NULL
          WHERE candidate_repo.is_active = true
            AND NOT (candidate.id = ANY($2::uuid[]))
            AND ((candidate.status = 'pending'
@@ -160,7 +164,8 @@ async function claimNextQueuedRun(staleAfterMinutes = 20) {
          RETURNING ar.id AS analysis_run_id, ar.repository_id,
            r.github_id AS repository_github_id, r.full_name AS repository_full_name,
            r.installation_id, ar.pull_request_id, ar.pr_number AS pull_request_number,
-           ar.commit_sha, r.baseline_set, ar.auto_retry_count`, [candidate.analysis_run_id]
+           ar.commit_sha, r.baseline_set, ar.auto_retry_count, ar.triggered_by,
+           ar.delivery_id`, [candidate.analysis_run_id]
       );
       if (!result.rows[0]) throw new Error('Claimed analysis run disappeared');
       await client.query('COMMIT');
@@ -201,7 +206,10 @@ async function getQueueStats() {
        COALESCE(
          EXTRACT(EPOCH FROM (NOW() - MIN(created_at) FILTER (WHERE status = 'pending'))),
          0
-       )::int AS oldest_pending_seconds
+       )::int AS oldest_pending_seconds,
+       -- NULL, not 0, when nothing has ever started: "no run in ten minutes" and
+       -- "a run started this instant" must not collapse into the same number.
+       EXTRACT(EPOCH FROM (NOW() - MAX(started_at)))::int AS seconds_since_last_start
      FROM analysis_runs`
   );
 
@@ -211,19 +219,24 @@ async function getQueueStats() {
     running: Number(row.running || 0),
     failed: Number(row.failed || 0),
     oldest_pending_seconds: Number(row.oldest_pending_seconds || 0),
+    seconds_since_last_start: row.seconds_since_last_start == null
+      ? null
+      : Number(row.seconds_since_last_start),
   };
 }
 
-async function markCompleted(runId, { findingsCount, counts, filesAnalyzed, checkRunId, reviewId }) {
+async function markCompleted(runId, { findingsCount, counts, filesAnalyzed, checkRunId, reviewId, limitations }) {
   await pool.query(
     `UPDATE analysis_runs
      SET status = 'completed', findings_count = $2, critical_count = $3,
          high_count = $4, medium_count = $5, low_count = $6,
          files_analyzed = $7, github_check_run_id = $8, summary_comment_id = $9,
+         analysis_limitations = $10::jsonb,
          completed_at = NOW()
      WHERE id = $1`,
     [runId, findingsCount, counts.critical || 0, counts.high || 0,
-     counts.medium || 0, counts.low || 0, filesAnalyzed, checkRunId || null, reviewId || null]
+     counts.medium || 0, counts.low || 0, filesAnalyzed, checkRunId || null, reviewId || null,
+     JSON.stringify(Array.isArray(limitations) ? limitations : [])]
   );
 }
 
@@ -244,13 +257,14 @@ async function requeueAfterTransientFailure(runId, { errorMessage, delayMs }) {
        UPDATE analysis_runs
        SET status = 'failed', error_message = $2, completed_at = NOW()
        WHERE id = $1 AND status <> 'failed'
-       RETURNING repository_id, pull_request_id, pr_number, commit_sha, auto_retry_count
+       RETURNING repository_id, pull_request_id, pr_number, commit_sha, auto_retry_count,
+         delivery_id
      )
      INSERT INTO analysis_runs
        (repository_id, pull_request_id, pr_number, commit_sha, status, triggered_by,
-        auto_retry_count, not_before)
+        auto_retry_count, not_before, delivery_id)
      SELECT repository_id, pull_request_id, pr_number, commit_sha, 'pending', 'auto_retry',
-       auto_retry_count + 1, NOW() + ($3::bigint * INTERVAL '1 millisecond')
+       auto_retry_count + 1, NOW() + ($3::bigint * INTERVAL '1 millisecond'), delivery_id
      FROM failed
      RETURNING id, auto_retry_count, not_before`,
     [runId, errorMessage, delay]

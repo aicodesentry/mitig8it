@@ -1,0 +1,1019 @@
+{
+  "version": 1,
+  "description": "One true-positive fixture per posting tier 2 rule in javascript_coverage.yml and python_coverage.yml, plus the replay lines that a rule was narrowed to stop matching. Every fixture is scanned in one pass by tests/test_tier2_precision_benchmark.py.",
+  "cases": [
+    {
+      "id": "cwe-89.js-knex-raw-interpolated",
+      "expect": "finding",
+      "rule": "cwe-89.js-knex-raw-interpolated",
+      "path": "positive/cwe-89_js-knex-raw-interpolated.js",
+      "code": "async function findUser(knex, name) {\n  return knex.raw(`SELECT * FROM users WHERE name = '${name}'`);\n}\n"
+    },
+    {
+      "id": "cwe-89.js-query-string-concat",
+      "expect": "finding",
+      "rule": "cwe-89.js-query-string-concat",
+      "path": "positive/cwe-89_js-query-string-concat.js",
+      "code": "async function findUser(db, name) {\n  return db.query(\"SELECT * FROM users WHERE name = \" + name);\n}\n"
+    },
+    {
+      "id": "cwe-89.js-sequelize-literal-interpolated",
+      "expect": "finding",
+      "rule": "cwe-89.js-sequelize-literal-interpolated",
+      "path": "positive/cwe-89_js-sequelize-literal-interpolated.js",
+      "code": "function order(sequelize, column) {\n  return sequelize.literal(`created_at ${column}`);\n}\n"
+    },
+    {
+      "id": "cwe-89.js-typeorm-where-concat",
+      "expect": "finding",
+      "rule": "cwe-89.js-typeorm-where-concat",
+      "path": "positive/cwe-89_js-typeorm-where-concat.ts",
+      "code": "function scope(qb: any, role: string) {\n  return qb.where(\"user.role = \" + role);\n}\n"
+    },
+    {
+      "id": "cwe-943.js-mongo-where-operator",
+      "expect": "finding",
+      "rule": "cwe-943.js-mongo-where-operator",
+      "path": "positive/cwe-943_js-mongo-where-operator.js",
+      "code": "async function search(collection, expression) {\n  return collection.find({ $where: expression });\n}\n"
+    },
+    {
+      "id": "cwe-943.js-mongo-request-filter",
+      "expect": "finding",
+      "rule": "cwe-943.js-mongo-request-filter",
+      "path": "positive/cwe-943_js-mongo-request-filter.js",
+      "code": "app.post('/search', async (req, res) => {\n  const rows = await users.find(req.body);\n  res.json(rows);\n});\n"
+    },
+    {
+      "id": "cwe-78.js-exec-interpolated",
+      "expect": "finding",
+      "rule": "cwe-78.js-exec-interpolated",
+      "path": "positive/cwe-78_js-exec-interpolated.js",
+      "code": "const cp = require('node:child_process');\nfunction ping(host) {\n  return cp.exec(`ping -c 1 ${host}`);\n}\n"
+    },
+    {
+      "id": "cwe-78.js-spawn-shell-true",
+      "expect": "finding",
+      "rule": "cwe-78.js-spawn-shell-true",
+      "path": "positive/cwe-78_js-spawn-shell-true.js",
+      "code": "const cp = require('node:child_process');\nfunction run(tool, args) {\n  return cp.spawn(tool, args, { shell: true });\n}\n"
+    },
+    {
+      "id": "cwe-78.js-shelljs-interpolated",
+      "expect": "finding",
+      "rule": "cwe-78.js-shelljs-interpolated",
+      "path": "positive/cwe-78_js-shelljs-interpolated.js",
+      "code": "const shell = require('shelljs');\nfunction archive(name) {\n  return shell.exec(`tar -cf ${name}.tar ${name}`);\n}\n"
+    },
+    {
+      "id": "cwe-95.js-new-function-dynamic",
+      "expect": "finding",
+      "rule": "cwe-95.js-new-function-dynamic",
+      "path": "positive/cwe-95_js-new-function-dynamic.js",
+      "code": "function compile(expression) {\n  return new Function(`return ${expression};`);\n}\n"
+    },
+    {
+      "id": "cwe-95.js-eval-interpolated",
+      "expect": "finding",
+      "rule": "cwe-95.js-eval-interpolated",
+      "path": "positive/cwe-95_js-eval-interpolated.js",
+      "code": "function compute(expression) {\n  return eval(`1 + ${expression}`);\n}\n"
+    },
+    {
+      "id": "cwe-95.js-vm-run-dynamic",
+      "expect": "finding",
+      "rule": "cwe-95.js-vm-run-dynamic",
+      "path": "positive/cwe-95_js-vm-run-dynamic.js",
+      "code": "const vm = require('node:vm');\nfunction run(req) {\n  return vm.runInNewContext(req.body.script);\n}\n"
+    },
+    {
+      "id": "cwe-95.js-settimeout-string",
+      "expect": "finding",
+      "rule": "cwe-95.js-settimeout-string",
+      "path": "positive/cwe-95_js-settimeout-string.js",
+      "code": "function schedule() {\n  setTimeout(\"refreshSession()\", 1000);\n}\n"
+    },
+    {
+      "id": "cwe-502.js-node-serialize-unserialize",
+      "expect": "finding",
+      "rule": "cwe-502.js-node-serialize-unserialize",
+      "path": "positive/cwe-502_js-node-serialize-unserialize.js",
+      "code": "const serialize = require('node-serialize');\nfunction restore(payload) {\n  return serialize.unserialize(payload);\n}\n"
+    },
+    {
+      "id": "cwe-502.js-yaml-load-unsafe",
+      "expect": "finding",
+      "rule": "cwe-502.js-yaml-load-unsafe",
+      "path": "positive/cwe-502_js-yaml-load-unsafe.js",
+      "code": "const jsyaml = require('js-yaml');\nfunction parse(text, schema) {\n  return jsyaml.load(text, { schema: DEFAULT_FULL_SCHEMA });\n}\n"
+    },
+    {
+      "id": "cwe-22.js-sendfile-request-path",
+      "expect": "finding",
+      "rule": "cwe-22.js-sendfile-request-path",
+      "path": "positive/cwe-22_js-sendfile-request-path.js",
+      "code": "const path = require('node:path');\napp.get('/docs/:name', (req, res) => {\n  res.sendFile(path.join(DOCS, req.params.name));\n});\n"
+    },
+    {
+      "id": "cwe-22.js-fs-read-request-path",
+      "expect": "finding",
+      "rule": "cwe-22.js-fs-read-request-path",
+      "path": "positive/cwe-22_js-fs-read-request-path.js",
+      "code": "const fs = require('node:fs');\nconst path = require('node:path');\napp.get('/read', (req, res) => {\n  res.send(fs.readFileSync(path.join(BASE, req.query.file), 'utf8'));\n});\n"
+    },
+    {
+      "id": "cwe-22.js-archive-entry-write",
+      "expect": "finding",
+      "rule": "cwe-22.js-archive-entry-write",
+      "path": "positive/cwe-22_js-archive-entry-write.js",
+      "code": "const fs = require('node:fs');\nconst path = require('node:path');\nfunction unpack(entry, dest) {\n  fs.writeFileSync(path.join(dest, entry.path), entry.body);\n}\n"
+    },
+    {
+      "id": "cwe-918.js-fetch-request-url",
+      "expect": "finding",
+      "rule": "cwe-918.js-fetch-request-url",
+      "path": "positive/cwe-918_js-fetch-request-url.js",
+      "code": "app.get('/proxy', async (req, res) => {\n  const upstream = await fetch(req.query.url);\n  res.send(await upstream.text());\n});\n"
+    },
+    {
+      "id": "cwe-918.js-http-request-request-url",
+      "expect": "finding",
+      "rule": "cwe-918.js-http-request-request-url",
+      "path": "positive/cwe-918_js-http-request-request-url.js",
+      "code": "const https = require('node:https');\napp.get('/fetch', (req, res) => {\n  https.get(req.query.target, (upstream) => upstream.pipe(res));\n});\n"
+    },
+    {
+      "id": "cwe-79.js-response-html-interpolated",
+      "expect": "finding",
+      "rule": "cwe-79.js-response-html-interpolated",
+      "path": "positive/cwe-79_js-response-html-interpolated.js",
+      "code": "app.get('/hello', (req, res) => {\n  res.send(`<h1>Hello ${req.query.name}</h1>`);\n});\n"
+    },
+    {
+      "id": "cwe-79.js-jquery-html-sink",
+      "expect": "finding",
+      "rule": "cwe-79.js-jquery-html-sink",
+      "path": "positive/cwe-79_js-jquery-html-sink.js",
+      "code": "function render(target) {\n  $(target).html(location.hash);\n}\n"
+    },
+    {
+      "id": "cwe-79.js-dangerously-set-dynamic",
+      "expect": "finding",
+      "rule": "cwe-79.js-dangerously-set-dynamic",
+      "path": "positive/cwe-79_js-dangerously-set-dynamic.jsx",
+      "code": "export function Note({ body }) {\n  return <div dangerouslySetInnerHTML={{ __html: body }} />;\n}\n"
+    },
+    {
+      "id": "cwe-79.js-dom-html-property-sink",
+      "expect": "finding",
+      "rule": "cwe-79.js-dom-html-property-sink",
+      "path": "positive/cwe-79_js-dom-html-property-sink.js",
+      "code": "function render(el) {\n  el.innerHTML = location.search;\n}\n"
+    },
+    {
+      "id": "cwe-916.js-password-weak-hash",
+      "expect": "finding",
+      "rule": "cwe-916.js-password-weak-hash",
+      "path": "positive/cwe-916_js-password-weak-hash.js",
+      "code": "const crypto = require('node:crypto');\nfunction hash(password) {\n  return crypto.createHash('md5').update(password).digest('hex');\n}\n"
+    },
+    {
+      "id": "cwe-327.js-ecb-cipher-mode",
+      "expect": "finding",
+      "rule": "cwe-327.js-ecb-cipher-mode",
+      "path": "positive/cwe-327_js-ecb-cipher-mode.js",
+      "code": "const crypto = require('node:crypto');\nfunction seal(key, iv) {\n  return crypto.createCipheriv('aes-128-ecb', key, iv);\n}\n"
+    },
+    {
+      "id": "cwe-329.js-static-initialization-vector",
+      "expect": "finding",
+      "rule": "cwe-329.js-static-initialization-vector",
+      "path": "positive/cwe-329_js-static-initialization-vector.js",
+      "code": "const crypto = require('node:crypto');\nfunction seal(key) {\n  return crypto.createCipheriv('aes-256-cbc', key, Buffer.from('0123456789abcdef'));\n}\n"
+    },
+    {
+      "id": "cwe-338.js-math-random-secret",
+      "expect": "finding",
+      "rule": "cwe-338.js-math-random-secret",
+      "path": "positive/cwe-338_js-math-random-secret.js",
+      "code": "function issue() {\n  const resetToken = Math.random().toString(36).slice(2);\n  return resetToken;\n}\n"
+    },
+    {
+      "id": "cwe-798.js-credential-constant",
+      "expect": "finding",
+      "rule": "cwe-798.js-credential-constant",
+      "path": "positive/cwe-798_js-credential-constant.js",
+      "code": "const apiKey = \"sk-live-7f3a91bc44de2210\";\n\nmodule.exports = { apiKey };\n"
+    },
+    {
+      "id": "cwe-798.js-credential-config-key",
+      "expect": "finding",
+      "rule": "cwe-798.js-credential-config-key",
+      "path": "positive/cwe-798_js-credential-config-key.js",
+      "code": "module.exports = {\n  host: 'billing.internal',\n  clientSecret: 'MFyZ2h0LWNsaWVudC1zZWNyZXQ',\n};\n"
+    },
+    {
+      "id": "cwe-798.js-basic-auth-literal",
+      "expect": "finding",
+      "rule": "cwe-798.js-basic-auth-literal",
+      "path": "positive/cwe-798_js-basic-auth-literal.js",
+      "code": "const headers = {\n  Authorization: \"Basic YWRtaW46aHVudGVyMg==\",\n};\n"
+    },
+    {
+      "id": "cwe-347.js-jwt-none-algorithm",
+      "expect": "finding",
+      "rule": "cwe-347.js-jwt-none-algorithm",
+      "path": "positive/cwe-347_js-jwt-none-algorithm.js",
+      "code": "const jwt = require('jsonwebtoken');\nfunction issue(claims, key) {\n  return jwt.sign(claims, key, { algorithm: 'none' });\n}\n"
+    },
+    {
+      "id": "cwe-347.js-jwt-decode-without-verify",
+      "expect": "finding",
+      "rule": "cwe-347.js-jwt-decode-without-verify",
+      "path": "positive/cwe-347_js-jwt-decode-without-verify.js",
+      "code": "const jwt = require('jsonwebtoken');\nfunction currentUser(token) {\n  const claims = jwt.decode(token);\n  return claims.sub;\n}\n"
+    },
+    {
+      "id": "cwe-613.js-jwt-ignore-expiration",
+      "expect": "finding",
+      "rule": "cwe-613.js-jwt-ignore-expiration",
+      "path": "positive/cwe-613_js-jwt-ignore-expiration.js",
+      "code": "const jwt = require('jsonwebtoken');\nfunction check(token, key) {\n  return jwt.verify(token, key, { ignoreExpiration: true });\n}\n"
+    },
+    {
+      "id": "cwe-601.js-redirect-request-value",
+      "expect": "finding",
+      "rule": "cwe-601.js-redirect-request-value",
+      "path": "positive/cwe-601_js-redirect-request-value.js",
+      "code": "app.get('/go', (req, res) => {\n  res.redirect(req.query.next);\n});\n"
+    },
+    {
+      "id": "cwe-601.js-dom-location-assign",
+      "expect": "finding",
+      "rule": "cwe-601.js-dom-location-assign",
+      "path": "positive/cwe-601_js-dom-location-assign.js",
+      "code": "function bounce() {\n  window.location.href = new URLSearchParams(location.search).get('next');\n}\n"
+    },
+    {
+      "id": "cwe-1321.js-merge-request-body",
+      "expect": "finding",
+      "rule": "cwe-1321.js-merge-request-body",
+      "path": "positive/cwe-1321_js-merge-request-body.js",
+      "code": "const _ = require('lodash');\napp.post('/settings', (req, res) => {\n  _.merge(settings, req.body);\n  res.end();\n});\n"
+    },
+    {
+      "id": "cwe-1321.js-dynamic-key-write",
+      "expect": "finding",
+      "rule": "cwe-1321.js-dynamic-key-write",
+      "path": "positive/cwe-1321_js-dynamic-key-write.js",
+      "code": "app.post('/set', (req, res) => {\n  store[req.body.key] = req.body.value;\n  res.end();\n});\n"
+    },
+    {
+      "id": "cwe-1321.js-setprototypeof-dynamic",
+      "expect": "finding",
+      "rule": "cwe-1321.js-setprototypeof-dynamic",
+      "path": "positive/cwe-1321_js-setprototypeof-dynamic.js",
+      "code": "app.post('/shape', (req, res) => {\n  Object.setPrototypeOf(target, req.body.proto);\n  res.end();\n});\n"
+    },
+    {
+      "id": "cwe-295.js-agent-reject-unauthorized-false",
+      "expect": "finding",
+      "rule": "cwe-295.js-agent-reject-unauthorized-false",
+      "path": "positive/cwe-295_js-agent-reject-unauthorized-false.js",
+      "code": "const https = require('node:https');\nconst agent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });\n"
+    },
+    {
+      "id": "cwe-326.js-tls-min-version-legacy",
+      "expect": "finding",
+      "rule": "cwe-326.js-tls-min-version-legacy",
+      "path": "positive/cwe-326_js-tls-min-version-legacy.js",
+      "code": "const options = {\n  host: 'legacy.internal',\n  minVersion: 'TLSv1',\n};\n"
+    },
+    {
+      "id": "cwe-295.js-checkserveridentity-disabled",
+      "expect": "finding",
+      "rule": "cwe-295.js-checkserveridentity-disabled",
+      "path": "positive/cwe-295_js-checkserveridentity-disabled.js",
+      "code": "const options = {\n  host: 'internal',\n  checkServerIdentity: () => {},\n};\n"
+    },
+    {
+      "id": "cwe-614.js-session-cookie-insecure",
+      "expect": "finding",
+      "rule": "cwe-614.js-session-cookie-insecure",
+      "path": "positive/cwe-614_js-session-cookie-insecure.js",
+      "code": "app.use(session({ secret: process.env.SESSION_SECRET, cookie: { maxAge: 60000, secure: false } }));\n"
+    },
+    {
+      "id": "cwe-1275.js-cookie-samesite-none",
+      "expect": "finding",
+      "rule": "cwe-1275.js-cookie-samesite-none",
+      "path": "positive/cwe-1275_js-cookie-samesite-none.js",
+      "code": "const cookieOptions = {\n  httpOnly: true,\n  sameSite: 'none',\n};\n"
+    },
+    {
+      "id": "cwe-798.js-session-secret-literal",
+      "expect": "finding",
+      "rule": "cwe-798.js-session-secret-literal",
+      "path": "positive/cwe-798_js-session-secret-literal.js",
+      "code": "app.use(session({ secret: 'keyboard-cat-9f21', resave: false }));\n"
+    },
+    {
+      "id": "cwe-942.js-cors-credentials-reflected",
+      "expect": "finding",
+      "rule": "cwe-942.js-cors-credentials-reflected",
+      "path": "positive/cwe-942_js-cors-credentials-reflected.js",
+      "code": "app.use(cors({ origin: true, credentials: true }));\n"
+    },
+    {
+      "id": "cwe-693.js-helmet-protection-disabled",
+      "expect": "finding",
+      "rule": "cwe-693.js-helmet-protection-disabled",
+      "path": "positive/cwe-693_js-helmet-protection-disabled.js",
+      "code": "app.use(helmet({ contentSecurityPolicy: false }));\n"
+    },
+    {
+      "id": "cwe-489.js-express-error-stack-exposed",
+      "expect": "finding",
+      "rule": "cwe-489.js-express-error-stack-exposed",
+      "path": "positive/cwe-489_js-express-error-stack-exposed.js",
+      "code": "app.use((err, req, res, next) => {\n  res.status(500).send(err.stack);\n});\n"
+    },
+    {
+      "id": "cwe-89.py-execute-fstring-direct",
+      "expect": "finding",
+      "rule": "cwe-89.py-execute-fstring-direct",
+      "path": "positive/cwe-89_py-execute-fstring-direct.py",
+      "code": "def find_user(cursor, name):\n    cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")\n    return cursor.fetchall()\n"
+    },
+    {
+      "id": "cwe-89.py-execute-concat-direct",
+      "expect": "finding",
+      "rule": "cwe-89.py-execute-concat-direct",
+      "path": "positive/cwe-89_py-execute-concat-direct.py",
+      "code": "def find_user(cursor, name):\n    cursor.execute(\"SELECT * FROM users WHERE name = \" + name)\n    return cursor.fetchall()\n"
+    },
+    {
+      "id": "cwe-89.py-sqlalchemy-text-interpolated",
+      "expect": "finding",
+      "rule": "cwe-89.py-sqlalchemy-text-interpolated",
+      "path": "positive/cwe-89_py-sqlalchemy-text-interpolated.py",
+      "code": "from sqlalchemy import text\n\n\ndef statement(column):\n    return text(f\"SELECT * FROM users ORDER BY {column}\")\n"
+    },
+    {
+      "id": "cwe-89.py-django-raw-interpolated",
+      "expect": "finding",
+      "rule": "cwe-89.py-django-raw-interpolated",
+      "path": "positive/cwe-89_py-django-raw-interpolated.py",
+      "code": "def search(User, name):\n    return User.objects.raw(f\"SELECT * FROM users WHERE name = '{name}'\")\n"
+    },
+    {
+      "id": "cwe-943.py-pymongo-where-operator",
+      "expect": "finding",
+      "rule": "cwe-943.py-pymongo-where-operator",
+      "path": "positive/cwe-943_py-pymongo-where-operator.py",
+      "code": "def search(collection, expression):\n    return collection.find({\"$where\": expression})\n"
+    },
+    {
+      "id": "cwe-943.py-pymongo-request-filter",
+      "expect": "finding",
+      "rule": "cwe-943.py-pymongo-request-filter",
+      "path": "positive/cwe-943_py-pymongo-request-filter.py",
+      "code": "from flask import request\n\n\ndef search(collection):\n    return collection.find(request.json)\n"
+    },
+    {
+      "id": "cwe-78.py-os-system-interpolated",
+      "expect": "finding",
+      "rule": "cwe-78.py-os-system-interpolated",
+      "path": "positive/cwe-78_py-os-system-interpolated.py",
+      "code": "import os\n\n\ndef ping(host):\n    os.system(f\"ping -c 1 {host}\")\n"
+    },
+    {
+      "id": "cwe-78.py-subprocess-shell-interpolated",
+      "expect": "finding",
+      "rule": "cwe-78.py-subprocess-shell-interpolated",
+      "path": "positive/cwe-78_py-subprocess-shell-interpolated.py",
+      "code": "import subprocess\n\n\ndef archive(name):\n    subprocess.run(f\"tar -cf {name}.tar {name}\", shell=True, check=True)\n"
+    },
+    {
+      "id": "cwe-78.py-os-popen-interpolated",
+      "expect": "finding",
+      "rule": "cwe-78.py-os-popen-interpolated",
+      "path": "positive/cwe-78_py-os-popen-interpolated.py",
+      "code": "import os\n\n\ndef lookup(host):\n    return os.popen(f\"dig {host}\").read()\n"
+    },
+    {
+      "id": "cwe-95.py-eval-request-value",
+      "expect": "finding",
+      "rule": "cwe-95.py-eval-request-value",
+      "path": "positive/cwe-95_py-eval-request-value.py",
+      "code": "from flask import request\n\n\ndef compute():\n    return eval(request.args.get(\"expression\"))\n"
+    },
+    {
+      "id": "cwe-95.py-eval-interpolated",
+      "expect": "finding",
+      "rule": "cwe-95.py-eval-interpolated",
+      "path": "positive/cwe-95_py-eval-interpolated.py",
+      "code": "def compute(expression):\n    return eval(f\"1 + {expression}\")\n"
+    },
+    {
+      "id": "cwe-1336.py-jinja-template-interpolated",
+      "expect": "finding",
+      "rule": "cwe-1336.py-jinja-template-interpolated",
+      "path": "positive/cwe-1336_py-jinja-template-interpolated.py",
+      "code": "from jinja2 import Template\n\n\ndef render(name):\n    return Template(f\"<h1>Hello {name}</h1>\").render()\n"
+    },
+    {
+      "id": "cwe-79.py-jinja-autoescape-off",
+      "expect": "finding",
+      "rule": "cwe-79.py-jinja-autoescape-off",
+      "path": "positive/cwe-79_py-jinja-autoescape-off.py",
+      "code": "import jinja2\n\nenvironment = jinja2.Environment(autoescape=False)\n"
+    },
+    {
+      "id": "cwe-79.py-django-mark-safe-dynamic",
+      "expect": "finding",
+      "rule": "cwe-79.py-django-mark-safe-dynamic",
+      "path": "positive/cwe-79_py-django-mark-safe-dynamic.py",
+      "code": "from django.utils.safestring import mark_safe\n\n\ndef label(name):\n    return mark_safe(f\"<span>{name}</span>\")\n"
+    },
+    {
+      "id": "cwe-79.py-html-response-interpolated",
+      "expect": "finding",
+      "rule": "cwe-79.py-html-response-interpolated",
+      "path": "positive/cwe-79_py-html-response-interpolated.py",
+      "code": "from django.http import HttpResponse\n\n\ndef hello(request):\n    return HttpResponse(f\"<h1>Hello {request.GET['name']}</h1>\")\n"
+    },
+    {
+      "id": "cwe-502.py-marshal-loads",
+      "expect": "finding",
+      "rule": "cwe-502.py-marshal-loads",
+      "path": "positive/cwe-502_py-marshal-loads.py",
+      "code": "import marshal\n\n\ndef restore(payload):\n    return marshal.loads(payload)\n"
+    },
+    {
+      "id": "cwe-502.py-dill-shelve-load",
+      "expect": "finding",
+      "rule": "cwe-502.py-dill-shelve-load",
+      "path": "positive/cwe-502_py-dill-shelve-load.py",
+      "code": "import dill\n\n\ndef restore(payload):\n    return dill.loads(payload)\n"
+    },
+    {
+      "id": "cwe-502.py-pickle-load-file",
+      "expect": "finding",
+      "rule": "cwe-502.py-pickle-load-file",
+      "path": "positive/cwe-502_py-pickle-load-file.py",
+      "code": "import pickle\n\n\ndef restore(handle):\n    return pickle.load(handle)\n"
+    },
+    {
+      "id": "cwe-22.py-send-file-request-path",
+      "expect": "finding",
+      "rule": "cwe-22.py-send-file-request-path",
+      "path": "positive/cwe-22_py-send-file-request-path.py",
+      "code": "import os\n\nfrom flask import request, send_file\n\n\ndef download():\n    return send_file(os.path.join(BASE, request.args.get(\"name\")))\n"
+    },
+    {
+      "id": "cwe-22.py-archive-extractall",
+      "expect": "finding",
+      "rule": "cwe-22.py-archive-extractall",
+      "path": "positive/cwe-22_py-archive-extractall.py",
+      "code": "import tarfile\n\n\ndef unpack(path, dest):\n    archive = tarfile.open(path)\n    archive.extractall(dest)\n"
+    },
+    {
+      "id": "cwe-22.py-open-request-path",
+      "expect": "finding",
+      "rule": "cwe-22.py-open-request-path",
+      "path": "positive/cwe-22_py-open-request-path.py",
+      "code": "import os\n\nfrom flask import request\n\n\ndef read():\n    with open(os.path.join(BASE, request.args.get(\"name\")), encoding=\"utf-8\") as handle:\n        return handle.read()\n"
+    },
+    {
+      "id": "cwe-918.py-urlopen-request-url",
+      "expect": "finding",
+      "rule": "cwe-918.py-urlopen-request-url",
+      "path": "positive/cwe-918_py-urlopen-request-url.py",
+      "code": "import urllib.request\n\nfrom flask import request\n\n\ndef proxy():\n    return urllib.request.urlopen(request.args[\"url\"]).read()\n"
+    },
+    {
+      "id": "cwe-918.py-requests-interpolated-url",
+      "expect": "finding",
+      "rule": "cwe-918.py-requests-interpolated-url",
+      "path": "positive/cwe-918_py-requests-interpolated-url.py",
+      "code": "import requests\n\nfrom flask import request\n\n\ndef proxy():\n    return requests.get(f\"https://{request.args['host']}/status\", timeout=5)\n"
+    },
+    {
+      "id": "cwe-916.py-password-weak-hash-usedforsecurity",
+      "expect": "finding",
+      "rule": "cwe-916.py-password-weak-hash-usedforsecurity",
+      "path": "positive/cwe-916_py-password-weak-hash-usedforsecurity.py",
+      "code": "import hashlib\n\n\ndef digest(password):\n    return hashlib.md5(password).hexdigest()\n"
+    },
+    {
+      "id": "cwe-327.py-ecb-cipher-mode",
+      "expect": "finding",
+      "rule": "cwe-327.py-ecb-cipher-mode",
+      "path": "positive/cwe-327_py-ecb-cipher-mode.py",
+      "code": "from Crypto.Cipher import AES\n\n\ndef seal(key):\n    return AES.new(key, AES.MODE_ECB)\n"
+    },
+    {
+      "id": "cwe-329.py-static-initialization-vector",
+      "expect": "finding",
+      "rule": "cwe-329.py-static-initialization-vector",
+      "path": "positive/cwe-329_py-static-initialization-vector.py",
+      "code": "from Crypto.Cipher import AES\n\n\ndef seal(key):\n    return AES.new(key, AES.MODE_CBC, b\"0123456789abcdef\")\n"
+    },
+    {
+      "id": "cwe-338.py-random-module-secret",
+      "expect": "finding",
+      "rule": "cwe-338.py-random-module-secret",
+      "path": "positive/cwe-338_py-random-module-secret.py",
+      "code": "import random\n\n\ndef issue():\n    reset_token = random.getrandbits(64)\n    return reset_token\n"
+    },
+    {
+      "id": "cwe-798.py-connection-string-literal",
+      "expect": "finding",
+      "rule": "cwe-798.py-connection-string-literal",
+      "path": "positive/cwe-798_py-connection-string-literal.py",
+      "code": "DATABASE_URL = \"postgresql://billing:s3cr3t-p4ssw0rd@db.internal:5432/billing\"\n"
+    },
+    {
+      "id": "cwe-798.py-credential-keyword-argument",
+      "expect": "finding",
+      "rule": "cwe-798.py-credential-keyword-argument",
+      "path": "positive/cwe-798_py-credential-keyword-argument.py",
+      "code": "import psycopg\n\n\ndef connect():\n    return psycopg.connect(host=\"db.internal\", password=\"s3cr3tp4ssw0rd99\")\n"
+    },
+    {
+      "id": "cwe-347.py-jwt-verification-disabled",
+      "expect": "finding",
+      "rule": "cwe-347.py-jwt-verification-disabled",
+      "path": "positive/cwe-347_py-jwt-verification-disabled.py",
+      "code": "import jwt\n\n\ndef claims(token):\n    return jwt.decode(token, options={\"verify_signature\": False})\n"
+    },
+    {
+      "id": "cwe-347.py-jwt-none-algorithm",
+      "expect": "finding",
+      "rule": "cwe-347.py-jwt-none-algorithm",
+      "path": "positive/cwe-347_py-jwt-none-algorithm.py",
+      "code": "import jwt\n\n\ndef claims(token, key):\n    return jwt.decode(token, key, algorithms=[\"none\"])\n"
+    },
+    {
+      "id": "cwe-601.py-redirect-request-value",
+      "expect": "finding",
+      "rule": "cwe-601.py-redirect-request-value",
+      "path": "positive/cwe-601_py-redirect-request-value.py",
+      "code": "from flask import redirect, request\n\n\ndef go():\n    return redirect(request.args.get(\"next\"))\n"
+    },
+    {
+      "id": "cwe-295.py-requests-verify-false",
+      "expect": "finding",
+      "rule": "cwe-295.py-requests-verify-false",
+      "path": "positive/cwe-295_py-requests-verify-false.py",
+      "code": "import requests\n\n\ndef status():\n    return requests.get(\"https://internal/status\", verify=False, timeout=5)\n"
+    },
+    {
+      "id": "cwe-295.py-ssl-unverified-context",
+      "expect": "finding",
+      "rule": "cwe-295.py-ssl-unverified-context",
+      "path": "positive/cwe-295_py-ssl-unverified-context.py",
+      "code": "import ssl\n\ncontext = ssl.create_default_context()\ncontext.check_hostname = False\n"
+    },
+    {
+      "id": "cwe-326.py-tls-version-legacy",
+      "expect": "finding",
+      "rule": "cwe-326.py-tls-version-legacy",
+      "path": "positive/cwe-326_py-tls-version-legacy.py",
+      "code": "import ssl\n\ncontext = ssl.SSLContext(ssl.PROTOCOL_TLSv1)\n"
+    },
+    {
+      "id": "cwe-611.py-lxml-resolve-entities",
+      "expect": "finding",
+      "rule": "cwe-611.py-lxml-resolve-entities",
+      "path": "positive/cwe-611_py-lxml-resolve-entities.py",
+      "code": "from lxml import etree\n\nparser = etree.XMLParser(resolve_entities=True)\n"
+    },
+    {
+      "id": "cwe-489.py-app-debug-true",
+      "expect": "finding",
+      "rule": "cwe-489.py-app-debug-true",
+      "path": "positive/cwe-489_py-app-debug-true.py",
+      "code": "def configure(app):\n    app.config[\"DEBUG\"] = True\n"
+    },
+    {
+      "id": "cwe-489.py-debug-constant-true",
+      "expect": "finding",
+      "rule": "cwe-489.py-debug-constant-true",
+      "path": "positive/cwe-489_py-debug-constant-true.py",
+      "code": "DEBUG = True\n"
+    },
+    {
+      "id": "cwe-798.py-framework-secret-key-literal",
+      "expect": "finding",
+      "rule": "cwe-798.py-framework-secret-key-literal",
+      "path": "positive/cwe-798_py-framework-secret-key-literal.py",
+      "code": "SECRET_KEY = \"django-insecure-3k2j4h5g6f7d8s9a\"\n"
+    },
+    {
+      "id": "cwe-614.py-session-cookie-insecure",
+      "expect": "finding",
+      "rule": "cwe-614.py-session-cookie-insecure",
+      "path": "positive/cwe-614_py-session-cookie-insecure.py",
+      "code": "SESSION_COOKIE_SECURE = False\n"
+    },
+    {
+      "id": "cwe-352.py-csrf-exempt",
+      "expect": "finding",
+      "rule": "cwe-352.py-csrf-exempt",
+      "path": "positive/cwe-352_py-csrf-exempt.py",
+      "code": "from django.views.decorators.csrf import csrf_exempt\n\n\n@csrf_exempt\ndef webhook(request):\n    return None\n"
+    },
+    {
+      "id": "cwe-942.py-cors-credentials-wildcard",
+      "expect": "finding",
+      "rule": "cwe-942.py-cors-credentials-wildcard",
+      "path": "positive/cwe-942_py-cors-credentials-wildcard.py",
+      "code": "CORS_ALLOW_ALL_ORIGINS = True\n"
+    },
+    {
+      "id": "cwe-489.py-flask-run-host-all-interfaces",
+      "expect": "finding",
+      "rule": "cwe-489.py-flask-run-host-all-interfaces",
+      "path": "positive/cwe-489_py-flask-run-host-all-interfaces.py",
+      "code": "def serve(app):\n    app.run(host=\"0.0.0.0\", debug=True)\n"
+    },
+    {
+      "id": "got-regexp-exec-is-not-a-shell",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-78.js-exec-interpolated"
+      ],
+      "path": "negative/got_regexp_exec.ts",
+      "code": "// sindresorhus/got, source/core/options.ts, six findings across PRs 2454 and\n// 2462-2466 in the September 2026 replay. This is RegExp.prototype.exec.\nlet unixSocketGroups: {socketPath: string; path: string} | undefined;\nfunction parse(url: URL) {\n  unixSocketGroups = /^(?<socketPath>[^:]+):(?<path>.+)$/v.exec(`${url.pathname}${url.search}`)?.groups as typeof unixSocketGroups;\n  return unixSocketGroups;\n}\n",
+      "note": "The rule matched any `$X.exec(template)`. It now names the child_process receiver, and accepts an unqualified `exec`/`execSync` only, where no regex method shares the name."
+    },
+    {
+      "id": "corpus.cwe-327.weak-hash-password",
+      "expect": "finding",
+      "rule": "cwe-327.weak-hash-password",
+      "path": "corpus/cwe-327_weak-hash-password.py",
+      "code": "from hashlib import md5\nfrom typing import NamedTuple, Optional\nfrom aiopg import Connection\nreturn self.pwd_hash == md5(password.encode('utf-8')).hexdigest()\n",
+      "note": "anxolerd/dvpwa sqli/dao/user.py:41, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-338.py-random-module-secret",
+      "expect": "finding",
+      "rule": "cwe-338.py-random-module-secret",
+      "path": "corpus/cwe-338_py-random-module-secret.py",
+      "code": "import base64\nimport datetime\nimport hashlib\nimport json\nimport logging\nimport os\nimport pickle\nimport random\nimport re\nimport string\nimport subprocess\nimport uuid\nfrom dataclasses import dataclass\nfrom hashlib import md5\nfrom io import BytesIO\nfrom random import randint\nfrom xml.dom.pulldom import START_ELEMENT, parseString\nfrom xml.sax import make_parser\nfrom xml.sax.handler import feature_external_ges\nimport jwt\nimport requests\nimport yaml\nfrom argon2 import PasswordHasher\nfrom django.contrib import messages\nfrom django.contrib.auth import authenticate, login\nfrom django.contrib.auth.forms import UserCreationForm\nfrom django.core import serializers\nfrom django.http import HttpResponse, HttpResponseBadRequest, JsonResponse\nfrom django.shortcuts import redirect, render\nfrom django.template import loader\nfrom django.template.loader import render_to_string\nfrom django.views.decorators.csrf import csrf_exempt\nfrom PIL import Image, ImageMath\nfrom requests.structures import CaseInsensitiveDict\nfrom .forms import NewUserForm\nfrom .utility import customHash, filter_blog\notpN=randint(100,999)\n",
+      "note": "adeyosemanputra/pygoat introduction/views.py:496, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-489.py-debug-constant-true",
+      "expect": "finding",
+      "rule": "cwe-489.py-debug-constant-true",
+      "path": "corpus/cwe-489_py-debug-constant-true.py",
+      "code": "DEBUG = True\n",
+      "note": "adeyosemanputra/pygoat pygoat/settings.py:30, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-502.js-node-serialize-unserialize",
+      "expect": "finding",
+      "rule": "cwe-502.js-node-serialize-unserialize",
+      "path": "corpus/cwe-502_js-node-serialize-unserialize.js",
+      "code": "var products = serialize.unserialize(req.files.products.data.toString('utf8'))\n",
+      "note": "appsecco/dvna core/appHandler.js:218, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-502.pickle-loads",
+      "expect": "finding",
+      "rule": "cwe-502.pickle-loads",
+      "path": "corpus/cwe-502_pickle-loads.py",
+      "code": "content = str(pickle.loads(urllib.parse.unquote_to_bytes(re.search(r\"(?:\\A|[?&])object=([^&]+)\", query).group(1))))\n",
+      "note": "stamparm/DSVW dsvw.py:27, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-502.py-pickle-load-file",
+      "expect": "finding",
+      "rule": "cwe-502.py-pickle-load-file",
+      "path": "corpus/cwe-502_py-pickle-load-file.py",
+      "code": "session['config'] = (pickle.load(open(config_pkl, 'rb'))\n                     if os.path.exists(config_pkl)\n                     else session['config'])\n",
+      "note": "benbusby/whoogle-search app/routes.py:430, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-502.yaml-unsafe-load",
+      "expect": "finding",
+      "rule": "cwe-502.yaml-unsafe-load",
+      "path": "corpus/cwe-502_yaml-unsafe-load.py",
+      "code": "return yaml.load(the_file)\n",
+      "note": "illagrenan/django-make-app django_make_app/io_utils.py:15, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-601.js-redirect-request-value",
+      "expect": "finding",
+      "rule": "cwe-601.js-redirect-request-value",
+      "path": "corpus/cwe-601_js-redirect-request-value.js",
+      "code": "res.redirect(req.query.url)\n",
+      "note": "appsecco/dvna core/appHandler.js:188, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-601.open-redirect",
+      "expect": "finding",
+      "rule": "cwe-601.open-redirect",
+      "path": "corpus/cwe-601_open-redirect.js",
+      "code": "res.redirect(req.query.url)\n",
+      "note": "appsecco/dvna core/appHandler.js:188, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-611.py-lxml-resolve-entities",
+      "expect": "finding",
+      "rule": "cwe-611.py-lxml-resolve-entities",
+      "path": "corpus/cwe-611_py-lxml-resolve-entities.py",
+      "code": "parser = lxml.etree.XMLParser(load_dtd=True, resolve_entities=True, no_network=False); parser.resolvers.add(RESOLVER()); content = lxml.etree.tostring(lxml.etree.parse(io.BytesIO(urllib.parse.unquote_to_bytes(re.search(r\"(?:\\A|[?&])xml=([^&]+)\", query).group(1))), parser), pretty_print=True).decode()\n",
+      "note": "stamparm/DSVW dsvw.py:33, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-614.insecure-cookie",
+      "expect": "finding",
+      "rule": "cwe-614.insecure-cookie",
+      "path": "corpus/cwe-614_insecure-cookie.js",
+      "code": "cookie: { secure: false }\n",
+      "note": "appsecco/dvna server.js:27, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-614.js-session-cookie-insecure",
+      "expect": "finding",
+      "rule": "cwe-614.js-session-cookie-insecure",
+      "path": "corpus/cwe-614_js-session-cookie-insecure.js",
+      "code": "app.use(session({\n  secret: 'keyboard cat',\n  resave: true,\n  saveUninitialized: true,\n  cookie: { secure: false }\n}))\n",
+      "note": "appsecco/dvna server.js:23, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-78.child-process-exec",
+      "expect": "finding",
+      "rule": "cwe-78.child-process-exec",
+      "path": "corpus/cwe-78_child-process-exec.js",
+      "code": "exec('ping -c 2 ' + req.body.address, function (err, stdout, stderr) {\n\toutput = stdout + stderr\n\tres.render('app/ping', {\n\t\toutput: output\n\t})\n})\n",
+      "note": "appsecco/dvna core/appHandler.js:39, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-78.js-exec-interpolated",
+      "expect": "finding",
+      "rule": "cwe-78.js-exec-interpolated",
+      "path": "corpus/cwe-78_js-exec-interpolated.ts",
+      "code": "execSync(`${adbPath} logcat -c`);\n",
+      "note": "zamotany/logkitty src/android/adb.ts:28, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-78.py-subprocess-shell-interpolated",
+      "expect": "finding",
+      "rule": "cwe-78.py-subprocess-shell-interpolated",
+      "path": "corpus/cwe-78_py-subprocess-shell-interpolated.py",
+      "code": "content = subprocess.run(\"nslookup \" + params[\"domain\"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.PIPE, text=True, errors=\"replace\").stdout\n",
+      "note": "stamparm/DSVW dsvw.py:31, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-798.hardcoded-secret-js",
+      "expect": "finding",
+      "rule": "cwe-798.hardcoded-secret-js",
+      "path": "corpus/cwe-798_hardcoded-secret-js.ts",
+      "code": "const privateKey = '-----BEGIN RSA PRIVATE KEY-----\\r\\nMIICXAIBAAKBgQDNwqLEe9wgTXCbC7+RPdDbBbeqjdbs4kOPOIGzqLpXvJXlxxW8iMz0EaM4BKUqYsIa+ndv3NAn2RxCd5ubVdJJcX43zO6Ko0TFEZx/65gY3BE0O6syCEmUP4qbSd6exou/F+WTISzbQ5FBVPVmhnYhG/kpwt/cIxK5iUn5hm+4tQIDAQABAoGBAI+8xiPoOrA+KMnG/T4jJsG6TsHQcDHvJi7o1IKC/hnIXha0atTX5AUkRRce95qSfvKFweXdJXSQ0JMGJyfuXgU6dI0TcseFRfewXAa/ssxAC+iUVR6KUMh1PE2wXLitfeI6JLvVtrBYswm2I7CtY0q8n5AGimHWVXJPLfGV7m0BAkEA+fqFt2LXbLtyg6wZyxMA/cnmt5Nt3U2dAu77MzFJvibANUNHE4HPLZxjGNXN+a6m0K6TD4kDdh5HfUYLWWRBYQJBANK3carmulBwqzcDBjsJ0YrIONBpCAsXxk8idXb8jL9aNIg15Wumm2enqqObahDHB5jnGOLmbasizvSVqypfM9UCQCQl8xIqy+YgURXzXCN+kwUgHinrutZms87Jyi+D8Br8NY0+Nlf+zHvXAomD2W5CsEK7C+8SLBr3k/TsnRWHJuECQHFE9RA2OP8WoaLPuGCyFXaxzICThSRZYluVnWkZtxsBhW2W8z1b8PvWUE7kMy7TnkzeJS2LSnaNHoyxi7IaPQUCQCwWU4U+v4lD7uYBw00Ga/xt+7+UqFPlPVdz1yyr4q24Zxaw0LgmuEvgU5dycq8N7JxjTubX0MIRR+G9fmDBBl8=\\r\\n-----END RSA PRIVATE KEY-----'\n",
+      "note": "juice-shop/juice-shop lib/insecurity.ts:21, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-798.js-credential-config-key",
+      "expect": "finding",
+      "rule": "cwe-798.js-credential-config-key",
+      "path": "corpus/cwe-798_js-credential-config-key.js",
+      "code": "module.exports = {\n    port,\n    db,\n    cookieSecret: \"session_cookie_secret_key_here\",\n    cryptoKey: \"a_secure_key_for_crypto_here\",\n    cryptoAlgo: \"aes256\",\n    hostName: \"localhost\",\n    environmentalScripts: []\n};\n",
+      "note": "OWASP/NodeGoat config/env/all.js:5, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-798.js-session-secret-literal",
+      "expect": "finding",
+      "rule": "cwe-798.js-session-secret-literal",
+      "path": "corpus/cwe-798_js-session-secret-literal.js",
+      "code": "app.use(session({\n  secret: 'keyboard cat',\n  resave: true,\n  saveUninitialized: true,\n  cookie: { secure: false }\n}))\n",
+      "note": "appsecco/dvna server.js:23, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-798.py-credential-keyword-argument",
+      "expect": "finding",
+      "rule": "cwe-798.py-credential-keyword-argument",
+      "path": "corpus/cwe-798_py-credential-keyword-argument.py",
+      "code": "sql_instance = sql_lab_table(id=\"admin\", password=\"65079b006e85a7e798abecb99e47c154\")\n",
+      "note": "adeyosemanputra/pygoat introduction/views.py:866, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-798.py-framework-secret-key-literal",
+      "expect": "finding",
+      "rule": "cwe-798.py-framework-secret-key-literal",
+      "path": "corpus/cwe-798_py-framework-secret-key-literal.py",
+      "code": "SECRET_KEY = 'lr66%-a!$km5ed@n5ug!tya5bv!0(yqwa1tn!q%0%3m2nh%oml'\n\nSENSITIVE_DATA = 'FLAGTHATNEEDSTOBEFOUND'\n\n# SECURITY WARNING: don't run with debug turned on in production!\nDEBUG = True\n\nALLOWED_HOSTS = ['pygoat.herokuapp.com', '0.0.0.0.']\n\n\n# Application definition\n\nINSTALLED_APPS = [\n    'django.contrib.admin',\n    'django.contrib.auth',\n    'django.contrib.contenttypes',\n    'django.contrib.sessions',\n    'django.contrib.messages',\n    'django.contrib.staticfiles',\n    'django.contrib.sites',\n    'introduction.apps.IntroductionConfig',\n",
+      "note": "adeyosemanputra/pygoat pygoat/settings.py:25, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-89.py-execute-concat-direct",
+      "expect": "finding",
+      "rule": "cwe-89.py-execute-concat-direct",
+      "path": "corpus/cwe-89_py-execute-concat-direct.py",
+      "code": "curs.execute(\"DELETE FROM keycache WHERE issuer = '{}' AND key_id = '{}'\".format(issuer, key_id))\n",
+      "note": "scitokens/scitokens src/scitokens/utils/keycache.py:83, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-89.sql-template-literal",
+      "expect": "finding",
+      "rule": "cwe-89.sql-template-literal",
+      "path": "corpus/cwe-89_sql-template-literal.ts",
+      "code": "models.sequelize.query(`SELECT * FROM Products WHERE ((name LIKE '%${criteria}%' OR description LIKE '%${criteria}%') AND deletedAt IS NULL) ORDER BY name`) // vuln-code-snippet vuln-line unionSqlInjectionChallenge dbSchemaChallenge\n",
+      "note": "juice-shop/juice-shop routes/search.ts:23, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-916.py-password-weak-hash-usedforsecurity",
+      "expect": "finding",
+      "rule": "cwe-916.py-password-weak-hash-usedforsecurity",
+      "path": "corpus/cwe-916_py-password-weak-hash-usedforsecurity.py",
+      "code": "from hashlib import md5\nfrom typing import NamedTuple, Optional\nfrom aiopg import Connection\nreturn self.pwd_hash == md5(password.encode('utf-8')).hexdigest()\n",
+      "note": "anxolerd/dvpwa sqli/dao/user.py:41, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-918.py-urlopen-request-url",
+      "expect": "finding",
+      "rule": "cwe-918.py-urlopen-request-url",
+      "path": "corpus/cwe-918_py-urlopen-request-url.py",
+      "code": "LISTEN_ADDRESS, LISTEN_PORT, FETCH, LATIN1 = \"127.0.0.1\", 65412, lambda url: urllib.request.urlopen(urllib.request.Request(url, headers={\"User-Agent\": \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\"})), lambda value: value.encode(\"latin-1\", \"replace\").decode(\"latin-1\")  # browser's User-Agent (rejected otherwise by many hosts) and latin-1 sanitization (required for HTTP header values)\n",
+      "note": "stamparm/DSVW dsvw.py:7, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-943.js-mongo-where-operator",
+      "expect": "finding",
+      "rule": "cwe-943.js-mongo-where-operator",
+      "path": "corpus/cwe-943_js-mongo-where-operator.ts",
+      "code": "db.reviewsCollection.find({ $where: 'this.product == ' + id }).then((reviews: Review[]) => {\n  const t1 = new Date().getTime()\n  challengeUtils.solveIf(challenges.noSqlCommandChallenge, () => { return (t1 - t0) > 2000 })\n  const user = security.authenticatedUsers.from(req)\n  for (let i = 0; i < reviews.length; i++) {\n    if (user === undefined || reviews[i].likedBy.includes(user.data.email)) {\n      reviews[i].liked = true\n    }\n  }\n  res.json(utils.queryResultToJson(reviews))\n}, () => {\n  res.status(400).json({ error: 'Wrong Params' })\n})\n",
+      "note": "juice-shop/juice-shop routes/showProductReviews.ts:36, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-95.eval-injection",
+      "expect": "finding",
+      "rule": "cwe-95.eval-injection",
+      "path": "corpus/cwe-95_eval-injection.js",
+      "code": "const preTax = eval(req.body.preTax);\n",
+      "note": "OWASP/NodeGoat app/routes/contributions.js:32, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "corpus.cwe-95.js-new-function-dynamic",
+      "expect": "finding",
+      "rule": "cwe-95.js-new-function-dynamic",
+      "path": "corpus/cwe-95_js-new-function-dynamic.js",
+      "code": "return (new Function('return ' + str))()\n",
+      "note": "commenthol/serialize-to-js lib/deserialize.js:28, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+    },
+    {
+      "id": "cwe-79.js-angular-bypass-security-trust",
+      "expect": "finding",
+      "rule": "cwe-79.js-angular-bypass-security-trust",
+      "path": "positive/cwe-79_js-angular-bypass-security-trust.ts",
+      "code": "class Results {\n  show(sanitizer: any, comment: string) {\n    this.comment = sanitizer.bypassSecurityTrustHtml(comment);\n  }\n}\n"
+    },
+    {
+      "id": "cwe-79.js-html-string-interpolated",
+      "expect": "finding",
+      "rule": "cwe-79.js-html-string-interpolated",
+      "path": "positive/cwe-79_js-html-string-interpolated.ts",
+      "code": "export function thumbnail(src: string, alt: string) {\n  return `<img src=\"${src}\" alt=\"${alt}\">`;\n}\n"
+    },
+    {
+      "id": "cwe-79.js-template-autoescape-disabled",
+      "expect": "finding",
+      "rule": "cwe-79.js-template-autoescape-disabled",
+      "path": "positive/cwe-79_js-template-autoescape-disabled.js",
+      "code": "const swig = require('swig');\nswig.setDefaults({\n  cache: false,\n  autoescape: false\n});\n"
+    },
+    {
+      "id": "cwe-79.py-html-percent-format",
+      "expect": "finding",
+      "rule": "cwe-79.py-html-percent-format",
+      "path": "positive/cwe-79_py-html-percent-format.py",
+      "code": "def describe(comic):\n    description = ''\n    description += '<br/>%s' % comic.text\n    return description\n"
+    },
+    {
+      "id": "cwe-22.py-pathlib-join-interpolated",
+      "expect": "finding",
+      "rule": "cwe-22.py-pathlib-join-interpolated",
+      "path": "positive/cwe-22_py-pathlib-join-interpolated.py",
+      "code": "def prompt_path(base, prompt):\n    return base / f\"{prompt.name}.{prompt.version}.jinja\"\n"
+    },
+    {
+      "id": "cwe-79.tpl-ejs-unescaped-output",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-ejs-unescaped-output",
+      "path": "positive/cwe-79_tpl-ejs-unescaped-output.ejs",
+      "code": "<p>Search results for <%- output.searchTerm %></p>\n"
+    },
+    {
+      "id": "cwe-79.tpl-erb-unescaped-output",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-erb-unescaped-output",
+      "path": "positive/cwe-79_tpl-erb-unescaped-output.erb",
+      "code": "<div><%= raw @body %></div>\n"
+    },
+    {
+      "id": "cwe-79.tpl-mustache-triple-brace",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-mustache-triple-brace",
+      "path": "positive/cwe-79_tpl-mustache-triple-brace.hbs",
+      "code": "<div class=\"body\">{{{ post.body }}}</div>\n"
+    },
+    {
+      "id": "cwe-79.tpl-unescaping-filter",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-unescaping-filter",
+      "path": "positive/cwe-79_tpl-unescaping-filter.jinja2",
+      "code": "<h3>The company '{{query|safe}}' you searched for is not part of FAANG</h3>\n"
+    },
+    {
+      "id": "cwe-79.tpl-vue-v-html",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-vue-v-html",
+      "path": "positive/cwe-79_tpl-vue-v-html.vue",
+      "code": "<template>\n  <div v-html=\"profile.bio\"></div>\n</template>\n"
+    },
+    {
+      "id": "cwe-79.tpl-svelte-html-tag",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-svelte-html-tag",
+      "path": "positive/cwe-79_tpl-svelte-html-tag.svelte",
+      "code": "<div class=\"bio\">{@html profile.bio}</div>\n"
+    },
+    {
+      "id": "cwe-79.tpl-dust-unescaped-filter",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-dust-unescaped-filter",
+      "path": "positive/cwe-79_tpl-dust-unescaped-filter.dust",
+      "code": "<div class=\"comment\">{comment|s}</div>\n"
+    },
+    {
+      "id": "cwe-79.tpl-pug-unescaped-interpolation",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-pug-unescaped-interpolation",
+      "path": "positive/cwe-79_tpl-pug-unescaped-interpolation.pug",
+      "code": "div\n  p !{profile.bio}\n"
+    },
+    {
+      "id": "cwe-79.tpl-inline-script-inner-html",
+      "expect": "finding",
+      "rule": "cwe-79.tpl-inline-script-inner-html",
+      "path": "positive/cwe-79_tpl-inline-script-inner-html.ejs",
+      "code": "<script>\n  cell.innerHTML = users[i].name;\n</script>\n"
+    },
+    {
+      "id": "html-string-rule-ignores-a-sql-template-literal",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.js-html-string-interpolated"
+      ],
+      "path": "negative/html_string_sql_literal.ts",
+      "code": "// A template literal that interpolates but opens no tag. The HTML rule keys on a\n// tag opener before the first interpolation; a query, a URL and a class name all\n// interpolate and none of them are markup.\nexport function rows(table: string, id: string) {\n  const sql = `SELECT * FROM ${table} WHERE id = ${id}`;\n  const url = `https://api.example.com/v1/${table}`;\n  const cls = `btn btn-${id}`;\n  return [sql, url, cls];\n}\n",
+      "note": "A template literal with no tag opener is not HTML assembly."
+    },
+    {
+      "id": "percent-format-rule-ignores-a-non-html-format-string",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.py-html-percent-format"
+      ],
+      "path": "negative/percent_format_not_html.py",
+      "code": "# Percent formatting is ordinary Python. The rule requires a tag opener and a\n# substitution in the same literal, so none of these are markup.\ndef messages(name, table, count):\n    greeting = 'hello %s' % name\n    query = 'SELECT * FROM %s' % table\n    total = '%d items' % count\n    return [greeting, query, total]\n",
+      "note": "A format string with no tag opener is not HTML assembly."
+    },
+    {
+      "id": "sendfile-rule-ignores-a-fully-literal-path",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-sendfile-request-path"
+      ],
+      "path": "negative/sendfile_literal_path.js",
+      "code": "// The widened branch requires a non-literal second argument. A static asset is\n// resolved from two literals and cannot be steered by a request.\nfunction home(req, res) {\n  res.sendFile(path.resolve('public/', 'index.html'));\n  res.sendFile(path.join(__dirname, 'index.html'));\n}\n",
+      "note": "A path built from literals only is a static asset, not a traversal."
+    },
+    {
+      "id": "template-rules-ignore-escaped-output",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.tpl-ejs-unescaped-output",
+        "cwe-79.tpl-inline-script-inner-html",
+        "cwe-79.tpl-mustache-triple-brace"
+      ],
+      "path": "negative/template_escaped_output.ejs",
+      "code": "<p>Search results for <%= output.searchTerm %></p>\n<div>{{ post.title }}</div>\n<script>\n  cell.textContent = users[i].name;\n  cell.innerHTML = '';\n</script>\n",
+      "note": "Escaped EJS output, double-brace interpolation, textContent and an empty clear are the safe forms of each sink."
+    },
+    {
+      "id": "erb-rule-ignores-trim-mode-and-escaped-output",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.tpl-erb-unescaped-output"
+      ],
+      "path": "negative/erb_trim_mode.erb",
+      "code": "<%- total = items.count -%>\n<h1><%= @title %></h1>\n<p><%= @body %></p>\n",
+      "note": "ERB's trim-mode tag is whitespace control, not unescaped output, and the plain output tag escapes. Reading the trim tag as a sink would report every trimmed tag in the file."
+    }
+  ]
+}

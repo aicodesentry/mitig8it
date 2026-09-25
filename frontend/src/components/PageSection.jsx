@@ -17,8 +17,11 @@ export const PageHeader = ({
   </div>
 )
 
-export const PageStats = ({ items }) => (
-  <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+// `columns` lets a row of three tiles sit beside a row of four without either being
+// stretched. `item.hint` is a one-line definition of the number, for a tile whose label
+// alone does not say what was counted.
+export const PageStats = ({ items, columns = 4 }) => (
+  <div className={cn('grid grid-cols-2 gap-3', columns === 3 ? 'lg:grid-cols-3' : 'lg:grid-cols-4')}>
     {items.map((item) => (
       <div key={item.label} className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
         <div className="flex items-center gap-3">
@@ -30,6 +33,9 @@ export const PageStats = ({ items }) => (
             <p className="text-xs text-neutral-500 dark:text-neutral-400">{item.label}</p>
           </div>
         </div>
+        {item.hint ? (
+          <p className="mt-2 text-xs leading-snug text-neutral-400 dark:text-neutral-500">{item.hint}</p>
+        ) : null}
       </div>
     ))}
   </div>

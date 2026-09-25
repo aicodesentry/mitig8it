@@ -1,0 +1,169 @@
+{
+  "version": "v1",
+  "file": ".mitig8it.yml",
+  "summary": "The exclusion dialect .mitig8it.yml uses, stated once for both implementations.",
+  "why": [
+    "The App excludes paths in services/api-service/src/services/repositoryConfig.js and the",
+    "Action excludes them in action/orchestrator/repo_config.py. A repository that adds an",
+    "exclusion has to see the same files skipped whichever one reviews it, so neither side is",
+    "free to have its own idea of what a glob means. Both read the cases below and both are",
+    "tested against them: services/api-service/tests/repositoryConfig.test.js and",
+    "action/tests/test_repository_config.py."
+  ],
+  "dialect": {
+    "separator": "/",
+    "anchored": "Patterns match the whole repository-relative path, not a suffix of it.",
+    "star": "* matches any run of characters except /",
+    "question": "? matches exactly one character except /",
+    "globstar": "** as a whole segment matches zero or more segments",
+    "trailing_globstar": "a/** matches a and everything under it",
+    "leading_globstar": "**/x matches x at any depth, including the root",
+    "directory_prefix": "a pattern with no wildcard also excludes everything under it, so `build` excludes `build/main.js`",
+    "case": "sensitive",
+    "empty": "an empty or whitespace-only pattern matches nothing"
+  },
+  "match_cases": [
+    {
+      "name": "a trailing globstar covers the whole subtree",
+      "patterns": ["benchmarks/remediation/fixtures/**"],
+      "excluded": [
+        "benchmarks/remediation/fixtures/a.js",
+        "benchmarks/remediation/fixtures/sql/b/c.py",
+        "benchmarks/remediation/fixtures"
+      ],
+      "kept": [
+        "benchmarks/remediation/evaluate.py",
+        "benchmarks/remediation/fixtures-extra/a.js",
+        "src/benchmarks/remediation/fixtures/a.js"
+      ]
+    },
+    {
+      "name": "a single star does not cross a separator",
+      "patterns": ["docs/*.md"],
+      "excluded": ["docs/a.md", "docs/b-c.md"],
+      "kept": ["docs/nested/a.md", "a.md", "docs/a.mdx"]
+    },
+    {
+      "name": "a leading globstar matches at any depth including the root",
+      "patterns": ["**/vendor/**"],
+      "excluded": ["vendor/a.js", "a/vendor/b.js", "a/b/vendor/c/d.js"],
+      "kept": ["vendors/a.js", "a/vendored/b.js"]
+    },
+    {
+      "name": "a globstar in the middle spans zero or more segments",
+      "patterns": ["src/**/test/*.js"],
+      "excluded": ["src/test/a.js", "src/a/test/b.js", "src/a/b/test/c.js"],
+      "kept": ["src/test/a/b.js", "test/a.js"]
+    },
+    {
+      "name": "a question mark is exactly one character and never a separator",
+      "patterns": ["a/?.js"],
+      "excluded": ["a/b.js"],
+      "kept": ["a/bc.js", "a/.js", "a/b/c.js"]
+    },
+    {
+      "name": "a wildcard-free pattern names a file or a directory",
+      "patterns": ["build", "LICENSE"],
+      "excluded": ["build", "build/main.js", "build/a/b.css", "LICENSE"],
+      "kept": ["builder/main.js", "build.js", "a/build/main.js", "LICENSE.md"]
+    },
+    {
+      "name": "a leading ./ or / on either side is not part of the path",
+      "patterns": ["./dist/**", "/tmp/**"],
+      "excluded": ["dist/a.js", "./dist/b.js", "tmp/c.js", "/tmp/d.js"],
+      "kept": ["a/dist/b.js"]
+    },
+    {
+      "name": "several patterns are a union",
+      "patterns": ["a/**", "b/**"],
+      "excluded": ["a/x.js", "b/y.js"],
+      "kept": ["c/z.js"]
+    },
+    {
+      "name": "regex metacharacters in a pattern are literal",
+      "patterns": ["a+b/c.(js)"],
+      "excluded": ["a+b/c.(js)"],
+      "kept": ["aab/cxjs", "ab/c.js"]
+    },
+    {
+      "name": "an empty pattern excludes nothing",
+      "patterns": ["", "   "],
+      "excluded": [],
+      "kept": ["a.js", ""]
+    },
+    {
+      "name": "no patterns at all excludes nothing",
+      "patterns": [],
+      "excluded": [],
+      "kept": ["a.js", "benchmarks/remediation/fixtures/a.js"]
+    }
+  ],
+  "parse_cases": [
+    {
+      "name": "a block sequence is the documented form",
+      "yaml": "exclude:\n  - benchmarks/remediation/fixtures/**\n  - benchmarks/vulnerable-corpus/**\n",
+      "patterns": ["benchmarks/remediation/fixtures/**", "benchmarks/vulnerable-corpus/**"],
+      "valid": true
+    },
+    {
+      "name": "a flow sequence parses the same way",
+      "yaml": "exclude: [\"a/**\", 'b/**']\n",
+      "patterns": ["a/**", "b/**"],
+      "valid": true
+    },
+    {
+      "name": "comments and blank lines are ignored",
+      "yaml": "# what this repository does not review\n\nexclude:\n  - a/**   # generated\n",
+      "patterns": ["a/**"],
+      "valid": true
+    },
+    {
+      "name": "an unknown key is ignored, so a newer file still works on an older reader",
+      "yaml": "exclude:\n  - a/**\nsomething_later: 3\n",
+      "patterns": ["a/**"],
+      "valid": true
+    },
+    {
+      "name": "an absent exclude key is an empty list",
+      "yaml": "something_later: 3\n",
+      "patterns": [],
+      "valid": true
+    },
+    {
+      "name": "an empty file is an empty list",
+      "yaml": "",
+      "patterns": [],
+      "valid": true
+    },
+    {
+      "name": "an explicitly null exclude is an empty list",
+      "yaml": "exclude:\n",
+      "patterns": [],
+      "valid": true
+    },
+    {
+      "name": "non-string entries are refused rather than coerced",
+      "yaml": "exclude:\n  - a/**\n  - 7\n",
+      "patterns": [],
+      "valid": false
+    },
+    {
+      "name": "a scalar exclude is refused, because one glob is still a list",
+      "yaml": "exclude: a/**\n",
+      "patterns": [],
+      "valid": false
+    },
+    {
+      "name": "a mapping at the top level is required",
+      "yaml": "- a/**\n",
+      "patterns": [],
+      "valid": false
+    },
+    {
+      "name": "text that is not YAML is refused",
+      "yaml": "exclude: [unterminated\n",
+      "patterns": [],
+      "valid": false
+    }
+  ]
+}

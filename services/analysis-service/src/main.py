@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List
@@ -11,14 +12,20 @@ from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from starlette.responses import Response
 
+import request_context
 from finding_quality import (
     cluster_findings,
     extract_match_context,
     has_path_containment_guard,
     pattern_matches_reviewable_content,
 )
-from security_rules import DEPENDENCY_RISK_PATTERNS, SECURITY_RULES, likely_llm_repo
-from opengrep_runner import run_opengrep
+from security_rules import (
+    DEPENDENCY_RISK_PATTERNS,
+    POSTING_QUARANTINE,
+    SECURITY_RULES,
+    likely_llm_repo,
+)
+from opengrep_runner import quarantined_rule_ids, run_opengrep, run_opengrep_with_limitations
 from llm_client import redact
 from llm_triage import triage_findings
 from remediation_patches import build_remediation_patch
@@ -27,6 +34,7 @@ from test_code_scope import (
     classify_findings,
     count_test_code_files,
     is_analyzable_path,
+    is_non_code_text_path,
     is_runtime_scannable_path,
     is_test_code_path,
 )
@@ -70,8 +78,66 @@ ANALYSIS_DURATION = Histogram(
     "Analysis runtime",
     buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20],
 )
+QUARANTINED_FINDING_COUNT = Counter(
+    "codesentry_analysis_quarantined_findings_total",
+    "Findings produced by a quarantined rule and withheld from posting",
+    ["rule_id"],
+)
+
+# Tier 1 runs 35 regexes over every changed line. On the largest payload the caps still
+# allow (200 files of 75 kB) that measured 50 s, against the orchestrator's 30 s budget in
+# prAnalysisOrchestrator.js. The budget stops the pass and reports what it did not reach
+# rather than blowing the caller's deadline.
+DEFAULT_TIER1_BUDGET_SECONDS = 20.0
+DEFAULT_TIER1_FILE_BUDGET_SECONDS = 2.0
+LIMITATION_BUDGET = "budget"
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def tier1_budget_seconds() -> float:
+    return _positive_float_env("TIER1_BUDGET_SECONDS", DEFAULT_TIER1_BUDGET_SECONDS)
+
+
+def tier1_file_budget_seconds() -> float:
+    return _positive_float_env("TIER1_FILE_BUDGET_SECONDS", DEFAULT_TIER1_FILE_BUDGET_SECONDS)
+
+
+# Rules whose measured precision does not support posting. They still run; see
+# `partition_by_posting_policy` and docs/services/analysis-service.md.
+#
+# Both tiers answer here. Tier 1 declares it on the rule (`posting=POSTING_QUARANTINE`);
+# tier 2 declares it per rule in its YAML metadata (`posting: quarantine`), read once at
+# import. The two tiers share this one frozenset and the one filter below, so there is a
+# single answer to "does this rule post".
+QUARANTINED_RULE_IDS = frozenset(
+    {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
+    | set(quarantined_rule_ids())
+)
+
+request_context.configure_logging(os.getenv("LOG_LEVEL", "INFO"))
+logger = request_context.get_logger("mitig8it.analysis")
 
 app = FastAPI(title="Mitig8it Analysis Service", version="1.0.0")
+
+
+# Every log line this request writes carries the delivery and run identifiers the
+# caller sent, without a single handler having to accept them as arguments.
+@app.middleware("http")
+async def correlation_middleware(request: Request, call_next):
+    with request_context.use(request_context.from_headers(request.headers)):
+        return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173"), "http://localhost:5173", "http://localhost:3001"],
@@ -163,8 +229,27 @@ def _deterministic_fix_metadata(rule, finding: Dict[str, Any], context: Dict[str
     }
 
 
+def rule_scan_options(rule, file_path: str) -> Dict[str, Any]:
+    """How a rule reads a patch: which file it is, what it must not see, what it may."""
+    exclusion = getattr(rule, "exclusion", None)
+    prose_exclusion = getattr(rule, "non_code_text_exclusion", None)
+    if prose_exclusion is not None and is_non_code_text_path(file_path):
+        # Both conditions have to hold, and `find_pattern_match_entry` takes one pattern, so
+        # they are combined into a single alternation rather than threaded through as a list.
+        exclusion = (
+            re.compile(f"(?:{exclusion.pattern})|(?:{prose_exclusion.pattern})")
+            if exclusion is not None
+            else prose_exclusion
+        )
+    return {
+        "path": file_path,
+        "exclusion": exclusion,
+        "blank_strings": not getattr(rule, "reads_string_literals", True),
+    }
+
+
 def generate_finding(rule, file_path: str, patch: str) -> Dict[str, Any]:
-    context = extract_match_context(patch, rule.pattern)
+    context = extract_match_context(patch, rule.pattern, **rule_scan_options(rule, file_path))
     taxonomy = build_taxonomy_metadata(
         rule_id=rule.rule_id,
         category=rule.category,
@@ -221,8 +306,8 @@ def dependency_findings(path: str, patch: str) -> List[Dict[str, Any]]:
         return findings
 
     for pattern, message, severity in DEPENDENCY_RISK_PATTERNS:
-        if pattern_matches_reviewable_content(patch, pattern):
-            context = extract_match_context(patch, pattern)
+        if pattern_matches_reviewable_content(patch, pattern, path=path):
+            context = extract_match_context(patch, pattern, path=path)
             taxonomy = build_taxonomy_metadata(
                 rule_id="dependency.risk.version",
                 category="dependency/package risk",
@@ -272,24 +357,77 @@ def dependency_findings(path: str, patch: str) -> List[Dict[str, Any]]:
     return findings
 
 
-def pattern_findings(scannable_files: List[ChangedFile]) -> List[Dict[str, Any]]:
-    """Tier 1: regex rules and dependency risk patterns over the reviewable patch text."""
+def pattern_findings(
+    scannable_files: List[ChangedFile],
+    limitations: List[Dict[str, Any]] | None = None,
+) -> List[Dict[str, Any]]:
+    """Tier 1: regex rules and dependency risk patterns over the reviewable patch text.
+
+    The pass is bounded twice: a total wall clock budget (`TIER1_BUDGET_SECONDS`, 20 s)
+    and a per-file cap (`TIER1_FILE_BUDGET_SECONDS`, 2 s). Exceeding either stops that
+    much of the work and appends a `budget` limitation; the findings already made are
+    kept, because a partial tier 1 that says so is worth more than a blown deadline.
+    """
     findings: List[Dict[str, Any]] = []
     repo_has_llm_flow = any(likely_llm_repo(f.path, f.patch) for f in scannable_files)
 
-    for changed_file in scannable_files:
+    total_files = len(scannable_files)
+    budget = tier1_budget_seconds()
+    file_budget = tier1_file_budget_seconds()
+    started = time.monotonic()
+
+    for index, changed_file in enumerate(scannable_files):
+        if time.monotonic() - started >= budget:
+            _record_limitation(
+                limitations,
+                {
+                    "kind": LIMITATION_BUDGET,
+                    "path": "",
+                    "message": (
+                        f"Tier 1 stopped after {index} of {total_files} files "
+                        f"({budget:g} s budget)"
+                    ),
+                },
+            )
+            break
+
         path = changed_file.path
         patch = changed_file.patch or ""
 
         if len(patch) > 200_000:
             continue
 
+        non_code_text = is_non_code_text_path(path)
+        file_started = time.monotonic()
+        rules_run = 0
         for rule in SECURITY_RULES:
+            if time.monotonic() - file_started >= file_budget:
+                _record_limitation(
+                    limitations,
+                    {
+                        "kind": LIMITATION_BUDGET,
+                        "path": path,
+                        "message": (
+                            f"Tier 1 stopped after {rules_run} of {len(SECURITY_RULES)} rules "
+                            f"on this file ({file_budget:g} s per-file cap)"
+                        ),
+                    },
+                )
+                break
+            rules_run += 1
+            # A changelog quoting an example route is not a route, and neither is a
+            # template. Rules that recognize committed data rather than code shapes still
+            # run on both.
+            if non_code_text and not rule.scans_prose:
+                continue
             if rule.category == "unsafe LLM/prompt injection patterns" and not repo_has_llm_flow:
                 continue
-            if not pattern_matches_reviewable_content(patch, rule.pattern):
+            options = rule_scan_options(rule, path)
+            if not pattern_matches_reviewable_content(patch, rule.pattern, **options):
                 continue
-            if rule.category == "path traversal" and has_path_containment_guard(patch, rule.pattern):
+            if rule.category == "path traversal" and has_path_containment_guard(
+                patch, rule.pattern, **options
+            ):
                 # The read resolves the candidate path and rejects anything outside the
                 # base directory, which is what the taint rule accepts as a sanitizer.
                 continue
@@ -298,6 +436,44 @@ def pattern_findings(scannable_files: List[ChangedFile]) -> List[Dict[str, Any]]
         findings.extend(dependency_findings(path, patch))
 
     return findings
+
+
+def _record_limitation(limitations: List[Dict[str, Any]] | None, limitation: Dict[str, Any]) -> None:
+    if limitations is None:
+        return
+    limitations.append(limitation)
+
+
+def partition_by_posting_policy(
+    findings: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Split findings into the ones the product will stand behind and the quarantined rest.
+
+    This is the only place a quarantined finding is removed, for both tiers. A quarantined
+    rule still runs, so its output is counted here and in
+    `codesentry_analysis_quarantined_findings_total`, but it does not reach the response.
+    The api-service therefore needs no knowledge of the policy: the findings simply do not
+    arrive, so nothing is posted to GitHub, nothing is counted in the check summary, and
+    nothing is handed to remediation.
+    """
+    postable: List[Dict[str, Any]] = []
+    quarantined: List[Dict[str, Any]] = []
+    for finding in findings or []:
+        rule_id = str(finding.get("rule_id") or "")
+        if rule_id in QUARANTINED_RULE_IDS:
+            quarantined.append(finding)
+            QUARANTINED_FINDING_COUNT.labels(rule_id).inc()
+        else:
+            postable.append(finding)
+    return postable, quarantined
+
+
+def quarantined_counts_by_rule(findings: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for finding in findings or []:
+        rule_id = str(finding.get("rule_id") or "")
+        counts[rule_id] = counts.get(rule_id, 0) + 1
+    return counts
 
 
 def run_tiers_concurrently(
@@ -318,7 +494,7 @@ def run_tiers_concurrently(
         try:
             tier2_findings = tier2_future.result()
         except Exception as e:
-            raise RuntimeError("Required OpenGrep analysis failed") from e
+            raise RuntimeError(f"Required OpenGrep analysis failed: {redact(e)}") from e
     return [*tier1_findings, *tier2_findings]
 
 
@@ -327,11 +503,30 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         raise ValueError("Too many files in PR payload")
 
     scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
-    opengrep_files = [{"path": f.path, "patch": f.patch} for f in scannable_files]
+    # The same payload the tier 2 endpoint builds. Dropping `content` here made this
+    # endpoint scan a reconstruction of the diff while `/analyze/pr/tier2` scanned the
+    # real file, so the two disagreed on the same pull request.
+    opengrep_files = [
+        {
+            "path": f.path,
+            "patch": f.patch,
+            "content": f.content,
+            "reviewable_line_spans": f.reviewable_line_spans,
+        }
+        for f in scannable_files
+    ]
+    limitations: List[Dict[str, Any]] = []
+
+    def tier2() -> List[Dict[str, Any]]:
+        tier2_findings, tier2_limitations = run_opengrep_with_limitations(opengrep_files)
+        limitations.extend(tier2_limitations)
+        return tier2_findings
+
     findings = run_tiers_concurrently(
-        lambda: pattern_findings(scannable_files),
-        lambda: run_opengrep(opengrep_files),
+        lambda: pattern_findings(scannable_files, limitations),
+        tier2,
     )
+    findings, quarantined = partition_by_posting_policy(findings)
 
     try:
         file_patches = {f.path: f.patch for f in scannable_files}
@@ -351,6 +546,11 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         "files_analyzed": len(payload.files),
         "test_files_analyzed": count_test_code_files(f.path for f in scannable_files),
         "findings": normalized,
+        "quarantined_findings": quarantined_counts_by_rule(quarantined),
+        # Both tiers report coverage gaps in the same {kind, path, message} shape: tier 1
+        # when it hits its per-file rule budget, tier 2 when the scanner could not fully
+        # read a file or hit a resource ceiling.
+        "analysis_limitations": limitations,
     }
 
 
@@ -359,7 +559,9 @@ def analyze_tier1_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         raise ValueError("Too many files in PR payload")
 
     scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
-    findings = pattern_findings(scannable_files)
+    limitations: List[Dict[str, Any]] = []
+    findings = pattern_findings(scannable_files, limitations)
+    findings, quarantined = partition_by_posting_policy(findings)
 
     normalized = cluster_findings(classify_findings(findings))
     return {
@@ -370,6 +572,8 @@ def analyze_tier1_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         "test_files_analyzed": count_test_code_files(f.path for f in scannable_files),
         "tier": 1,
         "findings": normalized,
+        "quarantined_findings": quarantined_counts_by_rule(quarantined),
+        "analysis_limitations": limitations,
     }
 
 
@@ -378,6 +582,7 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         raise ValueError("Too many files in PR payload")
 
     findings: List[Dict[str, Any]] = []
+    limitations: List[Dict[str, Any]] = []
     scannable_files = [f for f in payload.files if is_analyzable_path(f.path)]
     try:
         opengrep_files = [
@@ -389,9 +594,11 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
             }
             for f in scannable_files
         ]
-        findings = run_opengrep(opengrep_files)
+        findings, limitations = run_opengrep_with_limitations(opengrep_files)
     except Exception as e:
-        raise RuntimeError("Required OpenGrep analysis failed") from e
+        raise RuntimeError(f"Required OpenGrep analysis failed: {redact(e)}") from e
+
+    findings, quarantined = partition_by_posting_policy(findings)
 
     normalized = cluster_findings(classify_findings(findings))
     return {
@@ -402,6 +609,8 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         "test_files_analyzed": count_test_code_files(f.path for f in scannable_files),
         "tier": 2,
         "findings": normalized,
+        "analysis_limitations": limitations,
+        "quarantined_findings": quarantined_counts_by_rule(quarantined),
     }
 
 

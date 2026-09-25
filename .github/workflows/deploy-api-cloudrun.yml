@@ -6,17 +6,38 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Which environment to deploy'
+        type: choice
+        options: [production, staging]
+        default: production
+      api_min_instances:
+        description: >-
+          Instances kept warm. 1 keeps the first review after an idle period off the
+          cold-start path; see docs/deployment/cloud-run-firebase.md for the cost.
+        type: string
+        default: '1'
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        default: production
+      api_min_instances:
+        type: string
+        default: '1'
 
 permissions:
   contents: read
 
 concurrency:
-  group: cloudrun-deploy-${{ github.workflow }}
+  # Staging and production are separate services and must not queue behind each other.
+  group: cloudrun-deploy-${{ github.workflow }}-${{ inputs.environment || 'production' }}
   cancel-in-progress: false
 
 jobs:
   filter:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
       deploy: ${{ steps.decide.outputs.deploy }}
@@ -30,7 +51,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # Only a CI-triggered deploy is filtered by path. A manual run and a staging
+          # run are explicit requests and always deploy.
+          if [ "${{ github.event_name }}" != "workflow_run" ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -56,6 +79,48 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      # Everything downstream reads $SERVICE, $SECRET_SUFFIX and the resolved URLs, so
+      # the difference between production and staging lives in exactly one step.
+      - name: Resolve environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENVIRONMENT="${{ inputs.environment || 'production' }}"
+          case "$ENVIRONMENT" in
+            production)
+              SUFFIX=""
+              FRONTEND_URL='${{ vars.CODESENTRY_FRONTEND_URL }}'
+              GH_SERVICE_URL='${{ vars.CODESENTRY_GH_SERVICE_URL }}'
+              ANALYSIS_URL='${{ vars.CODESENTRY_ANALYSIS_URL }}'
+              ;;
+            staging)
+              SUFFIX="-staging"
+              FRONTEND_URL='${{ vars.CODESENTRY_FRONTEND_URL_STAGING }}'
+              GH_SERVICE_URL='${{ vars.CODESENTRY_GH_SERVICE_URL_STAGING }}'
+              ANALYSIS_URL='${{ vars.CODESENTRY_ANALYSIS_URL_STAGING }}'
+              ;;
+            *)
+              echo "Unknown environment: $ENVIRONMENT" >&2
+              exit 1
+              ;;
+          esac
+          # A staging deploy that silently fell back to the production URLs would point
+          # the staging API at production. Refuse instead.
+          for name in FRONTEND_URL GH_SERVICE_URL ANALYSIS_URL; do
+            if [ -z "${!name}" ]; then
+              echo "Missing repository variable for $name in the $ENVIRONMENT environment" >&2
+              exit 1
+            fi
+          done
+          {
+            echo "ENVIRONMENT=$ENVIRONMENT"
+            echo "SECRET_SUFFIX=$SUFFIX"
+            echo "SERVICE=codesentry-api${SUFFIX}"
+            echo "FRONTEND_URL=$FRONTEND_URL"
+            echo "GH_SERVICE_URL=$GH_SERVICE_URL"
+            echo "ANALYSIS_URL=$ANALYSIS_URL"
+          } >> "$GITHUB_ENV"
 
       - name: Authenticate to Google Cloud (Workload Identity)
         if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
@@ -85,7 +150,7 @@ jobs:
 
       - name: Load API migration secrets
         run: |
-          echo "DATABASE_URL=$(gcloud secrets versions access latest --secret=codesentry-database-url | tr -d '\n')" >> "$GITHUB_ENV"
+          echo "DATABASE_URL=$(gcloud secrets versions access latest --secret="codesentry-database-url${SECRET_SUFFIX}" | tr -d '\n')" >> "$GITHUB_ENV"
 
       - name: Set release metadata
         shell: bash
@@ -118,46 +183,81 @@ jobs:
             "$IMAGE" \
             npm run db:migrate
 
+      # Two containers in one instance. The application serves ingress; the managed
+      # Prometheus sidecar scrapes the loopback metrics listener every 30 seconds and
+      # writes the series to Cloud Monitoring, which is what the alert policies read.
+      # The sidecar holds no internal secret, which is why the loopback listener exists.
       - name: Deploy API
+        shell: bash
         run: |
-          gcloud run deploy codesentry-api \
-            --image "$IMAGE" \
+          set -euo pipefail
+          MIN_INSTANCES="${{ inputs.api_min_instances || '1' }}"
+          gcloud run deploy "$SERVICE" \
             --region '${{ vars.GCP_REGION }}' \
             --no-cpu-throttling \
             --project '${{ vars.GCP_PROJECT_ID }}' \
             --platform managed \
-            --update-env-vars "\
-              NODE_ENV=production,\
-              FRONTEND_URL=${{ vars.CODESENTRY_FRONTEND_URL }},\
-              GITHUB_SERVICE_URL=${{ vars.CODESENTRY_GH_SERVICE_URL }},\
-              ANALYSIS_SERVICE_URL=${{ vars.CODESENTRY_ANALYSIS_URL }},\
-              INTERNAL_SERVICE_TRANSPORT=grpc,\
-              GRPC_TRANSPORT_TLS=true,\
-              GITHUB_GRPC_URL=${{ vars.CODESENTRY_GH_SERVICE_URL }},\
-              GITHUB_GRPC_AUDIENCE=${{ vars.CODESENTRY_GH_SERVICE_URL }},\
-              ANALYSIS_GRPC_URL=${{ vars.CODESENTRY_ANALYSIS_URL }},\
-              ANALYSIS_GRPC_AUDIENCE=${{ vars.CODESENTRY_ANALYSIS_URL }},\
-              GITHUB_CALLBACK_URL=${{ vars.CODESENTRY_FRONTEND_URL }}/auth/github/callback,\
-              GITHUB_APP_SLUG=mitig8it,\
-              GITHUB_SERVICE_INTERNAL_SECRET=${{ secrets.CODESENTRY_INTERNAL_SECRET }}" \
-            --set-secrets "\
-              JWT_SECRET=codesentry-jwt-secret:latest,\
-              ENCRYPTION_KEY=codesentry-encryption-key:latest,\
-              DATABASE_URL=codesentry-database-url:latest,\
-              GITHUB_APP_ID=codesentry-github-app-id:latest,\
-              GITHUB_APP_PRIVATE_KEY=codesentry-github-app-private-key:latest,\
-              GITHUB_WEBHOOK_SECRET=codesentry-webhook-secret:latest,\
-              GITHUB_CLIENT_ID=codesentry-github-client-id:latest,\
-              GITHUB_CLIENT_SECRET=codesentry-github-client-secret:latest,\
-              REMEDIATION_SERVICE_INTERNAL_SECRET=codesentry-remediation-internal-secret:latest" \
-            --allow-unauthenticated
+            --min-instances "$MIN_INSTANCES" \
+            --allow-unauthenticated \
+            --container app \
+              --image "$IMAGE" \
+              --port 3000 \
+              --update-env-vars "\
+                NODE_ENV=production,\
+                DEPLOY_ENVIRONMENT=${ENVIRONMENT},\
+                METRICS_LOOPBACK_ENABLED=true,\
+                METRICS_LOOPBACK_PORT=9091,\
+                FRONTEND_URL=${FRONTEND_URL},\
+                GITHUB_SERVICE_URL=${GH_SERVICE_URL},\
+                ANALYSIS_SERVICE_URL=${ANALYSIS_URL},\
+                INTERNAL_SERVICE_TRANSPORT=grpc,\
+                GRPC_TRANSPORT_TLS=true,\
+                GITHUB_GRPC_URL=${GH_SERVICE_URL},\
+                GITHUB_GRPC_AUDIENCE=${GH_SERVICE_URL},\
+                ANALYSIS_GRPC_URL=${ANALYSIS_URL},\
+                ANALYSIS_GRPC_AUDIENCE=${ANALYSIS_URL},\
+                GITHUB_CALLBACK_URL=${FRONTEND_URL}/auth/github/callback,\
+                GITHUB_APP_SLUG=mitig8it,\
+                GITHUB_SERVICE_INTERNAL_SECRET=${{ secrets.CODESENTRY_INTERNAL_SECRET }}" \
+              --set-secrets "\
+                JWT_SECRET=codesentry-jwt-secret${SECRET_SUFFIX}:latest,\
+                ENCRYPTION_KEY=codesentry-encryption-key${SECRET_SUFFIX}:latest,\
+                DATABASE_URL=codesentry-database-url${SECRET_SUFFIX}:latest,\
+                GITHUB_APP_ID=codesentry-github-app${SECRET_SUFFIX}-id:latest,\
+                GITHUB_APP_PRIVATE_KEY=codesentry-github-app${SECRET_SUFFIX}-private-key:latest,\
+                GITHUB_WEBHOOK_SECRET=codesentry-webhook-secret${SECRET_SUFFIX}:latest,\
+                GITHUB_CLIENT_ID=codesentry-github-client${SECRET_SUFFIX}-id:latest,\
+                GITHUB_CLIENT_SECRET=codesentry-github-client${SECRET_SUFFIX}-secret:latest,\
+                REMEDIATION_SERVICE_INTERNAL_SECRET=codesentry-remediation-internal-secret${SECRET_SUFFIX}:latest" \
+            --container collector \
+              --image us-docker.pkg.dev/cloud-ops-agents-artifacts/cloud-run-gmp-sidecar/cloud-run-gmp-sidecar:1.1.1 \
+              --set-secrets "/etc/rungmp/config.yaml=codesentry-gmp-config:latest"
+          # One config secret serves both environments: the scrape target is the same
+          # loopback port either way, and the series are separated by the Cloud Run
+          # service name that Managed Prometheus attaches as a resource label.
 
       - name: Smoke (Cloud Run URL → /health)
         shell: bash
         run: |
           set -euo pipefail
-          URL=$(gcloud run services describe codesentry-api \
+          URL=$(gcloud run services describe "$SERVICE" \
             --region '${{ vars.GCP_REGION }}' \
             --project '${{ vars.GCP_PROJECT_ID }}' \
             --format='value(status.url)')
           curl -sfS --connect-timeout 15 --max-time 45 "${URL}/health"
+
+      # A scrape that silently stopped is the failure mode the stall alert cannot see
+      # on its own, so the deploy asserts the sidecar is present in the new revision.
+      - name: Assert the metrics sidecar is in the deployed revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTAINERS=$(gcloud run services describe "$SERVICE" \
+            --region '${{ vars.GCP_REGION }}' \
+            --project '${{ vars.GCP_PROJECT_ID }}' \
+            --format='value(spec.template.spec.containers[].name)')
+          echo "Containers: $CONTAINERS"
+          case "$CONTAINERS" in
+            *collector*) ;;
+            *) echo "The managed Prometheus sidecar is missing from the revision" >&2; exit 1 ;;
+          esac

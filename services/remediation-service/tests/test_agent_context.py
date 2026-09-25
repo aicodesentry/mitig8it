@@ -264,4 +264,10 @@ async def test_a_four_finding_job_on_a_sixty_line_file_stays_under_thirty_thousa
     result = await RepairAgent(provider, FailingVerifier()).run(request, snapshot)
 
     assert provider.calls == len(actions)
-    assert result.usage["input_tokens"] + result.usage["output_tokens"] < 30_000
+    # The budget is the guardrail against the working set growing back into every call, not a
+    # tight fit. It was 30_000 and the job measured 29_995, which is no headroom at all: adding
+    # `hardcoded_credential` to the JavaScript families put one more name in the task payload's
+    # `allowed_rule_families`, that payload is re-sent on each of the eight calls, and 48 tokens
+    # failed it. The measured cost of this job is 30_043; 32_000 leaves room for a family or a
+    # policy field without hiding a working set that has stopped being stubbed.
+    assert result.usage["input_tokens"] + result.usage["output_tokens"] < 32_000

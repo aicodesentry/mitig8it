@@ -66,8 +66,6 @@ function getPolicy() {
     enabled: flagEnv('REMEDIATION_ENABLED'),
     generate_enabled: flagEnv('REMEDIATION_GENERATE_ENABLED'),
     publish_enabled: flagEnv('REMEDIATION_PUBLISH_ENABLED'),
-    apply_enabled: flagEnv('REMEDIATION_APPLY_ENABLED'),
-    merge_enabled: flagEnv('REMEDIATION_MERGE_ENABLED'),
     policy_version: process.env.REMEDIATION_POLICY_VERSION || DEFAULT_POLICY.version,
     sandbox_image_digest: sandboxImage,
     verification_checks: verificationChecks,
@@ -79,19 +77,21 @@ function getPolicy() {
     input_usd_per_million_tokens: Number(process.env.REMEDIATION_INPUT_USD_PER_MILLION_TOKENS),
     output_usd_per_million_tokens: Number(process.env.REMEDIATION_OUTPUT_USD_PER_MILLION_TOKENS),
     repair_service_configured: Boolean(process.env.REMEDIATION_SERVICE_URL && process.env.REMEDIATION_SERVICE_INTERNAL_SECRET && process.env.GITHUB_SERVICE_URL && process.env.GITHUB_SERVICE_INTERNAL_SECRET && sandboxImage && Array.isArray(verificationChecks) && Array.isArray(allowedRuleFamilies) && Number.isFinite(Number(process.env.REMEDIATION_INPUT_USD_PER_MILLION_TOKENS)) && Number.isFinite(Number(process.env.REMEDIATION_OUTPUT_USD_PER_MILLION_TOKENS))),
+    // The GitHub adapter transport for comments and check runs. It has never carried a
+    // contents write, and since the App dropped that permission it cannot.
     github_write_configured: Boolean(process.env.GITHUB_SERVICE_URL && process.env.GITHUB_SERVICE_INTERNAL_SECRET),
   };
 }
 
 // Each capability is an independent flag gated by the global kill switch and by
-// the dependency it actually needs. merge is never an alias of apply.
+// the dependency it actually needs. There is no apply or merge capability: the App
+// holds no write access to repository contents, so the only way a fix reaches the
+// branch is GitHub's own "Commit suggestion" button, under the developer's identity.
 function capabilities() {
   const policy = getPolicy();
   return {
     generate: policy.enabled && policy.generate_enabled && policy.repair_service_configured,
     publish: policy.enabled && policy.publish_enabled && policy.repair_service_configured,
-    apply: policy.enabled && policy.apply_enabled && policy.github_write_configured,
-    merge: policy.enabled && policy.merge_enabled && policy.github_write_configured,
     // Generation after analysis is only useful when the result can be published under
     // the findings, so it requires both flags and both dependencies.
     auto_generate: policy.enabled && policy.generate_enabled && policy.publish_enabled
@@ -111,8 +111,6 @@ function capabilityReasons() {
   return {
     generate: reason(policy.generate_enabled, policy.repair_service_configured),
     publish: reason(policy.publish_enabled, policy.repair_service_configured),
-    apply: reason(policy.apply_enabled, policy.github_write_configured),
-    merge: reason(policy.merge_enabled, policy.github_write_configured),
     auto_generate: reason(policy.generate_enabled && policy.publish_enabled,
       policy.repair_service_configured && policy.github_write_configured),
   };
@@ -123,6 +121,7 @@ function capabilityReport() {
   const reasons = capabilityReasons();
   const report = Object.fromEntries(Object.keys(enabled).map((name) => [name, { enabled: enabled[name], reason: reasons[name] }]));
   report.development_verification_allowed = allowDevelopmentVerification();
+  report.isolated_job_verification_allowed = allowIsolatedJobVerification();
   return report;
 }
 
@@ -144,18 +143,6 @@ function assertPublishEnabled() {
   }
 }
 
-function assertApplyEnabled() {
-  if (!capabilities().apply) {
-    throw denial('Verified remediation application is not enabled or its GitHub dependency is unavailable', 'REMEDIATION_APPLY_UNAVAILABLE', 422);
-  }
-}
-
-function assertMergeEnabled() {
-  if (!capabilities().merge) {
-    throw denial('Automatic remediation merge is not enabled or its GitHub dependency is unavailable', 'REMEDIATION_MERGE_UNAVAILABLE', 422);
-  }
-}
-
 // A stage reserves its own estimate. The ceiling still bounds the job as a whole.
 function stageEstimate(policyManifest, stage) {
   const estimates = policyManifest?.stage_spend_estimates || DEFAULT_POLICY.stage_spend_estimates;
@@ -168,12 +155,22 @@ function stageEstimate(policyManifest, stage) {
 // Observed feedback expires; an unreviewed observation never influences generation and
 // never outlives its retention window.
 const PRODUCTION_VERIFICATION_LEVEL = 'independent_sandbox';
+// The Cloud Run job sandbox: separate containers, an unprivileged check user holding none of
+// the job's credentials, and a network the job's own probes measured as unreachable before
+// each check ran. Weaker than the Kubernetes/gVisor level, which also pins a read-only root
+// filesystem and a gVisor runtime class, and not comparable to the development level, where
+// repository code runs in the service's own container.
+const ISOLATED_JOB_VERIFICATION_LEVEL = 'isolated_job';
 
 // Development verification (local subprocess sandbox) never satisfies the production
 // gate. It is accepted for apply only when an operator opts in explicitly.
 function allowDevelopmentVerification() { return flagEnv('REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION'); }
+// Default true, and the repair service defaults its policy field the same way; the two must
+// agree. An operator who will accept nothing below the gVisor sandbox sets this to 'false'.
+function allowIsolatedJobVerification() { return process.env.REMEDIATION_ALLOW_ISOLATED_JOB_VERIFICATION !== 'false'; }
 function verificationLevelPermitted(level) {
   if (level === PRODUCTION_VERIFICATION_LEVEL) return true;
+  if (level === ISOLATED_JOB_VERIFICATION_LEVEL) return allowIsolatedJobVerification();
   return level === 'development_unverified' && allowDevelopmentVerification();
 }
 
@@ -195,10 +192,11 @@ function matchesBranchPattern(pattern, branch) {
 
 module.exports = {
   DEFAULT_POLICY, STAGE_SEQUENCE, getPolicy, capabilities, capabilityReasons, capabilityReport,
-  assertGenerateEnabled, assertPublishEnabled, assertApplyEnabled, assertMergeEnabled,
+  assertGenerateEnabled, assertPublishEnabled,
   // Retained name so existing callers keep the same behaviour.
   assertGenerationEnabled: assertGenerateEnabled,
   stageEstimate, branchAllowed, repairMemoryExpiryDays,
-  PRODUCTION_VERIFICATION_LEVEL, allowDevelopmentVerification, verificationLevelPermitted,
+  PRODUCTION_VERIFICATION_LEVEL, ISOLATED_JOB_VERIFICATION_LEVEL,
+  allowDevelopmentVerification, allowIsolatedJobVerification, verificationLevelPermitted,
   requireGeneratedRegressionTest,
 };

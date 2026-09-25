@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router'
-import { findingAPI } from '../services/api'
+import { findingAPI, DISMISSAL_REASONS } from '../services/api'
 import RemediationPanel from '../components/RemediationPanel'
 
 export default function FindingDetailPage() {
   const { findingId } = useParams()
   const [finding, setFinding] = useState(null)
+  const [reason, setReason] = useState(DISMISSAL_REASONS[0].value)
 
   useEffect(() => {
     findingAPI
@@ -22,7 +23,7 @@ export default function FindingDetailPage() {
     const updated = await findingAPI.updateStatus(
       finding.id,
       status,
-      status === 'dismissed' ? 'false_positive' : null
+      status === 'dismissed' ? reason : null
     )
     setFinding(updated.finding)
   }
@@ -65,8 +66,33 @@ export default function FindingDetailPage() {
       <div className="flex gap-2">
         <button onClick={() => setStatus('open')} className="rounded-lg border border-neutral-300 px-4 py-2 text-sm">Mark Open</button>
         <button onClick={() => setStatus('accepted_risk')} className="rounded-lg border border-neutral-300 px-4 py-2 text-sm">Accept Risk</button>
-        <button onClick={() => setStatus('dismissed')} className="rounded-lg border border-neutral-300 px-4 py-2 text-sm">Dismiss</button>
         <button onClick={() => setStatus('fixed')} className="rounded-lg border border-neutral-300 px-4 py-2 text-sm">Mark Fixed</button>
+      </div>
+
+      <div className="rounded-xl border border-neutral-200 bg-white p-6">
+        <h2 className="text-lg font-semibold text-neutral-900">Dismiss this finding</h2>
+        <p className="mt-1 text-sm text-neutral-600">The reason is recorded and feeds the rule quality numbers.</p>
+        <fieldset className="mt-3 space-y-2">
+          <legend className="sr-only">Dismissal reason</legend>
+          {DISMISSAL_REASONS.map((option) => (
+            <label key={option.value} className="flex items-center gap-2 text-sm text-neutral-700">
+              <input
+                type="radio"
+                name="dismissal-reason"
+                value={option.value}
+                checked={reason === option.value}
+                onChange={() => setReason(option.value)}
+              />
+              {option.label}
+            </label>
+          ))}
+        </fieldset>
+        <button
+          onClick={() => setStatus('dismissed')}
+          className="mt-4 rounded-lg border border-neutral-300 px-4 py-2 text-sm"
+        >
+          Dismiss
+        </button>
       </div>
     </div>
   )
