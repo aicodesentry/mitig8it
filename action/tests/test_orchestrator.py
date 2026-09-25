@@ -554,6 +554,90 @@ def test_the_summary_and_the_review_body_say_the_informational_findings_were_not
     assert "informational" not in rendered["none"], "a run with none says nothing about them"
 
 
+def test_the_expected_403_on_the_viewer_call_is_not_logged(api, caplog):
+    """The only status code in every trial run log, and it is the normal answer.
+
+    `HTTP Request: GET https://api.github.com/user "HTTP/1.1 403 Forbidden"` appeared at INFO on
+    all 26 runs. A workflow token has no user identity, so the 403 is expected and the code
+    already falls back; what it looked like to a reader scanning the log was the failure.
+    """
+    import logging
+
+    def forbidden(_match, _params):
+        # httpx logs every request it makes, at INFO, on the `httpx` logger.
+        logging.getLogger("httpx").info(
+            'HTTP Request: GET https://api.github.com/user "HTTP/1.1 403 Forbidden"'
+        )
+        return fake_github.FakeResponse({"message": "Resource not accessible"}, status_code=403)
+
+    api.route(r"/user", forbidden)
+
+    transport_log = logging.getLogger("httpx")
+    with caplog.at_level(logging.INFO, logger="httpx"):
+        before = transport_log.level
+        login = reader_for(api).viewer_login()
+        # The logger is left exactly as it was found, so nothing else in the run goes quiet.
+        assert transport_log.level == before
+
+    assert login == "github-actions[bot]"
+    assert api.asked_for("/user"), "the call is silenced, not removed"
+    assert [record.message for record in caplog.records] == []
+
+
+def test_a_viewer_call_that_answers_is_still_used(api):
+    api.route(r"/user", {"login": "my-app[bot]"})
+    assert reader_for(api).viewer_login() == "my-app[bot]"
+
+
+def test_the_scope_report_separates_what_was_analysed_from_what_was_not():
+    """"12 files in scope" counted the workflow the pull request adds and the README it edits.
+
+    Neither is a file a security rule reads whole, and nothing said which files had been
+    dropped or why, although action/README.md promised the check summary would.
+    """
+    files = [
+        {"filename": "app/routes/index.js", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": "app/views/admin.ejs", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": ".github/workflows/mitig8it.yml", "status": "added", "patch": "@@ -0,0 +1 @@\n+a\n"},
+        {"filename": "README.md", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": "dist/bundle.js", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": "static/app.min.js", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": "old.js", "status": "removed", "patch": ""},
+    ]
+    report = pr_scope.scope_report(files)
+
+    assert report["changed"] == 5, "removed files and vendored paths are not part of the review"
+    assert report["analysed"] == 2, "the JavaScript route and the template, not the YAML or the README"
+    assert report["skipped"] == 3
+    assert report["vendored"] == 1
+    assert report["excluded"] == 0
+
+    summary = pr_scope.scope_summary(report)
+    assert summary.startswith("2 files analysed")
+    assert "3 read as a patch only" in summary
+    assert "1 skipped as build output or a vendored dependency" in summary
+    assert ".mitig8it.yml" not in summary, "nothing was excluded, so nothing is claimed"
+
+
+def test_the_scope_report_counts_what_the_repository_excluded():
+    class Exclusions:
+        def matches(self, path):
+            return path.startswith("vendor/")
+
+    files = [
+        {"filename": "app/index.js", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": "vendor/lib.js", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+    ]
+    report = pr_scope.scope_report(files, Exclusions())
+
+    assert report == {"changed": 2, "analysed": 1, "excluded": 1, "skipped": 0, "vendored": 0}
+    assert "1 excluded by .mitig8it.yml" in pr_scope.scope_summary(report)
+
+
+def test_the_scope_summary_is_empty_when_there_is_nothing_to_say():
+    assert pr_scope.scope_summary({"changed": 0, "analysed": 0, "excluded": 0, "skipped": 0, "vendored": 0}) == ""
+
+
 def test_test_code_findings_are_counted_apart_from_runtime_ones():
     findings = [
         {"severity": "critical", "file_path": "src/a.py"},

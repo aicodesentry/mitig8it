@@ -72,6 +72,22 @@ function plural(count, noun) {
   return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }
 
+// The orchestrator's `scope_summary`, in the publisher's own words, from the same numbers.
+// `analysed` is the count "files in scope" was meant to be; `skipped` is the rest of the change,
+// counted rather than hidden, and deliberately not called unreviewed, because the regex tier
+// still reads its patch.
+function scopeSummary(scope) {
+  const number = (key) => Number(scope?.[key] || 0);
+  if (!['analysed', 'excluded', 'skipped', 'vendored'].some((key) => number(key))) return '';
+  const parts = [`${plural(number('analysed'), 'file')} analysed`];
+  if (number('skipped')) {
+    parts.push(`${number('skipped')} read as a patch only (the scanner has no deep rules for those file types)`);
+  }
+  if (number('excluded')) parts.push(`${number('excluded')} excluded by .mitig8it.yml`);
+  if (number('vendored')) parts.push(`${number('vendored')} skipped as build output or a vendored dependency`);
+  return `${parts.join(', ')}.`;
+}
+
 function breakdown(totals) {
   return `${totals.critical} critical, ${totals.high} high, ${totals.medium} medium, ${totals.low} low`;
 }
@@ -187,10 +203,18 @@ function checkRunSummary(request) {
   if (totals.informational > 0) {
     parts.push(`${plural(totals.informational, 'informational finding')} in test code, not posted.`);
   }
-  // What the repository asked not to be reviewed is part of what the check reports: a reader
-  // who sees no finding on a directory is entitled to know whether it was clean or skipped.
-  const excluded = Number(request.excludedFiles || 0);
-  if (excluded > 0) parts.push(`${plural(excluded, 'file')} excluded by .mitig8it.yml.`);
+  // What the review looked at, and what it did not. A reader who sees no finding on a directory
+  // is entitled to know whether it was clean, excluded or never read whole; the trial's clean
+  // repositories reported "12 files in scope" with the workflow YAML and the README among them,
+  // and `excluded_file_count` only ever counted `.mitig8it.yml` matches, so with no config file
+  // the line README.md promised never appeared at all.
+  const scope = request.scope || {};
+  const scopeLine = scopeSummary(scope);
+  if (scopeLine) parts.push(scopeLine);
+  else {
+    const excluded = Number(request.excludedFiles || 0);
+    if (excluded > 0) parts.push(`${plural(excluded, 'file')} excluded by .mitig8it.yml.`);
+  }
   return {
     // `fail-on: none` keeps a neutral conclusion so a security review never blocks a merge that
     // the repository did not ask it to block.

@@ -238,6 +238,26 @@ def test_the_title_the_summary_and_the_review_body_state_one_total(tmp_path):
     assert "37 findings detected" in review["body"]
 
 
+def test_the_check_summary_reports_analysed_excluded_and_skipped(tmp_path):
+    """action/README.md promised the check summary would say how many files were excluded.
+
+    `excluded_file_count` only counted `.mitig8it.yml` matches, so with no config file the line
+    never appeared at all, and "files in scope" counted the workflow the pull request adds.
+    """
+    if not publisher_harness.node_available():
+        pytest.skip("node is not on PATH")
+    request = a_request([], counts=NO_COUNTS, findings=0, conclusion="success")
+    request["scope"] = {"changed": 12, "analysed": 10, "excluded": 0, "skipped": 2, "vendored": 1}
+    completed, recorded = run_publisher(tmp_path, request)
+
+    assert completed.returncode == 0, completed.stderr
+    summary = next(call for call in recorded if call["name"] == "check")["summary"]
+    assert "10 files analysed" in summary
+    assert "2 read as a patch only" in summary
+    assert "1 skipped as build output or a vendored dependency" in summary
+    assert ".mitig8it.yml" not in summary
+
+
 def test_a_finding_off_the_diff_is_named_in_the_review_body(tmp_path):
     """28 of the trial's 93 findings existed only as a number. A number is not actionable."""
     if not publisher_harness.node_available():

@@ -449,6 +449,7 @@ def build_publish_request(
     model_configured: bool,
     conclusion: str,
     unanchored_findings: Sequence[Dict[str, Any]] = (),
+    scope: Optional[Dict[str, Any]] = None,
     excluded_files: int = 0,
     active_fingerprints: Sequence[str] = (),
     bot_login: str = "github-actions[bot]",
@@ -475,6 +476,10 @@ def build_publish_request(
         "modelConfigured": model_configured,
         "failConclusion": conclusion,
         "excludedFiles": int(excluded_files),
+        # What the review looked at, split into analysed, excluded and skipped. The check
+        # summary states all three, because a reader who sees no finding on a directory is
+        # entitled to know whether it was clean, excluded or never read whole.
+        "scope": dict(scope or {}),
         # One arithmetic, computed once, rendered by the publisher in three places. The
         # publisher derives nothing of its own from `counts`.
         "totals": review_totals(counts, inline_comments, unanchored_findings),
@@ -597,7 +602,8 @@ def _run() -> int:
             f"this pull request changes {len(scoped)} files, above the max-files input of "
             f"{max_files}. Raise the input or split the change."
         )
-    log(f"{plural(len(scoped), 'file')} in scope.")
+    scope = pr_scope.scope_report(raw_files, exclusions)
+    log(pr_scope.scope_summary(scope) or "Nothing in this pull request is reviewable.")
 
     wanted = [f["path"] for f in scoped if pr_scope.should_fetch_full_file_content(f)]
     contents = reader.file_contents(wanted, head_sha) if wanted else {}
@@ -661,6 +667,7 @@ def _run() -> int:
         model_configured=model_configured,
         conclusion=conclusion,
         unanchored_findings=unanchored,
+        scope=scope,
         excluded_files=excluded_files,
         active_fingerprints=active_fingerprints(findings),
         # Asked of the token rather than assumed. `github-actions[bot]` is right only for the

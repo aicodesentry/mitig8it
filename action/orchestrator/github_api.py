@@ -11,6 +11,7 @@ service's own write path, so this module reads only.
 from __future__ import annotations
 
 import base64
+import logging
 import random
 import time
 from typing import Any, Dict, Iterable, List, Optional
@@ -212,10 +213,21 @@ class GitHubReader:
         The App resolves `<slug>[bot]`. A workflow token posts as `github-actions[bot]`, which
         `GET /user` does not answer for, so the login is read from the token's own identity when
         that call works and falls back to the Actions bot otherwise.
+
+        The 403 is the expected answer, not a fault, and it was the only status code in the whole
+        run log: `HTTP Request: GET https://api.github.com/user "HTTP/1.1 403 Forbidden"` on every
+        one of the trial's 26 runs, at INFO, in a log a reader is scanning for exactly that shape.
+        httpx logs every request it makes, so the one call whose failure is the normal case is
+        made with that logger quiet. Nothing else the action does is hidden this way.
         """
+        transport_log = logging.getLogger("httpx")
+        previous = transport_log.level
+        transport_log.setLevel(max(previous, logging.WARNING))
         try:
             payload = self.get("/user").json()
         except GitHubError:
             return "github-actions[bot]"
+        finally:
+            transport_log.setLevel(previous)
         login = payload.get("login")
         return str(login) if login else "github-actions[bot]"
