@@ -10,6 +10,12 @@ All project Markdown documentation, except the root [README](../README.md), live
 - [GitHub Action](getting-started/github-action.md)
 - [Repository Configuration](getting-started/configuration.md)
 
+## Validation and design
+
+- [Validation index](validation/README.md), with the reference output of `make bench`
+- [Prove before post](design/prove-before-post.md)
+- [System overview](reference/system-overview.md), the component by component reference
+
 ## Architecture
 
 - [Architecture Overview](architecture/overview.md)
@@ -46,4 +52,10 @@ All project Markdown documentation, except the root [README](../README.md), live
 
 ## Contributors
 
-- [Contributor Guidelines](contributors/guidelines.md)
+- [Contributing](../CONTRIBUTING.md), the one to read first
+- [Good first issues](contributing/good-first-issues.md)
+- [Contributor Guidelines](contributors/guidelines.md), the older short guide
+
+## History
+
+- [Dated reviews and work packages](history/README.md), kept as written
