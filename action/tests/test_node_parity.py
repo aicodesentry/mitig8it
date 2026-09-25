@@ -344,3 +344,31 @@ def test_reviewable_line_spans_match_node():
     from_node = json.loads(result.stdout)
     from_python = [pr_scope.extract_reviewable_line_spans(patch) for patch in patches]
     assert from_node == from_python
+
+
+def test_the_unanchored_heading_is_the_wording_the_app_uses():
+    """Both products decline to annotate a finding off the diff, and both now name it.
+
+    A reader who has seen the App's review should recognise the section in the Action's, so the
+    heading is one string in two files rather than two strings that happen to agree today. The
+    publisher's copy is compared against the api-service's declaration.
+    """
+    publisher = read(REPO_ROOT / "action/publisher/publish.js")
+    orchestrator = read(API_ORCHESTRATOR)
+    pattern = r"const UNANCHORED_HEADING = '([^']+)';"
+    from_action = re.search(pattern, publisher)
+    from_app = re.search(pattern, orchestrator)
+    assert from_action, "publish.js no longer declares UNANCHORED_HEADING"
+    assert from_app, "prAnalysisOrchestrator.js no longer declares UNANCHORED_HEADING"
+    assert from_action.group(1) == from_app.group(1)
+    assert from_action.group(1) == "Findings on lines this pull request did not change"
+
+
+def test_the_unanchored_row_cap_is_the_app_s():
+    publisher = read(REPO_ROOT / "action/publisher/publish.js")
+    orchestrator = read(API_ORCHESTRATOR)
+    pattern = r"const UNANCHORED_ROW_CAP = (\d+);"
+    from_action = re.search(pattern, publisher)
+    from_app = re.search(pattern, orchestrator)
+    assert from_action and from_app, "one of the two no longer caps the listing"
+    assert from_action.group(1) == from_app.group(1)

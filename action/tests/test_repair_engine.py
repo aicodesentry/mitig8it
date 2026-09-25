@@ -172,3 +172,133 @@ def test_fix_sections_carry_the_level_through_to_the_publisher(sandbox):
         assert section["verification_level"] == "development_unverified"
         assert section["path"] == "src/reports.py"
         assert section["finding_fingerprint"] == "fp-sql"
+
+
+# --- JavaScript --------------------------------------------------------------------------
+#
+# The Python case above ran on Node 20 as well, because a Python repair never loads the
+# sandbox harness's TypeScript path. JavaScript did not, and nothing in this suite noticed:
+# the September 2026 trial produced zero fixes on four JavaScript repositories, including
+# findings in the supported `command_arguments` family, and the only trace was one ERROR
+# line in a run log. This is the same shape as the `js-command-exec-template` benchmark
+# fixture, inlined rather than read from `benchmarks/`, because the image does not carry
+# that directory and this has to run inside the image to prove anything.
+
+JS_SRC = (
+    "const { exec } = require('node:child_process');\n"
+    "\n"
+    "function fetchAuthorLog(author, callback) {\n"
+    "  return exec(`git log --author=${author} --oneline -n 20`, callback);\n"
+    "}\n"
+    "\n"
+    "module.exports = { fetchAuthorLog };\n"
+)
+
+JS_PACKAGE = (
+    "{\n"
+    '  "name": "action-js-repair",\n'
+    '  "version": "0.0.0",\n'
+    '  "private": true,\n'
+    '  "dependencies": {}\n'
+    "}\n"
+)
+
+JS_FINDING = {
+    "fingerprint": "fp-cmd",
+    "rule_id": "cwe-78.child-process-exec",
+    "cwe_id": "CWE-78",
+    "category": "command injection",
+    "title": "Command injection",
+    "description": "The author name is interpolated into a template literal handed to exec.",
+    "file_path": "app.js",
+    "line_start": 4,
+    "line_end": 4,
+    "severity": "critical",
+}
+
+
+def test_a_javascript_finding_is_in_a_supported_repair_family():
+    supported = remediation.supported_findings([JS_FINDING])
+    assert [f["fingerprint"] for f in supported] == ["fp-cmd"], (
+        "command_arguments on JavaScript is one of the five documented families"
+    )
+
+
+def test_a_javascript_repair_runs_its_verification_in_this_runtime(sandbox):
+    """The runtime proof: the engine must reach a verdict rather than refuse the runtime.
+
+    On the Node the image used to pin, this request came back with the harness reporting that
+    the runtime lacked `module.stripTypeScriptTypes` and `module.registerHooks`. What is
+    asserted here is that no such refusal is reported: a candidate is the good outcome and an
+    honest `unsupported` is an acceptable one, but a runtime prerequisite is not.
+    """
+    request = build([JS_FINDING], files={"app.js": JS_SRC, "package.json": JS_PACKAGE})
+    response = remediation.repair(request, model_configured=False)
+
+    reason = (response.reason or {}).get("code")
+    assert reason != "runtime_prerequisite_missing", (
+        "the engine refused the Node runtime, which is what pinning the remediation "
+        "service's NODE_VERSION in action/Dockerfile exists to prevent"
+    )
+    rendered = repr(response.evidence or {}) + repr(response.reason or {})
+    for missing in ("stripTypeScriptTypes", "registerHooks", "--experimental-strip-types"):
+        assert missing not in rendered, (
+            f"the sandbox harness reported {missing} unavailable in this runtime"
+        )
+    assert response.state in {"ready", "unsupported", "inconclusive"}
+
+
+JS_CREDENTIAL_SRC = (
+    "// Client for the vendor billing API.\n"
+    'const apiKey = "sk-live-7f3a91bc44de2210";\n'
+    "\n"
+    "function authHeaders() {\n"
+    "  return { Authorization: `Bearer ${apiKey}` };\n"
+    "}\n"
+    "\n"
+    "module.exports = { apiKey, authHeaders };\n"
+)
+
+JS_CREDENTIAL_FINDING = {
+    "fingerprint": "fp-jssecret",
+    "rule_id": "cwe-798.js-credential-constant",
+    "cwe_id": "CWE-798",
+    "category": "hardcoded secrets",
+    "title": "Hardcoded API key",
+    "description": "A vendor API key literal in the source.",
+    "file_path": "app.js",
+    "line_start": 2,
+    "line_end": 2,
+    "severity": "critical",
+}
+
+
+def test_a_javascript_repair_produces_a_clickable_suggestion(sandbox):
+    """One whole JavaScript repair, end to end, in the runtime the action ships.
+
+    The `js-hardcoded-secret` benchmark fixture's shape, inlined because the image does not
+    carry `benchmarks/`. This is the fixture repair that proves the Node pin: the candidate is
+    verified in this container, it comes back `development_unverified` because nothing here is
+    isolated, and `fix_sections` turns it into a hunk github-service can render as a suggestion
+    block rather than the diff the trial saw.
+    """
+    request = build(
+        [JS_CREDENTIAL_FINDING],
+        files={"app.js": JS_CREDENTIAL_SRC, "package.json": JS_PACKAGE},
+    )
+    response = remediation.repair(request, model_configured=False)
+    assert response.state == "ready", f"no verified JavaScript repair: {response.reason}"
+    assert response.candidates, "a ready response carried no candidate"
+
+    sections = remediation.fix_sections(response, {"fp-jssecret": JS_CREDENTIAL_FINDING})
+    assert len(sections) == len(response.candidates)
+    section = sections[0]
+    assert section["verification_level"] == "development_unverified"
+    assert section["not_suggestable_reason"] == ""
+    assert section["hunk"] is not None, (
+        "the section came back without a hunk, so github-service would render a diff "
+        "instead of a suggestion"
+    )
+    assert section["hunk"]["start_line"] == 2
+    assert section["hunk"]["end_line"] == 2
+    assert "sk-live-" not in "\n".join(section["hunk"]["replacement_lines"])

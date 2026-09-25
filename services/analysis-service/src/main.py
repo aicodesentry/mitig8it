@@ -229,8 +229,12 @@ def _deterministic_fix_metadata(rule, finding: Dict[str, Any], context: Dict[str
     }
 
 
-def rule_scan_options(rule, file_path: str) -> Dict[str, Any]:
-    """How a rule reads a patch: which file it is, what it must not see, what it may."""
+def rule_scan_options(rule, file_path: str, content: str = "") -> Dict[str, Any]:
+    """How a rule reads a patch: which file it is, what it must not see, what it may.
+
+    `content` is the file at the head revision when the request carried it. It is what lets the
+    comment stripper know that a hunk began inside a docstring, which a diff cannot show.
+    """
     exclusion = getattr(rule, "exclusion", None)
     prose_exclusion = getattr(rule, "non_code_text_exclusion", None)
     if prose_exclusion is not None and is_non_code_text_path(file_path):
@@ -245,11 +249,14 @@ def rule_scan_options(rule, file_path: str) -> Dict[str, Any]:
         "path": file_path,
         "exclusion": exclusion,
         "blank_strings": not getattr(rule, "reads_string_literals", True),
+        "content": content,
     }
 
 
-def generate_finding(rule, file_path: str, patch: str) -> Dict[str, Any]:
-    context = extract_match_context(patch, rule.pattern, **rule_scan_options(rule, file_path))
+def generate_finding(rule, file_path: str, patch: str, content: str = "") -> Dict[str, Any]:
+    context = extract_match_context(
+        patch, rule.pattern, **rule_scan_options(rule, file_path, content)
+    )
     taxonomy = build_taxonomy_metadata(
         rule_id=rule.rule_id,
         category=rule.category,
@@ -393,6 +400,10 @@ def pattern_findings(
 
         path = changed_file.path
         patch = changed_file.patch or ""
+        # The head revision when the request carried it. `should_fetch_full_file_content` on
+        # the orchestrator's side decides which files have one; without it the stripper falls
+        # back to scanning each hunk on its own.
+        content = changed_file.content or ""
 
         if len(patch) > 200_000:
             continue
@@ -422,7 +433,7 @@ def pattern_findings(
                 continue
             if rule.category == "unsafe LLM/prompt injection patterns" and not repo_has_llm_flow:
                 continue
-            options = rule_scan_options(rule, path)
+            options = rule_scan_options(rule, path, content)
             if not pattern_matches_reviewable_content(patch, rule.pattern, **options):
                 continue
             if rule.category == "path traversal" and has_path_containment_guard(
@@ -431,7 +442,7 @@ def pattern_findings(
                 # The read resolves the candidate path and rejects anything outside the
                 # base directory, which is what the taint rule accepts as a sanitizer.
                 continue
-            findings.append(generate_finding(rule, path, patch))
+            findings.append(generate_finding(rule, path, patch, content))
 
         findings.extend(dependency_findings(path, patch))
 

@@ -25,6 +25,18 @@ test('review retry reuses same completed review', async () => {
  expect(result.review_id).toBe(9);
  expect(axios.mock.calls.some(([r]) => r.method === 'post')).toBe(false);
 });
+test('an identical review body still posts when it carries comments the pull request lacks', async () => {
+ // The Action submits its new inline comments inside the review. A run whose comments failed
+ // after its body succeeded has to be able to post them on a retry rather than match the body,
+ // return the old review and drop every comment on the floor.
+ const {submitPullRequestReview} = require('../services/githubInternalOperations');
+ axios.mockImplementation(async r => ({data:r.url.includes('/reviews') ? (r.method === 'post' ? {id:11} : [{id:9,commit_id:'head-a',body:'<!-- mitig8it-review --> run1',state:'COMMENTED',user:{type:'Bot',login:'fixture[bot]'}}]) : {head:{sha:'head-a'}}}));
+ const result = await submitPullRequestReview({owner:'owner',repo:'repo',pr_number:1,installation_id:1,commit_sha:'head-a',body:'<!-- mitig8it-review --> run1',event:'COMMENT',comments:[{path:'a.py',line:3,body:'<!-- mitig8it-finding:fp1 -->\nnew'}]});
+ expect(result.comments_posted).toBe(1);
+ const posted = axios.mock.calls.filter(([r]) => r.method === 'post' && r.url.includes('/reviews'));
+ expect(posted).toHaveLength(1);
+ expect(posted[0][0].data.comments).toEqual([{path:'a.py',line:3,side:'RIGHT',body:'<!-- mitig8it-finding:fp1 -->\nnew'}]);
+});
 test('superseded review cannot dismiss newer blocking feedback', async () => {
  const {submitPullRequestReview} = require('../services/githubInternalOperations');
  axios.mockResolvedValue({data:{head:{sha:'head-b'}}});

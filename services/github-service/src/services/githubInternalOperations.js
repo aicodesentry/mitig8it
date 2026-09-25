@@ -273,7 +273,12 @@ async function submitPullRequestReview({ owner, repo, pr_number, installation_id
           token, { message: 'Superseded by new analysis run.' });
       }
     }
-    if (existing) return { review_id: existing.id, comments_posted: 0 };
+    // An identical review already on this head means this run has nothing new to say, and
+    // saying it again would be a second timeline entry for one opinion. It is only the same
+    // review when it also carries the same comments: the Action now submits its new inline
+    // comments inside the review, and a run whose comments failed after its body succeeded
+    // has to be able to post them on a retry rather than match the body and stop.
+    if (existing && !(comments || []).length) return { review_id: existing.id, comments_posted: 0 };
 
     const reviewPayload = {
       commit_id: commit_sha,

@@ -282,6 +282,79 @@ def test_findings_outside_the_diff_get_no_inline_comment():
     assert run.build_inline_comments(findings, {"src/reports.py": PATCH}) == []
 
 
+def test_a_finding_outside_the_diff_is_reported_rather_than_dropped():
+    """Having nowhere to put a comment is a reason to name the finding, not to hide it.
+
+    On nodejs-goof the trial saw six findings, five critical, and no sentence anywhere naming
+    a file or a line. Across the ten repositories 28 of 93 findings existed only as a number.
+    """
+    findings = [
+        {
+            "fingerprint": "fp",
+            "file_path": "src/reports.py",
+            "line_start": 99,
+            "severity": "high",
+            "rule_id": "sql.injection.raw_query",
+        }
+    ]
+    plan = run.plan_comments(findings, {"src/reports.py": PATCH})
+    assert plan["comments"] == []
+    assert plan["unanchored"] == [
+        {
+            "path": "src/reports.py",
+            "line": 99,
+            "severity": "high",
+            "rule": "sql.injection.raw_query",
+            "reason": "line_outside_diff",
+        }
+    ]
+
+
+def test_a_finding_past_the_inline_cap_is_reported_too():
+    """Invisible for a second reason is still invisible, so it is named the same way."""
+    findings = [
+        {
+            "fingerprint": f"fp-{i}",
+            "file_path": "src/reports.py",
+            "line_start": 3,
+            "severity": "medium",
+            "rule_id": "r",
+        }
+        for i in range(pr_scope.INLINE_COMMENT_CAP + 15)
+    ]
+    plan = run.plan_comments(findings, {"src/reports.py": PATCH})
+    assert len(plan["comments"]) == pr_scope.INLINE_COMMENT_CAP
+    assert len(plan["unanchored"]) == 15
+    assert {item["reason"] for item in plan["unanchored"]} == {"over_inline_cap"}
+
+
+def test_an_informational_finding_is_never_reported_as_unanchored():
+    """It is not being asked for, so listing it would restore the noise that was removed."""
+    findings = [
+        {
+            "fingerprint": "fp-info",
+            "file_path": "src/reports.py",
+            "line_start": 99,
+            "severity": "info",
+            "rule_id": "r",
+        }
+    ]
+    plan = run.plan_comments(findings, {"src/reports.py": PATCH})
+    assert plan["comments"] == []
+    assert plan["unanchored"] == []
+
+
+def test_one_arithmetic_serves_the_title_the_summary_and_the_body():
+    counts = {"critical": 22, "high": 10, "medium": 5, "low": 0, "info": 2}
+    totals = run.review_totals(counts, [{"x": 1}] * 16, [{"y": 1}] * 21)
+    assert totals["runtime"] == 37
+    assert totals["blocking"] == 32
+    assert totals["inline"] == 16
+    assert totals["unanchored"] == 21
+    assert totals["informational"] == 2
+    assert totals["inline"] + totals["unanchored"] == totals["runtime"]
+
+
 def test_inline_comments_are_capped_at_the_production_limit():
     findings = [
         {
@@ -294,6 +367,63 @@ def test_inline_comments_are_capped_at_the_production_limit():
     ]
     comments = run.build_inline_comments(findings, {"src/reports.py": PATCH})
     assert len(comments) == pr_scope.INLINE_COMMENT_CAP
+
+
+def test_a_comment_never_says_one_sentence_three_times():
+    """40 of the trial's 65 comments did. The OpenGrep rules set all three fields to the message.
+
+    The whole body of `views/admin.ejs:17` was "EJS unescaped output tag. `<%-` writes raw HTML;
+    use `<%=` so the value is escaped" in bold, again as prose, and a third time after
+    "Remediation:".
+    """
+    sentence = "EJS unescaped output tag. `<%-` writes raw HTML; use `<%=` so the value is escaped"
+    body = run.render_finding_comment(
+        {
+            "fingerprint": "fp",
+            "file_path": "views/admin.ejs",
+            "line_start": 17,
+            "severity": "critical",
+            "title": sentence,
+            "description": sentence,
+            "remediation": sentence,
+        }
+    )
+    assert body.count(sentence) == 2, body
+    assert f"**{sentence}**" in body
+    assert f"Remediation: {sentence}" in body
+
+
+def test_a_description_that_says_something_new_is_kept():
+    body = run.render_finding_comment(
+        {
+            "fingerprint": "fp",
+            "file_path": "a.py",
+            "line_start": 1,
+            "severity": "high",
+            "title": "SQL injection",
+            "description": "The login query concatenates the request body.",
+            "remediation": "Pass the value as a bound parameter.",
+        }
+    )
+    assert "The login query concatenates the request body." in body
+    assert "Remediation: Pass the value as a bound parameter." in body
+
+
+def test_a_remediation_that_only_repeats_the_description_is_dropped():
+    sentence = "Pass the value as a bound parameter."
+    body = run.render_finding_comment(
+        {
+            "fingerprint": "fp",
+            "file_path": "a.py",
+            "line_start": 1,
+            "severity": "high",
+            "title": "SQL injection",
+            "description": sentence,
+            "remediation": sentence,
+        }
+    )
+    assert body.count(sentence) == 1
+    assert "Remediation:" not in body
 
 
 def test_inline_comments_are_ordered_most_severe_first():
@@ -325,6 +455,22 @@ def test_fail_on_decides_the_conclusion(fail_on, counts, expected):
 def test_fail_on_none_never_blocks():
     """Installing the action must not break a merge on the day it is added."""
     assert run.fail_conclusion("none", {"critical": 99, "high": 99}) == "neutral"
+
+
+def test_a_clean_review_is_green_rather_than_grey():
+    """All 26 trial runs concluded neutral, including the five that found nothing.
+
+    A repository with a clean review and a repository with 22 critical findings showed the same
+    grey check, and only the title told them apart. `neutral` belongs to a review held back by
+    `fail-on: none`, not to a review with nothing in it.
+    """
+    empty = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    for fail_on in ("none", "high", "critical"):
+        assert run.fail_conclusion(fail_on, empty) == "success"
+    # Informational findings are in test code and never decide anything.
+    assert run.fail_conclusion("none", dict(empty, info=7)) == "success"
+    # Something to report, and the repository asked not to be blocked by it.
+    assert run.fail_conclusion("none", dict(empty, medium=1)) == "neutral"
 
 
 # --- informational findings -------------------------------------------------------------------
@@ -406,6 +552,90 @@ def test_the_summary_and_the_review_body_say_the_informational_findings_were_not
     assert "18 informational findings in test code, not posted." in rendered["summary"]
     assert "1 informational finding in test code, not posted." in rendered["one"]
     assert "informational" not in rendered["none"], "a run with none says nothing about them"
+
+
+def test_the_expected_403_on_the_viewer_call_is_not_logged(api, caplog):
+    """The only status code in every trial run log, and it is the normal answer.
+
+    `HTTP Request: GET https://api.github.com/user "HTTP/1.1 403 Forbidden"` appeared at INFO on
+    all 26 runs. A workflow token has no user identity, so the 403 is expected and the code
+    already falls back; what it looked like to a reader scanning the log was the failure.
+    """
+    import logging
+
+    def forbidden(_match, _params):
+        # httpx logs every request it makes, at INFO, on the `httpx` logger.
+        logging.getLogger("httpx").info(
+            'HTTP Request: GET https://api.github.com/user "HTTP/1.1 403 Forbidden"'
+        )
+        return fake_github.FakeResponse({"message": "Resource not accessible"}, status_code=403)
+
+    api.route(r"/user", forbidden)
+
+    transport_log = logging.getLogger("httpx")
+    with caplog.at_level(logging.INFO, logger="httpx"):
+        before = transport_log.level
+        login = reader_for(api).viewer_login()
+        # The logger is left exactly as it was found, so nothing else in the run goes quiet.
+        assert transport_log.level == before
+
+    assert login == "github-actions[bot]"
+    assert api.asked_for("/user"), "the call is silenced, not removed"
+    assert [record.message for record in caplog.records] == []
+
+
+def test_a_viewer_call_that_answers_is_still_used(api):
+    api.route(r"/user", {"login": "my-app[bot]"})
+    assert reader_for(api).viewer_login() == "my-app[bot]"
+
+
+def test_the_scope_report_separates_what_was_analysed_from_what_was_not():
+    """"12 files in scope" counted the workflow the pull request adds and the README it edits.
+
+    Neither is a file a security rule reads whole, and nothing said which files had been
+    dropped or why, although action/README.md promised the check summary would.
+    """
+    files = [
+        {"filename": "app/routes/index.js", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": "app/views/admin.ejs", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": ".github/workflows/mitig8it.yml", "status": "added", "patch": "@@ -0,0 +1 @@\n+a\n"},
+        {"filename": "README.md", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": "dist/bundle.js", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": "static/app.min.js", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": "old.js", "status": "removed", "patch": ""},
+    ]
+    report = pr_scope.scope_report(files)
+
+    assert report["changed"] == 5, "removed files and vendored paths are not part of the review"
+    assert report["analysed"] == 2, "the JavaScript route and the template, not the YAML or the README"
+    assert report["skipped"] == 3
+    assert report["vendored"] == 1
+    assert report["excluded"] == 0
+
+    summary = pr_scope.scope_summary(report)
+    assert summary.startswith("2 files analysed")
+    assert "3 read as a patch only" in summary
+    assert "1 skipped as build output or a vendored dependency" in summary
+    assert ".mitig8it.yml" not in summary, "nothing was excluded, so nothing is claimed"
+
+
+def test_the_scope_report_counts_what_the_repository_excluded():
+    class Exclusions:
+        def matches(self, path):
+            return path.startswith("vendor/")
+
+    files = [
+        {"filename": "app/index.js", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+        {"filename": "vendor/lib.js", "status": "modified", "patch": "@@ -1 +1 @@\n+a\n"},
+    ]
+    report = pr_scope.scope_report(files, Exclusions())
+
+    assert report == {"changed": 2, "analysed": 1, "excluded": 1, "skipped": 0, "vendored": 0}
+    assert "1 excluded by .mitig8it.yml" in pr_scope.scope_summary(report)
+
+
+def test_the_scope_summary_is_empty_when_there_is_nothing_to_say():
+    assert pr_scope.scope_summary({"changed": 0, "analysed": 0, "excluded": 0, "skipped": 0, "vendored": 0}) == ""
 
 
 def test_test_code_findings_are_counted_apart_from_runtime_ones():
