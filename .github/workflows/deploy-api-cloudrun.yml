@@ -192,46 +192,66 @@ jobs:
         run: |
           set -euo pipefail
           MIN_INSTANCES="${{ inputs.api_min_instances || '1' }}"
-          gcloud run deploy "$SERVICE" \
-            --region '${{ vars.GCP_REGION }}' \
-            --no-cpu-throttling \
-            --project '${{ vars.GCP_PROJECT_ID }}' \
-            --platform managed \
-            --min-instances "$MIN_INSTANCES" \
-            --allow-unauthenticated \
-            --container app \
+          # The managed Prometheus sidecar is opt-in through the METRICS_SIDECAR_ENABLED
+          # repository variable. It needs the codesentry-gmp-config secret, which is an
+          # owner step in docs/runbooks/observability.md; without the variable the service
+          # deploys as the single container it always was, so a missing secret cannot
+          # block a production deploy. The application container keeps the name Cloud Run
+          # gave the existing service (api-1): gcloud merges containers by name, and a new
+          # name would leave two containers exposing a port, which Cloud Run refuses.
+          SIDECAR="${{ vars.METRICS_SIDECAR_ENABLED || 'false' }}"
+          ENV_VARS="\
+            NODE_ENV=production,\
+            DEPLOY_ENVIRONMENT=${ENVIRONMENT},\
+            METRICS_LOOPBACK_ENABLED=${SIDECAR},\
+            METRICS_LOOPBACK_PORT=9091,\
+            FRONTEND_URL=${FRONTEND_URL},\
+            GITHUB_SERVICE_URL=${GH_SERVICE_URL},\
+            ANALYSIS_SERVICE_URL=${ANALYSIS_URL},\
+            INTERNAL_SERVICE_TRANSPORT=grpc,\
+            GRPC_TRANSPORT_TLS=true,\
+            GITHUB_GRPC_URL=${GH_SERVICE_URL},\
+            GITHUB_GRPC_AUDIENCE=${GH_SERVICE_URL},\
+            ANALYSIS_GRPC_URL=${ANALYSIS_URL},\
+            ANALYSIS_GRPC_AUDIENCE=${ANALYSIS_URL},\
+            GITHUB_CALLBACK_URL=${FRONTEND_URL}/auth/github/callback,\
+            GITHUB_APP_SLUG=mitig8it,\
+            GITHUB_SERVICE_INTERNAL_SECRET=${{ secrets.CODESENTRY_INTERNAL_SECRET }}"
+          SECRETS="\
+            JWT_SECRET=codesentry-jwt-secret${SECRET_SUFFIX}:latest,\
+            ENCRYPTION_KEY=codesentry-encryption-key${SECRET_SUFFIX}:latest,\
+            DATABASE_URL=codesentry-database-url${SECRET_SUFFIX}:latest,\
+            GITHUB_APP_ID=codesentry-github-app${SECRET_SUFFIX}-id:latest,\
+            GITHUB_APP_PRIVATE_KEY=codesentry-github-app${SECRET_SUFFIX}-private-key:latest,\
+            GITHUB_WEBHOOK_SECRET=codesentry-webhook-secret${SECRET_SUFFIX}:latest,\
+            GITHUB_CLIENT_ID=codesentry-github-client${SECRET_SUFFIX}-id:latest,\
+            GITHUB_CLIENT_SECRET=codesentry-github-client${SECRET_SUFFIX}-secret:latest,\
+            REMEDIATION_SERVICE_INTERNAL_SECRET=codesentry-remediation-internal-secret${SECRET_SUFFIX}:latest"
+          COMMON=(
+            --region "${{ vars.GCP_REGION }}"
+            --no-cpu-throttling
+            --project "${{ vars.GCP_PROJECT_ID }}"
+            --platform managed
+            --min-instances "$MIN_INSTANCES"
+            --allow-unauthenticated
+          )
+          if [ "$SIDECAR" = "true" ]; then
+            gcloud run deploy "$SERVICE" "${COMMON[@]}" \
+              --container api-1 \
+                --image "$IMAGE" \
+                --port 3000 \
+                --update-env-vars "$ENV_VARS" \
+                --set-secrets "$SECRETS" \
+              --container collector \
+                --image us-docker.pkg.dev/cloud-ops-agents-artifacts/cloud-run-gmp-sidecar/cloud-run-gmp-sidecar:1.1.1 \
+                --set-secrets "/etc/rungmp/config.yaml=codesentry-gmp-config:latest"
+          else
+            gcloud run deploy "$SERVICE" "${COMMON[@]}" \
               --image "$IMAGE" \
               --port 3000 \
-              --update-env-vars "\
-                NODE_ENV=production,\
-                DEPLOY_ENVIRONMENT=${ENVIRONMENT},\
-                METRICS_LOOPBACK_ENABLED=true,\
-                METRICS_LOOPBACK_PORT=9091,\
-                FRONTEND_URL=${FRONTEND_URL},\
-                GITHUB_SERVICE_URL=${GH_SERVICE_URL},\
-                ANALYSIS_SERVICE_URL=${ANALYSIS_URL},\
-                INTERNAL_SERVICE_TRANSPORT=grpc,\
-                GRPC_TRANSPORT_TLS=true,\
-                GITHUB_GRPC_URL=${GH_SERVICE_URL},\
-                GITHUB_GRPC_AUDIENCE=${GH_SERVICE_URL},\
-                ANALYSIS_GRPC_URL=${ANALYSIS_URL},\
-                ANALYSIS_GRPC_AUDIENCE=${ANALYSIS_URL},\
-                GITHUB_CALLBACK_URL=${FRONTEND_URL}/auth/github/callback,\
-                GITHUB_APP_SLUG=mitig8it,\
-                GITHUB_SERVICE_INTERNAL_SECRET=${{ secrets.CODESENTRY_INTERNAL_SECRET }}" \
-              --set-secrets "\
-                JWT_SECRET=codesentry-jwt-secret${SECRET_SUFFIX}:latest,\
-                ENCRYPTION_KEY=codesentry-encryption-key${SECRET_SUFFIX}:latest,\
-                DATABASE_URL=codesentry-database-url${SECRET_SUFFIX}:latest,\
-                GITHUB_APP_ID=codesentry-github-app${SECRET_SUFFIX}-id:latest,\
-                GITHUB_APP_PRIVATE_KEY=codesentry-github-app${SECRET_SUFFIX}-private-key:latest,\
-                GITHUB_WEBHOOK_SECRET=codesentry-webhook-secret${SECRET_SUFFIX}:latest,\
-                GITHUB_CLIENT_ID=codesentry-github-client${SECRET_SUFFIX}-id:latest,\
-                GITHUB_CLIENT_SECRET=codesentry-github-client${SECRET_SUFFIX}-secret:latest,\
-                REMEDIATION_SERVICE_INTERNAL_SECRET=codesentry-remediation-internal-secret${SECRET_SUFFIX}:latest" \
-            --container collector \
-              --image us-docker.pkg.dev/cloud-ops-agents-artifacts/cloud-run-gmp-sidecar/cloud-run-gmp-sidecar:1.1.1 \
-              --set-secrets "/etc/rungmp/config.yaml=codesentry-gmp-config:latest"
+              --update-env-vars "$ENV_VARS" \
+              --set-secrets "$SECRETS"
+          fi
           # One config secret serves both environments: the scrape target is the same
           # loopback port either way, and the series are separated by the Cloud Run
           # service name that Managed Prometheus attaches as a resource label.
@@ -249,6 +269,7 @@ jobs:
       # A scrape that silently stopped is the failure mode the stall alert cannot see
       # on its own, so the deploy asserts the sidecar is present in the new revision.
       - name: Assert the metrics sidecar is in the deployed revision
+        if: vars.METRICS_SIDECAR_ENABLED == 'true'
         shell: bash
         run: |
           set -euo pipefail
