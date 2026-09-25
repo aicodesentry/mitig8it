@@ -260,6 +260,66 @@ def reviewable_lines(patch: str) -> set[int]:
     return lines
 
 
+def scope_report(
+    files: Iterable[Dict[str, Any]],
+    exclusions: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """What the review actually looked at, split into the things a reader can act on.
+
+    The trial's clean repositories reported "12 files in scope" on the second run: ten source
+    files, the workflow YAML the pull request adds and the README the second commit touched.
+    Two of those twelve are files no security rule reads in full, and nothing said which files
+    had been dropped or why, although `action/README.md` promised the check summary would.
+
+    So the count is split. `analysed` is the files the semgrep tier reads whole, which is the
+    number "in scope" was meant to be. `excluded` is what `.mitig8it.yml` removed. `skipped` is
+    the rest of the change, counted rather than hidden, and it is deliberately not called
+    unreviewed: the regex tier still reads their patch, and the committed-secret rule is the one
+    that most often fires there. `vendored` is build output and dependencies, which are nobody's
+    to fix in this pull request.
+    """
+    entries = list(files)
+    before_exclusions = reviewable_entries(entries)
+    kept = reviewable_entries(entries, exclusions)
+    analysed = [
+        entry
+        for entry in kept
+        if should_fetch_full_file_content({"path": entry_path(entry)})
+    ]
+    return {
+        "changed": len(before_exclusions),
+        "analysed": len(analysed),
+        "excluded": len(before_exclusions) - len(kept),
+        "skipped": len(kept) - len(analysed),
+        "vendored": sum(
+            1
+            for entry in entries
+            if str(entry.get("status") or "") in REVIEWABLE_FILE_STATUSES
+            and is_vendor_path(entry_path(entry))
+        ),
+    }
+
+
+def scope_summary(report: Dict[str, Any]) -> str:
+    """One sentence stating every number in the report, or "" when there is nothing to say."""
+    analysed = int(report.get("analysed", 0))
+    if not any(int(report.get(key, 0)) for key in ("analysed", "excluded", "skipped", "vendored")):
+        return ""
+    parts = [f"{analysed} file{'' if analysed == 1 else 's'} analysed"]
+    skipped = int(report.get("skipped", 0))
+    if skipped:
+        parts.append(
+            f"{skipped} read as a patch only (the scanner has no deep rules for those file types)"
+        )
+    excluded = int(report.get("excluded", 0))
+    if excluded:
+        parts.append(f"{excluded} excluded by .mitig8it.yml")
+    vendored = int(report.get("vendored", 0))
+    if vendored:
+        parts.append(f"{vendored} skipped as build output or a vendored dependency")
+    return ", ".join(parts) + "."
+
+
 def build_analysis_files(
     scoped_files: Sequence[Dict[str, Any]],
     content_by_path: Dict[str, str],

@@ -33,12 +33,32 @@ def _patch(snippet):
     )
 
 
+def _content(case):
+    """The head revision of the file, for a case whose snippet is only part of one.
+
+    A diff cannot show what came before a hunk, so a hunk that begins inside a Python
+    docstring reads as code unless the file itself is available. `file` is the whole file
+    and `hunk_start` is the new-side line the snippet begins at; a case without them is
+    scanned from its snippet alone, as every case was before.
+    """
+    lines = case.get("file")
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def _case_patch(case):
+    start = int(case.get("hunk_start") or 1)
+    snippet = case["snippet"]
+    return "@@ -%d,%d +%d,%d @@\n" % (start, len(snippet), start, len(snippet)) + "".join(
+        f"+{line}\n" for line in snippet
+    )
+
+
 def _tier1(case):
     payload = AnalyzePRRequest(
         repository_full_name="acme/app",
         pull_request_number=1,
         commit_sha="a" * 40,
-        files=[{"path": case["path"], "patch": _patch(case["snippet"])}],
+        files=[{"path": case["path"], "patch": _case_patch(case), "content": _content(case)}],
     )
     return analyze_tier1_payload(payload)
 
@@ -50,7 +70,9 @@ def _rule(rule_id):
 def _rule_still_matches(case):
     rule = _rule(case["rule_id"])
     return pattern_matches_reviewable_content(
-        _patch(case["snippet"]), rule.pattern, **rule_scan_options(rule, case["path"])
+        _case_patch(case),
+        rule.pattern,
+        **rule_scan_options(rule, case["path"], _content(case)),
     )
 
 
@@ -60,7 +82,7 @@ def _ids(cases):
 
 class TestSetIntegrity:
     def test_the_set_is_the_size_the_report_supports(self):
-        assert len(FALSE_POSITIVES) == 18
+        assert len(FALSE_POSITIVES) == 19
         assert len(TRUE_POSITIVES) == 20
 
     def test_every_case_is_well_formed(self):
@@ -68,6 +90,11 @@ class TestSetIntegrity:
             assert case["expected"] in ("no_finding", "finding"), case["id"]
             assert case["language"] and case["path"] and case["snippet"]
             assert any(rule.rule_id == case["rule_id"] for rule in SECURITY_RULES), case["rule_id"]
+            if "file" in case:
+                # The snippet has to be the file's own lines at `hunk_start`, or the case is
+                # measuring a diff the file never had.
+                start = int(case["hunk_start"])
+                assert case["file"][start - 1 : start - 1 + len(case["snippet"])] == case["snippet"], case["id"]
 
     def test_case_ids_are_unique(self):
         ids = _ids(FALSE_POSITIVES + TRUE_POSITIVES)

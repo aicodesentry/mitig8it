@@ -1,8 +1,13 @@
 """A GitHub GraphQL endpoint good enough to reconcile review threads against.
 
 The publisher runs as a Node subprocess, so a fake that lives in the test process has to be
-reachable over HTTP. This serves `POST /graphql` on localhost and answers the three operations
-the publisher sends: the review-thread listing, `resolveReviewThread`, and `minimizeComment`.
+reachable over HTTP. This serves `POST /graphql` on localhost and answers the two operations the
+publisher sends: the review-thread listing and `resolveReviewThread`.
+
+`minimizeComment` is not one of them any more. A minimized thread is still an unresolved
+conversation, so a repository that requires every conversation resolved stayed blocked by a
+finding its author had fixed. The publisher deletes its own stale comment instead, through
+github-service's `retireInlineComments`, which the publisher harness's stub answers.
 
 It holds a mutable thread store, so a test can create threads in one run, let the publisher
 resolve some of them, and then read back what actually happened rather than what was asked for.
@@ -24,7 +29,6 @@ class Thread:
         # publish request carries it. `graphql_login` is what this server actually serves.
         self.login = login
         self.is_resolved = False
-        self.is_minimized = False
 
     @property
     def graphql_login(self) -> str:
@@ -52,11 +56,10 @@ class Thread:
 class FakeGraphQL:
     """The thread store plus a record of every mutation, with an optional forced failure."""
 
-    def __init__(self, *, resolve_fails: bool = False, minimize_fails: bool = False):
+    def __init__(self, *, resolve_fails: bool = False):
         self.threads: List[Thread] = []
         self.calls: List[str] = []
         self.resolve_fails = resolve_fails
-        self.minimize_fails = minimize_fails
         self._next = 0
         self._server: Optional[HTTPServer] = None
         self._thread: Optional[threading.Thread] = None
@@ -98,15 +101,6 @@ class FakeGraphQL:
                 if thread.id == variables["id"]:
                     thread.is_resolved = True
                     return {"resolveReviewThread": {"thread": {"id": thread.id, "isResolved": True}}}
-            raise ValueError("Could not resolve to a node")
-        if "minimizeComment" in query:
-            self.calls.append(f"minimize:{variables['id']}")
-            if self.minimize_fails:
-                raise ValueError("minimizeComment is not permitted")
-            for thread in self.threads:
-                if thread.comment_id == variables["id"]:
-                    thread.is_minimized = True
-                    return {"minimizeComment": {"minimizedComment": {"isMinimized": True}}}
             raise ValueError("Could not resolve to a node")
         raise ValueError("unexpected GraphQL operation")
 

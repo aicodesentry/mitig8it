@@ -26,7 +26,9 @@ import sys
 import uuid
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Sequence
+
+from . import inline_fixes
 
 REMEDIATION_ROOT_ENV = "MITIG8IT_REMEDIATION_ROOT"
 DEFAULT_REMEDIATION_ROOT = "/opt/mitig8it/services/remediation-service"
@@ -283,41 +285,80 @@ def fix_sections(response, findings_by_id: Dict[str, Dict[str, Any]]) -> List[Di
     """Turn engine candidates into the sections the publisher hands to github-service.
 
     The section shape is the service's own contract, so the published comment is built by the
-    same code the app uses. Only single-file, single-region candidates become suggestion blocks;
-    the publisher renders the rest as a diff, exactly as it does for the app.
+    same code the app uses. What decides whether that code can render a suggestion block is
+    `hunk`: `suggestionFor` in githubInternalOperations.js refuses without one and the comment
+    falls back to a fenced diff. This builder therefore does what `buildSections` in
+    services/api-service/src/services/remediationInlineFixes.js does, using the same ported
+    geometry: the candidate's change in the finding's file is split into its contiguous regions,
+    the region on the finding's line becomes the hunk, and the rest travel as extra hunks that
+    github-service publishes as suggestions of their own where the diff shows their lines.
+
+    The `not_suggestable_reason` values are the App's, in the App's order of precedence, so the
+    sentence a reader gets when a fix cannot be a suggestion says the same thing in both products.
     """
     sections: List[Dict[str, Any]] = []
     for candidate in getattr(response, "candidates", []) or []:
         preview = getattr(candidate, "preview", {}) or {}
         evidence = preview.get("evidence") or {}
-        changes = preview.get("changes") or []
+        changes = list(preview.get("changes") or [])
+        # The App publishes the whole candidate's diff under each of its findings, truncated
+        # once, rather than only the part that touches the finding's own file.
+        unified_diff = inline_fixes.truncate_diff(
+            "\n".join(
+                str(change.get("unified_diff") or "")
+                for change in changes
+                if change.get("unified_diff")
+            )
+        )
         for finding_id in getattr(candidate, "finding_ids", []) or []:
             finding = findings_by_id.get(str(finding_id))
             if not finding:
                 continue
-            section: Dict[str, Any] = {
-                "finding_fingerprint": str(finding_id),
-                "candidate_id": str(getattr(candidate, "candidate_id", "")),
-                "path": str(finding.get("file_path") or ""),
-                "finding_line": int(finding.get("line_start") or 1),
-                "verification_level": str(evidence.get("verification_level") or ""),
-                "stated_intent": str(getattr(candidate, "intended_behavior", "")),
-                "proof": str(evidence.get("summary") or ""),
-                "limitations": list(evidence.get("limitations") or []),
-                "evidence": [],
-                "finding_ids": [str(finding_id)],
-            }
-            change = _change_for_path(changes, section["path"])
-            if change:
-                section["unified_diff"] = str(change.get("unified_diff") or "")
-            if len(changes) > 1:
-                section["not_suggestable_reason"] = "multiple_files"
-            sections.append(section)
+            path = str(finding.get("file_path") or "")
+            finding_line = int(finding.get("line_start") or 1)
+            hunk, extra_hunks, reason = _hunks_for_finding(changes, path, finding_line)
+            sections.append(
+                {
+                    "finding_fingerprint": str(finding_id),
+                    "candidate_id": str(getattr(candidate, "candidate_id", "")),
+                    "path": path,
+                    "finding_line": finding_line,
+                    "hunk": hunk,
+                    "extra_hunks": extra_hunks,
+                    "unified_diff": unified_diff,
+                    "not_suggestable_reason": reason,
+                    "verification_level": str(evidence.get("verification_level") or ""),
+                    "stated_intent": str(getattr(candidate, "intended_behavior", "")),
+                    "proof": inline_fixes.proof_line(evidence, finding),
+                    "limitations": [str(item) for item in (evidence.get("limitations") or [])],
+                    "evidence": inline_fixes.evidence_lines(evidence),
+                    "finding_ids": [str(finding_id)],
+                }
+            )
     return sections
 
 
-def _change_for_path(changes: Sequence[Dict[str, Any]], path: str) -> Optional[Dict[str, Any]]:
-    for change in changes:
-        if str(change.get("path") or "") == path:
-            return change
-    return changes[0] if changes else None
+def _hunks_for_finding(
+    changes: Sequence[Dict[str, Any]],
+    path: str,
+    finding_line: int,
+):
+    """The App's `buildSections` decision, in its own order.
+
+    A candidate that does not touch the finding's file cannot be a suggestion on it; one that
+    touches several files cannot be applied by a suggestion at all, because GitHub would commit
+    only the part inside this comment and that is not the change that was verified.
+    """
+    change = next((item for item in changes if str(item.get("path") or "") == path), None)
+    if change is None:
+        return None, [], "changes_other_file"
+    if len(changes) > 1:
+        return None, [], "multiple_files"
+    regions = inline_fixes.compute_regions(
+        change.get("original"), change.get("replacement"), finding_line
+    )
+    if not regions:
+        return None, [], "no_line_change"
+    hunk = inline_fixes.primary_region(regions, finding_line)
+    extras = [region for region in regions if region is not hunk]
+    return hunk, extras, ""

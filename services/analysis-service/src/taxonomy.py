@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Union
 
@@ -290,6 +291,14 @@ def _as_list(value: Optional[object]) -> List[str]:
     return list(dict.fromkeys(normalized))
 
 
+# `md5(...)` or `sha1(...)` whose argument names a credential. The token list is the one
+# `cwe-327.weak-hash-password` uses in its own metavariable regex.
+_WEAK_HASH_OF_CREDENTIAL = re.compile(
+    r"\b(?:md5|sha1)\s*\(\s*[^)]{0,120}?(?:pass|pwd|secret|cred)",
+    re.IGNORECASE,
+)
+
+
 def _first(items: Iterable[str]) -> Optional[str]:
     for item in items:
         return item
@@ -327,6 +336,21 @@ def canonicalize_internal_type(
     # right. The heuristics stay for rules that declare nothing, or declare their check id.
     if explicit in CANONICAL_INTERNAL_TYPES:
         return str(explicit)
+
+    # A weak hash applied to a credential is a weak password hash, whichever rule found it and
+    # whatever CWE that rule carries. Two rules see `md5(password.encode())`: tier 2's
+    # `cwe-327.weak-hash-password` declares CWE-916, which maps to `weak_password_hash`, and
+    # tier 1's `crypto.weak.hash` declares CWE-327, which maps to `weak_cipher_algorithm`. The
+    # clusterer merges only within one internal type, so both survived and pygoat got a critical
+    # and a medium comment on the same line saying the same thing twice, on two lines of the
+    # trial. The disagreement is about the name, not about the code, so the name is settled here
+    # rather than by whichever rule happened to fire.
+    #
+    # The vocabulary is the opengrep rule's own metavariable regex, so the two stay in step: a
+    # weak hash of something that is not a credential, such as dvna's `md5(req.query.login)`
+    # reset token, is still a weak cipher and keeps its own type.
+    if _WEAK_HASH_OF_CREDENTIAL.search(code_snippet or ""):
+        return "weak_password_hash"
 
     if any(token in text for token in ('sslcontext.getinstance("ssl")', "tlsv1", "sslv3", "weak tls", "weak ssl")):
         return "weak_tls_protocol"

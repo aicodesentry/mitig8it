@@ -281,6 +281,138 @@ on any of the ten is treat a clean review as evidence: recall on lines known to 
 could not be applied with a click, so it is worth installing as a second pair of eyes and worth
 nothing as a gate.
 
+## After the trial fixes
+
+Everything below was changed on `fix/action-trial-findings` in response to the fourteen items
+above. Nothing here has been re-run against a real repository: these are the changes and what a
+re-run would have to show for each of them to count as confirmed.
+
+### What changed
+
+**1. A fix can be a suggestion block.** `action/orchestrator/inline_fixes.py` is `computeRegions`
+and `primaryRegion` from `services/api-service/src/services/remediationInlineFixes.js`, ported
+rather than re-derived, and `fix_sections` fills `hunk` and `extra_hunks` from it. The
+`not_suggestable_reason` values follow the App's order of precedence, so a fix that cannot be a
+suggestion gives the same sentence in both products. `proof` and `evidence` are read from the keys
+the App reads: `evidence.summary` is a list, and stringifying it into `proof` put a Python repr
+into the pull request. `action/tests/test_inline_fix_parity.py` executes the Node functions and
+compares them against the port on the same inputs, including the pygoat `SECRET_KEY` shape and a
+two-region fix.
+
+**2. Findings with nowhere to go are named.** The review body carries a section, **Findings on
+lines this pull request did not change**, listing severity, rule, path and line with a permalink
+to the head sha, and the check summary counts them separately. A finding past the inline cap is
+listed there too. The App dropped them the same way and is fixed with the same heading and the
+same row cap, compared by `test_node_parity.py`.
+
+**3. One set of numbers.** `review_totals` in `action/orchestrator/run.py` is the only arithmetic;
+it travels in the publish request as `totals` and the check title, the check summary and the
+review body render it rather than recompute it. The title states the same total the other two do,
+with the blocking share beside it rather than in place of it.
+
+**4. No sentence three times.** A description that repeats the title, or a remediation that
+repeats the description, is dropped.
+
+**5. One review per run.** New inline comments travel inside the review's `comments` array with
+one COMMENT event. Which comments are new is answered by the review-thread survey the stale-thread
+reconciliation already performs, so it costs no extra request; a comment that exists and would be
+written identically is skipped outright. On the fake-server test, 26 comments at 500 ms per round
+trip: publishing falls from 27.2 s to 1.1 s and the service calls from 28 to 2. At 60 ms per round
+trip, 3.42 s to 0.25 s.
+
+**6. Duplicates folded at the source.** `canonicalize_internal_type` now names a weak hash of a
+credential `weak_password_hash` whichever rule found it, using the vocabulary
+`cwe-327.weak-hash-password` uses in its own metavariable regex, so the clusterer folds it and
+keeps the worse severity. A weak hash of something that is not a credential, such as dvna's
+`md5(req.query.login)`, keeps `weak_cipher_algorithm`. The two findings on
+`routes/fileUpload.ts:109` and `routes/vulnCodeSnippet.ts:90` are genuinely different weaknesses
+and still produce two comments, which is the intended behaviour.
+
+**7. The docstring false positive.** The comment stripper already understood Python docstrings;
+what it could not do was know that a hunk began inside one, because it scanned each hunk alone.
+Given the file at the head revision, which both products already fetch for the semgrep tier, it
+classifies the whole file and each line takes its own mask, falling back to the per-hunk scan
+whenever the file's text at that line number is not exactly the patch's. The flask case is in
+`benchmarks/tier1-precision/cases.json` as `fp.redirect.docstring-code-block.flask`.
+
+**8. The check conclusion.** `success` when nothing was found or nothing met `fail-on`, `neutral`
+when there is something to report and `fail-on` is `none`, `failure` when `fail-on` is met.
+
+**9. Plurals and vocabulary.** "1 runtime findings" is gone, and so is "runtime finding": the
+check summary says "findings outside test code".
+
+**10. Node in the image.** `action/Dockerfile` pins the remediation service's `NODE_VERSION` and
+both SHA-256 arguments, repeats that image's capability probe so a wrong pin fails the build, and
+`test_action_definition.py` compares the two Dockerfiles. `test_node_runtime.py` asks the
+interpreter on PATH for the three features, which is what the in-image run proves. The host CI job
+moves to Node 22 so it cannot pass what the image fails.
+
+**11. The 403.** The `GET /user` call stays, because a repository that passes an App token does
+get a login from it, but the transport logger is quiet for that one call.
+
+**12. Scope.** `scope_report` separates analysed, excluded, skipped and vendored, and the check
+summary states all four. "Skipped" is not called unreviewed: the regex tier still reads those
+patches.
+
+**13. The anchor.** `cwe-798.js-session-secret-literal` matches the `secret:` property rather than
+the `session({ ... })` call that contains it. Measured against a synthetic file, the reported line
+moves from 5 to 6 and from 12 to 14.
+
+**14. Stale threads.** Resolution is tried first; when the token may not resolve, the action
+deletes its own comment through github-service's `retireInlineComments` rather than minimizing it,
+because a minimized thread is still an unresolved conversation. A comment carrying a published fix
+is kept. The summary line replaces `minimized` with `retired` and `kept for a published fix`.
+
+Not changed: recall. The 53 labelled lines the review missed are missed for the same reasons, and
+the table in "Precision and recall" still describes what the deterministic tiers cover.
+
+### What a re-run would need to confirm
+
+The trial's own method is the method: ten disposable copies, one pull request each that touches
+the labelled lines, then a second commit that changes one README line, then a third that fixes one
+finding for real. Against that, a re-run confirms these fixes if it shows:
+
+* **A clickable fix.** pygoat `pygoat/settings.py:25` renders as a suggestion block with the
+  Verified line, not as a fenced diff. This is the one number the trial could not produce at all:
+  suggestion blocks went from 0 to 1 in the table, and a re-run should move that column.
+* **Fixes on the JavaScript repositories.** Zero were produced on nodegoat, juice-shop,
+  nodejs-goof and dvna. Any number above zero, on findings in the `command_arguments` or
+  `path_containment` families, is what says the Node pin took effect; the absence of the
+  `stripTypeScriptTypes` ERROR line is the weaker version of the same evidence.
+* **Every finding accounted for.** 93 runtime findings and 65 comments, with the remaining 28
+  named in the review bodies with a path, a line and a working permalink. The counts on the check
+  title, the check summary and the review body agree, on pygoat especially, where four numbers
+  disagreed.
+* **One review per run.** juice-shop's timeline shows one "github-actions reviewed" entry per run
+  rather than 28 for 26 comments, and the publishing phase of its job is a fraction of the 39
+  seconds it took. The fake-server measurement predicts roughly a 25 to 1 reduction in API calls;
+  the real number depends on the runner's latency to api.github.com.
+* **A converged re-run writing nothing.** Comment counts identical, `updated_at` unmoved, and the
+  publisher reporting `unchanged` equal to the comment count with `posted` and `edited` at zero.
+* **A retired thread actually gone.** The third commit on nodejs-goof fixed `<%- redirectPage %>`.
+  The thread for that finding should no longer exist on the pull request, and the log line should
+  read `0 resolved, 1 retired, 0 kept for a published fix, 0 failed` rather than `0 resolved,
+  1 minimized`.
+* **One comment on the md5 lines.** pygoat `introduction/mitre.py:161` and
+  `introduction/views.py:1026` carry one comment each, critical, not two.
+* **No comment on `src/flask/views.py:158`.** flask's only finding was the trial's only false
+  positive; the repository should now come back with none. Note that this depends on the file
+  content being fetched, which it is for `.py`, so a re-run that still reports it means the
+  fallback path was taken and the reason is worth finding.
+* **A green check on the quiet repositories.** fastify, got and sequelize found nothing and should
+  conclude `success`. express and flask, with one medium each under `fail-on: none`, stay
+  `neutral` if they still report anything at all.
+* **Honest file counts.** The clean repositories reported 12 files in scope; they should now
+  report 10 analysed and 2 read as a patch only, naming the workflow YAML and the README as the
+  two.
+* **A quiet log.** No `GET /user` 403, and no status code at all in a healthy run.
+
+Two things a re-run cannot confirm on its own. The one-review timing depends on the runner's
+network, so the fake-server numbers are the controlled measurement and the trial number is the
+sanity check. And the suggestion geometry for a multi-region fix has no example in this corpus:
+every fix the trial produced was a single line, so a two-region fix has only the parity test
+behind it until one appears in a real repository.
+
 ## Repositories to delete
 
 Ten private repositories under `nebullii`, all disposable:

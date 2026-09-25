@@ -98,6 +98,47 @@ describe('PR Analysis Orchestrator — pure functions', () => {
     expect(all).toContain('3 of 3 annotated inline');
   });
 
+  test('buildReviewBody names the findings on lines the pull request did not change', () => {
+    const { __private } = require('../src/services/prAnalysisOrchestrator');
+    const finding = (title, line) => ({
+      severity: 'critical', title, rule_id: 'cwe-95.eval-injection', evidence: 'x', remediation: 'y',
+      file_path: 'app/routes/index.js', line_start: line, confidence: 0.9,
+    });
+    const findings = [finding('Eval injection', 12), finding('Eval injection', 88)];
+
+    const body = __private.buildReviewBody(findings, 'run-uuid-1', {
+      inlineCount: 1,
+      unanchoredFindings: [findings[1]],
+      repository: { owner: 'acme', repo: 'widgets', commitSha: 'a'.repeat(40) },
+    });
+
+    expect(body).toContain('#### Findings on lines this pull request did not change (1)');
+    expect(body).toContain('`cwe-95.eval-injection`');
+    expect(body).toContain(
+      `[app/routes/index.js:88](https://github.com/acme/widgets/blob/${'a'.repeat(40)}/app/routes/index.js#L88)`
+    );
+  });
+
+  test('the section is absent when every finding reached the diff', () => {
+    const { __private } = require('../src/services/prAnalysisOrchestrator');
+    const body = __private.buildReviewBody(
+      [{ severity: 'high', title: 'SQL injection', file_path: 'a.js', line_start: 1, confidence: 0.9 }],
+      'run-uuid-1',
+      { inlineCount: 1, unanchoredFindings: [] }
+    );
+    expect(body).not.toContain(__private.UNANCHORED_HEADING);
+  });
+
+  test('a finding with no permalink context is still named', () => {
+    const { __private } = require('../src/services/prAnalysisOrchestrator');
+    const lines = __private.buildUnanchoredSection(
+      [{ severity: 'medium', rule_id: 'redirect.open', file_path: 'src/app.py', line_start: 4 }],
+      null
+    );
+    expect(lines.join('\n')).toContain('src/app.py:4');
+    expect(lines.join('\n')).not.toContain('](');
+  });
+
   test('buildReviewComment renders GitHub suggestion blocks for validated Tier 3 patches', () => {
     const { __private } = require('../src/services/prAnalysisOrchestrator');
 

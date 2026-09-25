@@ -35,9 +35,13 @@ jobs:
           python-version: '3.11'
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
-          node-version: '20'
-      # The parity tests compare the ported filters against the Node sources, and one of them
-      # runs the Node implementation, so both toolchains are present here. The tests that need
+          # The major the image pins, because the host job asserts the runtime provides what
+          # the repair engine's sandbox harness needs. A host on an older Node would report a
+          # failure the image does not have, and a host on a newer one would pass where the
+          # image fails, which is the way round that hid this for a whole trial.
+          node-version: '22'
+      # The parity tests compare the ported filters against the Node sources, and some of them
+      # run the Node implementation, so both toolchains are present here. The tests that need
       # the services themselves skip in this job and run inside the image below.
       - name: Install the test dependencies
         run: pip install pytest httpx pyyaml
