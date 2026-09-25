@@ -153,6 +153,61 @@ test('snapshot caps unrelated files and fetches blobs concurrently so large repo
   expect(result.omitted_source_paths.length).toBe(entries.length - 41);
 });
 
+// Pull request 135 of nebullii/test-only mixed C#, Java, JavaScript and Python findings in
+// one automatic job. The snapshot refused the whole request because the C# and Java sources
+// are not in the tree it selects, so the nine JavaScript and Python findings on the same
+// pull request got no fix either. One unsupported source is now one finding's skip.
+test('snapshot drops a finding source the tree does not carry and repairs the rest', async () => {
+  const js = 'const q = "select";\n';
+  const py = 'API_KEY = "x"\n';
+  const blob = (text) => require('crypto').createHash('sha1').update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest('hex');
+  const entries = [{ path: 'services/orders.js', type: 'blob', mode: '100644', sha: blob(js), size: Buffer.byteLength(js) },
+    { path: 'main.py', type: 'blob', mode: '100644', sha: blob(py), size: Buffer.byteLength(py) }];
+  const contents = { [blob(js)]: js, [blob(py)]: py };
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/git/commits/')) return { data: { tree: { sha: tree } } };
+    if (request.url.includes('/git/trees/')) return { data: { truncated: false, tree: entries } };
+    if (request.url.includes('/git/blobs/')) { const sha = request.url.split('/git/blobs/')[1]; return { data: { encoding: 'base64', content: Buffer.from(contents[sha]).toString('base64') } }; }
+    return repositoryResponse(request);
+  });
+  const result = await fetchRemediationSnapshot({ ...payload(), finding_paths: ['services/orders.js', 'TestVuln.cs', 'TestVuln.java', 'main.py'] });
+  expect(result.files.map(file => file.path).sort()).toEqual(['main.py', 'services/orders.js']);
+  expect(result.skipped).toEqual([
+    { path: 'TestVuln.cs', code: 'affected_source_missing', message: 'The finding source is unsupported or missing from the immutable tree.' },
+    { path: 'TestVuln.java', code: 'affected_source_missing', message: 'The finding source is unsupported or missing from the immutable tree.' },
+  ]);
+});
+
+test('snapshot reports no skip when every finding source is in the tree', async () => {
+  const js = 'const q = "select";\n';
+  const sha = require('crypto').createHash('sha1').update(`blob ${Buffer.byteLength(js)}\0`).update(js).digest('hex');
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/git/commits/')) return { data: { tree: { sha: tree } } };
+    if (request.url.includes('/git/trees/')) return { data: { truncated: false, tree: [{ path: 'services/orders.js', type: 'blob', mode: '100644', sha, size: Buffer.byteLength(js) }] } };
+    if (request.url.includes('/git/blobs/')) return { data: { encoding: 'base64', content: Buffer.from(js).toString('base64') } };
+    return repositoryResponse(request);
+  });
+  const result = await fetchRemediationSnapshot({ ...payload(), finding_paths: ['services/orders.js'] });
+  expect(result.skipped).toEqual([]);
+});
+
+// The 422 is the last resort, not the first: it stands only when the snapshot would carry
+// no requested source at all, so the caller learns nothing could be repaired.
+test('snapshot still refuses when no requested finding source can be materialised', async () => {
+  const js = 'const q = "select";\n';
+  const sha = require('crypto').createHash('sha1').update(`blob ${Buffer.byteLength(js)}\0`).update(js).digest('hex');
+  axios.mockImplementation(async request => {
+    if (request.url.includes('/git/commits/')) return { data: { tree: { sha: tree } } };
+    if (request.url.includes('/git/trees/')) return { data: { truncated: false, tree: [{ path: 'services/orders.js', type: 'blob', mode: '100644', sha, size: Buffer.byteLength(js) }] } };
+    if (request.url.includes('/git/blobs/')) return { data: { encoding: 'base64', content: Buffer.from(js).toString('base64') } };
+    return repositoryResponse(request);
+  });
+  await expect(fetchRemediationSnapshot({ ...payload(), finding_paths: ['TestVuln.cs', 'TestVuln.java'] }))
+    .rejects.toMatchObject({ statusCode: 422, message: 'Finding source is unsupported or missing from the immutable tree' });
+  const tooMany = Array.from({ length: 201 }, (_, index) => `src/file${index}.js`);
+  await expect(fetchRemediationSnapshot({ ...payload(), finding_paths: tooMany })).rejects.toMatchObject({ statusCode: 422 });
+});
+
 test('snapshot rejects truncated repository trees rather than guessing missing source', async () => {
   axios.mockImplementation(async request => {
     if (request.url.includes('/git/commits/')) return { data: { tree: { sha: tree } } };
