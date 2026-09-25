@@ -37,9 +37,10 @@ PYTHON_HARNESS_MODULES = frozenset(
 # The Node budget was 16 KiB until the environment recorder and its two assertions were added
 # for the JavaScript `hardcoded_credential` family, then 20 KiB until the dynamic-code recorder,
 # `assert.noCode`, and `call` were added for `code_injection_eval`, then 24 KiB until TypeScript
-# resolution. 28 KiB is the next size that leaves room to extend an assertion without another
+# resolution, then 28 KiB until the fakes were served to the ES module loader as well as to the
+# require hook. 32 KiB is the next size that leaves room to extend an assertion without another
 # budget change in the same commit.
-MAX_HARNESS_BYTES = 28 * 1024
+MAX_HARNESS_BYTES = 32 * 1024
 MAX_PYTHON_HARNESS_BYTES = 40 * 1024
 HARNESS_OCCUPIED_LIMITATION = (
     f"the repository already carries {HARNESS_PATH}, so the service test harness was not materialized"

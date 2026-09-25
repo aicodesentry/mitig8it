@@ -415,3 +415,60 @@ h.run(async () => { h.load('services/levels.ts'); });
   assert.match(result.stderr, /ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX/);
   assert.match(result.stderr, /enum is not supported in strip-only mode/);
 });
+
+test('an ES module gets the same fakes a CommonJS module gets, by default and by name', () => {
+  // The shape the September 2026 corpus put in front: every juice-shop and electerm route is
+  // written with `import`/`export`, and the ES module loader never consults the require hook, so
+  // those modules used to receive the real `express` and `pg` and fail to load at all.
+  write('services/catalog.ts', `import express from 'express'
+import { Pool } from 'pg'
+import { readFileSync, existsSync } from 'node:fs'
+
+const pool = new Pool()
+export const router = express.Router()
+router.get('/items/:id', async (req: any, res: any) => {
+  const found = await pool.query("SELECT * FROM items WHERE id = '" + req.params.id + "'")
+  res.json({ rows: found.rows, seen: existsSync('items.json'), body: String(readFileSync('items.json')) })
+})
+`);
+  write('.mitig8it/regression/esm-fakes.test.js', `const h = require('../harness');
+h.run(async () => {
+  const m = h.load('services/catalog.ts', { fs: { content: 'catalog-body' } });
+  const out = await h.invoke(m.router, 'get', '/items/:id', { params: { id: '7' } });
+  h.assert.equal(h.pg.queries.length, 1, 'the ES module must reach the recording pg fake');
+  h.assert.includes(h.pg.queries[0].text, "id = '7'");
+  h.assert.equal(String(h.fs.reads[h.fs.reads.length - 1]), 'items.json');
+  h.assert.equal(out.body.body, 'catalog-body');
+});
+`);
+  const result = runTest('esm-fakes.test.js');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'harness: ok');
+});
+
+test('an ES module importing a stub by name gets the stub, and an unfaked package still fails', () => {
+  write('services/report.mjs', `import { render } from 'renderer'
+export const line = () => render('x')
+`);
+  write('.mitig8it/regression/esm-stub.test.js', `const h = require('../harness');
+h.run(async () => {
+  const m = h.load('services/report.mjs', { stubs: { renderer: { render: (v) => 'rendered:' + v } } });
+  h.assert.equal(m.line(), 'rendered:x');
+});
+`);
+  const stubbed = runTest('esm-stub.test.js');
+  assert.equal(stubbed.status, 0, stubbed.stderr);
+
+  // Nothing is installed in the sandbox and nothing is auto-stubbed: a package the harness does
+  // not fake is still a package the module cannot have, and the proof fails rather than passing
+  // against something invented.
+  write('services/missing.mjs', `import yaml from 'js-yaml'
+export const parse = (text) => yaml.load(text)
+`);
+  write('.mitig8it/regression/esm-missing.test.js', `const h = require('../harness');
+h.run(async () => { h.load('services/missing.mjs'); });
+`);
+  const missing = runTest('esm-missing.test.js');
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /Cannot find package 'js-yaml'/);
+});

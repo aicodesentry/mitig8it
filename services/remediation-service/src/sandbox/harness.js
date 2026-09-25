@@ -246,20 +246,60 @@ Module._load = function load(request, parent, isMain) {
     return originalLoad.call(this, found, parent, isMain);
   }
 };
-// A TypeScript module written with `import`/`export` is loaded by the ES module loader, which
-// never consults `Module._load`, so its imports are resolved through the synchronous hooks Node
-// 22.15 and later expose. The hook only redirects a relative specifier to the `.ts` source it
-// names; everything else falls through to the real resolver.
+// A module written with `import`/`export` is loaded by the ES module loader, which never consults
+// `Module._load`, so both of that loader's jobs are done through the synchronous hooks Node 22.15
+// and later expose: a relative specifier is redirected to the `.ts` source it names, and a faked
+// specifier is redirected to a synthetic module that re-exports the same fake object a CommonJS
+// module gets. Everything else falls through to the real resolver.
+const FAKE_SCHEME = 'mitig8it-fake:';
+const FAKES_KEY = Symbol.for('mitig8it.harness.fakes');
+const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+// `length`, `name` and the rest are a function's own machinery, and reading `caller` throws.
+const NOT_EXPORTED = new Set(['length', 'name', 'prototype', 'caller', 'arguments', 'constructor', 'default']);
+// The names a fake carries, its prototype chain included, because an ES module's named imports
+// have to exist as bindings at link time and only the fake itself knows what it offers. `fs` is
+// the case that needs the chain: its own keys are the recorders and the rest of node:fs is
+// inherited, and a module that imports one of those by name must still get it.
+function exported(value) {
+  const names = new Set();
+  for (let current = value; current && current !== Object.prototype && current !== Function.prototype; current = Object.getPrototypeOf(current)) {
+    for (const key of Object.getOwnPropertyNames(current)) if (IDENTIFIER.test(key) && !NOT_EXPORTED.has(key)) names.add(key);
+  }
+  return [...names];
+}
+globalThis[FAKES_KEY] = (name) => fakes[name];
 if (typeof Module.registerHooks === 'function') {
   Module.registerHooks({
     resolve(specifier, context, nextResolve) {
-      if (isRelative(String(specifier))) {
+      const written = String(specifier);
+      const name = written.replace(/^node:/, '');
+      if (Object.prototype.hasOwnProperty.call(fakes, name)) return { url: FAKE_SCHEME + name, shortCircuit: true, format: 'module' };
+      if (isRelative(written)) {
         let from = ROOT;
         try { from = path.dirname(new URL(context.parentURL).pathname); } catch { from = ROOT; }
-        const found = tsSource(path.resolve(from, String(specifier)));
+        const found = tsSource(path.resolve(from, written));
         if (found) return { url: new URL(`file://${found}`).href, shortCircuit: true };
       }
       return nextResolve(specifier, context);
+    },
+    load(url, context, nextLoad) {
+      const written = String(url);
+      if (!written.startsWith(FAKE_SCHEME)) return nextLoad(url, context);
+      const name = written.slice(FAKE_SCHEME.length);
+      const value = fakes[name];
+      const read = `globalThis[Symbol.for('mitig8it.harness.fakes')](${JSON.stringify(name)})`;
+      const names = exported(value);
+      // Each binding is named `e<n>` and aliased on the way out, because an export alias may be
+      // any identifier name and a `const` may not: `express.static` is a strict-mode reserved
+      // word, and `export const static` would not parse.
+      const source = [`const v = ${read};`, 'export default v;']
+        .concat(names.map((key, index) => `const e${index} = v[${JSON.stringify(key)}];`))
+        .concat(names.length ? [`export { ${names.map((key, index) => `e${index} as ${key}`).join(', ')} };`] : [])
+        .join('\n');
+      // The fake object itself is read at evaluation, so the module sees the same recorders the
+      // test asserts on. The ES module registry caches this module for the process, so a second
+      // load() that supplies a different stub for the same name does not re-evaluate it.
+      return { format: 'module', source, shortCircuit: true };
     },
   });
 }
