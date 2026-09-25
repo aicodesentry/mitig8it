@@ -70,8 +70,8 @@ Per-finding skips are reported in the job's `skipped` list and surface as the `N
 | --- | --- |
 | `unsupported_rule_family` | The finding is outside the five families, or the family is not repaired for that language yet. |
 | `rule_family_disabled` | The family is not in `REMEDIATION_ALLOWED_RULE_FAMILIES_JSON`. |
-| `affected_source_missing` | The affected file is absent from the snapshot. |
-| `unsupported_language` | The file extension is neither JavaScript nor Python. |
+| `affected_source_missing` | The affected file is absent from the snapshot. The snapshot drops that one path and reports it rather than refusing, so the findings whose sources it does carry are still repaired. |
+| `unsupported_language` | The file extension is neither JavaScript nor Python. Decided at selection, so such a finding never enters a job and never costs the job's other findings their repair. |
 | `pg_dependency_not_proven` | A JavaScript SQL repair whose snapshot has no `package.json` declaring `pg`. |
 | `shell_pipeline_unsupported` | The process call carries a pipe or `shell: true`. |
 | `ambiguous_query_api` | A Python query that reaches no known driver `execute()`, so the placeholder style cannot be determined. |

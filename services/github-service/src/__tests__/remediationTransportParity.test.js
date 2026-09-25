@@ -151,6 +151,10 @@ const cases = [
       head_sha: head,
       base_sha: base,
       omitted_source_paths: ['src/other.js'],
+      // A finding source the immutable tree does not carry is reported per path rather
+      // than raised as an error, so both transports must carry the skip list.
+      skipped: [{ path: 'TestVuln.cs', code: 'affected_source_missing',
+        message: 'The finding source is unsupported or missing from the immutable tree.' }],
     },
     read: (response) => ({
       files: response.getFilesList().map((file) => ({ path: file.getPath(), content: file.getContent(), sha: file.getSha() })),
@@ -161,6 +165,9 @@ const cases = [
       head_sha: response.getHeadSha(),
       base_sha: response.getBaseSha(),
       omitted_source_paths: response.getOmittedSourcePathsList(),
+      skipped: response.getSkippedList().map((item) => ({
+        path: item.getPath(), code: item.getCode(), message: item.getMessage(),
+      })),
     }),
   },
   {

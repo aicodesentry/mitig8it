@@ -149,6 +149,15 @@ message RemediationTreeEntry {
   string sha = 4;
 }
 
+// A requested finding path the immutable tree does not carry. One such path is not fatal
+// to the snapshot: it is dropped from the required set and reported here, so the control
+// plane records a per-finding skip instead of losing every finding of the same job.
+message RemediationSkippedSource {
+  string path = 1;
+  string code = 2;
+  string message = 3;
+}
+
 message RemediationSnapshotResponse {
   repeated RemediationSourceFile files = 1;
   repeated RemediationTreeEntry tree_entries = 2;
@@ -156,6 +165,7 @@ message RemediationSnapshotResponse {
   string head_sha = 4;
   string base_sha = 5;
   repeated string omitted_source_paths = 6;
+  repeated RemediationSkippedSource skipped = 7;
 }
 
 message RemediationCheckRunRequest {

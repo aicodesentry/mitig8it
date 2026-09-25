@@ -212,6 +212,11 @@ class GitHubGrpcClient {
       head_sha: response.getHeadSha(),
       base_sha: response.getBaseSha(),
       omitted_source_paths: response.getOmittedSourcePathsList(),
+      skipped: response.getSkippedList().map((item) => ({
+        path: item.getPath(),
+        code: item.getCode(),
+        message: item.getMessage(),
+      })),
     };
   }
 

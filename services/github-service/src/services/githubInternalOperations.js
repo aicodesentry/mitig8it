@@ -578,8 +578,25 @@ async function fetchRemediationSnapshot(payload) {
     && !/(^|\/)(node_modules|dist|vendor|\.git|coverage)\//.test(entry.path)
     && (/\.(js|jsx|ts|tsx|json|py|pyi|toml|txt|cfg|ini)$/.test(entry.path))
     && !/(^|\/)(\.env|credentials|secrets)(\.|\/|$)/i.test(entry.path));
-  const requiredPaths = new Set(Array.isArray(payload.finding_paths) ? payload.finding_paths : []);
-  if (requiredPaths.size > 200 || [...requiredPaths].some(path => typeof path !== 'string' || !sources.some(source => source.path === path))) {
+  const requestedPaths = [...new Set(Array.isArray(payload.finding_paths) ? payload.finding_paths : [])];
+  if (requestedPaths.length > 200) {
+    throw new OperationError('Finding source is unsupported or missing from the immutable tree', 422);
+  }
+  // One finding whose source the immutable tree does not carry (an extension this snapshot
+  // does not select, a file deleted at this revision) is that finding's loss, not the whole
+  // job's: it is dropped from the required set and reported so the caller records a skip
+  // against it, and the remaining findings are still snapshotted and repaired. Only a
+  // request where no finding source at all can be materialised is an error.
+  const requiredPaths = new Set();
+  const skipped = [];
+  for (const path of requestedPaths) {
+    if (typeof path === 'string' && sources.some(source => source.path === path)) requiredPaths.add(path);
+    else {
+      skipped.push({ path: typeof path === 'string' ? path : '', code: 'affected_source_missing',
+        message: 'The finding source is unsupported or missing from the immutable tree.' });
+    }
+  }
+  if (requestedPaths.length > 0 && requiredPaths.size === 0) {
     throw new OperationError('Finding source is unsupported or missing from the immutable tree', 422);
   }
   const directories = [...requiredPaths].map(path => path.slice(0, path.lastIndexOf('/') + 1));
@@ -634,7 +651,8 @@ async function fetchRemediationSnapshot(payload) {
   await loadExactSameRepositoryPull(envelope, token);
   const selectedPaths = new Set(selected.map(entry => entry.path));
   return { files, tree_entries: entries, head_tree_oid: treeOid, head_sha: envelope.head_sha, base_sha: envelope.base_sha,
-    omitted_source_paths: sources.filter(entry => !selectedPaths.has(entry.path)).map(entry => entry.path) };
+    omitted_source_paths: sources.filter(entry => !selectedPaths.has(entry.path)).map(entry => entry.path),
+    skipped };
 }
 
 const DEFAULT_REMEDIATION_CHECK_NAME = 'Mitig8it Remediation Verification';
