@@ -73,6 +73,12 @@ function text(value, limit) {
   return typeof value === 'string' ? value.slice(0, limit) : null;
 }
 
+function normalizeGrpcStatusCode(code) {
+  if (code === 3) return 'INVALID_ARGUMENT';
+  if (code === 9) return 'FAILED_PRECONDITION';
+  return code;
+}
+
 // A tail keeps the END of the output: the failure is at the bottom, not the top.
 function tail(value, limit = MAX_OUTPUT_TAIL_BYTES) {
   if (typeof value !== 'string') return null;
@@ -380,11 +386,15 @@ async function executeClaimedJob(job) {
     // adapter's status lines, and no credential is ever part of one.
     const detail = text(error.message, MAX_REASON_MESSAGE_CHARS);
     const status = Number(error?.response?.status || error?.status || 0) || null;
-    await remediationDb.completeStage(job, { state, stage: state === 'queued' ? stage : 'inconclusive', outcome: error.code || 'repair_failure',
-      reason: { code: error.code || 'repair_failure', message: detail || 'Repair stage could not be completed safely', status, retryable } });
+    const code = normalizeGrpcStatusCode(error.code);
+
+    await remediationDb.completeStage(job, { state, stage: state === 'queued' ? stage : 'inconclusive', outcome: code || 'repair_failure',
+      reason: { code: code || 'repair_failure', message: detail || 'Repair stage could not be completed safely', status, retryable } });
+
     logger.warn('Repair stage could not be completed safely', {
-      job_id: job.id, stage, state, retryable, code: error.code || 'repair_failure', status, error: detail,
+      job_id: job.id, stage, state, retryable, code: code || 'repair_failure', status, error: detail,
     });
+
     metrics.stageAttempts.labels(stage, state).inc();
     metrics.stageDuration.labels(stage, state).observe(Number(process.hrtime.bigint() - started) / 1e9);
   }
