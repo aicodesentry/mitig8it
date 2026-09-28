@@ -6,7 +6,10 @@ anyone. Each says the file to start in, what "done" looks like, and how to check
 
 Set up first: [CONTRIBUTING.md](../../CONTRIBUTING.md), then `make deps`.
 
-If you start one, say so on the issue so two people do not do it twice.
+If you start one, say so on the issue, and say in two or three sentences how you mean to fix
+it: the files you expect to change and the shape of the fix. That stops two people doing the same
+work, and it gets you a correction before you write the code rather than after. You get an answer
+within one working day.
 
 ---
 
