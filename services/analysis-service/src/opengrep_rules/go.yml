@@ -5,7 +5,7 @@ rules:
         - pattern: $DB.Query(fmt.Sprintf("...", $INPUT))
         - pattern: $DB.Exec(fmt.Sprintf("...", $INPUT))
         - pattern: $DB.QueryRow(fmt.Sprintf("...", $INPUT))
-        - pattern: $DB.Query("..." + $INPUT)
+        - pattern: $DB.Query(<... "..." + $INPUT ...>)
     message: "SQL query with string formatting — use parameterized queries with $1 placeholders"
     severity: ERROR
     languages: [go]

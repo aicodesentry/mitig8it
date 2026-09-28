@@ -10,7 +10,7 @@ rules:
             String $QUERY = String.format("...", $INPUT);
             ...
             $STMT.executeQuery($QUERY);
-        - pattern: $STMT.executeQuery("..." + $INPUT + "...")
+        - pattern: $STMT.executeQuery(<... "..." + $INPUT ...>)
     message: "SQL query built with string concatenation — use PreparedStatement"
     severity: ERROR
     languages: [java]

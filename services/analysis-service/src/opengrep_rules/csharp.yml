@@ -2,8 +2,8 @@ rules:
   - id: cwe-89.csharp-sql-injection
     patterns:
       - pattern-either:
-        - pattern: new SqlCommand("..." + $INPUT + "...", ...)
-        - pattern: $CMD.CommandText = "..." + $INPUT + "..."
+        - pattern: new SqlCommand(<... "..." + $INPUT ...>, ...)
+        - pattern: $CMD.CommandText = <... "..." + $INPUT ...>
         - pattern: $CMD.CommandText = $"...{$INPUT}..."
     message: "SQL query with string concatenation — use SqlParameter"
     severity: ERROR

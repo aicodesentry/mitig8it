@@ -2,9 +2,9 @@ rules:
   - id: cwe-89.php-sql-injection
     patterns:
       - pattern-either:
-        - pattern: mysqli_query($CONN, "..." . $INPUT . "...")
-        - pattern: $PDO->query("..." . $INPUT . "...")
-        - pattern: mysql_query("..." . $INPUT . "...")
+        - pattern: mysqli_query($CONN, <... "..." . $INPUT ...>)
+        - pattern: $PDO->query(<... "..." . $INPUT ...>)
+        - pattern: mysql_query(<... "..." . $INPUT ...>)
     message: "SQL query with string concatenation — use prepared statements"
     severity: ERROR
     languages: [php]

@@ -34,10 +34,10 @@ rules:
   - id: cwe-89.js-query-string-concat
     patterns:
       - pattern-either:
-        - pattern: $DB.query("..." + $INPUT, ...)
-        - pattern: $DB.query("..." + $INPUT)
-        - pattern: $DB.execute("..." + $INPUT, ...)
-        - pattern: $DB.execute("..." + $INPUT)
+        - pattern: $DB.query(<... "..." + $INPUT ...>, ...)
+        - pattern: $DB.query(<... "..." + $INPUT ...>)
+        - pattern: $DB.execute(<... "..." + $INPUT ...>, ...)
+        - pattern: $DB.execute(<... "..." + $INPUT ...>)
       - pattern-not: $DB.query("..." + "...", ...)
     message: "SQL query assembled by string concatenation. Use a parameterized query"
     severity: ERROR
@@ -73,9 +73,9 @@ rules:
   - id: cwe-89.js-typeorm-where-concat
     patterns:
       - pattern-either:
-        - pattern: $Q.where("..." + $INPUT)
-        - pattern: $Q.andWhere("..." + $INPUT)
-        - pattern: $Q.orWhere("..." + $INPUT)
+        - pattern: $Q.where(<... "..." + $INPUT ...>)
+        - pattern: $Q.andWhere(<... "..." + $INPUT ...>)
+        - pattern: $Q.orWhere(<... "..." + $INPUT ...>)
         - pattern: $Q.where(`...${$INPUT}...`)
         - pattern: $Q.andWhere(`...${$INPUT}...`)
     message: "TypeORM where clause built from an interpolated string. Use a named parameter"
@@ -148,12 +148,12 @@ rules:
           - pattern-either:
             - pattern: $CP.exec(`...${$INPUT}...`, ...)
             - pattern: $CP.exec(`...${$INPUT}...`)
-            - pattern: $CP.exec("..." + $INPUT, ...)
-            - pattern: $CP.exec("..." + $INPUT)
+            - pattern: $CP.exec(<... "..." + $INPUT ...>, ...)
+            - pattern: $CP.exec(<... "..." + $INPUT ...>)
             - pattern: $CP.execSync(`...${$INPUT}...`, ...)
             - pattern: $CP.execSync(`...${$INPUT}...`)
-            - pattern: $CP.execSync("..." + $INPUT, ...)
-            - pattern: $CP.execSync("..." + $INPUT)
+            - pattern: $CP.execSync(<... "..." + $INPUT ...>, ...)
+            - pattern: $CP.execSync(<... "..." + $INPUT ...>)
           - metavariable-regex:
               metavariable: $CP
               regex: ^(?:child_process|childProcess|node_child_process|cp)$
@@ -163,12 +163,12 @@ rules:
         - pattern: require("node:child_process").execSync(`...${$INPUT}...`, ...)
         - pattern: exec(`...${$INPUT}...`, ...)
         - pattern: exec(`...${$INPUT}...`)
-        - pattern: exec("..." + $INPUT, ...)
-        - pattern: exec("..." + $INPUT)
+        - pattern: exec(<... "..." + $INPUT ...>, ...)
+        - pattern: exec(<... "..." + $INPUT ...>)
         - pattern: execSync(`...${$INPUT}...`, ...)
         - pattern: execSync(`...${$INPUT}...`)
-        - pattern: execSync("..." + $INPUT, ...)
-        - pattern: execSync("..." + $INPUT)
+        - pattern: execSync(<... "..." + $INPUT ...>, ...)
+        - pattern: execSync(<... "..." + $INPUT ...>)
     message: "Shell command assembled by interpolation. Use execFile or spawn with an argument list"
     severity: ERROR
     languages: [javascript, typescript]
@@ -229,8 +229,8 @@ rules:
     patterns:
       - pattern-either:
         - pattern: new Function(`...${$INPUT}...`)
-        - pattern: new Function("..." + $INPUT)
-        - pattern: new Function($A, "..." + $INPUT)
+        - pattern: new Function(<... "..." + $INPUT ...>)
+        - pattern: new Function($A, <... "..." + $INPUT ...>)
         - pattern: Function(`...${$INPUT}...`)
     message: "Function constructor compiles a built string. The input becomes executable code"
     severity: ERROR
@@ -251,7 +251,7 @@ rules:
     patterns:
       - pattern-either:
         - pattern: eval(`...${$INPUT}...`)
-        - pattern: eval("..." + $INPUT)
+        - pattern: eval(<... "..." + $INPUT ...>)
         - pattern: window.eval(`...${$INPUT}...`)
         - pattern: globalThis.eval(`...${$INPUT}...`)
     message: "eval of a built string. Parse the value instead of executing it"
@@ -1097,7 +1097,6 @@ rules:
           - pattern: 'secret: "$VALUE"'
         - patterns:
           - pattern-inside: 'cookieSession({ ... })'
-          - pattern: 'secret: "$VALUE"'
         - pattern: cookieParser("$VALUE")
       - metavariable-regex:
           metavariable: $VALUE

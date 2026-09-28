@@ -33,11 +33,10 @@ rules:
   - id: cwe-89.py-execute-concat-direct
     patterns:
       - pattern-either:
-        - pattern: $CURSOR.execute("..." + $INPUT)
-        - pattern: $CURSOR.execute("..." + $INPUT, ...)
+        - pattern: $CURSOR.execute(<... "..." + $INPUT ...>)
+        - pattern: $CURSOR.execute(<... "..." + $INPUT ...>, ...)
         - pattern: $CURSOR.execute("..." % $INPUT)
         - pattern: $CURSOR.execute("...".format(...))
-        - pattern: $CURSOR.execute("..." + $INPUT + "...")
     message: "SQL passed to execute() as a built string. Pass the value as a bound parameter"
     severity: ERROR
     languages: [python]
@@ -59,7 +58,7 @@ rules:
       - pattern-either:
         - pattern: text(f"...{$INPUT}...")
         - pattern: sqlalchemy.text(f"...{$INPUT}...")
-        - pattern: text("..." + $INPUT)
+        - pattern: text(<... "..." + $INPUT ...>)
         - pattern: text("...".format(...))
     message: "SQLAlchemy text() built by interpolation. Use a :name bind parameter"
     severity: ERROR
@@ -77,10 +76,10 @@ rules:
     patterns:
       - pattern-either:
         - pattern: $M.objects.raw(f"...{$INPUT}...")
-        - pattern: $M.objects.raw("..." + $INPUT)
+        - pattern: $M.objects.raw(<... "..." + $INPUT ...>)
         - pattern: $M.objects.raw("...".format(...))
         - pattern: $M.objects.extra(where=[f"...{$INPUT}..."])
-        - pattern: $M.objects.extra(where=["..." + $INPUT])
+        - pattern: $M.objects.extra(where=[<... "..." + $INPUT ...>])
     message: "Django raw SQL built by interpolation. Pass params to raw() instead"
     severity: ERROR
     languages: [python]
@@ -136,7 +135,7 @@ rules:
     patterns:
       - pattern-either:
         - pattern: os.system(f"...{$INPUT}...")
-        - pattern: os.system("..." + $INPUT)
+        - pattern: os.system(<... "..." + $INPUT ...>)
         - pattern: os.system("...".format(...))
         - pattern: os.system("..." % $INPUT)
     message: "Shell command assembled by interpolation. Use subprocess.run with an argument list"
@@ -158,8 +157,8 @@ rules:
         - pattern: subprocess.call(f"...{$INPUT}...", ..., shell=True, ...)
         - pattern: subprocess.Popen(f"...{$INPUT}...", ..., shell=True, ...)
         - pattern: subprocess.check_output(f"...{$INPUT}...", ..., shell=True, ...)
-        - pattern: subprocess.run("..." + $INPUT, ..., shell=True, ...)
-        - pattern: subprocess.check_output("..." + $INPUT, ..., shell=True, ...)
+        - pattern: subprocess.run(<... "..." + $INPUT ...>, ..., shell=True, ...)
+        - pattern: subprocess.check_output(<... "..." + $INPUT ...>, ..., shell=True, ...)
     message: "subprocess with shell=True on a built command string. Pass an argument list and drop shell"
     severity: ERROR
     languages: [python]
@@ -179,7 +178,7 @@ rules:
     patterns:
       - pattern-either:
         - pattern: os.popen(f"...{$INPUT}...")
-        - pattern: os.popen("..." + $INPUT)
+        - pattern: os.popen(<... "..." + $INPUT ...>)
         - pattern: os.popen(f"...{$INPUT}...", ...)
         - pattern: commands.getoutput(f"...{$INPUT}...")
         - pattern: commands.getstatusoutput(f"...{$INPUT}...")
@@ -223,9 +222,9 @@ rules:
     patterns:
       - pattern-either:
         - pattern: eval(f"...{$INPUT}...")
-        - pattern: eval("..." + $INPUT)
+        - pattern: eval(<... "..." + $INPUT ...>)
         - pattern: exec(f"...{$INPUT}...")
-        - pattern: exec("..." + $INPUT)
+        - pattern: exec(<... "..." + $INPUT ...>)
         - pattern: exec("...".format(...))
     message: "Python source assembled by interpolation and executed"
     severity: ERROR
@@ -246,9 +245,9 @@ rules:
       - pattern-either:
         - pattern: Template(f"...{$INPUT}...")
         - pattern: jinja2.Template(f"...{$INPUT}...")
-        - pattern: Template("..." + $INPUT)
+        - pattern: Template(<... "..." + $INPUT ...>)
         - pattern: $ENV.from_string(f"...{$INPUT}...")
-        - pattern: $ENV.from_string("..." + $INPUT)
+        - pattern: $ENV.from_string(<... "..." + $INPUT ...>)
     message: "Template source built by interpolation. The input is template syntax, not data; pass it as a context variable"
     severity: ERROR
     languages: [python]
@@ -293,9 +292,9 @@ rules:
     patterns:
       - pattern-either:
         - pattern: mark_safe(f"...{$INPUT}...")
-        - pattern: mark_safe("..." + $INPUT)
+        - pattern: mark_safe(<... "..." + $INPUT ...>)
         - pattern: mark_safe("...".format(...))
-        - pattern: format_html_join($S, "..." + $INPUT, ...)
+        - pattern: format_html_join($S, <... "..." + $INPUT ...>, ...)
     message: "mark_safe on a built string turns off escaping for the interpolated value. Use format_html"
     severity: ERROR
     languages: [python]
@@ -311,7 +310,7 @@ rules:
     patterns:
       - pattern-either:
         - pattern: HttpResponse(f"...{$INPUT}...")
-        - pattern: HttpResponse("..." + $INPUT)
+        - pattern: HttpResponse(<... "..." + $INPUT ...>)
         - pattern: make_response(f"...<{$TAG}...{$INPUT}...")
       - metavariable-regex:
           metavariable: $INPUT
