@@ -656,8 +656,30 @@ def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
     except Exception as e:
         print(f"LLM triage failed (non-blocking): {redact(e)}")
 
+    triaged_count = len(findings)
+
     # Triage may adjust severity; test-code findings stay informational.
     findings = classify_findings(findings)
+
+    # The cross-tier fold, and the only place in the pipeline that can do it.
+    #
+    # Each tier endpoint clusters its own findings before returning them, so a line matched
+    # twice inside one tier already arrives once. What no tier endpoint can see is a line
+    # matched by a tier 1 rule and a tier 2 rule, because the control plane calls
+    # `/analyze/pr/tier1` and `/analyze/pr/tier2` as two separate requests and concatenates
+    # the two lists. The concatenated list reaches this handler and nothing else, and until
+    # this call it went to the reviewer unfolded: a hardcoded credential that both tiers
+    # recognise produced two inline comments on one line, with near-identical remediation.
+    #
+    # `cluster_findings` is the same function each tier already ran, so this adds no second
+    # definition of what a duplicate is. It keys on file, internal type and adjacent lines,
+    # which is why it folds the pair and still leaves two genuinely different defects on one
+    # line alone: an injection and a committed credential on the same `run:` step have
+    # different internal types and different fixes, and both are still reported.
+    #
+    # It runs whether or not a model is configured. Tier 3 with no model key returns the
+    # findings it was given, and the fold is not a model's judgement.
+    findings = cluster_findings(findings)
 
     return {
         "repository_full_name": payload.repository_full_name,
@@ -665,7 +687,10 @@ def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
         "commit_sha": payload.commit_sha,
         "tier": 3,
         "findings": findings,
-        "filtered_count": original_count - len(findings),
+        # Triage filtering only. Folding two descriptions of one defect into one finding is
+        # not a finding being filtered out, and counting it here would overstate what the
+        # model removed.
+        "filtered_count": original_count - triaged_count,
     }
 
 
