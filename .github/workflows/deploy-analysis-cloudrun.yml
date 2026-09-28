@@ -28,7 +28,16 @@ concurrency:
 
 jobs:
   filter:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # A workflow_run deploy must come from a push to this repository. The branches
+    # filter above matches the *triggering* run's head branch, so a pull request from
+    # a fork whose branch is named main satisfies it. Without the event and
+    # head_repository checks the deploy job below would check out that fork's commit
+    # and run it with production credentials.
+    if: >-
+      github.event_name != 'workflow_run'
+      || (github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     outputs:
       deploy: ${{ steps.decide.outputs.deploy }}
