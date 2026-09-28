@@ -150,6 +150,32 @@ test that proves the repair. There are five today: `sql_parameterization`, `comm
    writes a proof for, and how many verify end to end. The gap between those three is the honest
    part.
 
+## How this repository is written
+
+Most of the code here is written by AI agents working in parallel branches, at a rate no person
+matches. `git shortlog -sn` shows the shape of it. You are not competing with that, and it is
+better to know before you spend a weekend here than to work it out from the commit log afterwards.
+
+What it means in practice:
+
+- **An assignment is a lock.** While an issue is assigned to you, the files it names are not
+  changed by an agent. If something else has to change them first, you get a comment on the issue
+  saying so before it happens, rather than a merge conflict afterwards.
+- **Claim it by commenting.** Say you are starting and you will be assigned. There is nothing to
+  ask permission for.
+- **An assignment lapses after ten days** with no commit and no comment, and the issue goes back on
+  the board. That is not a judgement about you. It is so the next person can tell what is actually
+  free.
+- **A first pull request gets a reply from a person within one working day**, even when the reply
+  is a question.
+
+**Where a person is worth more than an agent here.** Adjudication is the work this project runs
+on, and it is judgement rather than throughput: whether a finding is real, whether a refusal was
+correct, whether a repair is one a reviewer would actually commit. Every precision number under
+`docs/validation/` is only as good as the adjudication behind it, and the posting policy in
+[Adding a rule](#adding-a-rule) spends those judgements directly. An agent can produce candidates
+all day. Someone has to be right about them.
+
 ## Conventions
 
 - **No em-dashes.** Anywhere: code, comments, commit messages, documentation. Use a comma, a
