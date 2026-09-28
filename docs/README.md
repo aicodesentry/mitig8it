@@ -33,6 +33,8 @@ All project Markdown documentation, except the root [README](../README.md), live
 
 - [Observability](runbooks/observability.md)
 - [Remediation Operations](runbooks/remediation.md)
+- [Rollback](runbooks/rollback.md), how to undo a bad deploy and what a migration makes impossible
+- [Cloud Run Jobs Sandbox](runbooks/sandbox-cloud-run-job.md)
 
 ## Deployment
 
