@@ -12,6 +12,7 @@ produced it. Nothing in this directory is an estimate.
 | [action-trial-2026-09.md](action-trial-2026-09.md) | The GitHub Action installed on private copies of ten real repositories and read as their maintainer would read it. |
 | [pairs-2026-09.md](pairs-2026-09.md) | Why a repair pair that exists does not verify: each complete pair's proof run against the original tree and the patched tree, what the two outcomes said, and what installing the repository's own dependencies changed. |
 | [static-assertion-2026-09.md](static-assertion-2026-09.md) | What the static assertion reaches on that same corpus: how many findings with a patch and no proof the level carries, how many it refuses and on which clause, and what an assertion is and is not worth. |
+| [concatenation-arity-2026-09.md](concatenation-arity-2026-09.md) | A detection gate on how many pieces a concatenated sink was built from, per language pack before and after, what removing it cost on every gate that measures precision, and the adjudicated pull request that found it. |
 
 Two more documents belong to the same record without being measurements:
 [../legal/third-party-rules.md](../legal/third-party-rules.md) is why every rule in the tree is
