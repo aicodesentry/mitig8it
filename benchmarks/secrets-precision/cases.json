@@ -776,6 +776,14 @@
       "evidence": ".gitleaksignore entry 2 of 9. The same request de-duplication identifier, in a second file; the path is part of the case because the path decides scope, so one case per entry is what makes the coverage assertion mean anything."
     },
     {
+      "id": "fp.own-repo.gitleaksignore.benchmark-quotes-its-own-cases",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "benchmarks/secrets-precision/cases.json",
+      "line": "      idempotency_key: 'idempotency-key-0001',",
+      "evidence": "This file quotes the four repository lines gitleaks reads as credentials, so gitleaks flags the quotes too and each carries its own .gitleaksignore entry. The detector must stay silent on them here for the same reason it stays silent on the originals: an idempotency key is a request de-duplication identifier, not a secret."
+    },
+    {
       "id": "fp.own-repo.gitleaksignore.idempotency-key-transport-parity",
       "expect": "no-finding",
       "reason": "credential_name_excluded",

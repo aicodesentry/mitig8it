@@ -44,6 +44,12 @@ WORKFLOW_PATH = ".github/workflows/triage.yml"
 # straight into a shell command, and a GitHub personal access token written into the same
 # command. The token is a syntactically valid `ghp_` key that grants nothing; it is here
 # because the format signal verifies structure, so a placeholder would not reach the detector.
+# GitHub's own documentation example token, assembled rather than written out. The file would
+# otherwise hold a credential-shaped literal, which our own scanner flags and which a
+# repository that ships a secrets detector has no business carrying. Only the shape is under
+# test: the point is that a workflow line can carry both a secret and an injection.
+EXAMPLE_GITHUB_TOKEN = "ghp_" + "16C7e42F292c6912E7710c838347Ae178B4a"
+
 WORKFLOW = """name: triage
 on:
   issues:
@@ -53,8 +59,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Post the title
-        run: curl -H "Authorization: token ghp_16C7e42F292c6912E7710c838347Ae178B4a" -d "${{ github.event.issue.title }}" https://api.github.com/x
-"""
+        run: curl -H "Authorization: token TOKEN_PLACEHOLDER" -d "${{ github.event.issue.title }}" https://api.github.com/x
+""".replace("TOKEN_PLACEHOLDER", EXAMPLE_GITHUB_TOKEN)
 COLLIDING_LINE = next(
     number
     for number, text in enumerate(WORKFLOW.split("\n"), start=1)

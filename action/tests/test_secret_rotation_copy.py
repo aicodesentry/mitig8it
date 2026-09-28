@@ -12,6 +12,7 @@ quote the strings from `services/analysis-service/src/secret_detection.py`.
 """
 from __future__ import annotations
 
+import pytest
 import sys
 from pathlib import Path
 
@@ -64,6 +65,16 @@ class TestTheActionRendersTheRotationSentence:
         for finding in (MOVE_AND_ROTATE, ROTATE_ONLY):
             body = run.render_finding_comment(finding)
             assert "Weakness: CWE-798" in body
+
+
+# The routing assertion loads the repair service's own module, which the image carries and the
+# host job deliberately does not: that job installs pytest, httpx and pyyaml and nothing else,
+# so the Action's own tests cannot come to depend on a service being installed. Skipped where
+# the engine is absent rather than restated, because a restatement of `rule_family` would pass
+# while the real table said something else, which is the whole reason this class exists.
+_engine = pytest.importorskip(
+    "pydantic", reason="the repair service's own family table is what this asserts against"
+)
 
 
 class TestSecretsRouteIntoTheCredentialFamily:
