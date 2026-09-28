@@ -1,0 +1,178 @@
+name: DCO
+
+# Every commit in a pull request must carry a `Signed-off-by` line whose email matches the
+# commit author's email. That line is the Developer Certificate of Origin 1.1 in `DCO`, and
+# it is the only licensing paperwork this project asks for: there is no contributor licence
+# agreement and no copyright assignment. docs/legal/licensing.md says why.
+#
+# This workflow uses no actions at all, first-party or third-party. It reads the pull
+# request's commits over the API with the `gh` CLI that the runner already ships, so there is
+# no third-party reference to pin and nothing outside this file to trust.
+# `cwe-1357.gha-third-party-action-unpinned`, this repository's own rule, is what a pinned
+# digest would be answering; using no action answers it outright.
+#
+# Whether a red check here blocks a merge is branch protection, which is configured on the
+# repository and not in this file.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Reading the commit list of a pull request needs nothing else.
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: dco-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  signoff:
+    name: Sign-off on every commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Signed-off-by
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+
+          # One JSON object per line, so a commit message with newlines in it cannot run the
+          # lines together. The endpoint caps at 250 commits; the script says so if it hits that.
+          gh api --paginate \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${REPO}/pulls/${PR}/commits?per_page=100" \
+            --jq '.[] | @json' > commits.jsonl
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          BASE_REF = os.environ["BASE_REF"]
+
+          # The two bots that commit on this repository. Dependabot opens its own pull requests,
+          # and `gh pr update-branch` in .github/workflows/auto-update-pr-branches.yml makes
+          # github-actions[bot] the author of the merge commit it writes. Named rather than
+          # matched on a `[bot]` suffix, so the exemption is a list someone can read.
+          EXEMPT_LOGINS = {"dependabot[bot]", "github-actions[bot]"}
+
+          SIGNOFF = re.compile(
+              r"^\s*Signed-off-by:\s*(?P<name>.*?)\s*<(?P<email>[^>]+)>\s*$",
+              re.MULTILINE | re.IGNORECASE,
+          )
+
+          commits = []
+          with open("commits.jsonl", encoding="utf-8") as handle:
+              for line in handle:
+                  line = line.strip()
+                  if line:
+                      commits.append(json.loads(line))
+
+          if not commits:
+              print("No commits reported for this pull request. Nothing to check.")
+              sys.exit(0)
+
+          if len(commits) >= 250:
+              print(
+                  "::warning::The pull request commits endpoint returns at most 250 commits, "
+                  "and it returned that many. Commits beyond the 250th were not checked."
+              )
+
+          missing = []
+          for commit in commits:
+              sha = commit.get("sha") or ""
+              payload = commit.get("commit") or {}
+              author = payload.get("author") or {}
+              name = author.get("name") or ""
+              email = (author.get("email") or "").strip()
+              message = payload.get("message") or ""
+              subject = message.splitlines()[0] if message else ""
+              login = (commit.get("author") or {}).get("login") or ""
+
+              if len(commit.get("parents") or []) > 1:
+                  print(f"skip  {sha[:8]}  merge commit")
+                  continue
+
+              if login in EXEMPT_LOGINS:
+                  print(f"skip  {sha[:8]}  {login}")
+                  continue
+
+              signed = [
+                  match.group("email").strip().lower()
+                  for match in SIGNOFF.finditer(message)
+              ]
+              if email and email.lower() in signed:
+                  print(f"ok    {sha[:8]}  {subject}")
+                  continue
+
+              missing.append((sha, subject, name, email, signed))
+              print(f"FAIL  {sha[:8]}  {subject}")
+
+          if not missing:
+              print(f"\nEvery commit carries a matching sign-off ({len(commits)} checked).")
+              sys.exit(0)
+
+          lines = []
+          lines.append(f"{len(missing)} commit(s) have no sign-off matching their author.\n")
+          for sha, subject, name, email, signed in missing:
+              lines.append(f"  {sha[:12]}  {subject}")
+              lines.append(f"      author:   {name} <{email}>")
+              if signed:
+                  lines.append("      sign-off: " + ", ".join(f"<{value}>" for value in signed))
+              else:
+                  lines.append("      sign-off: none")
+              lines.append("")
+
+          single = len(missing) == 1 and len(commits) == 1
+          lines.append("How to fix it.\n")
+          lines.append(
+              "The sign-off is the Developer Certificate of Origin 1.1, which is in `DCO` at\n"
+              "the root of this repository. It is the whole of the licensing paperwork here:\n"
+              "there is no contributor licence agreement and no copyright assignment.\n"
+          )
+          lines.append("Set the identity git will sign off with, if you have not already:\n")
+          lines.append("    git config user.name  \"Your Name\"")
+          lines.append("    git config user.email \"you@example.com\"\n")
+          if single:
+              lines.append("This pull request has one commit, so amending it is enough:\n")
+              lines.append("    git commit --amend -s --no-edit")
+              lines.append("    git push --force-with-lease\n")
+          else:
+              lines.append(
+                  "This pull request has more than one commit. Sign off all of them at once:\n"
+              )
+              lines.append(f"    git fetch origin {BASE_REF}")
+              lines.append(f"    git rebase --signoff origin/{BASE_REF}")
+              lines.append("    git push --force-with-lease\n")
+              lines.append(
+                  "If it is only the most recent commit that is missing one:\n"
+              )
+              lines.append("    git commit --amend -s --no-edit")
+              lines.append("    git push --force-with-lease\n")
+          lines.append(
+              "The email in the sign-off has to be the email git recorded as the commit\n"
+              "author. `-s` uses your `user.email`, so the two agree unless you edited one of\n"
+              "them by hand.\n"
+          )
+          lines.append("To stop having to remember `-s`:\n")
+          lines.append("    git config alias.ci \"commit -s\"\n")
+
+          report = "\n".join(lines)
+          print("\n" + report)
+          print("::error title=Missing DCO sign-off::"
+                + f"{len(missing)} commit(s) have no Signed-off-by line matching their author. "
+                + "See the log for the exact command that fixes it.")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as handle:
+                  handle.write("## DCO sign-off\n\n```\n" + report + "\n```\n")
+
+          sys.exit(1)
+          PY
