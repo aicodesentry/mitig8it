@@ -3,6 +3,7 @@ require('dotenv').config();
 require('dotenv').config({ path: path.resolve(__dirname, '../../../.env'), override: false });
 
 const { pool } = require('./config/database');
+const remediationPolicy = require('./services/remediationPolicy');
 const logger = require('./utils/logger');
 const { startTelemetry, shutdownTelemetry } = require('./utils/telemetry');
 const { createApp } = require('./app');
@@ -31,6 +32,14 @@ async function start() {
   const app = createApp();
   const server = app.listen(PORT, () => {
     logger.info('API service started', { port: PORT });
+    // A repair family this build ships that the deployment's policy leaves out. An explicit
+    // allowed-families list is the operator's choice and is honoured, but a list written
+    // before a family existed disables it silently, which is how workflow_hardening reached
+    // production switched off. Said once, at start-up, where an operator will see it.
+    const excluded = remediationPolicy.capabilityReport().rule_families_excluded_by_policy;
+    if (excluded.length) {
+      logger.warn('Repair families excluded by REMEDIATION_ALLOWED_RULE_FAMILIES_JSON', { families: excluded });
+    }
   });
 
   // The managed Prometheus sidecar scrapes this loopback listener; the public

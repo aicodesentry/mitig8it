@@ -133,6 +133,14 @@ function capabilityReport() {
   // Weakest first, so a consumer ranking or explaining levels reads the order from the report
   // rather than hard-coding one of its own.
   report.verification_levels = [...VERIFICATION_LEVEL_ORDER];
+  // A family this build can repair that the operator's policy leaves out. An explicit
+  // REMEDIATION_ALLOWED_RULE_FAMILIES_JSON is the operator's choice and is honoured, but a
+  // list written before a family existed silently disables it: workflow_hardening shipped
+  // switched off in production for exactly that reason, and the only symptom was a skip line
+  // on the pull request saying the family was disabled by policy. Reporting it turns a silent
+  // drift into something an operator can see.
+  report.rule_families_excluded_by_policy = DEFAULT_POLICY.allowed_rule_families
+    .filter((family) => !getPolicy().allowed_rule_families.includes(family));
   return report;
 }
 
