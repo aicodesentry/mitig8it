@@ -335,6 +335,17 @@ jobs:
       - name: Report required job results
         run: |
           echo '${{ toJSON(needs) }}'
+      # A job this run never finished is not a job that failed. Cancellation means a newer push
+      # superseded this run, and the newer run is the one that reports; a skip means a job's own
+      # condition said it had nothing to do, and a job that skipped because something it needed
+      # failed is preceded by that failure, which is caught below. Treating either as a failure
+      # turned a healthy pull request red for a reason its author could not act on, which is a
+      # bad first impression for a contributor and an untrue one for everybody.
+      - name: Say why this run has no verdict
+        if: ${{ !contains(needs.*.result, 'failure') && contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "::notice::This run was cancelled, most likely superseded by a newer push."
+          echo "::notice::The newest run on this commit is the one that reports."
       - name: Fail when any required job failed
-        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        if: ${{ contains(needs.*.result, 'failure') }}
         run: exit 1
