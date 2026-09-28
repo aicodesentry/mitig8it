@@ -6,6 +6,7 @@ const policy = require('./remediationPolicy');
 const metrics = require('./remediationMetrics');
 const logger = require('../utils/logger');
 const { withSpan, injectTrace } = require('../utils/telemetry');
+const grpc = require('@grpc/grpc-js');
 
 const REPAIR_OUTCOMES = new Set(['ready', 'unsupported', 'inconclusive', 'failed']);
 const STAGE_SEQUENCE = policy.STAGE_SEQUENCE;
@@ -74,9 +75,7 @@ function text(value, limit) {
 }
 
 function normalizeGrpcStatusCode(code) {
-  if (code === 3) return 'INVALID_ARGUMENT';
-  if (code === 9) return 'FAILED_PRECONDITION';
-  return code;
+  return typeof code === 'number' && grpc.status[code] ? grpc.status[code] : code;
 }
 
 // A tail keeps the END of the output: the failure is at the bottom, not the top.

@@ -101,6 +101,7 @@ test('a failed stage records the underlying error and code, and logs both with t
 test.each([
   [3, 'INVALID_ARGUMENT'],
   [9, 'FAILED_PRECONDITION'],
+  [14, 'UNAVAILABLE'],
 ])('normalizes numeric gRPC code %s before persistence', async (numericCode, expectedCode) => {
   withFindings([{ id: 'f-js', file_path: 'services/orders.js' }]);
   withSnapshot({
