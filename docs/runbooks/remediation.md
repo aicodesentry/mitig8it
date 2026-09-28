@@ -170,6 +170,13 @@ REMEDIATION_SERVICE_INTERNAL_SECRET=...
 REMEDIATION_SANDBOX_IMAGE_DIGEST=...            # policy input; unused by the local driver
 REMEDIATION_VERIFICATION_CHECKS_JSON=[...]
 REMEDIATION_ALLOWED_RULE_FAMILIES_JSON=[...]
+
+An explicit list is the operator's choice and is honoured as written, including a narrower
+one. It is also how a new family reaches production switched off: a list written before the
+family existed excludes it, and the only symptom is a `No automatic fix: the repair family is
+disabled by policy` line on the pull request. The API logs every family it ships that the
+policy leaves out once at start-up, and `capabilities.rule_families_excluded_by_policy`
+reports the same set, so check that after deploying a release that adds one.
 REMEDIATION_INPUT_USD_PER_MILLION_TOKENS=...
 REMEDIATION_OUTPUT_USD_PER_MILLION_TOKENS=...
 REMEDIATION_POLICY_VERSION=...                  # optional

@@ -1,4 +1,3 @@
-import hashlib
 import hmac
 import os
 import re
@@ -17,6 +16,7 @@ from finding_quality import (
     cluster_findings,
     extract_match_context,
     has_path_containment_guard,
+    make_fingerprint,
     pattern_matches_reviewable_content,
     # Defined beside the matchers it configures, and re-exported here because both tiers and
     # the static assertion endpoint below read a rule through it.
@@ -29,6 +29,11 @@ from security_rules import (
     likely_llm_repo,
 )
 from opengrep_runner import ScanPathError, quarantined_rule_ids, run_opengrep, run_opengrep_with_limitations
+from secret_detection import (
+    POSTING as SECRET_DETECTOR_POSTING,
+    POSTING_QUARANTINE as SECRET_POSTING_QUARANTINE,
+    secret_findings,
+)
 import static_assertion
 from llm_client import redact
 from llm_triage import triage_findings
@@ -105,6 +110,10 @@ DEFAULT_TIER1_BUDGET_SECONDS = 20.0
 DEFAULT_TIER1_FILE_BUDGET_SECONDS = 2.0
 LIMITATION_BUDGET = "budget"
 
+# The substring-search credential rule the secrets detector supersedes. It still runs on the
+# files the detector found nothing in; see `pattern_findings`.
+LEGACY_CREDENTIAL_RULE_ID = "secret.hardcoded.credential"
+
 
 def _positive_float_env(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -135,6 +144,11 @@ def tier1_file_budget_seconds() -> float:
 QUARANTINED_RULE_IDS = frozenset(
     {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
     | set(quarantined_rule_ids())
+    | {
+        rule_id
+        for rule_id, posting in SECRET_DETECTOR_POSTING.items()
+        if posting == SECRET_POSTING_QUARANTINE
+    }
 )
 
 request_context.configure_logging(os.getenv("LOG_LEVEL", "INFO"))
@@ -176,11 +190,6 @@ def require_internal_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-
-
-def make_fingerprint(rule_id: str, path: str, line_start: int, snippet: str) -> str:
-    raw = f"{rule_id}|{path}|{line_start}|{snippet.strip()}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _meaningful_line_count(text: str) -> int:
@@ -399,6 +408,14 @@ def pattern_findings(
 
         non_code_text = is_non_code_text_path(path)
         file_started = time.monotonic()
+
+        # Secrets first, because the legacy credential regex defers to them. The detector
+        # reads the added lines only and owns its own path scoping, so it is not filtered by
+        # `non_code_text`: a key that passes its own structural verification is a leak in a
+        # README as much as in a module.
+        file_secret_findings = secret_findings(path, patch, content)
+        findings.extend(file_secret_findings)
+
         rules_run = 0
         for rule in SECURITY_RULES:
             if time.monotonic() - file_started >= file_budget:
@@ -419,6 +436,13 @@ def pattern_findings(
             # template. Rules that recognize committed data rather than code shapes still
             # run on both.
             if non_code_text and not rule.scans_prose:
+                continue
+            # The secrets detector supersedes the credential regex on any file it has already
+            # reported. The regex is a substring search kept for the shapes the detector does
+            # not model, and two findings on one leaked key is one review conversation too
+            # many; `cluster_findings` cannot merge them because it keys `hardcoded_secret`
+            # on the exact snippet and the two quote different spans of the same line.
+            if rule.rule_id == LEGACY_CREDENTIAL_RULE_ID and file_secret_findings:
                 continue
             if rule.category == "unsafe LLM/prompt injection patterns" and not repo_has_llm_flow:
                 continue

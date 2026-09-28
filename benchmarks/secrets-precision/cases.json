@@ -1,0 +1,889 @@
+{
+  "version": 1,
+  "description": "Labelled precision set for the secrets detector in services/analysis-service/src/secret_detection.py. Every true positive is a key shape the detector claims to verify; every no-finding case is a line someone read and judged wrong, with provenance. The gate is services/analysis-service/src/tests/test_secrets_precision_benchmark.py. Findings are keyed by signal rather than by key format, because the detector declares two rule ids and the format is recorded in evidence_details.extra.secret_type.",
+  "provenance": {
+    "measurement": "docs/validation/secrets-in-the-diff-2026-09.md",
+    "clean_corpus": "the eleven public repositories of docs/validation/real-repo-replay-2026-09.md, 165 merged pull requests, replayed with scripts/replay/replay.py",
+    "vulnerable_corpus": "benchmarks/vulnerable-corpus/labels.json, 23 repositories at pinned refs, replayed with scripts/replay/replay.py --snapshot",
+    "own_repository": ".gitleaksignore, whose nine entries are lines this repository's own secret scanner caught in our fixtures and a human then cleared. Every entry has its own case, keyed on the path, because the path is what decides scope.",
+    "note": "No key in this file is a live credential, and since the fixtures became specifications rather than literals, no key in this file is a key at all: see the `fixtures` block.",
+    "redaction": "Where a case reproduces the shape of a real credential the measurement found in a public repository, the evidence names the repository, the path and the format, and the value is built from the case's own specification. The real value is recorded nowhere."
+  },
+  "signals": {
+    "secret.format.known_key": "A published key format whose declared structure verified: the prefix, the exact length, the charset, and the format's own content where it has any.",
+    "secret.entropy.credential_assignment": "A high-entropy value assigned to an identifier whose name says it is a credential."
+  },
+  "no_finding_reasons": {
+    "structure_failed": "The candidate matched the prefix and failed the format's own length, charset or content check.",
+    "published_example": "The value is a key the vendor publishes in its own documentation.",
+    "random_core_too_short": "The value's longest separator-free segment is below the entropy signal's length floor, so the apparent entropy was the vendor prefix rather than the key.",
+    "sequential_run": "The value contains an ascending run of eight or more characters, which is a hand-typed fixture.",
+    "credential_name_excluded": "The identifier's last token makes it an identifier, a location or a description rather than a credential.",
+    "entropy_exclusion": "The value is one of the shapes that are legitimately high entropy: a hash, a digest, a UUID, a base64 asset, a path, an interpolation or an environment read.",
+    "local_or_example_host": "The connection string reaches loopback, a documentation domain or a bare compose alias, so its password grants access to nothing.",
+    "dotenv_placeholder_path": "The file is a .env.example or a sibling, whose whole purpose is placeholder values.",
+    "path_scope": "The entropy signal does not run on lockfiles, prose, templates or data documents.",
+    "added_lines_only": "The line is context or a removal, so it is not this pull request's change.",
+    "unsigned_jwt": "The value carries a JWT with no signature. Anyone can mint one, so it grants nothing; the format signal already refuses it and the entropy signal must agree rather than re-report the same value under its own rule id."
+  },
+  "cases": [
+    {
+      "id": "tp.format.aws-access-key-id",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "aws_access_key_id",
+      "path": "src/aws_client.py",
+      "line": "AWS_ACCESS_KEY_ID = \"{{secret}}\"",
+      "secret": {
+        "kind": "key_format",
+        "format": "aws_access_key_id"
+      },
+      "evidence": "One of AWS's nine key-type prefixes and exactly 20 base32 characters. The corpus carries no CWE-798 fix commit, so this fixture is generated rather than quoted."
+    },
+    {
+      "id": "tp.format.aws-secret-access-key",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "aws_secret_access_key",
+      "path": "src/aws_client.py",
+      "line": "aws_secret_access_key = \"{{secret}}\"",
+      "secret": {
+        "kind": "key_format",
+        "format": "aws_secret_access_key"
+      },
+      "evidence": "Exactly 40 base64 characters under the vendor's own identifier name, which is what makes a generic 40-character shape attributable."
+    },
+    {
+      "id": "tp.format.github-token",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "github_token",
+      "path": ".github/scripts/release.js",
+      "line": "const token = \"{{secret}}\";",
+      "secret": {
+        "kind": "key_format",
+        "format": "github_token"
+      },
+      "evidence": "A `ghp_` prefix and exactly 36 base62 characters, the length GitHub's token format fixes."
+    },
+    {
+      "id": "tp.format.github-fine-grained-pat",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "github_fine_grained_pat",
+      "path": ".github/scripts/release.js",
+      "line": "const pat = \"{{secret}}\";",
+      "secret": {
+        "kind": "key_format",
+        "format": "github_fine_grained_pat"
+      },
+      "evidence": "`github_pat_`, a 22-character identifier, an underscore and exactly 59 base62 characters."
+    },
+    {
+      "id": "tp.format.google-api-key",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "google_api_key",
+      "path": "src/maps.ts",
+      "line": "const mapsKey = \"{{secret}}\";",
+      "secret": {
+        "kind": "key_format",
+        "format": "google_api_key"
+      },
+      "evidence": "The `AIza` prefix and a fixed total length of 39."
+    },
+    {
+      "id": "tp.format.slack-token",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "slack_token",
+      "path": "src/notify.py",
+      "line": "SLACK_BOT_TOKEN = \"{{secret}}\"",
+      "secret": {
+        "kind": "key_format",
+        "format": "slack_token"
+      },
+      "evidence": "The `xoxb-` prefix, Slack's numeric team and installation segments, and a 24-character tail."
+    },
+    {
+      "id": "tp.format.slack-webhook",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "slack_webhook",
+      "path": "src/notify.py",
+      "line": "WEBHOOK = \"{{secret}}\"",
+      "secret": {
+        "kind": "key_format",
+        "format": "slack_webhook"
+      },
+      "evidence": "The webhook host, a `T` team id, a `B` channel id and a 24-character secret tail. No fix is offered: the URL is not a literal bound to a constant a template can rewrite."
+    },
+    {
+      "id": "tp.format.stripe-live-key",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "stripe_live_key",
+      "path": "src/billing.js",
+      "line": "const stripeKey = \"{{secret}}\";",
+      "secret": {
+        "kind": "key_format",
+        "format": "stripe_live_key"
+      },
+      "evidence": "The `sk_live_` prefix Stripe reserves for live secret keys."
+    },
+    {
+      "id": "tp.format.stripe-test-key",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "stripe_test_key",
+      "path": "src/billing.js",
+      "line": "const stripeTestKey = \"{{secret}}\";",
+      "secret": {
+        "kind": "key_format",
+        "format": "stripe_test_key"
+      },
+      "evidence": "A test key cannot move money, so it reports at medium rather than critical. It is still a credential and often the same account as the live key."
+    },
+    {
+      "id": "tp.format.twilio-api-key",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "twilio_api_key",
+      "path": "src/sms.py",
+      "line": "TWILIO_API_KEY = \"{{secret}}\"",
+      "secret": {
+        "kind": "key_format",
+        "format": "twilio_api_key"
+      },
+      "evidence": "The `SK` prefix and exactly 32 lowercase hex characters."
+    },
+    {
+      "id": "tp.format.twilio-auth-token",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "twilio_auth_token",
+      "path": "src/sms.py",
+      "line": "twilio_auth_token = \"{{secret}}\"",
+      "secret": {
+        "kind": "key_format",
+        "format": "twilio_auth_token"
+      },
+      "evidence": "Thirty-two hex characters is not a self-identifying shape, so the vendor's name in the identifier is part of the structure."
+    },
+    {
+      "id": "tp.format.sendgrid-api-key",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "sendgrid_api_key",
+      "path": "src/mail.py",
+      "line": "SENDGRID_API_KEY = \"{{secret}}\"",
+      "secret": {
+        "kind": "key_format",
+        "format": "sendgrid_api_key"
+      },
+      "evidence": "`SG.`, a 22-character key id, a dot and exactly 43 characters of secret."
+    },
+    {
+      "id": "tp.format.openai-legacy-key",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "openai_api_key",
+      "path": "src/llm.py",
+      "line": "OPENAI_API_KEY = \"{{secret}}\"",
+      "secret": {
+        "kind": "key_format",
+        "format": "openai_api_key"
+      },
+      "evidence": "The legacy 48-character form, accepted only with the `T3BlbkFJ` marker every OpenAI key embeds, because `sk-` plus 48 alphanumerics collides with other vendors."
+    },
+    {
+      "id": "tp.format.openai-project-key",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "openai_api_key",
+      "path": "src/llm.py",
+      "line": "OPENAI_API_KEY = \"{{secret}}\"",
+      "secret": {
+        "kind": "key_format",
+        "format": "openai_api_key_project"
+      },
+      "evidence": "The project prefix is distinctive on its own."
+    },
+    {
+      "id": "tp.format.anthropic-api-key",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "anthropic_api_key",
+      "path": "src/llm.py",
+      "line": "ANTHROPIC_API_KEY = \"{{secret}}\"",
+      "secret": {
+        "kind": "key_format",
+        "format": "anthropic_api_key"
+      },
+      "evidence": "The `sk-ant-api` prefix with its two-digit version and an 80-to-120 character body."
+    },
+    {
+      "id": "tp.format.private-key-pem",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "private_key_pem",
+      "path": "deploy/keys.py",
+      "line": "-----BEGIN RSA PRIVATE KEY-----",
+      "evidence": "A PEM private-key armour marker. No fix is offered: a PEM block is not a literal a template can rewrite, so the finding says the key must be rotated."
+    },
+    {
+      "id": "tp.format.jwt",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "jwt",
+      "path": "src/auth.js",
+      "line": "const idToken = \"{{secret}}\";",
+      "secret": {
+        "kind": "jwt",
+        "alg": "HS256",
+        "payload": {
+          "sub": "1234567890"
+        },
+        "signature_length": 36
+      },
+      "evidence": "Three base64url segments, a header that decodes to JSON naming a real `alg`, a payload that decodes to JSON, and a non-empty signature."
+    },
+    {
+      "id": "tp.format.database-connection-string",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "database_connection_string",
+      "path": "src/settings.py",
+      "line": "DATABASE_URL = \"postgresql://appuser:{{secret}}@db.prod.internal:5432/orders\"",
+      "secret": {
+        "kind": "connection_string"
+      },
+      "evidence": "A URL parse yields a password that is neither empty, interpolated nor a placeholder, reaching a host that is not loopback and not a compose alias."
+    },
+    {
+      "id": "tp.format.dotenv-file",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "dotenv_file",
+      "path": ".env",
+      "line": "STRIPE_SECRET_KEY={{secret}}",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 24
+      },
+      "evidence": "A `.env` that is not a `.env.example`, carrying a credential-named variable whose value is neither a placeholder nor an interpolation. One finding for the file, not one per variable."
+    },
+    {
+      "id": "tp.entropy.session-secret",
+      "expect": "finding",
+      "signal": "secret.entropy.credential_assignment",
+      "secret_type": "high_entropy_assignment",
+      "path": "src/settings.py",
+      "line": "SESSION_SECRET = \"{{secret}}\"",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 28
+      },
+      "evidence": "The signal that catches the formats nobody has written down: a credential identifier and a value whose random core clears the length and entropy floors."
+    },
+    {
+      "id": "tp.entropy.signing-key-camel-case",
+      "expect": "finding",
+      "signal": "secret.entropy.credential_assignment",
+      "secret_type": "high_entropy_assignment",
+      "path": "src/webhooks.js",
+      "line": "const signingKey = \"{{secret}}\";",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 28
+      },
+      "evidence": "`signingKey` and `signing_key` are the same two tokens, so the name model reads camelCase identically."
+    },
+    {
+      "id": "tp.entropy.hex-key",
+      "expect": "finding",
+      "signal": "secret.entropy.credential_assignment",
+      "secret_type": "high_entropy_assignment",
+      "path": "src/crypto.py",
+      "line": "ENCRYPTION_KEY = \"{{secret}}\"",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "hex",
+        "length": 32
+      },
+      "evidence": "Hex halves the alphabet, so it is scored on its own floor: 32 characters at 3.2 bits, not 20 at 4.0."
+    },
+    {
+      "id": "fp.own-repo.gitleaksignore.idempotency-key",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "services/github-service/src/__tests__/remediationAuthorize.test.js",
+      "line": "      idempotency_key: 'idempotency-key-0001',",
+      "evidence": ".gitleaksignore entry 1 of 9: gitleaks' generic-api-key rule matched this request de-duplication identifier in four github-service tests and one api-service test. The identifier's last token is `key` with `idempotency` in front of it, which is not a credential qualifier, and the value is neither long enough nor random enough."
+    },
+    {
+      "id": "fp.own-repo.gitleaksignore.live-text-fixture",
+      "expect": "no-finding",
+      "reason": "random_core_too_short",
+      "path": "services/remediation-service/tests/fixtures/live/text.py",
+      "line": "API_KEY = \"sk-{{secret}}\"",
+      "secret": {
+        "kind": "sequential",
+        "length": 16
+      },
+      "evidence": ".gitleaksignore entry 6 of 9: the placeholder literal the hardcoded-credential generators are tested against. Its longest separator-free segment is 16 characters, below the entropy floor, and it carries a sequential run. Both properties are built here rather than pasted; the real line is named by its `.gitleaksignore` entry."
+    },
+    {
+      "id": "fp.own-repo.gitleaksignore.dependency-installed-fixture",
+      "expect": "no-finding",
+      "reason": "random_core_too_short",
+      "path": "services/remediation-service/tests/test_dependency_installed_verification.py",
+      "line": "SECRET = 'const apiKey = \"sk-live-{{secret}}\";\\nmodule.exports = { apiKey };\\n'",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "hex",
+        "length": 12
+      },
+      "evidence": ".gitleaksignore entries 7 and 8 of 9: a fake API key literal inside a Python string holding a JavaScript fixture. The random core is twelve characters, which is the property asserted; the real line is named by its `.gitleaksignore` entry."
+    },
+    {
+      "id": "fp.own-repo.gitleaksignore.action-repair-engine-fixture",
+      "expect": "no-finding",
+      "reason": "random_core_too_short",
+      "path": "action/tests/test_repair_engine.py",
+      "line": "SECRET = 'const apiKey = \"sk-live-{{secret}}\";\\nmodule.exports = { apiKey };\\n'",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "hex",
+        "length": 16
+      },
+      "evidence": ".gitleaksignore entry 9 of 9, and the one case that fired before the random-core rule existed. Twenty-four characters look like a key until the `sk` and `live` segments come off; the remaining sixteen hex characters are below the hex floor of 32."
+    },
+    {
+      "id": "fp.own-repo.dotenv-example-connection-string",
+      "expect": "no-finding",
+      "reason": "dotenv_placeholder_path",
+      "path": ".env.example",
+      "line": "DATABASE_URL=postgresql://dev:devpass123@localhost:5432/codesentry",
+      "evidence": "This repository's own `.env.example`, and the same line appears in `services/api-service/.env.example`, `services/github-service/.env.example` and `docs/getting-started/environment.md`. Three separate reasons refuse it: the path is a documented placeholder file, the password is in the placeholder vocabulary, and the host is loopback."
+    },
+    {
+      "id": "fp.own-repo.docs-connection-string",
+      "expect": "no-finding",
+      "reason": "local_or_example_host",
+      "path": "docs/getting-started/environment.md",
+      "line": "DATABASE_URL=postgresql://dev:devpass123@localhost:5432/codesentry",
+      "evidence": "The same line in prose. The format signal runs in prose on purpose, so the host rule is what has to refuse it: a connection string to loopback grants access to nothing outside the developer's machine."
+    },
+    {
+      "id": "fp.own-repo.compose-alias-connection-string",
+      "expect": "no-finding",
+      "reason": "local_or_example_host",
+      "path": "services/analysis-service/src/tests/test_security_rules.py",
+      "line": "database_url = \"postgresql://user:pass123456@host/db\"",
+      "evidence": "A bare host alias with no dot is a docker-compose service name, not a reachable address, and `pass123456` is in the placeholder vocabulary."
+    },
+    {
+      "id": "fp.vendor.stripe-documentation-key",
+      "expect": "no-finding",
+      "reason": "published_example",
+      "path": "docs/getting-started/configuration.md",
+      "line": "api_key = \"{{secret}}\"",
+      "secret": {
+        "kind": "reassembled",
+        "joiner": "_",
+        "parts": [
+          "sk",
+          "live",
+          "4eC39HqLyjWDarjtT1zdp7dc"
+        ],
+        "why": "Stripe's published quickstart key, which the detector has to refuse by identity, so no generated value can stand in for it. The prefix is stored apart from the body: assembled, the string is what GitHub's push protection rejected this file for, and the body alone matches no pattern. `secret_detection.PUBLISHED_EXAMPLE_BODIES` carries the same body for the same reason."
+      },
+      "evidence": "Stripe's own quickstart key, which `services/analysis-service/src/security_rules.py` quotes in the comment explaining the prose exclusion. Reporting it on our own pull request is the detector failing on the file that documents it."
+    },
+    {
+      "id": "fp.vendor.aws-documentation-key",
+      "expect": "no-finding",
+      "reason": "published_example",
+      "path": "docs/deploy/aws.md",
+      "line": "AWS_ACCESS_KEY_ID={{secret}}",
+      "secret": {
+        "kind": "reassembled",
+        "parts": [
+          "AKIA",
+          "IOSFODNN7EXAMPLE"
+        ],
+        "why": "AWS's documentation key, refused by identity through `PUBLISHED_EXAMPLE_VALUES`. Split after the four-character key-type prefix, which is what the format matches on, so neither part is a key."
+      },
+      "evidence": "AWS's documentation key, in every AWS tutorial. The prefix and the length are exactly right, which is the point: a format match alone is not enough."
+    },
+    {
+      "id": "fp.vendor.aws-documentation-secret",
+      "expect": "no-finding",
+      "reason": "published_example",
+      "path": "docs/deploy/aws.md",
+      "line": "aws_secret_access_key = \"{{secret}}\"",
+      "secret": {
+        "kind": "reassembled",
+        "joiner": "/",
+        "parts": [
+          "wJalrXUtnFEMI",
+          "K7MDENG",
+          "bPxRfiCYEXAMPLEKEY"
+        ],
+        "why": "The matching AWS documentation secret, split on its own slashes so no part is forty characters."
+      },
+      "evidence": "The matching documentation secret, forty base64 characters under the right identifier."
+    },
+    {
+      "id": "fp.hand-typed.github-token-alphabet",
+      "expect": "no-finding",
+      "reason": "sequential_run",
+      "path": "action/tests/fixtures/github_token.js",
+      "line": "const token = \"{{secret}}\";",
+      "secret": {
+        "kind": "sequential",
+        "prefix": "ghp_",
+        "length": 36
+      },
+      "evidence": "The prefix is right and the length is exactly the thirty-six the format fixes, so structure alone accepts it. It is a hand-typed fixture: its random core runs straight through the alphabet, which a real key does with probability around one in ten to the thirteenth per position. This is the shape `sk_live_1234567890abcdef` has in three files of this repository, where the run is nine characters and an eight-character threshold is what catches it."
+    },
+    {
+      "id": "fp.structure.github-token-short",
+      "expect": "no-finding",
+      "reason": "structure_failed",
+      "silent_signal": "secret.format.known_key",
+      "path": "src/release.js",
+      "line": "const token = \"{{secret}}\";",
+      "secret": {
+        "kind": "key_format",
+        "format": "github_token",
+        "body_length": 35
+      },
+      "evidence": "Thirty-five characters where the format fixes thirty-six, so this is not a GitHub token and the format signal must not claim it is. The entropy signal does still report it, and that is a different and defensible claim: a thirty-five-character random value under `token` is a credential of some format, just not this one. Only the format signal is asserted silent."
+    },
+    {
+      "id": "fp.structure.jwt-header-not-json",
+      "expect": "no-finding",
+      "reason": "structure_failed",
+      "path": "src/auth.js",
+      "line": "const cacheKey = \"{{secret}}\";",
+      "secret": {
+        "kind": "jwt",
+        "header_not_json": true,
+        "signature_length": 16
+      },
+      "evidence": "`eyJ` and two dots is a substring search. The header here does not base64url-decode to a JSON object, so it is not a token."
+    },
+    {
+      "id": "fp.structure.jwt-alg-none",
+      "expect": "no-finding",
+      "reason": "structure_failed",
+      "path": "src/auth.js",
+      "line": "const unsigned = \"{{secret}}\";",
+      "secret": {
+        "kind": "jwt",
+        "alg": "none",
+        "payload": {
+          "sub": "1"
+        },
+        "signature_length": 22
+      },
+      "evidence": "A token whose header says `alg: none` carries no signature that means anything, so it is not a credential."
+    },
+    {
+      "id": "fp.structure.pem-public-key",
+      "expect": "no-finding",
+      "reason": "structure_failed",
+      "path": "deploy/keys.py",
+      "line": "-----BEGIN PUBLIC KEY-----",
+      "evidence": "A public key is published on purpose. The PEM marker grammar is what separates it from a private one."
+    },
+    {
+      "id": "fp.structure.connection-string-no-password",
+      "expect": "no-finding",
+      "reason": "structure_failed",
+      "path": "src/settings.py",
+      "line": "DATABASE_URL = \"postgresql://appuser@db.prod.internal:5432/orders\"",
+      "evidence": "A URL parse, not a regex, is what decides there is no password here."
+    },
+    {
+      "id": "fp.structure.connection-string-interpolated-password",
+      "expect": "no-finding",
+      "reason": "structure_failed",
+      "path": "src/settings.py",
+      "line": "DATABASE_URL = \"postgresql://appuser:${DB_PASSWORD}@db.prod.internal:5432/orders\"",
+      "evidence": "The characters in the source are not the characters of the password, so there is nothing leaked."
+    },
+    {
+      "id": "fp.name.key-id",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "src/kms.py",
+      "line": "KEY_ID = \"{{secret}}\"",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 28
+      },
+      "evidence": "A key id is an identifier, not a key. The name model reads the last token, which is what separates this from `api_key`."
+    },
+    {
+      "id": "fp.name.public-key",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "src/jwt.py",
+      "line": "PUBLIC_KEY = \"{{secret}}\"",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 28
+      },
+      "evidence": "A disqualifying first token. A public key is published deliberately."
+    },
+    {
+      "id": "fp.name.password-hash",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "tests/factories.py",
+      "line": "password_hash = \"{{secret}}\"",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 28
+      },
+      "evidence": "A stored hash is the output of the credential, not the credential. A substring list keyed on `password` reports it."
+    },
+    {
+      "id": "fp.name.token-url",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "src/oauth.py",
+      "line": "TOKEN_URL = \"https://accounts.example.com/oauth2/v4/tokenAuthEndpoint\"",
+      "evidence": "An endpoint, not a token."
+    },
+    {
+      "id": "fp.name.bare-key",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "src/cache.js",
+      "line": "  const key = \"user:profile:{{secret}}\";",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 20
+      },
+      "evidence": "In JavaScript and Python a bare `key` is a dictionary or cache key far more often than a credential, which is why it is a disqualifying tail on its own."
+    },
+    {
+      "id": "fp.entropy.commit-digest",
+      "expect": "no-finding",
+      "reason": "entropy_exclusion",
+      "path": "src/build.py",
+      "line": "SECRET_HASH = \"{{secret}}\"",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "hex",
+        "length": 40
+      },
+      "evidence": "Forty hex characters under a name whose tokens include `hash`. A commit digest, a content hash and a fingerprint are high entropy by construction."
+    },
+    {
+      "id": "fp.entropy.uuid",
+      "expect": "no-finding",
+      "reason": "entropy_exclusion",
+      "path": "src/tenants.py",
+      "line": "API_KEY = \"550e8400-e29b-41d4-a716-446655440000\"",
+      "evidence": "A UUID is an identifier with a published shape, and it is the shape a seeded test tenant carries."
+    },
+    {
+      "id": "fp.entropy.subresource-integrity",
+      "expect": "no-finding",
+      "reason": "entropy_exclusion",
+      "path": "src/assets.js",
+      "line": "const integritySecret = \"sha512-{{secret}}==\";",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base64",
+        "length": 86
+      },
+      "evidence": "A subresource integrity hash, the single commonest high-entropy string in any JavaScript repository."
+    },
+    {
+      "id": "fp.entropy.base64-data-uri",
+      "expect": "no-finding",
+      "reason": "entropy_exclusion",
+      "path": "src/logo.js",
+      "line": "const logoSecret = \"data:image/png;base64,{{secret}}\";",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base64",
+        "length": 40
+      },
+      "evidence": "A base64 asset. The bytes are a picture."
+    },
+    {
+      "id": "fp.entropy.fixture-path",
+      "expect": "no-finding",
+      "reason": "entropy_exclusion",
+      "path": "tests/conftest.py",
+      "line": "SERVICE_ACCOUNT_KEY = \"./tests/fixtures/keys/{{secret}}.json\"",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 22
+      },
+      "evidence": "A path to a test fixture, not the fixture's contents."
+    },
+    {
+      "id": "fp.entropy.environment-read",
+      "expect": "no-finding",
+      "reason": "entropy_exclusion",
+      "path": "src/settings.py",
+      "line": "SECRET_KEY = \"os.environ['DJANGO_SECRET_KEY_PRODUCTION']\"",
+      "evidence": "The fix, quoted. Reporting the repair as the defect is the worst false positive this category can produce."
+    },
+    {
+      "id": "fp.entropy.placeholder-value",
+      "expect": "no-finding",
+      "reason": "entropy_exclusion",
+      "path": "config/settings.py",
+      "line": "API_KEY = \"your-api-key-goes-right-here\"",
+      "evidence": "A placeholder a developer is meant to replace."
+    },
+    {
+      "id": "fp.path.lockfile-hash",
+      "expect": "no-finding",
+      "reason": "path_scope",
+      "path": "pnpm-lock.yaml",
+      "line": "    integritySecret: {{secret}}",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 40
+      },
+      "evidence": "A lockfile is nothing but high-entropy strings. `pnpm-lock.yaml` and `go.sum` are not covered by the data-path extension set, so the lockfile name list is what stops them."
+    },
+    {
+      "id": "fp.path.json-fixture-entropy",
+      "expect": "no-finding",
+      "reason": "path_scope",
+      "path": "benchmarks/tier1-precision/cases.json",
+      "line": "      \"snippet\": [\"api_key = '{{secret}}'\"],",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 28
+      },
+      "evidence": "A data document, and the file whose entire content is labelled vulnerable snippets. `is_data_path` already turned 35 tier 1 regexes off here; the entropy signal is off for the same reason."
+    },
+    {
+      "id": "fp.path.prose-entropy",
+      "expect": "no-finding",
+      "reason": "path_scope",
+      "path": "docs/validation/secrets-in-the-diff-2026-09.md",
+      "line": "The corpus fixture was `SESSION_SECRET = \"{{secret}}\"`, which the entropy signal reported.",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 28,
+        "seed": "tp.entropy.session-secret"
+      },
+      "evidence": "A write-up quoting the measurement it made. `docs/validation/*.md` already drew a critical finding each for a sentence about someone else's fixture; the entropy signal must not repeat it."
+    },
+    {
+      "id": "fp.scope.context-line",
+      "expect": "no-finding",
+      "reason": "added_lines_only",
+      "path": "src/billing.js",
+      "line": "const stripeKey = \"{{secret}}\";",
+      "secret": {
+        "kind": "key_format",
+        "format": "stripe_live_key",
+        "seed": "tp.format.stripe-live-key"
+      },
+      "as_context_line": true,
+      "evidence": "The same line as `tp.format.stripe-live-key`, unchanged by this pull request. An existing secret is not this pull request's fault, and re-reporting it on every change to the file is how a category gets muted."
+    },
+    {
+      "id": "fp.scope.dotenv-example",
+      "expect": "no-finding",
+      "reason": "dotenv_placeholder_path",
+      "path": ".env.example",
+      "line": "STRIPE_SECRET_KEY={{secret}}",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 24,
+        "seed": "tp.format.dotenv-file"
+      },
+      "evidence": "The same line as `tp.format.dotenv-file`, in the file that exists to carry placeholders."
+    },
+    {
+      "id": "fp.scope.dotenv-no-credential",
+      "expect": "no-finding",
+      "reason": "structure_failed",
+      "path": ".env",
+      "line": "NODE_ENV=production",
+      "evidence": "A real `.env` in the diff is not automatically a finding: the file has to carry something that is actually a credential, or every `.env` with a port number in it is a critical."
+    },
+    {
+      "id": "fp.published-example.jwt-io-token",
+      "expect": "no-finding",
+      "reason": "published_example",
+      "path": "frontend/src/app/app.guard.spec.ts",
+      "line": "        localStorage.setItem('token', '{{secret}}')",
+      "secret": {
+        "kind": "reassembled",
+        "joiner": ".",
+        "parts": [
+          "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+          "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ",
+          "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        ],
+        "why": "The token on jwt.io's front page, the exact string the September 2026 measurement found committed in juice-shop. It passes the JWT format's structural verification in full, so only the published-example refusal can stop it and only this literal proves that refusal works. Stored as its three segments, none of which is a JWT."
+      },
+      "evidence": "Read by hand in juice-shop at frontend/src/app/app.guard.spec.ts:46 in the September 2026 measurement, and judged false. It is the example token on jwt.io's front page, signed with `your-256-bit-secret`, which is printed beside it. It passes the JWT format's structural verification in full, so only the published-example refusal can stop it, and every tutorial that shows a decoded JWT puts the same string in a repository."
+    },
+    {
+      "id": "fp.unsigned-jwt.authorization-header",
+      "expect": "no-finding",
+      "reason": "unsigned_jwt",
+      "path": "test/server/verify.unit.test.ts",
+      "line": "      req.headers = { authorization: 'Bearer {{secret}}' }",
+      "secret": {
+        "kind": "jwt",
+        "alg": "none",
+        "payload": {
+          "data": {
+            "email": "jwtn3d@"
+          },
+          "iat": 1508639612
+        },
+        "signature_length": 0
+      },
+      "evidence": "Read by hand in juice-shop at test/server/verify.unit.test.ts:283 and :291 in the September 2026 measurement, and judged false. The token has `alg:none` and an empty signature, so the JWT format refuses it; the entropy signal was reporting it anyway under the identifier `authorization`, which is the weaker signal re-claiming what the stronger one examined and rejected. The header and payload are rebuilt from the same claims rather than pasted, because what the case asserts is the shape."
+    },
+    {
+      "id": "fp.own-repo.gitleaksignore.idempotency-key-operations",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "services/github-service/src/__tests__/remediationOperations.test.js",
+      "line": "      idempotency_key: 'idempotency-key-0001',",
+      "evidence": ".gitleaksignore entry 2 of 9. The same request de-duplication identifier, in a second file; the path is part of the case because the path decides scope, so one case per entry is what makes the coverage assertion mean anything."
+    },
+    {
+      "id": "fp.own-repo.gitleaksignore.benchmark-quotes-its-own-cases",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "benchmarks/secrets-precision/cases.json",
+      "line": "      idempotency_key: 'idempotency-key-0001',",
+      "evidence": "This file quotes the four repository lines gitleaks reads as credentials, so gitleaks flags the quotes too and each carries its own .gitleaksignore entry. The detector must stay silent on them here for the same reason it stays silent on the originals: an idempotency key is a request de-duplication identifier, not a secret."
+    },
+    {
+      "id": "fp.own-repo.gitleaksignore.idempotency-key-transport-parity",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "services/github-service/src/__tests__/remediationTransportParity.test.js",
+      "line": "      idempotency_key: 'idempotency-key-0001',",
+      "evidence": ".gitleaksignore entry 3 of 9."
+    },
+    {
+      "id": "fp.own-repo.gitleaksignore.idempotency-key-internal-routes",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "services/github-service/src/__tests__/internalRoutes.test.js",
+      "line": "      idempotency_key: 'idempotency-key-0001',",
+      "evidence": ".gitleaksignore entry 4 of 9."
+    },
+    {
+      "id": "fp.own-repo.gitleaksignore.idempotency-key-api-transport",
+      "expect": "no-finding",
+      "reason": "credential_name_excluded",
+      "path": "services/api-service/tests/githubRemediationTransport.test.js",
+      "line": "      idempotency_key: 'idempotency-key-0001',",
+      "evidence": ".gitleaksignore entry 5 of 9, and the one in a different service."
+    },
+    {
+      "id": "fp.own-repo.gitleaksignore.proof-module-closure-fixture",
+      "expect": "no-finding",
+      "reason": "random_core_too_short",
+      "path": "services/remediation-service/tests/test_proof_module_closure.py",
+      "line": "SECRET = 'const apiKey = \"sk-live-{{secret}}\";\\nmodule.exports = { apiKey };\\n'",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "hex",
+        "length": 12,
+        "seed": "fp.own-repo.gitleaksignore.dependency-installed-fixture"
+      },
+      "evidence": ".gitleaksignore entry 8 of 9: the same fixture literal as entry 7, in the proof-closure test, so it is built from the same seed and is the same string."
+    },
+    {
+      "id": "tp.entropy.object-property-credential-key",
+      "expect": "finding",
+      "signal": "secret.entropy.credential_assignment",
+      "secret_type": "high_entropy_assignment",
+      "path": "config/env/development.js",
+      "line": "   scannerApiKey: \"{{secret}}\",",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "base62",
+        "length": 26
+      },
+      "evidence": "The shape of a true positive read by hand in OWASP/NodeGoat at config/env/development.js:6 and config/env/test.js:6 in the September 2026 measurement: a scanner API key as an object property in a committed configuration module, outside test code. The value here is generated; the real one is redacted and recorded only as repository, path, line and format."
+    },
+    {
+      "id": "tp.entropy.password-keyword-argument",
+      "expect": "finding",
+      "signal": "secret.entropy.credential_assignment",
+      "secret_type": "high_entropy_assignment",
+      "path": "app/views.py",
+      "line": "            row = user_table(id=\"admin\", password=\"{{secret}}\")",
+      "secret": {
+        "kind": "entropy_value",
+        "charset": "hex",
+        "length": 32
+      },
+      "evidence": "The shape of three true positives read by hand in adeyosemanputra/pygoat at introduction/views.py:866, :870 and :872: an account password literal written into the database from application code. The identifier is `password` and the value is a 32-character digest, which the digest exclusion does not reach because that exclusion reads the identifier. Indented, so no template can rewrite it: the finding offers no fix and says to rotate."
+    },
+    {
+      "id": "tp.format.jwt-in-a-comment",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "jwt",
+      "path": "static/js/client.js",
+      "line": "    // myHeaders.append(\"Cookie\", \"jwt={{secret}}\");",
+      "secret": {
+        "kind": "jwt",
+        "alg": "HS256",
+        "payload": {
+          "sub": "1234567890"
+        },
+        "signature_length": 36
+      },
+      "evidence": "The shape of a true positive read by hand in adeyosemanputra/pygoat at introduction/static/js/a7.js:4: a signed session token commented out in shipped frontend JavaScript, with the same token live eighteen lines into a9.js. This is the case the module's refusal to strip comments exists for: a commented-out credential is still a committed credential."
+    },
+    {
+      "id": "tp.format.private-key-pem-inline-in-source",
+      "expect": "finding",
+      "signal": "secret.format.known_key",
+      "secret_type": "private_key_pem",
+      "path": "lib/insecurity.ts",
+      "line": "const privateKey = '-----BEGIN RSA PRIVATE KEY-----\\r\\n{{secret}}\\r\\n-----END RSA PRIVATE KEY-----'",
+      "secret": {
+        "kind": "pem",
+        "length": 64
+      },
+      "evidence": "The shape of the most consequential true positive of the whole measurement, read by hand in juice-shop at lib/insecurity.ts:21: a complete RSA private key inlined into a single-line JavaScript string in production source, not test code. The key body here is built from the case's seed; the real one is redacted and recorded only as repository, path, line and format. The armour marker is what the format verifies, and the `\\r\\n` escapes are why no template can rewrite the line."
+    }
+  ],
+  "fixtures": {
+    "note": "This file stores no credential. A case names a format and the loader builds a value that satisfies it (benchmarks/secrets-precision/synthesize.py), keyed by a seed that defaults to the case id, so every fixture is identical on every run and no positive fixture is a string a secret scanner can be right about. The four cases where an exact published literal is the assertion -- Stripe's quickstart key, AWS's two documentation values and the token on jwt.io's front page, all of which the detector must refuse by identity -- store it split into parts that match no pattern alone, and each says so in its `why`. The reason is not tidiness: the earlier version of this file held assembled keys, GitHub push protection rejected the branch over three of them, and the only alternative on offer was an allowlist entry per case, renewed by hand forever, in the repository whose own product exists to stop people committing keys.",
+    "builder": "benchmarks/secrets-precision/synthesize.py",
+    "placeholder": "`{{secret}}` in a case's `line` is replaced by the value its `secret` spec builds. A case with no `secret` holds no credential-shaped value at all and its line is the literal being asserted about.",
+    "seed": "The case id, unless the `secret` spec names another case's id because the two must be the same string."
+  }
+}

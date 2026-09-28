@@ -2,6 +2,17 @@
 
 Mitig8it enforces guardrails as a centralized control model, not per-service ad hoc behavior.
 
+Every item below carries its state, because a guardrails document that reads the same whether or
+not a control is switched on is the document an auditor trusts and the code contradicts. The
+states are:
+
+- **Enforced.** The code refuses without it. Nothing to switch on.
+- **Provisioned.** The configuration is in this repository and an operator applies it. Written is
+  not applied, and this document cannot tell you which is true of your project.
+- **Not implemented.** Named here because its absence is worth knowing, not because it is planned.
+
+As of 2026-09-28.
+
 ## 1) Network and Ingress
 - **Enforced.** `api-service` is the only Cloud Run service reachable without a
   Google-signed identity token. It is the one deploy that passes
@@ -292,11 +303,49 @@ Mitig8it enforces guardrails as a centralized control model, not per-service ad 
   every analysis; a comment carrying a published verified fix is kept.
 
 ## 7) CI Guardrails
-- Secret scanning on every PR/push.
-- API and analysis tests required.
-- Branch protection should require `Guardrails` workflow success before merge.
+- **Enforced.** Secret scanning on every pull request and push, as the `Secret scan (Gitleaks)`
+  job in `.github/workflows/ci.yml`.
+- **Enforced.** API, GitHub service, analysis, frontend, docker build and remediation integration
+  jobs all run on every pull request, and all of them feed the aggregate `Required CI` job.
+- **Not implemented.** `Required CI` is a job name, not a merge gate. There is no branch
+  protection rule and no ruleset on `main`, so nothing refuses a merge whose checks failed and
+  nothing refuses a direct push. `.github/workflows/dependabot-automerge.yml` polls for
+  `Required CI` itself before merging, which is one workflow doing the work a branch rule should
+  do, for one kind of pull request.
+- **Enforced.** `.github/CODEOWNERS` requests a review on every pull request. A request is not a
+  requirement: making it one needs the branch rule above. GitHub does not request a review from
+  the author, so this does not fire on pull requests opened by the code owner.
 
 ## 8) Monitoring Guardrails
-- Uptime checks for API and analysis health endpoints.
-- Alerts for 5xx, latency spikes, and error bursts.
-- Correlation IDs in logs for cross-service tracing.
+- **Provisioned.** Cloud Monitoring alert policies and an email notification channel in
+  `infrastructure/monitoring/*.tf`, evaluating PromQL against the managed Prometheus sidecar.
+  They are applied by an operator; `docs/runbooks/observability.md` has the steps. The sidecar is
+  opt-in through `METRICS_SIDECAR_ENABLED`, so an unapplied project emits nothing and the
+  policies stay silent rather than firing.
+- **Provisioned.** Equivalent Grafana rules in
+  `infrastructure/remediation/grafana/alerts/remediation-rules.yaml`. They are an alternative to
+  the Cloud Monitoring policies, not an addition: running both pages twice for one incident.
+- **Enforced.** Correlation IDs in logs for cross-service tracing.
+- **Not implemented.** Uptime checks against the API and analysis health endpoints.
+
+## 9) Verification Sandbox
+
+The largest trust boundary in the system, and the one this document previously did not mention.
+The remediation service proves a repair by running a repository's own checks. What isolates that
+execution depends on `SANDBOX_DRIVER`:
+
+- **Not implemented, and the production default.** `SANDBOX_DRIVER=local` runs the repository's
+  own commands inside the remediation service container: no kernel, network or filesystem
+  isolation, and no broker trust boundary. `local` is the default of the `sandbox_driver` input
+  in `.github/workflows/deploy-remediation-cloudrun.yml`, so an ordinary deploy runs this one.
+  Every result it produces is labelled `development_unverified`, which is the honest label and
+  not a mitigation. Use it only for repositories the operator owns and has enrolled as test
+  repositories.
+- **Provisioned.** `SANDBOX_DRIVER=cloud_run_job` runs each check in a separate Cloud Run job
+  container with its own unprivileged user and a denied network, and labels evidence
+  `isolated_job`. It requires `infrastructure/remediation/terraform` with
+  `enable_cloud_run_job_sandbox=true` and every step of `docs/runbooks/sandbox-cloud-run-job.md`,
+  including the smoke test proving the job's own probes came back denied.
+- Neither driver justifies `SANDBOX_NETWORK_POLICY_ATTESTED` or `SANDBOX_NODE_LIMITS_ATTESTED`.
+  `cloud_run_job` still has no read-only root filesystem, no gVisor runtime class and no broker
+  trust boundary, so it is a real sandbox and still not the production level.
