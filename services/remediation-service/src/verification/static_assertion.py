@@ -41,6 +41,11 @@ implementations, because the two deployments differ:
 
 An oracle that cannot answer refuses the candidate. It never returns an empty match set: an
 empty match set is the shape of "the rule no longer matches", which is the thing being claimed.
+That holds for a missing match set as well as for an absent oracle, which is what
+`_require_match_sets` is for: a side of the answer with no `all_matches` at all is not a file
+that matched nothing, and clause 4 is never decided from it. An oracle that has no scanner to run
+says so under its own code rather than by failing at the first query, so a deployment reading the
+reason can tell "install the scanner" from "the scanner crashed".
 """
 from __future__ import annotations
 
@@ -64,6 +69,24 @@ NOTHING_EXECUTED = "No code was executed."
 NOT_REPAIRED = "not_repaired"
 
 DEFAULT_ORACLE_TIMEOUT_SECONDS = 60
+
+# The oracle error codes, and which of them mean the rule was never evaluated at all.
+#
+# The distinction is the whole point of the level. `rule_oracle_failed` is a scanner that ran and
+# broke; `rule_oracle_scanner_unavailable` is a process that never had a scanner, so no rule was
+# ever asked anything. Both refuse the candidate, but only the second is a deployment fault a
+# reason code should be able to name, and neither may ever look like an empty match set.
+ORACLE_FAILED = "rule_oracle_failed"
+ORACLE_SCANNER_UNAVAILABLE = "rule_oracle_scanner_unavailable"
+ORACLE_UNREACHABLE = "rule_oracle_unreachable"
+ORACLE_REJECTED_REQUEST = "rule_oracle_rejected_request"
+ORACLE_RESPONSE_INVALID = "rule_oracle_response_invalid"
+
+# Every code above says the rule was not evaluated, because none of them carries match sets. They
+# are listed rather than derived so adding a code is a decision about this set.
+RULE_NOT_EVALUATED_CODES = frozenset(
+    {ORACLE_FAILED, ORACLE_SCANNER_UNAVAILABLE, ORACLE_UNREACHABLE, ORACLE_REJECTED_REQUEST, ORACLE_RESPONSE_INVALID}
+)
 
 
 class RuleOracleError(Exception):
@@ -94,10 +117,34 @@ class InProcessRuleOracle:
         self._module = module
 
     @staticmethod
-    def load() -> "InProcessRuleOracle | None":
-        """The oracle if this process can import the analysis service's module, else None."""
+    def unavailable_reason() -> str | None:
+        """Why this process cannot answer with the in-process oracle, or None when it can.
+
+        Two separate things have to be true, and before this was asked they were conflated: the
+        analysis service's module has to be importable, *and* the scanner that module shells out
+        to has to be installed. A checkout with the rules and no scanner satisfies the first and
+        fails the second, which is what the repair service's own CI job is, and an oracle built
+        in that state answers nothing while looking like an oracle.
+        """
         module = _load_analysis_static_assertion()
-        return None if module is None else InProcessRuleOracle(module)
+        if module is None:
+            return "the analysis service is not importable from this process"
+        if not module.scanner_available():
+            return "the analysis service's rule scanner is not installed in this process"
+        return None
+
+    @staticmethod
+    def load() -> "InProcessRuleOracle | None":
+        """The oracle if this process can both import the analysis module and run its scanner.
+
+        None rather than an oracle that raises on first use: a caller with no oracle refuses the
+        candidate by name (`verifier.STATIC_ASSERTION_ORACLE_UNAVAILABLE`), which is a better
+        answer than a candidate refused halfway through an assertion.
+        """
+        module = _load_analysis_static_assertion()
+        if module is None or not module.scanner_available():
+            return None
+        return InProcessRuleOracle(module)
 
     async def match_sets(self, rule_id: str, path: str, original: str, patched: str) -> dict[str, Any]:
         try:
@@ -105,7 +152,19 @@ class InProcessRuleOracle:
             # goes off the event loop: the worker's lease heartbeat shares this loop.
             return await asyncio.to_thread(self._module.match_sets, rule_id, path, original, patched)
         except Exception as exc:  # noqa: BLE001 - any scanner failure refuses the candidate
-            raise RuleOracleError("rule_oracle_failed", f"{type(exc).__name__}: {exc}") from exc
+            raise RuleOracleError(self._error_code(exc), f"{type(exc).__name__}: {exc}") from exc
+
+    def _error_code(self, exc: BaseException) -> str:
+        """Which kind of failure this was: no scanner at all, or a scanner that broke.
+
+        `load` checks for the scanner, so reaching this means it went away between the check and
+        the query. Rare, and still worth its own code: a deployment reading the reason should not
+        have to guess whether to install something or to look at a crash.
+        """
+        unavailable = getattr(self._module, "ScannerUnavailableError", None)
+        if isinstance(unavailable, type) and issubclass(unavailable, BaseException) and isinstance(exc, unavailable):
+            return ORACLE_SCANNER_UNAVAILABLE
+        return ORACLE_FAILED
 
 
 class HttpRuleOracle:
@@ -141,15 +200,20 @@ class HttpRuleOracle:
                     headers={"x-internal-secret": self._secret},
                 )
         except Exception as exc:  # noqa: BLE001 - connect, DNS, timeout: all refuse the candidate
-            raise RuleOracleError("rule_oracle_unreachable", f"{type(exc).__name__}: {exc}") from exc
+            raise RuleOracleError(ORACLE_UNREACHABLE, f"{type(exc).__name__}: {exc}") from exc
+        if response.status_code == 503:
+            # What the analysis service answers when its scanner did not run at all
+            # (`main.verify_static_assertion`). The same state the in-process oracle reports, so
+            # the two deployments give a reviewer the same reason.
+            raise RuleOracleError(ORACLE_SCANNER_UNAVAILABLE, "HTTP 503: the analysis service could not run the rule")
         if response.status_code != 200:
-            raise RuleOracleError("rule_oracle_rejected_request", f"HTTP {response.status_code}")
+            raise RuleOracleError(ORACLE_REJECTED_REQUEST, f"HTTP {response.status_code}")
         try:
             document = response.json()
         except ValueError as exc:
-            raise RuleOracleError("rule_oracle_response_invalid", "the response body is not JSON") from exc
+            raise RuleOracleError(ORACLE_RESPONSE_INVALID, "the response body is not JSON") from exc
         if not isinstance(document, dict):
-            raise RuleOracleError("rule_oracle_response_invalid", "the response body is not an object")
+            raise RuleOracleError(ORACLE_RESPONSE_INVALID, "the response body is not an object")
         return document
 
 
@@ -167,12 +231,16 @@ def _load_analysis_static_assertion() -> Any | None:
 
     Tried in the order the deployments are: already imported, then importable from `sys.path`
     (the Action's image puts the analysis source there), then from a checkout beside this one.
+
+    A module counts only when it carries both of the names this side uses: `match_sets` to ask,
+    and `scanner_available` to ask first whether asking is worth anything.
     """
     import sys  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
-    if "static_assertion" in sys.modules and hasattr(sys.modules["static_assertion"], "match_sets"):
-        return sys.modules["static_assertion"]
+    loaded = sys.modules.get("static_assertion")
+    if loaded is not None and hasattr(loaded, "match_sets") and hasattr(loaded, "scanner_available"):
+        return loaded
     candidates = []
     configured = os.getenv("MITIG8IT_ANALYSIS_SRC")
     if configured:
@@ -318,6 +386,26 @@ def _rule_ids(value: Any) -> set[str]:
     if not isinstance(value, list):
         return set()
     return {str(item["rule_id"]) for item in value if isinstance(item, dict) and item.get("rule_id")}
+
+
+MATCH_SET_KEYS = ("rule_matches", "all_matches")
+
+
+def _require_match_sets(side: dict[str, Any], which: str) -> None:
+    """Both match sets on one side of the answer, present as lists, or no answer at all.
+
+    `_lines` and `_rule_ids` read anything that is not a list as the empty set, which is right
+    for a list with junk in it and wrong for a key that is not there: an answer with no
+    `all_matches` would make clause 4 hold over a rule set nothing ever ran. Clause 4 is the one
+    that stops a repair trading one vulnerability for another, so it is never decided from a key
+    the oracle did not send.
+    """
+    missing = [key for key in MATCH_SET_KEYS if not isinstance(side.get(key), list)]
+    if missing:
+        raise RuleOracleError(
+            ORACLE_RESPONSE_INVALID,
+            f"the {which} side of the answer carries no " + " and no ".join(missing),
+        )
 
 
 def _unproven(finding_id: str, code: str, message: str) -> dict[str, str]:
@@ -489,7 +577,9 @@ async def _assert_one(
     if not isinstance(original_side, dict) or not isinstance(patched_side, dict):
         # An answer with no match sets is not "the rule found nothing". It is no answer, and a
         # candidate is never passed on one.
-        raise RuleOracleError("rule_oracle_response_invalid", "the response carries no match sets")
+        raise RuleOracleError(ORACLE_RESPONSE_INVALID, "the response carries no match sets")
+    _require_match_sets(original_side, "original")
+    _require_match_sets(patched_side, "patched")
     original_rule = _lines(original_side.get("rule_matches"))
     patched_rule = _lines(patched_side.get("rule_matches"))
     original_all = _rule_ids(original_side.get("all_matches"))

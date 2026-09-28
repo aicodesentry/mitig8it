@@ -52,6 +52,51 @@ class ActionError(Exception):
     """A condition the run cannot continue past, reported without a traceback."""
 
 
+# --- what produced this review ---------------------------------------------------------------
+#
+# A bug report used to have to name a date. The trial's own defects were filed as "the review on
+# the 24th said X", which is unanswerable once main has moved: nothing on the pull request said
+# which code reviewed it. Every review now carries the version, in the check run summary and in
+# one line of the review body, and the composition happens here so that one string reaches both.
+#
+# `action.yml` supplies the four variables. They are deliberately about what happened rather than
+# what was intended: a released ref whose image pull failed reports `source`, because a review that
+# came out of a local build must not claim to be the published image.
+
+UNRELEASED_LABEL = "unreleased"
+
+
+def version_identity(environ: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """The version line a review carries, and the parts it was built from.
+
+    `label` is what a user is asked to quote. It is `v1.0.0` on a released ref that ran the
+    published image, and it says so plainly when it is anything else, because "v1.0.0" on a run
+    that built its own image from a branch would send a bug report to the wrong code.
+    """
+    env = os.environ if environ is None else environ
+    version = (env.get("MITIG8IT_ACTION_VERSION") or "").strip()
+    digest = (env.get("MITIG8IT_ACTION_IMAGE_DIGEST") or "").strip()
+    source = (env.get("MITIG8IT_ACTION_SOURCE") or "").strip().lower()
+    ref = (env.get("MITIG8IT_ACTION_REF") or "").strip()
+
+    if version and source == "registry":
+        label = f"v{version}"
+    elif version:
+        label = f"v{version} (built from source, not the released image)"
+    elif ref:
+        label = f"{UNRELEASED_LABEL} ({ref}, built from source)"
+    else:
+        label = f"{UNRELEASED_LABEL} (local checkout, built from source)"
+
+    return {
+        "label": label,
+        "version": version,
+        "digest": digest,
+        "source": source or "source",
+        "ref": ref,
+    }
+
+
 def input_value(name: str, default: str = "") -> str:
     """Read an action input. GitHub passes them as INPUT_<NAME> with dashes as underscores."""
     key = f"INPUT_{name.replace('-', '_').upper()}"
@@ -348,7 +393,13 @@ def render_finding_comment(finding: Dict[str, Any]) -> str:
     if evidence:
         lines.extend(["", evidence])
     remediation = str(finding.get("remediation") or "")
-    if remediation and not (description and _same_sentence(remediation, description)):
+    # The description is compared against the title and dropped when it repeats it, which left
+    # `description` empty and made the old check here vacuous: a remediation identical to the
+    # title survived on 40 of the trial's 65 comments. A field is dropped when it repeats
+    # anything the reader has already been shown, which is the title or a description that
+    # survived it.
+    already_said = [title] + ([description] if description else [])
+    if remediation and not any(_same_sentence(remediation, said) for said in already_said):
         lines.extend(["", f"Remediation: {remediation}"])
     return "\n".join(lines)
 
@@ -454,6 +505,7 @@ def build_publish_request(
     active_fingerprints: Sequence[str] = (),
     bot_login: str = "github-actions[bot]",
     action_id: Optional[str] = None,
+    version_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Everything the Node publisher needs, in one place the tests can build without a network."""
     action_id = action_id or f"action-{uuid.uuid4().hex[:16]}"
@@ -474,6 +526,10 @@ def build_publish_request(
         "findings": findings,
         "fixes": len(fix_sections),
         "modelConfigured": model_configured,
+        # One string, composed once here, rendered by the publisher in two places. The publisher
+        # derives nothing of its own from it, the same rule `counts` follows, so a check summary
+        # and a review body can never name two different versions of the same run.
+        "versionLabel": version_label or version_identity()["label"],
         "failConclusion": conclusion,
         "excludedFiles": int(excluded_files),
         # What the review looked at, split into analysed, excluded and skipped. The check
@@ -550,6 +606,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _run() -> int:
+    # First line of every log, so a run that fails before it publishes still says what it was.
+    identity = version_identity()
+    log(f"Mitig8it {identity['label']}.")
+    if identity["digest"]:
+        log(f"Image {identity['digest']}.")
+
     token = input_value("github-token") or os.environ.get("GITHUB_TOKEN", "")
     if not token:
         raise ActionError("no github-token was provided")
@@ -675,6 +737,7 @@ def _run() -> int:
         # posts under a different login, and github-service recognises its own comment by that
         # login. Assuming it meant every re-run created a second comment instead of editing.
         bot_login=reader.viewer_login(),
+        version_label=identity["label"],
     )
 
     log("Publishing.")
@@ -715,6 +778,11 @@ def _run() -> int:
             else "No model key was configured, so only template fixes were produced and "
             "nothing left this runner.\n"
         )
+        # The job summary is where a maintainer looks when a run went wrong, so it carries the
+        # digest as well as the label. The review body carries only the label, because a
+        # sixty-four character hex string in a pull request comment is noise.
+        + f"\nMitig8it {identity['label']}."
+        + (f" Image `{identity['digest']}`.\n" if identity["digest"] else "\n")
     )
 
     if conclusion == "failure":

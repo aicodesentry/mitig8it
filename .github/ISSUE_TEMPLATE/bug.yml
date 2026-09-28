@@ -57,8 +57,10 @@ body:
     attributes:
       label: Version
       description: >
-        The action ref you used (for example aicodesentry/mitig8it/action@main), or the commit you
-        are running locally. For the App, the date and time of the review.
+        The version the review reported. Every check run summary and every review body the Action
+        posts ends with the version that produced it, for example "Mitig8it v1.0.0"; copy that.
+        If you are running the action from a branch or a local checkout it says so instead, and
+        the commit sha is what to give us. For the App, the run id in the review footer.
 
   - type: textarea
     id: environment

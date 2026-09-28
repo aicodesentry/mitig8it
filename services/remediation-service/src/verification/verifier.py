@@ -16,6 +16,7 @@ from .checks import EffectiveChecks, build_effective_checks, generated_snapshot_
 from .static_assertion import (
     NOT_REPAIRED,
     NOTHING_EXECUTED,
+    ORACLE_SCANNER_UNAVAILABLE,
     RuleOracle,
     RuleOracleError,
     assert_statically,
@@ -99,6 +100,19 @@ class FindingVerdicts:
 
 STATIC_ASSERTION_NOT_PERMITTED = "static_assertion_verification_not_permitted"
 STATIC_ASSERTION_ORACLE_UNAVAILABLE = "static_assertion_rule_oracle_unavailable"
+# The reason code for the one outcome this level must never blur into any other: the rule was
+# never evaluated. Every refusal below carries it, so a caller reading a static assertion that did
+# not complete can tell "no rule was run over this patch" from "a clause was decided and failed"
+# without knowing which transport gave out. The oracle's own code is kept alongside it in
+# `oracle_reason_code`, because "the scanner is not installed" and "the analysis service did not
+# answer" need different things done about them.
+STATIC_ASSERTION_RULE_NOT_EVALUATED = "static_assertion_rule_not_evaluated"
+# What a reviewer is told when nothing evaluated the rule. It says the claim was not made rather
+# than that it failed, because no clause was reached.
+RULE_NOT_EVALUATED_LIMITATION = (
+    "the rule that flagged the finding was never evaluated over the patched file, so nothing here "
+    "says whether it still matches"
+)
 # The limitation a static assertion always carries. It is not a caveat that undoes the level; it
 # is the level, said out loud, so nobody reads a static assertion as a test result.
 STATIC_ASSERTION_LIMITATION = (
@@ -150,9 +164,15 @@ class Verifier:
         try:
             outcome = await assert_statically(request, snapshot, bundle, findings, self.rule_oracle, reason=reason)
         except RuleOracleError as exc:
+            detail = (
+                "the scanner that runs the rule is not installed where the assertion was decided"
+                if exc.code == ORACLE_SCANNER_UNAVAILABLE
+                else f"the oracle reported {exc.code}"
+            )
             return self._static_assertion_refusal(
                 findings, exc.code,
-                f"The rule could not be re-run over the patched file, so the patch was not asserted ({exc.code}).",
+                f"The rule that flagged this finding was never evaluated over the patched file, so nothing "
+                f"was asserted about it ({detail}).",
             )
         evidence = {
             **outcome.evidence,
@@ -186,15 +206,30 @@ class Verifier:
 
     @staticmethod
     def _static_assertion_refusal(findings: list[Any], code: str, message: str) -> VerificationResult:
+        """Refuse a candidate whose rule was never evaluated, and say that is what happened.
+
+        Every path here is a non-evaluation, by construction: `code` is either
+        `STATIC_ASSERTION_ORACLE_UNAVAILABLE` or one of `RULE_NOT_EVALUATED_CODES`, and none of
+        those carries match sets. So the result's `reason_code` is
+        `STATIC_ASSERTION_RULE_NOT_EVALUATED` regardless of which one it was: a caller's first
+        question is not which transport gave out, it is whether a clause was decided, and here
+        none was. `oracle_reason_code` keeps the cause, and no `clauses` map is written at all, so
+        nothing downstream can read a held clause out of a refusal.
+        """
         evidence = {
-            "reason_code": code,
+            "reason_code": STATIC_ASSERTION_RULE_NOT_EVALUATED,
+            "oracle_reason_code": code,
             "verification_level": STATIC_ASSERTION_VERIFICATION_LEVEL,
+            # Not "no rule matched": no rule was run. The two are the same shape and opposite
+            # claims, so the evidence states which one this is.
+            "rule_evaluated": False,
             "executed": False,
             "nothing_executed": NOTHING_EXECUTED,
         }
         return VerificationResult(
-            "inconclusive", evidence, None, code, STATIC_ASSERTION_VERIFICATION_LEVEL,
-            [f"the static assertion did not complete: {code}"], [],
+            "inconclusive", evidence, None, STATIC_ASSERTION_RULE_NOT_EVALUATED,
+            STATIC_ASSERTION_VERIFICATION_LEVEL,
+            [RULE_NOT_EVALUATED_LIMITATION, f"the static assertion did not complete: {code}"], [],
             [{"finding_id": finding.stable_id, "code": code, "message": message} for finding in findings],
         )
 

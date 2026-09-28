@@ -10,6 +10,11 @@ All project Markdown documentation, except the root [README](../README.md), live
 - [GitHub Action](getting-started/github-action.md)
 - [Repository Configuration](getting-started/configuration.md)
 
+## Releasing
+
+- [Releasing](releasing.md), the versioning policy, the owner's steps, and the Marketplace answer
+- [Changelog](../CHANGELOG.md)
+
 ## Validation and design
 
 - [Validation index](validation/README.md), with the reference output of `make bench`

@@ -447,6 +447,18 @@ function buildReviewComment(finding, options = {}) {
       : null,
   ];
 
+  // A field that only repeats what the reader has already read is dropped. The rules set a
+  // finding's title, description and remediation from one rule message, so without this the
+  // comment says the same sentence twice: the headline, then `**Fix:**` saying it again. The
+  // Action applies the same rule in `_same_sentence`, and `tests/commentSaysEachThingOnce.test.js`
+  // holds the two renderers to the same wording.
+  const sameSentence = (left, right) => {
+    const normalise = (value) => String(value || '').split(/\s+/).join(' ').replace(/\.+$/, '').toLowerCase();
+    return Boolean(normalise(left)) && normalise(left) === normalise(right);
+  };
+  const remediationRepeatsWhatWasSaid = sameSentence(repoAwareRemediation, finding.title)
+    || sameSentence(repoAwareRemediation, finding.description);
+
   const showSuggestion = shouldRenderSuggestion(finding, suggestionPatch) && suggestionValidation.ok;
   const showFixCodeBlock = !showSuggestion && shouldRenderFixCodeBlock(suggestionPatch);
   const codeFenceLanguage = inferCodeFenceLanguage(finding.file_path);
@@ -454,7 +466,7 @@ function buildReviewComment(finding, options = {}) {
   if (showSuggestion) {
     lines.push('', '```suggestion', suggestionPatch, '```');
   } else {
-    lines.push('', `**Fix:** ${markdownEscape(repoAwareRemediation)}`);
+    if (!remediationRepeatsWhatWasSaid) lines.push('', `**Fix:** ${markdownEscape(repoAwareRemediation)}`);
     if (showFixCodeBlock) {
       lines.push('', `\`\`\`${codeFenceLanguage}`, suggestionPatch, '```');
     }

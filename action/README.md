@@ -18,10 +18,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: aicodesentry/mitig8it/action@main
+      # `v1` is the released major; it only ever moves forward within 1.x.
+      # A digest pin is stronger, because a tag can be moved and a digest cannot:
+      #   gh api repos/aicodesentry/mitig8it/commits/v1 --jq .sha
+      # then use that sha as the ref, keeping `# v1` in a trailing comment.
+      - uses: aicodesentry/mitig8it/action@v1
 ```
 
 That is the whole installation. To remove it, delete the file.
+
+`@v1` rather than `@main` is not a style preference. This product's own highest-precision rule,
+`cwe-1357.gha-third-party-action-unpinned`, flags a third-party action referenced by a branch or a
+tag, and it would flag a quickstart that told you to run whatever is on our default branch today.
+The rule's own advice is the digest, so the two lines above say how to get one; `@v1` is what the
+five-line install shows because it is the form a reader can retype. What each pin promises you is
+in [docs/releasing.md](../docs/releasing.md).
 
 ## Why these permissions, and no others
 
@@ -138,6 +149,37 @@ Verifying a JavaScript repair needs the Node the image pins, which is the one
 drifted apart every JavaScript verification refused to run and the only trace was one line in a
 job log.
 
+## Which version produced a review
+
+Every review names it, in two places: the check run summary opens with it, and the last line of the
+review body carries it.
+
+> Mitig8it v1.0.0 found 3 findings outside test code (1 critical, 2 high, 0 medium, 0 low).
+
+> <sub>Analyzed by **Mitig8it v1.0.0** running as a GitHub Action in this repository's own runner.
+> 3 findings reported. Quote that version in a bug report.</sub>
+
+On a ref that is not a release it says what it is instead of guessing: `unreleased (main, built from
+source)`, or `unreleased (local checkout, built from source)` for `uses: ./action`. A released ref
+whose image pull failed says `v1.0.0 (built from source, not the released image)`, because a review
+that came out of a local build must not be compared against the published bytes.
+
+The string is composed once, by `version_identity` in `orchestrator/run.py`, and rendered by the
+publisher. Neither place derives it independently, which is the same rule the finding totals follow
+and for the same reason: three renderers doing their own arithmetic is how one review came to report
+four different totals.
+
+The job summary carries the image digest as well. The review body does not, because a sixty-four
+character hex string in a pull request comment is noise to everyone who is not filing a bug.
+
+**The App reports no version, and this change does not give it one.** Its review footer carries the
+run id (`Analyzed by Mitig8it · Run a1b2c3d4 · ...`), which identifies that one review in its
+database and is the right thing to quote in a bug report against the App. There is no released App
+version to name: it is deployed continuously from `main` to Cloud Run, each deployment identified by
+a commit and a revision, and `"version": "1.0.0"` in `services/api-service/package.json` has never
+been bumped and is not surfaced anywhere. Printing it would be inventing a version, so the App keeps
+the run id.
+
 ## What the review looks like
 
 One review per run. The summary body and every new inline comment are submitted together as a
@@ -192,6 +234,41 @@ Without a database there are no suppressions and no baseline, so a finding you h
 to act on will be reported again on the next pull request that touches those lines. If that
 matters more to you than keeping everything in your own runner, the app is the other trade.
 
+## Where the image comes from
+
+A released ref pulls the image the release workflow published. Every other ref builds it.
+
+| Ref | What happens first |
+| --- | --- |
+| `@v1`, `@v1.0.0`, `@<sha>` on `aicodesentry/mitig8it` | `docker pull ghcr.io/aicodesentry/mitig8it-action:<version>@sha256:<digest>` |
+| `@main` or any other branch | The image is built from source, with the layer cache |
+| A fork's ref | The image is built from the fork's source, because that is the point of a fork |
+| `uses: ./action` | The image is built from your checkout |
+| A released ref whose pull fails | A warning, then the image is built from source |
+
+The version and the digest are not resolved at run time. `action/released-image.env` carries them,
+`.github/workflows/release.yml` writes that file on the commit it tags, and the tag is what
+`uses: ...@v1` checks out, so a released ref knows its own image without asking a registry which
+image `:1.0.0` means today. The pull uses `name:tag@sha256:...`, so the daemon verifies the digest
+and a registry serving a different manifest fails the pull rather than reviewing your code.
+
+Four conditions have to hold before the published image is used: the action came from
+`aicodesentry/mitig8it`, the ref is a release tag or a full commit sha, the file names a version, an
+image and a digest, and a tag ref agrees with the version the file names. The last one is what keeps
+the moving `v1` tag honest. A run says on its log which condition failed when it builds instead.
+
+On `main` the three values in that file are empty, which is the correct state rather than a missing
+one: an unreleased ref has no published image, so it builds, exactly as every ref did before.
+
+**The cold start is unmeasured, and will stay unmeasured until CI runs a release.** What can be
+said is the arithmetic. The September 2026 trial measured the build at 85 to 111 seconds cold and 36
+to 65 seconds warm on GitHub's runners, for an image of 745 MB
+([docs/validation/action-trial-2026-09.md](../docs/validation/action-trial-2026-09.md)). A pull of a
+745 MB image replaces that build. Nobody has timed the pull on a GitHub runner, so the only honest
+claim is the shape of the change and not a number: the build disappears from the critical path and a
+pull takes its place. The first release run is what will produce the figure, and this paragraph
+should be replaced with it rather than argued with.
+
 ## How it is packaged
 
 This is a composite action, not a container action, and the difference matters.
@@ -206,13 +283,13 @@ docker build --file "${GITHUB_ACTION_PATH}/Dockerfile" --tag mitig8it-action:loc
 ```
 
 The parent of the action path is the repository root in both cases that matter: `uses: ./action`
-resolves inside your checkout, and a remote `uses: aicodesentry/mitig8it/action@ref` makes GitHub
+resolves inside your checkout, and a remote `uses: aicodesentry/mitig8it/action@<ref>` makes GitHub
 check out the whole repository and point the action path at the subdirectory in it.
 
 Both the action and CI build through the same script, `action/build-image.sh`, so the image the
 dogfood builds and the image CI proves buildable cannot drift apart.
 
-The first run on a runner pays for the full build. After that a layer cache keyed on the
+When a ref builds, the first run on a runner pays for the full build. After that a layer cache keyed on the
 Dockerfile, the pinned Python requirements and the github-service lockfile is restored by
 `actions/cache`, so an ordinary source change reuses the base image, the apt packages, the Node
 tarball and the Python wheels and only replays the `COPY` layers. The build step prints
@@ -266,6 +343,14 @@ Several families of test exist to stop specific mistakes recurring:
   and that both workflows parse. An unparsable workflow is worth a test of its own: GitHub
   rejects the whole run before any job starts and reports only "this run likely failed because
   of a workflow file issue", naming no file and no line.
+- `test_released_image.py` extracts the pull-or-build decision out of `action.yml` and runs it as
+  shell against a fabricated `released-image.env`, so every branch of it is exercised without a
+  runner and without Docker. Shell inside a YAML string is otherwise first run by a user.
+- `test_documented_refs.py` reads the documented installs and fails on a ref that is neither a
+  release tag nor a full commit sha, because `@main` in a quickstart is what this product's own
+  `cwe-1357.gha-third-party-action-unpinned` rule reports in other people's workflows.
+- `test_version_identity.py` covers the sentence a review carries about what produced it, in both
+  the orchestrator that composes it and the publisher that renders it.
 
 Lint the workflows the way CI does:
 

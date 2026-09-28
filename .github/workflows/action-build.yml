@@ -12,6 +12,18 @@ on:
       # so a change to the App alone is exactly the change that can break them.
       - 'services/api-service/**'
       - '.github/workflows/action-build.yml'
+      # The release gate is the action's own, so its tests run here. test_release.py reads
+      # release.yml and the changelog script; test_documented_refs.py reads every documented
+      # install; test_release.py also reads docs/releasing.md.
+      - '.github/workflows/release.yml'
+      - 'scripts/release-changelog.py'
+      - 'CHANGELOG.md'
+      - 'docs/releasing.md'
+      # A quickstart that goes back to `@main` has to fail on the pull request that does it, not
+      # on main afterwards, which means the files the quickstart test reads are triggers too.
+      - 'README.md'
+      - 'docs/getting-started/**'
+      - '.github/ISSUE_TEMPLATE/bug.yml'
   push:
     branches: [main]
 

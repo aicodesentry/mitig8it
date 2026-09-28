@@ -37,6 +37,183 @@ Two structural rules back this up, both enforced by `src/tests/test_rule_posting
 - **A negative condition goes in `exclusion`, not in a lookahead.** `find_ineffective_lookaheads()` in `security_rules.py` is a static check over every regex tier 1 runs. It flags a negative lookahead that an unbounded greedy quantifier precedes with no required token in between, because the engine can always satisfy such a lookahead by letting the quantifier consume to the end of the line. A rule with that shape silently degrades to its leading alternation. `exclusion` is a second pass over the matched line, where backtracking cannot defeat it.
 - **Tier 1 does not read comments.** `src/comment_stripper.py` blanks line comments, block comments, JSDoc, Ruby `=begin` blocks and Python docstrings for JavaScript, TypeScript, Go, Java, C#, PHP, Ruby and Python before any regex runs, keeping line numbers and column offsets so a finding still quotes the author's text. It never strips inside a string literal, and an unmodelled extension is not touched at all. A rule can also opt out of seeing string literal bodies with `reads_string_literals=False`; the credential rule keeps them, because a secret lives in a string.
 
+## Secrets in the diff
+
+A committed credential is the most consequential thing a pull request can carry, and until
+this change the product looked for one with a single tier 1 regex: a credential-ish
+identifier, a colon or an equals sign, and twelve or more characters of anything. No key
+formats, no structural verification, no entropy, and it was one of the rules that had fired on
+documentation prose. `src/secret_detection.py` replaces it.
+
+**It reads the added lines only.** An existing secret is not this pull request's fault, and
+re-reporting it on every change to the file is how a category gets muted. Only entries whose
+`kind` is `add` are scanned, which is also why a context line carrying a key produces nothing.
+
+**Two independent signals, and the finding says which one fired**, in
+`evidence_details.extra.signal`. Each is its own rule id, so the posting policy, the metrics
+and the precision tables all answer per signal.
+
+### `secret.format.known_key`
+
+Seventeen published key formats, and for each one the structure that format declares is
+verified. That verification is the difference between a detector and a substring search, and it is
+why this signal posts on the self-validating clause of the posting policy as well as on a number:
+the same argument the policy already makes for a sink-only pattern. It also has the number,
+**1.00 over three posted findings**, one of which was a complete RSA private key in a public
+repository's production source.
+
+| Format | What is verified |
+| --- | --- |
+| AWS access key id | one of the nine four-character key-type prefixes, exactly 20 base32 characters |
+| AWS secret access key | exactly 40 base64 characters under an `aws_secret_access_key` identifier |
+| GitHub token | a `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` prefix and exactly 36 base62 characters |
+| GitHub fine-grained PAT | `github_pat_`, a 22-character id, an underscore, exactly 59 characters |
+| Google API key | the `AIza` prefix and a fixed total length of 39 |
+| Slack token | the `xox?-` prefix, the numeric team and installation segments, a 24-to-34 character tail |
+| Slack incoming webhook | the host, a `T` team id, a `B` channel id, a 24-character secret tail |
+| Stripe live and test keys | the `sk_live_`/`rk_live_`/`sk_test_`/`rk_test_` prefix and at least 24 base62 characters |
+| Twilio API key | the `SK` prefix and exactly 32 lowercase hex characters |
+| Twilio auth token | exactly 32 hex characters under a Twilio auth-token identifier |
+| SendGrid API key | `SG.`, a 22-character key id, a dot, exactly 43 characters |
+| OpenAI API key | a `sk-proj-`/`sk-svcacct-`/`sk-admin-` prefix, or the legacy 48-character form carrying the `T3BlbkFJ` marker |
+| Anthropic API key | the `sk-ant-api`/`sk-ant-admin` prefix with its two-digit version and an 80-to-120 character body |
+| Private key PEM | a `BEGIN … PRIVATE KEY` armour marker, which a public key and a certificate do not carry |
+| JWT | three base64url segments, a header that decodes to JSON naming a real `alg`, a payload that decodes to JSON, a non-empty signature |
+| Database connection string | a URL parse yielding a password that is neither empty, interpolated nor a placeholder, at a host that is not loopback and not a bare compose alias |
+| `.env` file | a `.env` that is not a `.env.example`, carrying a credential-named variable whose value is neither a placeholder nor an interpolation |
+
+Two things the verification refuses that a prefix match accepts. **A published example**: the
+AWS documentation key id and secret, and the Stripe quickstart key that `security_rules.py`
+quotes in its own comment, are in thousands of repositories and in this one. **A hand-typed
+fixture**: a value whose random core runs eight or more characters straight through the
+alphabet or the digits, which a real key does with a probability around one in ten to the
+thirteenth per position.
+
+GitHub's classic token format also carries a CRC32 checksum over its random part, encoded
+base62. It is **not** verified, and the reason is recorded rather than papered over: the
+algorithm could not be confirmed on this machine against a token with a known-valid checksum,
+because the only publicly published example, from GitHub's own announcement, validates under
+none of the four plausible base62 alphabet orderings, and it is an illustration rather than a
+token. Verifying a checksum against an unconfirmed algorithm would silently reject every real
+token, which is worse than the exact length and charset check that is there.
+
+### `secret.entropy.credential_assignment`
+
+A high-entropy value assigned to an identifier whose name says it is a credential. It is the
+signal that catches the formats nobody has written down, and it is the signal that can be
+wrong, so it carries a measured precision, **1.00 over five posted findings**, which is above
+the policy's floor and is not a lot, and it is bounded on both sides.
+
+The **name** is read as tokens, not as a substring, because a substring list gets this wrong in
+both directions: `API_KEY` contains `key`, which has to be disqualifying on its own and must
+not disqualify `api_key`, and `password_hash` contains `password` and is not a password. The
+identifier is split on separators and camelCase boundaries, and then a disqualifying first
+token (`public`), a credential bigram (`connection_string`), `key` with a qualifier in front of
+it, a self-standing credential tail (`token`, `secret`, `password`, `dsn`), and a disqualifying
+tail (`id`, `name`, `path`, `url`, `header`, `hash`, and thirty more) are asked in that order.
+
+The **value** is measured on its `random_core`, the longest segment carrying no separator,
+because a credential's randomness lives in one segment and the rest is structure the vendor put
+there. `sk-live-7f3a91bc44de2210`, a fixture this repository's own `.gitleaksignore` records, is
+24 characters of which 16 are random, and scoring the whole string counted `sk` and `live` as
+entropy. Hex and base62 are scored on separate floors (32 characters at 3.2 bits, 20 at 4.0),
+and a base62 core must mix at least two character classes. Twelve named exclusions then refuse
+the shapes that are legitimately high entropy: a UUID, a subresource integrity hash, a digest
+under a digest name, a path, an interpolation, an environment read, a repeated character, a
+placeholder, a base64 asset, a published example, an unsigned JWT, and a value that echoes its
+own identifier. The reason is returned rather than swallowed, so a test can name the shape it
+protects.
+
+`unsigned_jwt` is the one the September 2026 measurement added, and it is a rule about the two
+signals rather than about entropy. A JWT with an empty signature is one anyone can mint, so
+`_verify_jwt` refuses it for the format signal; without this exclusion the entropy signal
+reported the same value under its own rule id, at 5.4 bits under the identifier `authorization`,
+and told the author to rotate a token that was never a credential. The weaker signal does not get
+to re-claim what the stronger one examined and rejected.
+
+### Path and context
+
+The path model is the one `src/test_code_scope.py` already owns, not a second one.
+
+- `is_test_code_path` makes a secret in test code informational through `classify_finding`,
+  which is how the product already treats test code. A realistic fake key in a fixture is the
+  irreducible case, and `info` is the answer.
+- `is_lockfile_path` and `is_non_code_text_path` turn the **entropy** signal off. A lockfile is
+  nothing but high-entropy strings, and `docs/validation/*.md` has already drawn a critical
+  finding for a sentence about someone else's fixture.
+- The **format** signal stays on everywhere, for the reason `SecurityRule.scans_prose` already
+  gives: a key that passes its own structural verification is a leak in a README and in a JSON
+  config as much as in a module.
+- `.mitig8it.yml` keeps `benchmarks/**`, `docs/validation/**` and `action/tests/fixtures/**` out
+  of our own pull requests, unchanged.
+- Comments are **not** stripped before matching. Every other tier 1 rule reads the
+  comment-blanked text because its signal is the shape of executable code; a commented-out
+  credential is still a committed credential.
+
+At most five findings per file per signal, and a `.env` is one finding rather than one per
+variable: a file full of secrets is one review conversation.
+
+### The fix, and the sentence that matters more than a patch
+
+`families.rule_family` in the remediation service derives the repair family from the finding's
+CWE, so a CWE-798 finding is already routed into `hardcoded_credential`. What the detector
+decides is whether the finding **promises** a fix, and it decides it by mirroring the shapes the
+family's templates actually recognize: the two JavaScript shapes in
+`remediation-service/src/sites.py` (`_JS_CONSTANT_RE`, `_JS_PROPERTY_RE`) and its module-level
+Python assignment. `is_rewritable_credential_shape` is that mirror; if either matcher changes,
+change it in the same commit, the way `scripts/replay/prodfilters.py` mirrors the orchestrator.
+
+A rewritable shape gets the existing template's `process.env.NAME` / `os.getenv("NAME")` patch
+and this message:
+
+> Rotate this credential now, then replace the literal with a read from the environment or a
+> secret manager. Rotating matters as much as removing: the value is in the commit history, so
+> deleting the line does not un-leak it.
+
+A key inside a JSON config, a PEM block, a Slack webhook URL and a `.env` file cannot be
+rewritten mechanically, so no fix is offered and the message says so:
+
+> Rotate this credential now, then remove it from the repository. Rotating matters as much as
+> removing: the value is in the commit history, so deleting the line does not un-leak it. No
+> automatic fix is offered for this shape, because the literal is not bound to a constant a
+> template can rewrite.
+
+Both are the finding's `remediation`, which is the field the api-service publishes in the pull
+request comment and the field the Action renders in its annotation, so the App and the Action
+read the same sentence by construction rather than by two copies being kept in step.
+`services/api-service/tests/secretRotationCopy.test.js` and
+`action/tests/test_secret_rotation_copy.py` assert that neither renderer drops it.
+
+The evidence line quotes a shape, never a whole credential: `sk_l…******… (32 characters)` and
+the structure that was verified. `code_snippet` keeps the author's line, because that is what
+the suggestion the App publishes has to match and what every other rule does.
+
+### Measurement and the benchmark
+
+Both signals were measured over three corpora (165 merged pull requests from eleven clean
+repositories, the 23 pinned trees of the vulnerable corpus, and this repository's own tracked
+files), and **every one of the 42 findings they produced was read by hand**. The full write-up,
+including
+the eight true positives with their values redacted and the two detector defects the reading found
+and fixed, is [secrets-in-the-diff-2026-09.md](../validation/secrets-in-the-diff-2026-09.md).
+
+| Signal | Adjudicated | Precision over all | Posted | Precision over posted |
+| --- | --- | --- | --- | --- |
+| `secret.format.known_key` | 19 | 0.16 | 3 | 1.00 |
+| `secret.entropy.credential_assignment` | 20 | 0.25 | 5 | 1.00 |
+
+The two columns differ because **no informational finding is posted inline** and all eight true
+positives are outside test code while all thirty-one false positives are inside it. A repository
+writes invented credentials in its tests and real ones in its configuration and its source, and
+`is_test_code_path` is the one assumption both figures rest on.
+
+`benchmarks/secrets-precision/cases.json` and
+`src/tests/test_secrets_precision_benchmark.py` are the gate: one true-positive fixture per key
+format, a true-positive case for each shape a corpus true positive was found in with a generated
+value, every adjudicated false positive as a no-finding case with the exclusion that refuses it,
+and all nine `.gitleaksignore` entries read out of that file itself, so the detector can never
+regress onto our own fixtures.
+
 ## Tier 1 budget
 
 Tier 1 runs every rule over every changed line, and on the largest payload the caps still allow (200 files of 75 kB) that measured 50 s against the orchestrator's 30 s budget. It is now bounded twice:

@@ -30,6 +30,8 @@ from src.verification.static_assertion import (
     REFUSAL_UNRELATED_FILE,
     REFUSAL_UNRELATED_LINE,
     HttpRuleOracle,
+    ORACLE_SCANNER_UNAVAILABLE,
+    RULE_NOT_EVALUATED_CODES,
     RuleOracleError,
     changed_lines,
 )
@@ -40,6 +42,7 @@ from src.verification.verifier import (
     SANDBOX_VERIFICATION_LEVELS,
     STATIC_ASSERTION_NOT_PERMITTED,
     STATIC_ASSERTION_ORACLE_UNAVAILABLE,
+    STATIC_ASSERTION_RULE_NOT_EVALUATED,
     STATIC_ASSERTION_VERIFICATION_LEVEL,
     VERIFICATION_LEVEL_ORDER,
     VERIFICATION_LEVELS,
@@ -432,20 +435,30 @@ async def test_the_limitations_say_no_test_ran(request_payload):
 
 @pytest.mark.asyncio
 async def test_an_unreachable_analysis_service_refuses_the_candidate(request_payload):
-    """The case that must never pass: no answer is not an empty match set."""
+    """The case that must never pass: no answer is not an empty match set.
+
+    The verdict-level reason is the one every non-evaluation shares, so a caller never has to
+    enumerate transports to learn that no clause was decided; the oracle's own code is kept
+    beside it and on the finding, because that is what says what to go and fix.
+    """
     result = await assert_with(request_payload, DeadOracle())
     assert result.status == "inconclusive"
     assert result.proven_finding_ids == []
-    assert result.reason_code == "rule_oracle_unreachable"
+    assert result.reason_code == STATIC_ASSERTION_RULE_NOT_EVALUATED
+    assert result.evidence["oracle_reason_code"] == "rule_oracle_unreachable"
+    assert result.evidence["rule_evaluated"] is False
+    assert "clauses" not in result.evidence
     assert result.evidence_digest is None
     assert result.unproven_findings[0]["code"] == "rule_oracle_unreachable"
+    assert "never evaluated" in result.unproven_findings[0]["message"]
 
 
 @pytest.mark.asyncio
 async def test_no_oracle_at_all_refuses_the_candidate(request_payload):
     result = await assert_with(request_payload, None)
     assert result.status == "inconclusive"
-    assert result.reason_code == STATIC_ASSERTION_ORACLE_UNAVAILABLE
+    assert result.reason_code == STATIC_ASSERTION_RULE_NOT_EVALUATED
+    assert result.evidence["oracle_reason_code"] == STATIC_ASSERTION_ORACLE_UNAVAILABLE
     assert result.proven_finding_ids == []
 
 
@@ -457,7 +470,53 @@ async def test_a_response_with_no_match_sets_refuses_the_candidate(request_paylo
 
     result = await assert_with(request_payload, EmptyOracle())
     assert result.status == "inconclusive"
-    assert result.reason_code == "rule_oracle_response_invalid"
+    assert result.reason_code == STATIC_ASSERTION_RULE_NOT_EVALUATED
+    assert result.evidence["oracle_reason_code"] == "rule_oracle_response_invalid"
+
+
+@pytest.mark.parametrize("code", sorted(RULE_NOT_EVALUATED_CODES))
+@pytest.mark.asyncio
+async def test_every_oracle_failure_reads_as_a_rule_that_was_not_evaluated(request_payload, code):
+    """One reason code for the whole class, so no caller has to enumerate transports.
+
+    An oracle can give out in several ways and none of them produces match sets, so none of them
+    decides a clause. A caller asking "was anything asserted here" gets one answer to compare
+    against instead of five, and `oracle_reason_code` still says which way it was.
+    """
+    result = await assert_with(request_payload, DeadOracle(code))
+    assert result.status == "inconclusive"
+    assert result.reason_code == STATIC_ASSERTION_RULE_NOT_EVALUATED
+    assert result.evidence["oracle_reason_code"] == code
+    assert result.evidence["rule_evaluated"] is False
+    assert result.proven_finding_ids == []
+
+
+@pytest.mark.parametrize("missing", ["rule_matches", "all_matches"])
+@pytest.mark.asyncio
+async def test_a_side_with_a_missing_match_set_refuses_the_candidate(request_payload, missing):
+    """The clause that must never be decided from a key the oracle did not send.
+
+    `all_matches` is clause 4's only input. Reading an absent key as an empty list would make the
+    clause hold over a rule set nothing ran, which is the exact shape of a fix shipping with the
+    claim that no new rule started matching when nothing ever asked.
+    """
+    class PartialOracle:
+        async def match_sets(self, rule_id, path, original, patched):
+            sides = {
+                side: {
+                    "rule_matches": [{"rule_id": rule_id, "line": FINDING_LINE}] if side == "original" else [],
+                    "all_matches": [{"rule_id": rule_id, "line": FINDING_LINE}] if side == "original" else [],
+                }
+                for side in ("original", "patched")
+            }
+            del sides["patched"][missing]
+            return {"rule_id": rule_id, "path": path, "tier": "tier1", "refusal": None, **sides}
+
+    result = await assert_with(request_payload, PartialOracle())
+    assert result.status == "inconclusive"
+    assert result.reason_code == STATIC_ASSERTION_RULE_NOT_EVALUATED
+    assert result.evidence["oracle_reason_code"] == "rule_oracle_response_invalid"
+    assert result.proven_finding_ids == []
 
 
 @pytest.mark.asyncio
@@ -496,12 +555,25 @@ def test_the_http_oracle_is_configured_from_the_same_env_the_api_service_uses(mo
     assert oracle is not None and oracle.base_url == "http://analysis-service:8001"
 
 
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (500, "rule_oracle_rejected_request"),
+        # The analysis service answers 503 for exactly one thing: its scanner did not run
+        # (`main.verify_static_assertion`). It gets the code that says so, the same one the
+        # in-process oracle reports, so the two deployments read alike.
+        (503, ORACLE_SCANNER_UNAVAILABLE),
+        (400, "rule_oracle_rejected_request"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_the_http_oracle_refuses_rather_than_passes_when_the_service_answers_badly(monkeypatch):
+async def test_the_http_oracle_refuses_rather_than_passes_when_the_service_answers_badly(
+    monkeypatch, status, code
+):
     import httpx
 
     class Response:
-        status_code = 503
+        status_code = status
 
         def json(self):  # pragma: no cover - never reached on a non-200
             return {}
@@ -523,7 +595,7 @@ async def test_the_http_oracle_refuses_rather_than_passes_when_the_service_answe
     oracle = HttpRuleOracle("http://analysis-service:8001", "s3cret")
     with pytest.raises(RuleOracleError) as excinfo:
         await oracle.match_sets(RULE, "src/db.ts", SOURCE, SOURCE)
-    assert excinfo.value.code == "rule_oracle_rejected_request"
+    assert excinfo.value.code == code
 
 
 @pytest.mark.asyncio

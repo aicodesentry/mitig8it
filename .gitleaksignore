@@ -14,3 +14,13 @@ c08c138f0d9d46573ef7e8d88b4a442e46a348c9:services/api-service/tests/githubRemedi
 # Test fixture: a fake API key literal in the proof-closure test. Not a credential.
 8642df179a1cad34929d4f7469794b663d405e9c:services/remediation-service/tests/test_proof_module_closure.py:generic-api-key:27
 74db4329332c283d55bcf5da072adadcf99a99e6:action/tests/test_repair_engine.py:generic-api-key:253
+
+# The benchmark's own no-finding cases quote the four repository lines that gitleaks reads as
+# credentials, which is the whole point of those cases: an idempotency key is a request
+# de-duplication identifier, not a secret, and the detector must stay silent on it. Quoting a
+# line gitleaks flags means the quote is flagged too, so the four quotes carry the same
+# exemption their originals already do, one entry each rather than a rule-wide allowance.
+99c5ba950a49442e84f4e03425e640db66cebcaa:benchmarks/secrets-precision/cases.json:generic-api-key:775
+99c5ba950a49442e84f4e03425e640db66cebcaa:benchmarks/secrets-precision/cases.json:generic-api-key:783
+99c5ba950a49442e84f4e03425e640db66cebcaa:benchmarks/secrets-precision/cases.json:generic-api-key:791
+99c5ba950a49442e84f4e03425e640db66cebcaa:benchmarks/secrets-precision/cases.json:generic-api-key:799

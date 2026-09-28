@@ -18,7 +18,9 @@ jobs:
     steps:
       - name: Fetch Dependabot metadata
         id: meta
-        uses: dependabot/fetch-metadata@v3
+        # Pinned to the commit `v3` pointed at, because `cwe-1357.gha-third-party-action-unpinned`
+        # is this repository's own rule and a tag its owner can move is what the rule is about.
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
       - name: Merge eligible updates after Required CI
         if: |

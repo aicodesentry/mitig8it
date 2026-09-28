@@ -5,8 +5,15 @@ in a file whose import closure reaches a package the sandbox has no copy of. The
 to write a proof for it (`dependency_not_available_in_sandbox:js-yaml`), the template writes a
 patch for it, and before this level existed the finding shipped nothing.
 
-These tests use the real analysis service through `InProcessRuleOracle`, so they need semgrep on
-PATH and skip without it.
+These tests use the real analysis service through `InProcessRuleOracle`, so they need both the
+analysis module importable and its scanner installed. Either one missing skips them, with the
+reason named. The repair service's own CI job installs the scanner beside the test environment
+rather than in it, because semgrep's `opentelemetry-api` pin and this service's cannot both be
+satisfied; `.github/workflows/remediation.yml` says so where it does it.
+
+The last test here is the other half: the state where the module is importable and the scanner is
+not. Nothing may be asserted in that state, and before it was tested the assertion came back as a
+bare `inconclusive` that read like a rule that had been run.
 """
 from __future__ import annotations
 
@@ -21,8 +28,11 @@ from src.models import GitTreeEntry, RepairRequest
 from src.proofs import ProofFallback, generate_proof
 from src.retrieval import Snapshot
 from src.templates import TemplateFallback, generate_template
-from src.verification.static_assertion import InProcessRuleOracle
-from src.verification.verifier import STATIC_ASSERTION_VERIFICATION_LEVEL
+from src.verification.static_assertion import ORACLE_SCANNER_UNAVAILABLE, InProcessRuleOracle
+from src.verification.verifier import (
+    STATIC_ASSERTION_RULE_NOT_EVALUATED,
+    STATIC_ASSERTION_VERIFICATION_LEVEL,
+)
 
 RULE = "secret.hardcoded.credential"
 PATH = "src/server.js"
@@ -83,10 +93,13 @@ def payload(source: str = SOURCE) -> dict:
 
 @pytest.fixture(scope="module")
 def oracle():
-    loaded = InProcessRuleOracle.load()
-    if loaded is None:
-        pytest.skip("the analysis service is not importable from this checkout")
-    return loaded
+    unavailable = InProcessRuleOracle.unavailable_reason()
+    if unavailable is not None:
+        # The reason rather than a guess at it: an environment with the analysis module and no
+        # scanner and one with neither are different problems, and a skip that names the wrong one
+        # is how this suite came to pass on its author's machine and fail on CI.
+        pytest.skip(unavailable)
+    return InProcessRuleOracle.load()
 
 
 def test_the_subject_is_the_pair_the_corpus_counts_84_of():
@@ -187,6 +200,60 @@ async def test_a_patch_that_still_matches_the_rule_is_refused(oracle):
     assert result.status == "failed"
     assert result.reason_code == "static_assertion_rule_still_matches_patch"
     assert result.proven_finding_ids == []
+
+
+@pytest.mark.asyncio
+async def test_a_scanner_the_process_does_not_have_is_not_a_rule_that_matched_nothing(
+    oracle, monkeypatch, tmp_path
+):
+    """The state this level shipped in on CI, and the one that must never pass a clause.
+
+    A checkout carries the analysis service's module and its rule files, so an oracle loads. It
+    does not carry the scanner, because semgrep's `opentelemetry-api~=1.37.0` and this service's
+    `==1.44.0` cannot both be satisfied in one environment. Clause 4 is the one that breaks first:
+    its input is every rule's matches on both files, and that needs tier 2.
+
+    The patch under test is a correct repair. It is still refused, and the refusal says the rule
+    was never evaluated rather than reporting a bare `inconclusive`, because a static assertion is
+    the claim that a rule no longer matches and nothing here asked.
+    """
+    from src.patches import build_patch_bundle
+    from src.verification import Verifier
+
+    request = RepairRequest.model_validate(payload())
+    snapshot = Snapshot(request)
+    original = snapshot.full_content(PATH).splitlines()
+    bundle = build_patch_bundle(
+        request, snapshot,
+        [{
+            "path": PATH,
+            "start_line": FINDING_LINE,
+            "original_lines": [original[FINDING_LINE - 1]],
+            "replacement_lines": ["const apiKey = process.env.API_KEY;"],
+        }],
+        None,
+    )
+    assert "process.env.API_KEY" in bundle.patches[0].replacement_content
+    assert LITERAL not in bundle.patches[0].replacement_content
+
+    # A PATH with no scanner on it, while the module stays imported and the rules stay on disk.
+    # That is the repair service's environment, not a broken checkout.
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert InProcessRuleOracle.load() is None
+    assert "scanner" in (InProcessRuleOracle.unavailable_reason() or "")
+
+    result = await Verifier(broker=None, rule_oracle=oracle).verify_static_assertion(
+        request, snapshot, bundle, reason="execution_not_available:test"
+    )
+    assert result.status != "passed"
+    assert result.proven_finding_ids == []
+    assert result.reason_code == STATIC_ASSERTION_RULE_NOT_EVALUATED
+    assert result.evidence["oracle_reason_code"] == ORACLE_SCANNER_UNAVAILABLE
+    assert result.evidence["rule_evaluated"] is False
+    # No clause is recorded at all, so nothing downstream can read one as held.
+    assert "findings" not in result.evidence
+    assert any("never evaluated" in item for item in result.limitations)
+    assert result.unproven_findings[0]["finding_id"] == "secret-1"
 
 
 async def _repair(engine: RepairEngine, body: dict, oracle) -> object:

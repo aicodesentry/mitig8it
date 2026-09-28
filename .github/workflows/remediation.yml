@@ -56,6 +56,44 @@ jobs:
           cache: pip
           cache-dependency-path: services/remediation-service/requirements-test.txt
       - run: pip install -r services/remediation-service/requirements-test.txt
+      # The static assertion level is decided by re-running the rule that produced the finding,
+      # and `tests/test_static_assertion_engine.py` drives the real oracle rather than a stub, so
+      # this job needs the analysis service's scanner. It cannot go in the test environment:
+      # semgrep requires opentelemetry-api~=1.37.0 and this service pins ==1.44.0, the conflict
+      # `action/requirements.txt` is written around. The oracle shells out to the binary, so a
+      # separate virtualenv with only `semgrep` linked onto PATH gives the tests the real scanner
+      # without moving a pin. The version is read out of the analysis service's own requirements
+      # rather than restated, so this can never verify against a scanner that service does not run.
+      - name: Install the scanner the rule oracle runs, beside the test environment
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^semgrep==\(.*\)$/\1/p' services/analysis-service/src/requirements.txt | head -n 1)"
+          if [ -z "${version}" ]; then
+            echo "services/analysis-service/src/requirements.txt no longer pins semgrep" >&2
+            exit 1
+          fi
+          python -m venv /tmp/rule-scanner
+          /tmp/rule-scanner/bin/pip install --disable-pip-version-check "semgrep==${version}"
+          # Only the scanner is exposed. Putting the whole virtualenv on PATH would shadow this
+          # job's own python and pip, which belong to the test environment.
+          mkdir -p /tmp/rule-scanner-bin
+          ln -sf /tmp/rule-scanner/bin/semgrep /tmp/rule-scanner-bin/semgrep
+          echo "/tmp/rule-scanner-bin" >> "$GITHUB_PATH"
+      # A guard rather than a courtesy. The oracle reports itself unavailable when either half is
+      # missing and its tests then skip, so a job that lost the scanner would go green having
+      # tested nothing. This asks the same question the test fixture asks, before pytest runs.
+      - name: The rule oracle must be available here, so its tests run rather than skip
+        run: |
+          set -euo pipefail
+          semgrep --version
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "services/remediation-service")
+          from src.verification.static_assertion import InProcessRuleOracle
+          reason = InProcessRuleOracle.unavailable_reason()
+          if reason is not None:
+              sys.exit(f"the static assertion tests would skip in this job: {reason}")
+          PY
       - run: pytest services/remediation-service/tests -q
 
   remediation-evaluation:

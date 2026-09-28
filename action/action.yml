@@ -82,11 +82,117 @@ outputs:
 # `${{ github.action_path }}/..` is the repository root in both cases that matter: `uses: ./action`
 # resolves the action path inside the checkout, and a remote `uses: owner/repo/action@ref` makes
 # GitHub check out the whole repository and point the action path at the subdirectory in it.
+#
+# Building is no longer the first thing a run does. A released ref pulls the image the release
+# workflow published and verified, which is the difference between a user's first review starting
+# after a pull and starting after a full container build. Building from source is kept, unchanged,
+# for every ref that has no published image to name: a branch, a fork, a local `./action`, or a
+# released ref whose registry cannot be reached. `released-image.env` is what tells the two apart.
 runs:
   using: composite
   steps:
+    # Which image this run will use, decided once, before anything expensive happens.
+    #
+    # The published image is used only when all of these hold. Any one of them failing is an
+    # ordinary case, not an error, and the step says on the log which one it was.
+    #
+    #   1. the action was resolved from aicodesentry/mitig8it, so a fork builds its own code
+    #   2. the ref is a release tag (v1, v1.0, v1.0.0) or a full commit sha, never a branch
+    #   3. released-image.env at that ref names a version, an image and a digest
+    #   4. a tag ref agrees with the version the file names, so `v1` cannot pull a 2.x image
+    #
+    # The file is parsed, never sourced. A ref a user pins should not be able to run shell in
+    # their runner merely by being checked out, and each value is matched against a regex before
+    # it becomes part of a `docker pull` argument.
+    - name: Decide whether to pull the released image or build from source
+      id: image
+      shell: bash
+      env:
+        ACTION_REPOSITORY: ${{ github.action_repository }}
+        ACTION_REF: ${{ github.action_ref }}
+        MANIFEST: ${{ github.action_path }}/released-image.env
+      run: |
+        set -euo pipefail
+
+        field() {
+          sed -n "s/^${1}=//p" "${MANIFEST}" | tail -n 1 | tr -d '\r'
+        }
+
+        version=''
+        image=''
+        digest=''
+        if [ -f "${MANIFEST}" ]; then
+          version="$(field MITIG8IT_VERSION)"
+          image="$(field MITIG8IT_IMAGE)"
+          digest="$(field MITIG8IT_IMAGE_DIGEST)"
+        fi
+
+        reason=''
+        if [ "$(printf '%s' "${ACTION_REPOSITORY:-}" | tr 'A-Z' 'a-z')" != 'aicodesentry/mitig8it' ]; then
+          reason="the action came from ${ACTION_REPOSITORY:-a local path} rather than aicodesentry/mitig8it"
+        elif ! printf '%s' "${ACTION_REF:-}" | grep -qE '^(v[0-9]+(\.[0-9]+){0,2}|[0-9a-f]{40})$'; then
+          reason="${ACTION_REF:-the empty ref} is a branch rather than a release tag or a commit sha"
+        elif ! printf '%s' "${version}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+          reason='released-image.env names no released version, so this ref is not a release'
+        elif ! printf '%s' "${image}" | grep -qE '^ghcr\.io/[a-z0-9][a-z0-9._/-]*$'; then
+          reason='released-image.env names no usable image repository'
+        elif ! printf '%s' "${digest}" | grep -qE '^sha256:[0-9a-f]{64}$'; then
+          reason='released-image.env names no image digest'
+        else
+          case "${ACTION_REF}" in
+            v*)
+              want="${ACTION_REF#v}"
+              case "${version}" in
+                "${want}" | "${want}".*) ;;
+                *) reason="the ref ${ACTION_REF} does not name the released version ${version}" ;;
+              esac
+              ;;
+          esac
+        fi
+
+        if [ -n "${reason}" ]; then
+          echo "Building the image from source: ${reason}."
+          echo 'source=build' >> "$GITHUB_OUTPUT"
+        else
+          echo "Using the released image ${image}:${version}@${digest}."
+          echo 'source=registry' >> "$GITHUB_OUTPUT"
+          echo "reference=${image}:${version}@${digest}" >> "$GITHUB_OUTPUT"
+        fi
+        # Reported whatever the decision, because a review has to name the version that produced
+        # it even when that version is "none yet".
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+        echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+    # `name:tag@sha256:...` makes the daemon verify the digest, so a registry that served a
+    # different manifest fails here rather than reviewing anybody's code.
+    #
+    # A pull that fails is not fatal. The package may be private, the registry may be down, or the
+    # runner may have no route to it, and in each case building from source produces the same
+    # review a minute later. A digest mismatch also lands here, and the warning names the
+    # reference so the difference between "unreachable" and "wrong content" is readable in the log.
+    - name: Pull the released image
+      id: pull
+      if: steps.image.outputs.source == 'registry'
+      shell: bash
+      env:
+        REFERENCE: ${{ steps.image.outputs.reference }}
+      run: |
+        set -euo pipefail
+        start="$(date +%s)"
+        if docker pull --quiet "${REFERENCE}"; then
+          docker tag "${REFERENCE}" mitig8it-action:local
+          echo 'pulled=true' >> "$GITHUB_OUTPUT"
+          echo "Pulled the released image in $(( $(date +%s) - start ))s."
+        else
+          echo 'pulled=false' >> "$GITHUB_OUTPUT"
+          echo "::warning::Could not pull ${REFERENCE}, so this run builds the image from source. \
+        The review is the same; it starts later. If the package is private, make it public or give \
+        this job registry credentials."
+        fi
+
     - name: Resolve the build context and cache key
       id: context
+      if: steps.image.outputs.source != 'registry' || steps.pull.outputs.pulled == 'false'
       shell: bash
       run: |
         set -euo pipefail
@@ -104,6 +210,7 @@ runs:
 
     - name: Restore the image layer cache
       id: cache
+      if: steps.image.outputs.source != 'registry' || steps.pull.outputs.pulled == 'false'
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
       with:
         path: ${{ steps.context.outputs.cache-dir }}
@@ -116,6 +223,7 @@ runs:
     # The same script CI runs, so the image the dogfood builds and the image CI proves buildable
     # cannot drift apart.
     - name: Build the image
+      if: steps.image.outputs.source != 'registry' || steps.pull.outputs.pulled == 'false'
       shell: bash
       run: |
         set -euo pipefail
@@ -136,6 +244,18 @@ runs:
         INPUT_MODEL_PROVIDER: ${{ inputs.model-provider }}
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_MAX_FILES: ${{ inputs.max-files }}
+        # What produced this review, so the check summary and the review body can name it and a
+        # bug report can quote a version instead of a date. Passed at run time rather than baked
+        # into the image, because the image is addressed by its digest and must not have to be
+        # rebuilt to learn its own version.
+        #
+        # SOURCE is what actually happened, not what was intended: a released ref whose pull failed
+        # reports `source`, so a review that came out of a local build never claims to be the
+        # published image.
+        MITIG8IT_ACTION_VERSION: ${{ steps.image.outputs.version }}
+        MITIG8IT_ACTION_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        MITIG8IT_ACTION_SOURCE: ${{ steps.pull.outputs.pulled == 'true' && 'registry' || 'source' }}
+        MITIG8IT_ACTION_REF: ${{ github.action_ref }}
       run: |
         set -euo pipefail
 
@@ -169,6 +289,10 @@ runs:
           --env INPUT_MODEL_PROVIDER \
           --env INPUT_MODEL \
           --env INPUT_MAX_FILES \
+          --env MITIG8IT_ACTION_VERSION \
+          --env MITIG8IT_ACTION_IMAGE_DIGEST \
+          --env MITIG8IT_ACTION_SOURCE \
+          --env MITIG8IT_ACTION_REF \
           mitig8it-action:local || status=$?
 
         # The outputs are forwarded whatever the exit status, so a failing review still reports

@@ -27,7 +27,7 @@ ACTION_YML = REPO_ROOT / "action/action.yml"
 DOCKERFILE = REPO_ROOT / "action/Dockerfile"
 BUILD_SCRIPT = REPO_ROOT / "action/build-image.sh"
 WORKFLOWS = REPO_ROOT / ".github/workflows"
-OUR_WORKFLOWS = ["action-build.yml", "mitig8it-self-review.yml"]
+OUR_WORKFLOWS = ["action-build.yml", "mitig8it-self-review.yml", "release.yml"]
 
 EXPECTED_INPUTS = {
     "github-token", "fail-on", "post-fixes",

@@ -369,7 +369,7 @@ def test_inline_comments_are_capped_at_the_production_limit():
     assert len(comments) == pr_scope.INLINE_COMMENT_CAP
 
 
-def test_a_comment_never_says_one_sentence_three_times():
+def test_a_comment_never_says_one_sentence_twice():
     """40 of the trial's 65 comments did. The OpenGrep rules set all three fields to the message.
 
     The whole body of `views/admin.ejs:17` was "EJS unescaped output tag. `<%-` writes raw HTML;
@@ -388,9 +388,12 @@ def test_a_comment_never_says_one_sentence_three_times():
             "remediation": sentence,
         }
     )
-    assert body.count(sentence) == 2, body
+    # Said once: the headline. The description was already dropped for repeating the title,
+    # and the remediation is now dropped for the same reason, which is what this test asserted
+    # the other way round while the comparison was still against the emptied description.
+    assert body.count(sentence) == 1, body
     assert f"**{sentence}**" in body
-    assert f"Remediation: {sentence}" in body
+    assert "Remediation:" not in body
 
 
 def test_a_description_that_says_something_new_is_kept():

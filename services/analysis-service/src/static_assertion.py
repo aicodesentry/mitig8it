@@ -21,6 +21,13 @@ scanner parses; the tier 1 rules are regular expressions over text. Neither eval
 
 **Determinism.** Given the same rule id, path and two file contents, the returned match sets are
 the same. Line numbers are the file's own, so a caller can compare them against a finding's line.
+
+**An answer or an error, never an empty answer.** A rule that could not be evaluated never comes
+back looking like a rule that was evaluated and matched nothing, because that shape is the thing
+the assertion claims. A rule no tier declares and a rule the path is out of scope for come back
+as a named `refusal`; a process that has no scanner raises `ScannerUnavailableError`, which the
+endpoint returns as a 503 rather than as match sets. `scanner_available` lets a caller ask before
+it offers itself as an oracle.
 """
 from __future__ import annotations
 
@@ -33,11 +40,13 @@ import yaml
 from finding_quality import pattern_match_lines, rule_scan_options, whole_file_patch
 from opengrep_runner import (
     RULES_DIR,
+    ScannerUnavailableError,
     _build_finding,
     _rule_documents,
     _run_semgrep,
     canonical_check_id,
     contained_scan_path,
+    scanner_available,
 )
 from security_rules import SECURITY_RULES
 from test_code_scope import SUPPORTED_EXTENSIONS, is_analyzable_path
@@ -54,6 +63,12 @@ TIER2 = "tier2"
 # caller is told which of these it got, and refuses the candidate.
 RULE_UNKNOWN = "rule_not_recognized"
 RULE_NOT_APPLICABLE = "rule_not_applicable_to_path"
+
+
+# The third way a rule can fail to be evaluated, and the only one that is not a property of the
+# rule or the path: this process has no scanner. `ScannerUnavailableError` and `scanner_available`
+# are imported above rather than used only internally, because the remediation service reaches
+# this module as an object and asks it both questions through these two names.
 
 MAX_ASSERTION_FILE_BYTES = 2_000_000
 MAX_MATCHES_PER_FILE = 500

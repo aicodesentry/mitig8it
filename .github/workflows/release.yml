@@ -1,0 +1,422 @@
+name: Release
+
+# The owner's release button. Nothing here runs on an ordinary push.
+#
+# What a release produces: one container image on ghcr.io, tagged with the version and addressed by
+# its digest; a provenance attestation and an SBOM for that digest; a release commit that records
+# the version and the digest in `action/released-image.env`; the `v<version>` and `v<major>` tags on
+# that commit; and a GitHub release whose notes are the changelog's own section.
+#
+# Why there is a release commit at all. `uses: aicodesentry/mitig8it/action@v1` checks the
+# repository out at the tag, and the action has to know the digest of the image it should pull
+# without asking a registry what `:1.0.0` means today. The digest only exists after the image is
+# built, so it cannot be committed before the tag is cut. The workflow therefore builds first and
+# writes the digest onto a commit of its own, then points the tags at that commit.
+#
+# Which is why `workflow_dispatch` is the recommended path. A tag push arrives with `v1.0.0` already
+# pointing somewhere, so the workflow has to move it, and moving a tag that someone may already have
+# fetched is the kind of thing that is fine in practice and unpleasant to explain. A dispatch has no
+# tag yet: the workflow creates `v1.0.0` on the release commit and moves nothing. Both paths are
+# supported because the brief asks for both, and docs/releasing.md recommends the dispatch.
+#
+# Dry run is the default for a dispatch. Everything is built, tested, attested and printed, and
+# nothing is pushed, so the machinery can be proven without releasing anything.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, with no leading v (for example 1.0.0). CHANGELOG.md must already document it with a real date.'
+        required: true
+        type: string
+      dry-run:
+        description: 'Build, test, attest and stop. Nothing is pushed, no tag is created or moved, no release is made.'
+        required: false
+        type: boolean
+        default: true
+
+# Read-only by default. The one job that writes asks for what it writes, and nothing else.
+permissions:
+  contents: read
+
+# One release at a time, and never cancelled. A release cancelled between pushing the image and
+# moving the tag leaves a published image no ref names, which is confusing rather than harmful,
+# and is still worth not doing.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/aicodesentry/mitig8it-action
+
+jobs:
+  # Everything that can refuse a release, before a single byte is built. The order is cheapest
+  # first, so the common mistake (forgetting the changelog date) is reported in fifteen seconds.
+  gate:
+    name: Refuse a release that is not ready
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Asking whether CI has passed on this commit is a read of the Actions API, and a
+      # `permissions` block makes every scope it does not name `none`. Without this the gate would
+      # get a 403 where it expects a conclusion, which is the wrong way for a gate to fail.
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      major: ${{ steps.version.outputs.major }}
+      tag: ${{ steps.version.outputs.tag }}
+      dry-run: ${{ steps.version.outputs.dry-run }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          # The whole history and every tag: the ancestry check below needs main, and the release
+          # job needs to be able to create a commit on top of this one.
+          fetch-depth: 0
+
+      - name: Resolve the version being released
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT}" = 'push' ]; then
+            version="${REF_NAME#v}"
+            dry_run=false
+          else
+            version="${INPUT_VERSION#v}"
+            dry_run="${INPUT_DRY_RUN:-true}"
+          fi
+          if ! printf '%s' "${version}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'${version}' is not a MAJOR.MINOR.PATCH version. A release tag is v1.2.3."
+            exit 1
+          fi
+          {
+            echo "version=${version}"
+            echo "major=${version%%.*}"
+            echo "tag=v${version}"
+            echo "dry-run=${dry_run}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing ${version} (dry run: ${dry_run})."
+
+      # The version and the changelog have to agree, and the changelog has to carry a real date.
+      # Both rules live in scripts/release-changelog.py, which has its own tests, because a regex
+      # in a workflow string is first exercised by a release.
+      - name: The changelog documents this version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: python3 scripts/release-changelog.py check "${VERSION}"
+
+      - name: This commit is on main
+        run: |
+          set -euo pipefail
+          # checkout with fetch-depth 0 fetches the history of the triggering ref, and for a tag
+          # push that leaves no origin/main to compare against. Asked for explicitly.
+          git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+          if git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "${GITHUB_SHA} is reachable from origin/main."
+          else
+            echo "::error::${GITHUB_SHA} is not reachable from origin/main. A release is cut from \
+          main, so that what is released is what was reviewed and what CI ran."
+            exit 1
+          fi
+
+      # "Refuse to release if the tests have not passed" has two halves. This is the first: the
+      # repository's own suites must already have passed on this exact commit. Re-running them here
+      # would prove that they pass in this job, which is not the same claim.
+      #
+      # The second half is in the release job, which runs the action's suites again before it pushes
+      # anything, because the image it is about to publish is built in that job from this tree.
+      - name: CI and the action image build have passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          required='CI Action image'
+          failed=0
+          for workflow in ${required}; do
+            conclusion="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&status=completed" \
+              --jq "[.workflow_runs[] | select(.name == \"${workflow}\")] | .[0].conclusion // \"none\"")"
+            echo "${workflow}: ${conclusion}"
+            if [ "${conclusion}" != 'success' ]; then
+              echo "::error::The '${workflow}' workflow has not passed on ${GITHUB_SHA} (${conclusion}). \
+          Push the commit to main, let it go green, and tag that commit."
+              failed=1
+            fi
+          done
+          exit "${failed}"
+
+      # A tag whose commit already records a released image is a tag that has already been through
+      # this workflow. Releasing it again would build a second image, write a second release commit
+      # on top of the first, and move the tag onto it, which is a worse outcome than a refusal.
+      - name: This commit is not already a release commit
+        run: |
+          set -euo pipefail
+          if grep -qE '^MITIG8IT_IMAGE_DIGEST=sha256:' action/released-image.env; then
+            echo "::error::action/released-image.env on this commit already records a published \
+          image, so this commit has been released before. Tag a fresh commit on main."
+            exit 1
+          fi
+
+      - name: This version has no release already
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${TAG}"
+          if gh release view "${tag}" --json tagName >/dev/null 2>&1; then
+            echo "::error::A GitHub release already exists for ${tag}. Delete it, or release a new \
+          version."
+            exit 1
+          fi
+          echo "No release exists for ${tag} yet."
+
+  release:
+    name: Build, publish, attest and tag
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      # The release commit, the tags and the GitHub release.
+      contents: write
+      # The image on ghcr.io.
+      packages: write
+      # The provenance attestation: a signing certificate from GitHub's OIDC provider, and the
+      # attestation stored against the repository.
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.gate.outputs.version }}
+      MAJOR: ${{ needs.gate.outputs.major }}
+      TAG: ${{ needs.gate.outputs.tag }}
+      DRY_RUN: ${{ needs.gate.outputs.dry-run }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          # The major the image pins. The action's own test job explains why the host has to match
+          # it: a host on a different Node reports failures the image does not have, or passes
+          # where the image fails.
+          node-version: '22'
+
+      # The second half of the test gate. These run against the tree the image is about to be
+      # built from, in this job, so a release cannot publish an image whose suites were not run.
+      - name: The action's own suites
+        run: |
+          set -euo pipefail
+          pip install --quiet pytest httpx pyyaml
+          pytest tests -q
+        working-directory: action
+
+      - name: The release gate's own tests
+        run: |
+          set -euo pipefail
+          pytest tests/test_release.py -q
+        working-directory: action
+
+      - name: actionlint over every workflow
+        run: |
+          set -euo pipefail
+          curl -fsSL -o actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint -color
+
+      # The same script the composite action and action-build.yml use, so the image that is
+      # published is built the way the image that was proven buildable was built.
+      - name: Build the image
+        run: ./action/build-image.sh "${IMAGE}:${VERSION}" "${RUNNER_TEMP}/mitig8it-buildx-cache"
+
+      - name: The image's own tests, inside the image
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh "${IMAGE}:${VERSION}" -c \
+            'pip install --no-cache-dir --quiet pytest \
+             && cd /opt/mitig8it/action \
+             && pytest tests -q -m "not repo_definition"'
+
+      - name: The scanner and both runtimes are in the image
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint semgrep "${IMAGE}:${VERSION}" --version
+          docker run --rm --entrypoint node "${IMAGE}:${VERSION}" --version
+          docker run --rm --entrypoint python "${IMAGE}:${VERSION}" --version
+
+      # The action's central claim, exercised against the real entrypoint rather than against the
+      # function that implements it. No token is supplied, so the run must stop before it reaches
+      # GitHub. A release that published an image which reviews without a token would be worse
+      # than no release.
+      - name: The entrypoint still refuses to run without a token
+        run: |
+          set +e
+          output="$(docker run --rm --env GITHUB_REPOSITORY=acme/widgets "${IMAGE}:${VERSION}" 2>&1)"
+          status=$?
+          set -e
+          echo "${output}"
+          if [ "${status}" -eq 0 ]; then
+            echo "::error::the entrypoint exited 0 with no token, which it must never do"
+            exit 1
+          fi
+
+      # Through the environment and over stdin, never on a command line. A token in argv shows up
+      # in a process listing and in a shell trace, which is the same rule the action itself follows
+      # for the caller's token and has a test of its own.
+      - name: Log in to ghcr.io
+        if: env.DRY_RUN != 'true'
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${REGISTRY_TOKEN}" \
+            | docker login ghcr.io --username "${REGISTRY_USER}" --password-stdin
+
+      # The digest is the point of this step. Everything downstream, the attestation, the SBOM and
+      # the file a released ref reads, is addressed by it rather than by the tag beside it.
+      - name: Push the image and record its digest
+        id: push
+        if: env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          docker tag "${IMAGE}:${VERSION}" "${IMAGE}:${MAJOR}"
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:${MAJOR}"
+          # RepoDigests is populated by the push, and is the registry's own manifest digest rather
+          # than the local image id, which is a different hash and would verify nothing.
+          digest="$(docker image inspect "${IMAGE}:${VERSION}" \
+            --format '{{ range .RepoDigests }}{{ println . }}{{ end }}' \
+            | sed -n "s|^${IMAGE}@||p" | head -n 1)"
+          if ! printf '%s' "${digest}" | grep -qE '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::the push reported no usable manifest digest: '${digest}'"
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Published ${IMAGE}:${VERSION}@${digest}."
+
+      # Who built this image, from which commit, with which workflow. Pushed to the registry beside
+      # the image so `gh attestation verify oci://...` answers without the repository.
+      - name: Attest the build provenance
+        if: env.DRY_RUN != 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # What is in the image. The action bundles two services, a scanner and a Node runtime, so
+      # "what version of semgrep does this review use" is a question a user is entitled to answer
+      # without our help.
+      - name: Generate an SBOM for the image
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ env.IMAGE }}:${{ env.VERSION }}
+          format: spdx-json
+          output-file: mitig8it-action-${{ env.VERSION }}.spdx.json
+          artifact-name: mitig8it-action-${{ env.VERSION }}-sbom
+          upload-artifact: true
+
+      # The commit a released ref is checked out at. It exists so the action can read its own
+      # version and digest out of the tree instead of asking a registry at review time.
+      - name: Write the release commit
+        if: env.DRY_RUN != 'true'
+        id: commit
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python3 - "${VERSION}" "${IMAGE}" "${DIGEST}" <<'PYTHON'
+          import pathlib, re, sys
+
+          version, image, digest = sys.argv[1:4]
+          path = pathlib.Path("action/released-image.env")
+          text = path.read_text(encoding="utf-8")
+          for key, value in (
+              ("MITIG8IT_VERSION", version),
+              ("MITIG8IT_IMAGE", image),
+              ("MITIG8IT_IMAGE_DIGEST", digest),
+          ):
+              text, count = re.subn(rf"(?m)^{key}=.*$", f"{key}={value}", text)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one {key}= line, found {count}")
+          path.write_text(text, encoding="utf-8")
+          PYTHON
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add action/released-image.env
+          git commit --message "Release ${VERSION}" \
+            --message "Image ${IMAGE}:${VERSION}@${DIGEST}" \
+            --message "Written by .github/workflows/release.yml. This commit exists so that a ref pinned to ${TAG} knows the digest of the image it should pull."
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # `v<version>` is created on a dispatch and moved on a tag push, because a tag push already
+      # cut it at the commit that has no digest in it. `v<major>` is always moved: that is what a
+      # major tag is for.
+      - name: Point the tags at the release commit
+        if: env.DRY_RUN != 'true'
+        env:
+          RELEASE_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git tag --force "${TAG}"
+          git tag --force "v${MAJOR}"
+          git push --force origin "refs/tags/${TAG}" "refs/tags/v${MAJOR}"
+          echo "${TAG} and v${MAJOR} now point at ${RELEASE_SHA}."
+
+      - name: Create the GitHub release
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          RELEASE_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          notes="${RUNNER_TEMP}/release-notes.md"
+          python3 scripts/release-changelog.py notes "${VERSION}" > "${notes}"
+          {
+            echo
+            echo '---'
+            echo
+            echo "Image: \`${IMAGE}:${VERSION}@${DIGEST}\`"
+            echo
+            echo 'Install:'
+            echo
+            echo '```yaml'
+            echo "      - uses: aicodesentry/mitig8it/action@v${MAJOR}"
+            echo '```'
+            echo
+            echo "A digest pin is stronger. \`${TAG}\` points at \`${RELEASE_SHA}\`, and a ref pinned to that sha cannot be moved by anybody, including us."
+          } >> "${notes}"
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --notes-file "${notes}" \
+            "mitig8it-action-${VERSION}.spdx.json#SBOM (SPDX JSON)"
+
+      - name: What a dry run would have done
+        if: env.DRY_RUN == 'true'
+        run: |
+          set -euo pipefail
+          {
+            echo "### Release dry run: ${VERSION}"
+            echo
+            echo 'Every gate passed and the image was built and tested. Nothing was pushed.'
+            echo
+            echo 'A real release would have:'
+            echo
+            echo "- pushed \`${IMAGE}:${VERSION}\` and \`${IMAGE}:${MAJOR}\`"
+            echo '- attested its provenance and attached an SBOM'
+            echo "- committed the version and the digest to \`action/released-image.env\`"
+            echo "- pointed \`${TAG}\` and \`v${MAJOR}\` at that commit"
+            echo "- created the \`${TAG}\` release from the changelog's own section"
+          } >> "$GITHUB_STEP_SUMMARY"

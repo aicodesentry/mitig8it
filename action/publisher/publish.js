@@ -92,6 +92,18 @@ function breakdown(totals) {
   return `${totals.critical} critical, ${totals.high} high, ${totals.medium} medium, ${totals.low} low`;
 }
 
+// What produced this review, composed once by the orchestrator's `version_identity` and rendered
+// here. The publisher derives nothing of its own from it, the same rule `counts` follows, so the
+// check summary and the review body can never name two different versions of one run.
+//
+// The fallback is not a version. A request built by an older orchestrator, or by a test that does
+// not care, says "an unreported version" rather than inventing one, because a bug report quoting a
+// version that was never released is worse than a bug report quoting nothing.
+function versionLabel(request) {
+  const label = String(request.versionLabel || '').trim();
+  return label || 'an unreported version';
+}
+
 // --- the review body -------------------------------------------------------------------
 
 function severityTable(totals) {
@@ -182,7 +194,11 @@ function buildReviewBody(request) {
   lines.push(...unanchoredSection(request, totals));
 
   lines.push('');
-  lines.push(`<sub>Analyzed by <strong>Mitig8it</strong> running as a GitHub Action in this repository's own runner. ${plural(totals.runtime, 'finding')} reported.</sub>`);
+  // The version goes in the footer rather than at the top, because it is the line a reader looks
+  // for when they are filing a bug and the line they should be able to ignore otherwise. Before
+  // this, the only thing identifying a review was its date, which stops meaning anything as soon
+  // as main moves.
+  lines.push(`<sub>Analyzed by <strong>Mitig8it ${versionLabel(request)}</strong> running as a GitHub Action in this repository's own runner. ${plural(totals.runtime, 'finding')} reported. Quote that version in a bug report.</sub>`);
   return lines.filter((line) => line !== undefined).join('\n');
 }
 
@@ -192,7 +208,7 @@ function checkRunSummary(request) {
   // nothing told a first user it meant "not in test code". The plural agrees with the number
   // and the noun says what it means.
   const parts = [
-    `Mitig8it found ${plural(totals.runtime, 'finding')} outside test code (${breakdown(totals)}).`,
+    `Mitig8it ${versionLabel(request)} found ${plural(totals.runtime, 'finding')} outside test code (${breakdown(totals)}).`,
   ];
   if (totals.runtime > 0) {
     parts.push(totals.unanchored > 0
