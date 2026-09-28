@@ -240,7 +240,10 @@ SECURITY_RULES: List[SecurityRule] = [
         confidence=0.86,
         exploitability="high",
         pattern=re.compile(
-            r"(f['\"].*(?:SELECT|INSERT|UPDATE|DELETE)\s+|(?:SELECT|INSERT|UPDATE|DELETE)\s+.*(?:\+\s*[a-zA-Z_]|\.format\(|%s|%\s*\())",
+            # The f-string branch requires an actual interpolation. Without the trailing
+            # `\{` it matched `f"SELECT id FROM orders"`, an f-string with nothing in it,
+            # which is a constant query and cannot be injected into.
+            r"(f['\"].*(?:SELECT|INSERT|UPDATE|DELETE)\s+.*\{|(?:SELECT|INSERT|UPDATE|DELETE)\s+.*(?:\+\s*[a-zA-Z_]|\.format\(|%s|%\s*\())",
             re.IGNORECASE,
         ),
         description="A SQL query appears to be dynamically assembled from variables.",
@@ -256,8 +259,12 @@ SECURITY_RULES: List[SecurityRule] = [
         confidence=0.9,
         exploitability="high",
         pattern=re.compile(
+            # `f["\']` is guarded by a lookbehind because an unguarded `f"` matches the
+            # letter f before a quote anywhere on the line. `["tar", "-czf", path]` ends an
+            # argument in f, so every `tar -czf` written as an argument list was reported as
+            # shell injection. The guard keeps real f-strings, in both quote styles.
             r"(subprocess\.\w+|os\.system|os\.popen|child_process\.\w+)\s*\(.*"
-            r"(shell\s*=\s*True|\+|f\"|`\$|req\.|input\()",
+            r"(shell\s*=\s*True|\+|(?<![A-Za-z0-9_])f[\"\']|`\$|req\.|input\()",
             re.IGNORECASE,
         ),
         description="Shell command execution includes dynamic input or shell=True.",

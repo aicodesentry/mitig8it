@@ -18,6 +18,23 @@ rules:
         - pattern: $CURSOR.execute(f"...{$INPUT}...")
         - pattern: $CURSOR.execute(f"...{$INPUT}...", ...)
         - pattern: $CURSOR.executemany(f"...{$INPUT}...", ...)
+      # An identifier cannot be a bound parameter, so a dynamic ORDER BY column is written
+      # as an interpolation and made safe by checking it against an allowlist first. That is
+      # the correct way to write it. Reporting it tells a reader their fix is a defect, so a
+      # membership test on the interpolated name, in the function that interpolates it,
+      # withdraws the finding. The unguarded form is still reported.
+      - pattern-not-inside: |
+          def $F(...):
+            ...
+            if $INPUT not in $ALLOWED:
+              ...
+            ...
+      - pattern-not-inside: |
+          def $F(...):
+            ...
+            if $INPUT in $ALLOWED:
+              ...
+            ...
     message: "SQL passed to execute() as an f-string. Pass the value as a bound parameter"
     severity: ERROR
     languages: [python]

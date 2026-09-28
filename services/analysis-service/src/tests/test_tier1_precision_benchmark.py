@@ -4,6 +4,12 @@
 real-repository replay read by hand and judged wrong, plus one true positive per rule
 family drawn from `tests/test_security_rules.py`. A rule change that makes a false
 positive post again, or that stops a true positive being found, fails here.
+
+Two further false positives, each with the true positive that keeps its fix from becoming
+silence, come from the trial pull request of 2026-09-28 rather than the replay. Both were
+rules matching something other than what they meant to match, and both are written up in
+`docs/validation/guarded-values-2026-09.md`. The set size is asserted below so that cases
+cannot be added without saying where they came from.
 """
 
 import json
@@ -81,9 +87,11 @@ def _ids(cases):
 
 
 class TestSetIntegrity:
-    def test_the_set_is_the_size_the_report_supports(self):
-        assert len(FALSE_POSITIVES) == 19
-        assert len(TRUE_POSITIVES) == 20
+    def test_the_set_is_the_size_its_sources_support(self):
+        # 19 false positives and 20 true positives from the September replay, plus the two
+        # pairs from the 2026-09-28 trial pull request.
+        assert len(FALSE_POSITIVES) == 19 + 2
+        assert len(TRUE_POSITIVES) == 20 + 2
 
     def test_every_case_is_well_formed(self):
         for case in FALSE_POSITIVES + TRUE_POSITIVES:

@@ -1166,6 +1166,22 @@
       "path": ".github/workflows/no-finding-pinned-references.yml",
       "note": "The four reference shapes the rule must not claim: a full commit digest with the tag in a trailing comment, a first-party `actions/*` tag, a local composite action, and a reusable workflow in the same repository. Taken from this repository's own `.github/workflows/ci.yml` and `deploy-analysis-cloudrun.yml`, which is where the digest-plus-comment convention comes from.",
       "code": "name: CI\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0\n      - uses: actions/setup-node@v4\n      - uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcaf3b2c9e6ba # v6.9.0\n      - uses: ./.github/actions/setup\n  b:\n    uses: ./.github/workflows/deploy-api-cloudrun.yml\n"
+    },
+    {
+      "id": "py-execute-fstring-allowlisted-order-by",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-89.py-execute-fstring-direct"
+      ],
+      "path": "negative/py_execute_fstring_allowlisted_order_by.py",
+      "code": "# Trial pull request, 2026-09-28. An identifier cannot be a bound parameter, so a\n# dynamic ORDER BY column is interpolated and made safe by checking it against an\n# allowlist first. The user value is bound. This is the correct way to write it.\nALLOWED_SORT = {\"id\", \"total\", \"status\"}\n\n\ndef search_orders(cursor, status, sort_column):\n    if sort_column not in ALLOWED_SORT:\n        raise ValueError(\"unsupported sort column\")\n    cursor.execute(\n        f\"SELECT * FROM orders WHERE status = ? ORDER BY {sort_column}\",\n        (status,),\n    )\n    return cursor.fetchall()\n"
+    },
+    {
+      "id": "py-execute-fstring-unguarded-order-by",
+      "expect": "finding",
+      "rule": "cwe-89.py-execute-fstring-direct",
+      "path": "positive/py_execute_fstring_unguarded_order_by.py",
+      "code": "# The same statement with no membership test guarding the interpolated name. The\n# exclusion that withdraws the allowlisted case must not withdraw this one.\ndef search_orders(cursor, status, sort_column):\n    cursor.execute(\n        f\"SELECT * FROM orders WHERE status = ? ORDER BY {sort_column}\",\n        (status,),\n    )\n    return cursor.fetchall()\n"
     }
   ]
 }
