@@ -1363,7 +1363,7 @@ describe('PR Analysis Orchestrator — pipeline', () => {
       line_start: 2,
       line_end: 2,
       code_snippet: 'fs.readFile(file)',
-      evidence: 'OpenGrep AST match on rule `cwe-22.path-traversal-fs`',
+      evidence: 'Matched rule `cwe-22.path-traversal-fs`',
       remediation: 'Validate the path against an allowlist.',
       remediation_patch: 'const file = path.basename(req.query.file);',
       fingerprint: 'fp-tier2-evidence',

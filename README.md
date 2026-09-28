@@ -108,9 +108,14 @@ Why the proof exists, what it establishes and what it does not:
   candidate is `development_unverified` and every comment says "development sandbox". The isolated
   job is written and not yet proven to run. A statically asserted candidate is weaker still: it
   executed nothing, and its comment says so instead of claiming a test result.
-- **JavaScript, TypeScript and Python only**, plus 16 template extensions for tier 2. Five repair
-  families: `sql_parameterization`, `command_arguments`, `path_containment`,
-  `hardcoded_credential`, `code_injection_eval`.
+- **Detection and repair cover different languages, and the difference is the point.** Tier 2
+  reads JavaScript, TypeScript, Python, Java, Go, Ruby, PHP and C#, plus 16 template extensions
+  and GitHub Actions workflows; JavaScript and Python carry most of the rules and the other five
+  carry a smaller set each. Repair is narrower on purpose, because a fix has to be shown to be a
+  fix: five families on JavaScript and Python (`sql_parameterization`, `command_arguments`,
+  `path_containment`, `hardcoded_credential`, `code_injection_eval`), and `workflow_hardening` on
+  workflows. A finding in a language with no repair family still posts; it says no automatic fix
+  is offered and why.
 - **Informational findings are not posted**, and a finding on a line the pull request did not touch
   has nowhere to go: GitHub rejects an inline comment there. In the ten-repository trial that was
   28 of 93 findings, counted in the summary and visible nowhere else. It is a defect and it is
