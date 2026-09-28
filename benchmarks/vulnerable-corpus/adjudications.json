@@ -10,6 +10,10 @@
       "description": "Hand verdicts on the rules added by the XSS and path-traversal recall change. Every finding of each new rule was read where the rule produced ten or fewer; where it produced more, a sample was read and the count is named in the rule's own evidence line.",
       "verdicts": 44
     },
+    "secrets_pass_2026_09_27": {
+      "description": "Hand verdicts on both signals of the secrets detector, over the eleven clean repositories, the 23 corpus trees and this repository's own tracked files. Every finding of both signals was read, so the seeded-sample rule was not needed: the signals produced 42 findings between them, 20 under `secret.format.known_key` and 22 under `secret.entropy.credential_assignment`. A finding is true when the value on the line is credential material a reviewer would act on in a security review of that line, and false when it is a published example or a local fixture that grants nothing. Three of the false positives were detector defects and are fixed in the same change; they keep their verdicts here and carry `no_longer_fires`.",
+      "verdicts": 42
+    },
     "workflow_tampering_pass_2026_09_27": {
       "description": "Hand verdicts on the nine GitHub Actions workflow rules, measured over the `.github/workflows` directory of 27 repositories at pinned refs: the eleven clean replay repositories, the fifteen vulnerable-corpus repositories that have one, and this repository. 240 workflow files. Every finding was read where a rule produced ten or fewer; where it produced more, a seeded random ten was read and the seed is recorded here. Two of the verdict sets are on the pattern a rule was narrowed away from rather than on what it produces now, which is deliberate: the reading is what caused the narrowing, and the same lines are checked in as no-finding cases in benchmarks/tier2-precision/cases.json.",
       "seed": 20260927,
@@ -216,7 +220,7 @@
     {
       "fingerprint": "b48a871e7f85defece2268a710dcac054a62dc1bda4466380b0cf1c42384b9b5",
       "verdict": "true",
-      "note": "password=\"65079b00…\" is a credential literal in a model construction",
+      "note": "password=\"65079b00\u2026\" is a credential literal in a model construction",
       "rule_id": "secret.hardcoded.credential",
       "where": "adeyosemanputra/pygoat introduction/views.py:866",
       "sampled_as": "class_mismatch"
@@ -264,7 +268,7 @@
     {
       "fingerprint": "fb56365a9a9b8a80f6f70e1d2309f379718dd266381f4b7bd3e6a9368125b19b",
       "verdict": "true",
-      "note": "password=\"65079b00…\" as a keyword argument is a credential literal",
+      "note": "password=\"65079b00\u2026\" as a keyword argument is a credential literal",
       "rule_id": "opengrep.cwe-798.py-credential-keyword-argument",
       "where": "adeyosemanputra/pygoat introduction/views.py:866",
       "sampled_as": "class_mismatch"
@@ -940,6 +944,348 @@
       "rule_id": "opengrep.cwe-79.tpl-inline-script-inner-html",
       "where": "sebhildebrandt/systeminformation docs/v4/index.html:67",
       "sampled_as": "new_rule_2026_09_24"
+    },
+    {
+      "fingerprint": "dba35f53b2b5a5530144849e466d427e4e939ea525037a9c6c072d13b0bc46b1",
+      "verdict": "true",
+      "note": "a scanner API key committed as an object property of a configuration module, outside test code; the value is redacted and recorded only as repository, path and format",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "OWASP/NodeGoat config/env/development.js:6",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "b061da3262267ba4c03fd9787e6ebd0221d3f9a0d3b27719b906d1f9ae846383",
+      "verdict": "true",
+      "note": "the same scanner API key in the second environment config; `config/env/test.js` is a configuration file named test.js, not test code, so this one posts",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "OWASP/NodeGoat config/env/test.js:6",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "22deff710091457f209f2e9364d952524f3c30ba9fbeb1e17b123a587a6f641d",
+      "verdict": "true",
+      "note": "an HS256-signed session token for user id 1, commented out in shipped frontend JavaScript; a commented-out credential is still a committed credential, which is why this module does not read the comment-blanked text",
+      "rule_id": "secret.format.known_key",
+      "where": "adeyosemanputra/pygoat introduction/static/js/a7.js:4",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "e60da8204de09ae88b19edf366b3452bdab387391da4bb57cabcd14a8b478e3c",
+      "verdict": "true",
+      "note": "the same session token, live rather than commented, eighteen lines into the sibling file; the value is redacted and recorded only as repository, path and format",
+      "rule_id": "secret.format.known_key",
+      "where": "adeyosemanputra/pygoat introduction/static/js/a9.js:18",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "02ada44d471ca45df80f2d2ed1a5e25cb627b780df4dcfb1696f8fca858ef746",
+      "verdict": "true",
+      "note": "an account password literal written into the database from application code; the identifier is `password` and the value is a 32-character digest, which is credential material for that account whether or not it was hashed first",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "adeyosemanputra/pygoat introduction/views.py:866",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "14e754a73650c9c5b4a63e11b82c80c8ff910a41398b864528ad45f84f9d8f8e",
+      "verdict": "true",
+      "note": "the same shape for a second seeded account, three lines down",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "adeyosemanputra/pygoat introduction/views.py:870",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "12878b91fa769b42c7bc5d979396bc4344f71da2358fd7df062e086d7a4889bb",
+      "verdict": "true",
+      "note": "the same shape for a third seeded account",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "adeyosemanputra/pygoat introduction/views.py:872",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "24dfa49699e145eeee59b2599a9431f2f4c00d0b2fd0117e80c072d405d8626f",
+      "verdict": "false",
+      "note": "a token minted by the test to carry a `lastLoginIp` claim through the component under test; it authenticates against nothing",
+      "rule_id": "secret.format.known_key",
+      "where": "juice-shop/juice-shop frontend/src/app/last-login-ip/last-login-ip.component.spec.ts:72",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "8278f340f293cdc4e6cc44e78dcc70cfe6c6988bb2d37113bb12be7dba4a5abc",
+      "verdict": "false",
+      "note": "the empty-claims variant of the same minted token, two tests down",
+      "rule_id": "secret.format.known_key",
+      "where": "juice-shop/juice-shop frontend/src/app/last-login-ip/last-login-ip.component.spec.ts:78",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "7e80abacee8ff9dd6c212d556f7a31d074d3ad779d8f2b432b2442e8e33409be",
+      "verdict": "true",
+      "note": "a complete RSA private key inlined into a single-line JavaScript string in production source, not test code; the most consequential finding of the measurement, and the value is redacted and recorded only as repository, path, line and format",
+      "rule_id": "secret.format.known_key",
+      "where": "juice-shop/juice-shop lib/insecurity.ts:21",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "f117160506eb3e913910e8f88f3862aeb445d97ada194387e464b0bfb966e183",
+      "verdict": "false",
+      "note": "a TOTP seed for a demo account the application itself ships in its seed data, in test code; it authenticates nothing outside a local run, so rotating it is not advice",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/2fa.test.ts:42",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "1fb42d5e87f383fdf40fdb6967f7971ba326bd59e063368265b9be41742cdfdd",
+      "verdict": "false",
+      "note": "a second TOTP seed in the same test file, same reasoning",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/2fa.test.ts:66",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "08c2143fd73958d5c07d1ba8f695c22abbf7485111595a33131508bca4c224b6",
+      "verdict": "false",
+      "note": "the seeded account's TOTP secret passed to a login helper in a test",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/2fa.test.ts:142",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "a274aea0f02fb9deffbb9c9cb15a2322cfed00bc9732ae8da4761e6025cc4517",
+      "verdict": "false",
+      "note": "a TOTP seed the test generates a registration with; it is a fixture the test invents, not a credential that exists anywhere",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/2fa.test.ts:182",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "9170a6eed46facff58cbf76e18dca8da59321c1613be8bb4fa1ab720dac7035b",
+      "verdict": "false",
+      "note": "the same invented seed in the disable-2fa test",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/2fa.test.ts:352",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "a3936d0fe28f7dab457655201ddda4023523290b2e0463eb5d027fb8f27735f8",
+      "verdict": "false",
+      "note": "a token the test supplies precisely because it expired in 2019, to assert that an expired token returns no user",
+      "rule_id": "secret.format.known_key",
+      "where": "juice-shop/juice-shop test/api/user.test.ts:280",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "6c3d41f5b063c258100ffb50d9691c28255edbcde807cac3cc992f2e2db95bf1",
+      "verdict": "false",
+      "note": "a forged token fixture for the signed-JWT challenge, minted by the test author",
+      "rule_id": "secret.format.known_key",
+      "where": "juice-shop/juice-shop test/cypress/e2e/forgedJwt.spec.ts:22",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "fb4b64f54a4ce3e36845e9d7b3f2a5dbbac91dc5e3659ec77f18dbe4b84033ff",
+      "verdict": "false",
+      "note": "the RS256 forgery fixture for the leaked-key challenge; the credential in that story is the private key in `lib/insecurity.ts`, which is the true positive above",
+      "rule_id": "secret.format.known_key",
+      "where": "juice-shop/juice-shop test/cypress/e2e/forgedJwt.spec.ts:38",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "24fa66fc7db946f7209e90f49abb06dde0f705c94c2e27b3113fdd5b4cbab961",
+      "verdict": "false",
+      "note": "a token the unit test puts in a cookie and then registers in its own in-memory map",
+      "rule_id": "secret.format.known_key",
+      "where": "juice-shop/juice-shop test/server/currentUser.unit.test.ts:31",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "fd1efc29fc9231ed8beaaa261d5dd67538ca21f3a83f2adc636efb9d769ff616",
+      "verdict": "false",
+      "note": "the seeded demo user's password, base64 of their reversed email address, in test code; the application ships the same value in its own seed data",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/basket.test.ts:114",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "59af70e7841d81b51acc49f94d28fd6787add3ebdf5d883024a3414ce18a8890",
+      "verdict": "false",
+      "note": "the same seeded demo password, one of eight test files carrying it",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/chat.test.ts:261",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "dfd7ec01fac3eafdffe79459384e7adf15cd0f6d8238ce440dfc87d5396fe849",
+      "verdict": "false",
+      "note": "the same seeded demo password",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/data-export.test.ts:53",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "bbe85a624a872eb7c25012f088772d230f50e1c2806e4bb38ded2fd7a21aed81",
+      "verdict": "false",
+      "note": "the same seeded demo password",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/erasure-request.test.ts:36",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "89ccf3b27ba7c99bc3261176d59a88de897dcf7ce4cfe2f5612e4e2bf315ea8f",
+      "verdict": "false",
+      "note": "the same seeded demo password",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/feedback.test.ts:117",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "751b95cce8fc8b71d69db49b86f47c3fc797de21b0b0e5ae12f834550862dc79",
+      "verdict": "false",
+      "note": "the same seeded demo password",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/login.test.ts:147",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "09b2498c3664d9ac7fe100cca2014f69bd1ae05766b9106e96587ee36a9e689e",
+      "verdict": "false",
+      "note": "the same seeded demo password",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/product-review.test.ts:101",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "f8ae0c6b2595639ec5394b58370355567e2a5f93b932cd7486cb597e2574c055",
+      "verdict": "false",
+      "note": "the same seeded demo password",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/api/user.test.ts:240",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "9d37494beaaa683d4c84bde8969f1e226f841f19966a22a71523cada6bb4bb68",
+      "verdict": "false",
+      "note": "the seeded account's TOTP secret in a Cypress login helper",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/cypress/e2e/totpSetup.spec.ts:7",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "e46780fa989363fe34e63c66fa7cb63da04205bbb82164545d7d9cb8a1281761",
+      "verdict": "false",
+      "note": "a forged HMAC-signed token fixture for the challenge verifier",
+      "rule_id": "secret.format.known_key",
+      "where": "juice-shop/juice-shop test/server/verify.unit.test.ts:308",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "56bba1605fb1b7b034577cf4af5e1656bd5a1453db022d8e7b0791c6bb4321db",
+      "verdict": "false",
+      "note": "the second forged token fixture in the same test",
+      "rule_id": "secret.format.known_key",
+      "where": "juice-shop/juice-shop test/server/verify.unit.test.ts:316",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "cb00668264a23b72a6d4e50df62ffbebe923014269e1408590026b207623d36f",
+      "verdict": "false",
+      "note": "a generated Stripe-shaped fixture in this branch's own test for the rotation copy",
+      "rule_id": "secret.format.known_key",
+      "where": "aicodesentry/mitig8it action/tests/test_secret_rotation_copy.py:32",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "9f818af59f258e9003fa510f41ae049bee513753a5e373a0cfef5850dfcaa38d",
+      "verdict": "false",
+      "note": "a bare PEM armour marker as a fixture in the same test",
+      "rule_id": "secret.format.known_key",
+      "where": "aicodesentry/mitig8it action/tests/test_secret_rotation_copy.py:35",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "a97c3247248d11b7d4ac3f59203591b2377e19553f8397a08d57d548a355746d",
+      "verdict": "false",
+      "note": "a generated Stripe-shaped fixture inside a prose line, in the test that asserts the format signal reads prose",
+      "rule_id": "secret.format.known_key",
+      "where": "aicodesentry/mitig8it services/analysis-service/src/tests/test_prose_path_scope.py:27",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "d5e2671fdff16a392a6e963fcf2b6b8d4df111c8444296e38dd000fbf427aaaa",
+      "verdict": "false",
+      "note": "a base64 fragment inside a JSON string in a test payload; a fixture, not a credential",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "aicodesentry/mitig8it services/analysis-service/src/tests/test_prose_path_scope.py:184",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "0d386cb200c7288e4e7f10a0a364f924c90ae98de45dfe52a4b31a7a4791cfe8",
+      "verdict": "false",
+      "note": "the PEM armour marker in this detector's own format table test",
+      "rule_id": "secret.format.known_key",
+      "where": "aicodesentry/mitig8it services/analysis-service/src/tests/test_secret_detection.py:95",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "cd6d9947ccfdb6177752520b2207a3cde35667b92ea35d08ff6ecf61086def86",
+      "verdict": "false",
+      "note": "the OpenSSH armour marker in the same table",
+      "rule_id": "secret.format.known_key",
+      "where": "aicodesentry/mitig8it services/analysis-service/src/tests/test_secret_detection.py:96",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "98a7a3e3225cc5cf960bb7480ee0906449c5e2fde1fc4cce92f0d090e61450ce",
+      "verdict": "false",
+      "note": "a generated connection-string fixture in the same table",
+      "rule_id": "secret.format.known_key",
+      "where": "aicodesentry/mitig8it services/analysis-service/src/tests/test_secret_detection.py:100",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "da49689a808f60121d915eca863d801579daa16482adecebf97e34118a48e542",
+      "verdict": "false",
+      "note": "the same generated Stripe-shaped fixture, in the App's copy test",
+      "rule_id": "secret.format.known_key",
+      "where": "aicodesentry/mitig8it services/api-service/tests/secretRotationCopy.test.js:35",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "7ea206943cfcaaed4c02b7dab9c7e45e248dbfb4f165078189355924614fd13e",
+      "verdict": "false",
+      "note": "the same PEM marker fixture, in the App's copy test",
+      "rule_id": "secret.format.known_key",
+      "where": "aicodesentry/mitig8it services/api-service/tests/secretRotationCopy.test.js:56",
+      "sampled_as": "secrets_signal_every_finding"
+    },
+    {
+      "fingerprint": "",
+      "verdict": "false",
+      "note": "the example token from jwt.io's front page, whose signing key is printed beside it there; it passes the JWT format's structural verification in full, so only a published-example refusal can stop it",
+      "rule_id": "secret.format.known_key",
+      "where": "juice-shop/juice-shop frontend/src/app/app.guard.spec.ts:46",
+      "sampled_as": "secrets_signal_every_finding",
+      "fixed_by_exclusion": "published_example",
+      "no_longer_fires": true
+    },
+    {
+      "fingerprint": "",
+      "verdict": "false",
+      "note": "an `alg:none` JWT with an empty signature, in a fixture for the unsigned-token challenge; anyone can mint one, so it grants nothing, and the JWT format had already refused it when the entropy signal reported it under the identifier `authorization`",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/server/verify.unit.test.ts:283",
+      "sampled_as": "secrets_signal_every_finding",
+      "fixed_by_exclusion": "unsigned_jwt",
+      "no_longer_fires": true
+    },
+    {
+      "fingerprint": "",
+      "verdict": "false",
+      "note": "the second unsigned forgery fixture in the same file",
+      "rule_id": "secret.entropy.credential_assignment",
+      "where": "juice-shop/juice-shop test/server/verify.unit.test.ts:291",
+      "sampled_as": "secrets_signal_every_finding",
+      "fixed_by_exclusion": "unsigned_jwt",
+      "no_longer_fires": true
     },
     {
       "fingerprint": "aea0489e4f9fdd8c285c2a6544a46096550c2634e3ca23484276fce2e3f0f0c5",
