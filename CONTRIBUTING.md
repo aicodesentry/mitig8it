@@ -13,7 +13,7 @@ document.
 | Python | 3.11 | Both Python services pin against it. `make deps` calls `python3.11`; override with `make PYTHON311=/path/to/python3.11 deps`. |
 | Node | 22 LTS or later | The sandbox harness needs `module.stripTypeScriptTypes` and `registerHooks`. The exact version the service image uses is `ARG NODE_VERSION` in `services/remediation-service/Dockerfile`. |
 | npm | Ships with Node | Every Node package is installed with `npm ci` from its lockfile. |
-| Docker | Any recent version | Only for `docker compose` local development and for building the action image. Not needed for `make test` or `make bench`. |
+| Docker or Podman | Any recent version | Only for `docker compose` local development and for building the action image. Not needed for `make test` or `make bench`. Podman works in place of Docker for both; `podman compose` and `podman build` take the same arguments used here. |
 
 Nothing else. No database, no cloud credentials and no model key is needed to run the tests or the
 benchmarks: every suite that needs a database is a separate integration target, and every adapter
@@ -180,6 +180,24 @@ correct, whether a repair is one a reviewer would actually commit. Every precisi
 `docs/validation/` is only as good as the adjudication behind it, and the posting policy in
 [Adding a rule](#adding-a-rule) spends those judgements directly. An agent can produce candidates
 all day. Someone has to be right about them.
+
+## Sign-off, and why there is no contributor licence agreement
+
+Every commit needs a `Signed-off-by` line matching its author:
+
+```sh
+git commit -s -m "..."
+```
+
+That line is the [Developer Certificate of Origin](DCO), reproduced verbatim at the root of this
+repository. It is a statement that you wrote the change or have the right to submit it. Nothing
+more is asked: this project does not use a contributor licence agreement and will never ask you to
+assign copyright. You keep the copyright in what you write, under the repository's Apache 2.0
+licence. Most employers have already cleared sign-off for their engineers and have not cleared
+assignment, which is the reason for the choice.
+
+`.github/workflows/dco.yml` checks it on every pull request and, when a commit is missing the line,
+prints the exact command to fix it.
 
 ## Conventions
 
