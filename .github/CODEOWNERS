@@ -1,0 +1,12 @@
+# Every pull request gets a review request automatically. The last matching
+# pattern wins, so the specific entries below override the catch-all.
+
+*                                   @nebullii
+
+# Anything that can reach production credentials or change what CI enforces.
+/.github/workflows/                 @nebullii
+/.github/CODEOWNERS                 @nebullii
+/infrastructure/                    @nebullii
+
+# The rules and the evidence behind them.
+/docs/legal/                        @nebullii
