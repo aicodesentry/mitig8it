@@ -4,7 +4,8 @@
     "replay_report": "docs/validation/real-repo-replay-2026-09.md",
     "hand_read_findings": 30,
     "hand_read_lines_quoted_in_the_report": 18,
-    "note": "The replay read 30 findings by hand and found 29 wrong. Its raw results are not committed (scripts/replay/.gitignore ignores results/), so only the lines the report quotes can be reproduced as cases. The other 12 lines are unavailable; this set is every one that is."
+    "note": "The replay read 30 findings by hand and found 29 wrong. Its raw results are not committed (scripts/replay/.gitignore ignores results/), so only the lines the report quotes can be reproduced as cases. The other 12 lines are unavailable; this set is every one that is.",
+    "trial_pull_request_2026_09_28": "Two false positives and their matching true positives come from the trial pull request of 2026-09-28 rather than the replay: `sql.injection.raw_query` on an f-string that interpolates nothing, and `cmd.injection.shell_true` on an argument list whose command ends in the letter f. Both are written up in docs/validation/guarded-values-2026-09.md."
   },
   "suppressed_by_values": {
     "quarantine": "The rule is quarantined, so nothing it produces is posted.",
@@ -23,7 +24,9 @@
       "id": "fp.null.method-chain.sequelize-oracle",
       "language": "typescript",
       "path": "packages/oracle/src/connection-manager.ts",
-      "snippet": ["connection.removeAllListeners('error').on('error', handleConnectionError);"],
+      "snippet": [
+        "connection.removeAllListeners('error').on('error', handleConnectionError);"
+      ],
       "rule_id": "null.pointer.deref",
       "expected": "no_finding",
       "suppressed_by": "quarantine",
@@ -33,7 +36,9 @@
       "id": "fp.null.jest-idiom.nextjs",
       "language": "typescript",
       "path": "test/e2e/app-dir/app/index.test.ts",
-      "snippet": ["  await expect(next.start()).rejects.toThrow()"],
+      "snippet": [
+        "  await expect(next.start()).rejects.toThrow()"
+      ],
       "rule_id": "null.pointer.deref",
       "expected": "no_finding",
       "suppressed_by": "quarantine",
@@ -43,7 +48,9 @@
       "id": "fp.null.rust-await.nextjs",
       "language": "rust",
       "path": "turbopack/crates/turbopack-ecmascript/src/references/esm/export.rs",
-      "snippet": ["    let references = chunking_context.unused_references().await?;"],
+      "snippet": [
+        "    let references = chunking_context.unused_references().await?;"
+      ],
       "rule_id": "null.pointer.deref",
       "expected": "no_finding",
       "suppressed_by": "quarantine",
@@ -53,7 +60,9 @@
       "id": "fp.null.guarded-on-the-same-line.got",
       "language": "typescript",
       "path": "source/core/index.ts",
-      "snippet": ["  if (encoding === undefined || encoding.toLowerCase().replace('-', '') === 'utf8') {"],
+      "snippet": [
+        "  if (encoding === undefined || encoding.toLowerCase().replace('-', '') === 'utf8') {"
+      ],
       "rule_id": "null.pointer.deref",
       "expected": "no_finding",
       "suppressed_by": "exclusion",
@@ -63,7 +72,9 @@
       "id": "fp.integer.unique-constraint.drf",
       "language": "markdown",
       "path": "docs/api-guide/validators.md",
-      "snippet": ["            models.UniqueConstraint(fields=['category', 'slug'], name='unique_slug')"],
+      "snippet": [
+        "            models.UniqueConstraint(fields=['category', 'slug'], name='unique_slug')"
+      ],
       "rule_id": "integer.overflow",
       "expected": "no_finding",
       "suppressed_by": "word_boundary",
@@ -73,7 +84,9 @@
       "id": "fp.integer.fingerprint.nextjs",
       "language": "typescript",
       "path": ".github/actions/pr-stack-ci-gate/src/fingerprint.ts",
-      "snippet": ["function fingerprint(snapshot: Snapshot): string {"],
+      "snippet": [
+        "function fingerprint(snapshot: Snapshot): string {"
+      ],
       "rule_id": "integer.overflow",
       "expected": "no_finding",
       "suppressed_by": "word_boundary",
@@ -83,7 +96,9 @@
       "id": "fp.ratelimit.redirect-fixture.got",
       "language": "typescript",
       "path": "test/redirects.ts",
-      "snippet": ["\tresponse.writeHead(302, { location: '/login' });"],
+      "snippet": [
+        "\tresponse.writeHead(302, { location: '/login' });"
+      ],
       "rule_id": "rate_limit.missing",
       "expected": "no_finding",
       "suppressed_by": "quarantine",
@@ -93,7 +108,9 @@
       "id": "fp.ratelimit.jsdoc-example.express",
       "language": "javascript",
       "path": "lib/response.js",
-      "snippet": [" *    res.location('../login');"],
+      "snippet": [
+        " *    res.location('../login');"
+      ],
       "rule_id": "rate_limit.missing",
       "expected": "no_finding",
       "suppressed_by": "comment_stripping",
@@ -103,7 +120,9 @@
       "id": "fp.ratelimit.licence-text.nextjs",
       "language": "text",
       "path": ".github/actions/pr-stack-ci-gate/dist/licenses.txt",
-      "snippet": ["@octokit/auth-token"],
+      "snippet": [
+        "@octokit/auth-token"
+      ],
       "rule_id": "rate_limit.missing",
       "expected": "no_finding",
       "suppressed_by": "quarantine",
@@ -113,7 +132,9 @@
       "id": "fp.authz.stream-teardown.got",
       "language": "typescript",
       "path": "source/core/index.ts",
-      "snippet": ["    result.destroy();"],
+      "snippet": [
+        "    result.destroy();"
+      ],
       "rule_id": "authz.missing_function_level",
       "expected": "no_finding",
       "suppressed_by": "quarantine",
@@ -123,7 +144,9 @@
       "id": "fp.authz.session-teardown",
       "language": "typescript",
       "path": "packages/core/src/session.ts",
-      "snippet": ["      session.destroy();"],
+      "snippet": [
+        "      session.destroy();"
+      ],
       "rule_id": "authz.missing_function_level",
       "expected": "no_finding",
       "suppressed_by": "quarantine",
@@ -133,7 +156,9 @@
       "id": "fp.authz.pool-teardown.sequelize",
       "language": "typescript",
       "path": "packages/core/src/abstract-dialect/connection-manager.ts",
-      "snippet": ["    void this.sequelize.pool.destroy(connection);"],
+      "snippet": [
+        "    void this.sequelize.pool.destroy(connection);"
+      ],
       "rule_id": "authz.missing_function_level",
       "expected": "no_finding",
       "suppressed_by": "quarantine",
@@ -158,7 +183,9 @@
       "id": "fp.concurrency.global-agent-comment.got",
       "language": "typescript",
       "path": "source/core/index.ts",
-      "snippet": ["// If agent.http2 is unset, use the global agent for connection pooling."],
+      "snippet": [
+        "// If agent.http2 is unset, use the global agent for connection pooling."
+      ],
       "rule_id": "concurrency.shared_state",
       "expected": "no_finding",
       "suppressed_by": "comment_stripping",
@@ -168,7 +195,9 @@
       "id": "fp.concurrency.sequelize-global-option-comment",
       "language": "typescript",
       "path": "packages/mariadb/src/connection-manager.ts",
-      "snippet": ["    // Replaced by Sequelize's global option"],
+      "snippet": [
+        "    // Replaced by Sequelize's global option"
+      ],
       "rule_id": "concurrency.shared_state",
       "expected": "no_finding",
       "suppressed_by": "comment_stripping",
@@ -178,7 +207,9 @@
       "id": "fp.concurrency.changelog-global-leak.express",
       "language": "markdown",
       "path": "History.md",
-      "snippet": ["  * Fix a global leak when multiple subnets are trusted"],
+      "snippet": [
+        "  * Fix a global leak when multiple subnets are trusted"
+      ],
       "rule_id": "concurrency.shared_state",
       "expected": "no_finding",
       "suppressed_by": "quarantine",
@@ -188,7 +219,9 @@
       "id": "fp.authz.changelog-route-example.express",
       "language": "markdown",
       "path": "History.md",
-      "snippet": ["  * Added `app.get('/user/:id').remove();` style routing"],
+      "snippet": [
+        "  * Added `app.get('/user/:id').remove();` style routing"
+      ],
       "rule_id": "authz.missing_function_level",
       "expected": "no_finding",
       "suppressed_by": "quarantine",
@@ -198,7 +231,9 @@
       "id": "fp.authbypass.changelog-route-example.express",
       "language": "markdown",
       "path": "History.md",
-      "snippet": ["  * Added `app.get('/user/:id').remove();` style routing"],
+      "snippet": [
+        "  * Added `app.get('/user/:id').remove();` style routing"
+      ],
       "rule_id": "auth.bypass.missing_check",
       "expected": "no_finding",
       "suppressed_by": "prose_path_scope",
@@ -230,33 +265,259 @@
         "        return None"
       ],
       "hunk_start": 15,
-      "snippet": ["                return redirect(url_for(\"counter\"))"],
+      "snippet": [
+        "                return redirect(url_for(\"counter\"))"
+      ],
       "rule_id": "redirect.open",
       "expected": "no_finding",
       "suppressed_by": "comment_stripping",
       "evidence": "The only false positive of the September 2026 action trial (docs/validation/action-trial-2026-09.md, item 7). `src/flask/views.py:158` was flagged \"Potential open redirect\" on a line inside a `.. code-block:: python` example in the `MethodView` docstring, which redirects to a hard-coded endpoint and is not executable code. Prose scoping keeps rules off documentation files, not documentation regions; the comment stripper knew about docstrings but was scanning each hunk on its own, and this hunk opens well below the docstring's own quotes. Given the file at the head revision it now classifies the line as prose."
+    },
+    {
+      "id": "fp.sql.injection.raw_query.f-string-with-no-interpolation",
+      "language": "python",
+      "path": "storefront/orders.py",
+      "snippet": [
+        "query = f\"SELECT id, status FROM orders\""
+      ],
+      "rule_id": "sql.injection.raw_query",
+      "expected": "no_finding",
+      "suppressed_by": "word_boundary",
+      "evidence": "Trial pull request, 2026-09-28. The f-string branch of the pattern asked only for an f-string containing a SQL keyword, so a constant query written as an f-string was reported. Nothing is interpolated, so there is nothing to inject."
+    },
+    {
+      "id": "fp.cmd.injection.shell_true.argument-list-ending-in-f",
+      "language": "python",
+      "path": "storefront/orders.py",
+      "snippet": [
+        "    subprocess.run([\"tar\", \"-czf\", str(archive), str(target)], check=True)"
+      ],
+      "rule_id": "cmd.injection.shell_true",
+      "expected": "no_finding",
+      "suppressed_by": "word_boundary",
+      "evidence": "Trial pull request, 2026-09-28. The pattern's f-string alternative was an unguarded `f\"`, which matches the letter f before a quote anywhere on the line. `\"-czf\"` ends an argument in f, so a command passed as an argument list with no shell was reported as shell injection."
     }
   ],
   "true_positives": [
-    {"id": "tp.auth.bypass", "language": "javascript", "path": "src/routes/admin.js", "snippet": ["app.get('/admin/users', handler)"], "rule_id": "auth.bypass.missing_check", "expected": "finding"},
-    {"id": "tp.path.traversal", "language": "python", "path": "src/files.py", "snippet": ["    data = open(\"/data/\" + filename)"], "rule_id": "path.traversal.user_path", "expected": "finding"},
-    {"id": "tp.cors", "language": "python", "path": "src/main.py", "snippet": ["allow_origins=[\"*\"]"], "rule_id": "cors.overly_permissive", "expected": "finding"},
-    {"id": "tp.csrf", "language": "python", "path": "src/views.py", "snippet": ["@csrf_exempt"], "rule_id": "csrf.missing_protection", "expected": "finding"},
-    {"id": "tp.crypto.weak_hash", "language": "python", "path": "src/hashing.py", "snippet": ["digest = hashlib.md5(data)"], "rule_id": "crypto.weak.hash", "expected": "finding"},
-    {"id": "tp.crypto.entropy", "language": "javascript", "path": "src/token.js", "snippet": ["const token = Math.random().toString(36)"], "rule_id": "crypto.insufficient_entropy", "expected": "finding"},
-    {"id": "tp.crypto.hardcoded_iv", "language": "python", "path": "src/crypto.py", "snippet": ["iv = \"0123456789abcdef0123456789abcdef\""], "rule_id": "crypto.hardcoded_iv", "expected": "finding"},
-    {"id": "tp.sql.injection", "language": "python", "path": "src/db.py", "snippet": ["query = f\"SELECT * FROM users WHERE id = {user_id}\""], "rule_id": "sql.injection.raw_query", "expected": "finding"},
-    {"id": "tp.cmd.injection", "language": "python", "path": "src/runner.py", "snippet": ["subprocess.run(cmd, shell=True)"], "rule_id": "cmd.injection.shell_true", "expected": "finding"},
-    {"id": "tp.code.injection", "language": "python", "path": "src/evaluate.py", "snippet": ["result = eval(user_input)"], "rule_id": "code.injection.eval", "expected": "finding"},
-    {"id": "tp.xss", "language": "javascript", "path": "src/render.js", "snippet": ["element.innerHTML = data"], "rule_id": "xss.unsafe_html_render", "expected": "finding"},
-    {"id": "tp.nosql.injection", "language": "javascript", "path": "src/users.js", "snippet": ["db.users.find(req.body)"], "rule_id": "nosql.injection", "expected": "finding"},
-    {"id": "tp.ldap.injection", "language": "python", "path": "src/directory.py", "snippet": ["ldap.search(\"ou=users,dc=example\" + user_input)"], "rule_id": "ldap.injection", "expected": "finding"},
-    {"id": "tp.template.injection", "language": "python", "path": "src/views.py", "snippet": ["render_template_string(req.form['template'])"], "rule_id": "template.injection", "expected": "finding"},
-    {"id": "tp.config.debug", "language": "python", "path": "src/settings.py", "snippet": ["DEBUG = True"], "rule_id": "config.debug_enabled", "expected": "finding"},
-    {"id": "tp.upload.unsafe", "language": "javascript", "path": "src/upload.js", "snippet": ["upload(file.originalname, req.body.path)"], "rule_id": "upload.unsafefile", "expected": "finding"},
-    {"id": "tp.config.tls", "language": "python", "path": "src/client.py", "snippet": ["requests.get(url, verify=False)"], "rule_id": "config.tls_disabled", "expected": "finding"},
-    {"id": "tp.config.verbose_errors", "language": "javascript", "path": "src/errors.js", "snippet": ["res.json({ error: err.message, stack: err.stack })"], "rule_id": "config.verbose_errors", "expected": "finding"},
-    {"id": "tp.secret.credential", "language": "python", "path": "src/config.py", "snippet": ["api_key = \"sk_live_abc123def456\""], "rule_id": "secret.hardcoded.credential", "expected": "finding"},
-    {"id": "tp.auth.weak_hash", "language": "python", "path": "src/auth.py", "snippet": ["password_hash = md5(password)"], "rule_id": "auth.weak_password_hash", "expected": "finding"}
+    {
+      "id": "tp.auth.bypass",
+      "language": "javascript",
+      "path": "src/routes/admin.js",
+      "snippet": [
+        "app.get('/admin/users', handler)"
+      ],
+      "rule_id": "auth.bypass.missing_check",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.path.traversal",
+      "language": "python",
+      "path": "src/files.py",
+      "snippet": [
+        "    data = open(\"/data/\" + filename)"
+      ],
+      "rule_id": "path.traversal.user_path",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.cors",
+      "language": "python",
+      "path": "src/main.py",
+      "snippet": [
+        "allow_origins=[\"*\"]"
+      ],
+      "rule_id": "cors.overly_permissive",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.csrf",
+      "language": "python",
+      "path": "src/views.py",
+      "snippet": [
+        "@csrf_exempt"
+      ],
+      "rule_id": "csrf.missing_protection",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.crypto.weak_hash",
+      "language": "python",
+      "path": "src/hashing.py",
+      "snippet": [
+        "digest = hashlib.md5(data)"
+      ],
+      "rule_id": "crypto.weak.hash",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.crypto.entropy",
+      "language": "javascript",
+      "path": "src/token.js",
+      "snippet": [
+        "const token = Math.random().toString(36)"
+      ],
+      "rule_id": "crypto.insufficient_entropy",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.crypto.hardcoded_iv",
+      "language": "python",
+      "path": "src/crypto.py",
+      "snippet": [
+        "iv = \"0123456789abcdef0123456789abcdef\""
+      ],
+      "rule_id": "crypto.hardcoded_iv",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.sql.injection",
+      "language": "python",
+      "path": "src/db.py",
+      "snippet": [
+        "query = f\"SELECT * FROM users WHERE id = {user_id}\""
+      ],
+      "rule_id": "sql.injection.raw_query",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.cmd.injection",
+      "language": "python",
+      "path": "src/runner.py",
+      "snippet": [
+        "subprocess.run(cmd, shell=True)"
+      ],
+      "rule_id": "cmd.injection.shell_true",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.code.injection",
+      "language": "python",
+      "path": "src/evaluate.py",
+      "snippet": [
+        "result = eval(user_input)"
+      ],
+      "rule_id": "code.injection.eval",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.xss",
+      "language": "javascript",
+      "path": "src/render.js",
+      "snippet": [
+        "element.innerHTML = data"
+      ],
+      "rule_id": "xss.unsafe_html_render",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.nosql.injection",
+      "language": "javascript",
+      "path": "src/users.js",
+      "snippet": [
+        "db.users.find(req.body)"
+      ],
+      "rule_id": "nosql.injection",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.ldap.injection",
+      "language": "python",
+      "path": "src/directory.py",
+      "snippet": [
+        "ldap.search(\"ou=users,dc=example\" + user_input)"
+      ],
+      "rule_id": "ldap.injection",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.template.injection",
+      "language": "python",
+      "path": "src/views.py",
+      "snippet": [
+        "render_template_string(req.form['template'])"
+      ],
+      "rule_id": "template.injection",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.config.debug",
+      "language": "python",
+      "path": "src/settings.py",
+      "snippet": [
+        "DEBUG = True"
+      ],
+      "rule_id": "config.debug_enabled",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.upload.unsafe",
+      "language": "javascript",
+      "path": "src/upload.js",
+      "snippet": [
+        "upload(file.originalname, req.body.path)"
+      ],
+      "rule_id": "upload.unsafefile",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.config.tls",
+      "language": "python",
+      "path": "src/client.py",
+      "snippet": [
+        "requests.get(url, verify=False)"
+      ],
+      "rule_id": "config.tls_disabled",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.config.verbose_errors",
+      "language": "javascript",
+      "path": "src/errors.js",
+      "snippet": [
+        "res.json({ error: err.message, stack: err.stack })"
+      ],
+      "rule_id": "config.verbose_errors",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.secret.credential",
+      "language": "python",
+      "path": "src/config.py",
+      "snippet": [
+        "api_key = \"sk_live_abc123def456\""
+      ],
+      "rule_id": "secret.hardcoded.credential",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.auth.weak_hash",
+      "language": "python",
+      "path": "src/auth.py",
+      "snippet": [
+        "password_hash = md5(password)"
+      ],
+      "rule_id": "auth.weak_password_hash",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.sql.injection.raw_query.f-string-interpolates-a-value",
+      "language": "python",
+      "path": "storefront/orders.py",
+      "snippet": [
+        "    cursor.execute(f\"SELECT * FROM orders WHERE id = {order_id}\")"
+      ],
+      "rule_id": "sql.injection.raw_query",
+      "expected": "finding"
+    },
+    {
+      "id": "tp.cmd.injection.shell_true.f-string-with-shell",
+      "language": "python",
+      "path": "storefront/orders.py",
+      "snippet": [
+        "    subprocess.run(f\"tar -czf {name}.tgz\", shell=True)"
+      ],
+      "rule_id": "cmd.injection.shell_true",
+      "expected": "finding"
+    }
   ]
 }
