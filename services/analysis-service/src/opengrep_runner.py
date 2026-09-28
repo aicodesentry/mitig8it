@@ -17,7 +17,10 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from finding_quality import is_transcript_artifact_line
+from finding_quality import (
+    is_transcript_artifact_line,
+    make_fingerprint as finding_quality_make_fingerprint,
+)
 from remediation_patches import build_remediation_patch
 from taxonomy import build_taxonomy_metadata
 from test_code_scope import (
@@ -175,9 +178,10 @@ INSUFFICIENT_SANITIZERS = {
 }
 
 
-def make_fingerprint(rule_id: str, path: str, line: int, snippet: str) -> str:
-    raw = f"{rule_id}|{path}|{line}|{snippet.strip()}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+# Re-exported from `finding_quality`, which is the one definition; `main` re-exports the same
+# one. Two identical copies of a fingerprint function is two chances for a GitHub comment
+# marker to stop matching its own previous comment.
+make_fingerprint = finding_quality_make_fingerprint
 
 
 HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")

@@ -1,8 +1,23 @@
+import hashlib
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
 from comment_stripper import strip_lines
 from test_code_scope import is_non_code_text_path
+
+
+def make_fingerprint(rule_id: str, path: str, line_start: int, snippet: str) -> str:
+    """The identity of a finding, and the key everything downstream joins on.
+
+    It lives here, in the module that owns finding shape, because four modules need it and
+    none of them may import the others: `main` and `opengrep_runner` had identical copies, and
+    `secret_detection` reaching into `main` for it made the import order decide which service's
+    `main` answered when the Action puts two of them on `sys.path`. `main.make_fingerprint` and
+    `opengrep_runner.make_fingerprint` are re-exports of this, so every existing caller and the
+    GitHub comment marker are unchanged.
+    """
+    raw = f"{rule_id}|{path}|{line_start}|{snippet.strip()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 HUNK_RE = re.compile(r"@@ -(?P<old_start>\d+)(?:,\d+)? \+(?P<new_start>\d+)(?:,\d+)? @@")
