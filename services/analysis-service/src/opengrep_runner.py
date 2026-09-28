@@ -978,7 +978,12 @@ def _build_finding(
         "trace_summary": metadata.get("trace_summary"),
         "evidence_details": evidence_details,
         "code_snippet": code_snippet,
-        "evidence": f"OpenGrep AST match on rule `{check_id}`",
+        # The rule is ours. Every rule in `opengrep_rules/` is original work of this
+        # repository, and `docs/legal/third-party-rules.md` records why both public rule
+        # libraries were excluded. Naming the pattern engine here told every reader that a
+        # finding came from a third-party tool, in the highest-visibility surface we have.
+        # The engine belongs in logs and structured output, not in the prose a customer reads.
+        "evidence": f"Matched rule `{check_id}` (tier 2, AST)",
         "exploit_scenario": "",
         "remediation": match.get("extra", {}).get("message", ""),
         "remediation_patch": "",

@@ -27,7 +27,7 @@ const SupportPage = () => {
     },
     {
       question: 'Can I customize the analysis rules?',
-      answer: 'Custom rule support is on the roadmap. Currently the engine runs 35+ CWE-focused regex patterns plus OpenGrep AST rules across Python, JavaScript, TypeScript, Java, Go, Ruby, PHP, and C#.'
+      answer: 'Custom rule support is on the roadmap. Today the review runs about 30 pattern rules and 177 AST rules, all written and measured in this repository, across Python, JavaScript, TypeScript, Java, Go, Ruby, PHP, C#, template languages and GitHub Actions workflows.'
     },
   ]
 

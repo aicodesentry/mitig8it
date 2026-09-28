@@ -10,7 +10,7 @@ const finding = (over = {}) => ({
   title: 'EJS unescaped output tag. `<%-` writes raw HTML; use `<%=` so the value is escaped',
   description: 'EJS unescaped output tag. `<%-` writes raw HTML; use `<%=` so the value is escaped',
   remediation: 'EJS unescaped output tag. `<%-` writes raw HTML; use `<%=` so the value is escaped',
-  evidence: 'OpenGrep AST match on rule `cwe-79.ejs-unescaped-output`',
+  evidence: 'Matched rule `cwe-79.ejs-unescaped-output`',
   severity: 'high', confidence: 0.9, cwe_id: 'CWE-79', file_path: 'views/admin.ejs', line_start: 17,
   ...over,
 });
@@ -37,6 +37,6 @@ describe('a finding comment says each thing once', () => {
   });
 
   test('the evidence line is never dropped, because it says where the match came from', () => {
-    expect(build()).toContain('OpenGrep AST match');
+    expect(build()).toContain('Matched rule');
   });
 });
