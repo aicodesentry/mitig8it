@@ -161,8 +161,13 @@ What it means in practice:
 - **An assignment is a lock.** While an issue is assigned to you, the files it names are not
   changed by an agent. If something else has to change them first, you get a comment on the issue
   saying so before it happens, rather than a merge conflict afterwards.
-- **Claim it by commenting.** Say you are starting and you will be assigned. There is nothing to
-  ask permission for.
+- **Claim it by commenting, and say how you mean to fix it.** Two or three sentences: the files
+  you expect to change and the shape of the fix. You are assigned on that comment. The sketch is
+  not a gate to pass, it is so a wrong approach costs you a comment instead of a weekend.
+- **You get an answer on the approach within one working day.** If it is wrong, you are told what
+  is wrong with it and what to do instead, on the issue, before you have written the code. An
+  issue text says what done looks like; it does not always say the one way to get there, and the
+  file it points you at is sometimes not the file that holds the answer.
 - **An assignment lapses after ten days** with no commit and no comment, and the issue goes back on
   the board. That is not a judgement about you. It is so the next person can tell what is actually
   free.
