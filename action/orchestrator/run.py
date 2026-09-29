@@ -16,7 +16,6 @@ import os
 import sys
 import subprocess
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -508,7 +507,13 @@ def build_publish_request(
     version_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Everything the Node publisher needs, in one place the tests can build without a network."""
-    action_id = action_id or f"action-{uuid.uuid4().hex[:16]}"
+    # Derived from the run's subject, never minted fresh. `manifest_digest` binds `action_id`,
+    # because it reproduces `manifestDigestFor` in the App, where the same position holds a job row
+    # id. A `uuid4` here therefore gave the same set of fixes a different envelope digest on every
+    # run, and the digest is reviewer-visible through the fix comment, so a re-run over an unchanged
+    # head rewrote a fix block whose suggestion text had not moved. The triple below is the one
+    # `idempotency_key` on the next line already treats as this publish's identity.
+    action_id = action_id or f"action-{hashlib.sha256(f'{repository}:{pr_number}:{head_sha}'.encode('utf-8')).hexdigest()[:16]}"
     base_sha = base_sha or head_sha
     return {
         "token": token,
