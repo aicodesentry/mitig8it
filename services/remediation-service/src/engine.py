@@ -354,17 +354,38 @@ def _build_candidate(
     passed on this bundle, and the bundle holds only the hunks attributed to them, so a candidate
     states what its evidence covers rather than every finding the group carried.
     """
-    candidate_id = digest_json(
-        {
-            "job_id": request.job_id,
-            "finding_ids": finding_ids,
-            "artifact_digest": bundle.artifact_digest,
-            "evidence_digest": verification.evidence_digest,
-        }
-    )
     verified_tree_oid = compute_tree_oid(
         request.tree_entries,
         {patch.path: patch.replacement_content for patch in bundle.patches},
+    )
+    # A candidate's identity is what it changes and what it claims to repair, and nothing else.
+    #
+    # It used to include `job_id` and `evidence_digest`, and both of those move on every run over
+    # identical code. `job_id` is a fresh row per job in the App and a fresh `uuid4` per run in the
+    # Action. `evidence_digest` is worse: it hashes the broker's whole evidence document, which
+    # binds `request_nonce` from `secrets.token_hex(32)` in `verification/verifier.py`, freshly
+    # minted per verification and required by `sandbox/broker.py` to come back unchanged. That
+    # nonce is an anti-replay property of the verification contract and it is supposed to move,
+    # which is exactly why nothing durable may be keyed by it.
+    #
+    # The consequence was visible to maintainers. `candidate_id` is the `<!-- mitig8it-fix:... -->`
+    # marker that the publisher matches a fix block by, so a re-run over an unchanged head found no
+    # marker it recognised and rewrote the block, with byte-identical suggestion text. The ten
+    # repository trial recorded it on pygoat, where a commit touching only the README rewrote two
+    # fix comments: docs/validation/action-trial-2026-09.md, "The findings are not stable between
+    # runs on identical code".
+    #
+    # `artifact_digest` is the patch content and `verified_tree_oid` is the tree the patch produces,
+    # so two runs that write the same repair for the same findings now agree on the identity, and
+    # any change to the repair changes it. The evidence digest keeps its job: it stays on the
+    # candidate's `verification` summary and in `preview.evidence` for the audit trail, where a
+    # per-run value belongs.
+    candidate_id = digest_json(
+        {
+            "finding_ids": finding_ids,
+            "artifact_digest": bundle.artifact_digest,
+            "verified_tree_oid": verified_tree_oid,
+        }
     )
     limitations = list(verification.limitations) + [item for item in bundle.limitations if item not in verification.limitations]
     return Candidate(
