@@ -530,6 +530,28 @@ labelled line the fixes cost. *Fix:* start from `services/analysis-service/src/m
 `pattern_findings`, which now passes `content` into every rule's scan options, and from the
 clustering that `canonicalize_internal_type` feeds.
 
+> **Re-checked on 29 September 2026 against `main`: this does not reproduce.** The finding is
+> produced and it lands on line 963. The check was the real
+> `analyze_pull_request_payload` over `introduction/views.py` at the corpus ref
+> `19d17cc8874861142b330636d068bbde54e86b85`, with the labelled line changed by a trailing comment
+> exactly as the trial changed it, head content supplied, and `reviewable_line_spans` naming only
+> that line. `ssrf.untrusted_url_fetch` is not quarantined and the finding survives the posting
+> policy and the clustering.
+>
+> So the loss was either fixed by one of the merges after `integration/2026-09-24` or never left
+> that branch, and this note cannot say which, because nothing recorded it at the time. The first
+> attempt at reproducing it here did report line 962 rather than 963, which looked exactly like the
+> anchoring bug it was hunting for and was an off-by-one in the hunk header of the reproduction: one
+> context line before the change instead of two. Worth writing down, because that is the failure mode
+> of a reproduction, and a wrong one would have sent someone into `pattern_findings` after a bug that
+> was in the test.
+>
+> What was actually missing was a test. `services/analysis-service/src/tests/`
+> `test_corpus_labelled_lines_still_report.py` now holds the case, asserting the finding exists, that
+> it anchors on 963 rather than near it, and that it is not quarantined away; all three fail if the
+> rule stops posting. A labelled line that goes missing should fail a suite, not wait for a hand-read
+> of sixty comments five days later.
+
 **2. The findings are not stable between runs on identical code.** pygoat did not converge: the
 README-only commit **deleted** the `introduction/views.py:291` comment and **rewrote** two others.
 The rewrites say why. `pygoat/settings.py:25` changed its fix marker from
