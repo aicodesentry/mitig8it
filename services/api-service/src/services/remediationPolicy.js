@@ -13,11 +13,17 @@ const DEFAULT_POLICY = Object.freeze({
   // the two Python-only ones (hardcoded credentials moved to the environment, eval replaced
   // by ast.literal_eval). REMEDIATION_ALLOWED_RULE_FAMILIES_JSON narrows or overrides this.
   //
-  // `workflow_hardening` is listed so an operator can turn it off, not because it can ship: it
-  // is the one family that verifies by static assertion rather than by a regression test, that
-  // verification level is not implemented yet, and the repair service refuses every candidate of
-  // the family by name until it is. Leaving the family out here would have hidden the refusal
-  // behind a policy message that says something else.
+  // `workflow_hardening` is the one family that verifies by static assertion rather than by a
+  // regression test, because no test can show that a workflow file is secure. That level used to
+  // be unimplemented, and this comment used to say the repair service refused every candidate of
+  // the family by name until it was; it is implemented now
+  // (`docs/validation/static-assertion-2026-09.md`), and `static_gate` only refuses the family on
+  // a deployment whose repair service does not offer the level at all.
+  //
+  // What still stops it shipping a fix is upstream of policy: the pinning repair needs the commit
+  // a tag resolves to, that lookup happens during analysis behind
+  // `WORKFLOW_ACTION_DIGEST_LOOKUP`, and a finding that arrives without a digest is refused as
+  // `action_digest_unresolved` rather than pinned to a guess.
   allowed_rule_families: Object.freeze([
     'sql_parameterization', 'command_arguments', 'path_containment', 'hardcoded_credential', 'code_injection_eval',
     'workflow_hardening',
