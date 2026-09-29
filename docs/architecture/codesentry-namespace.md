@@ -41,12 +41,12 @@ they appear reproduces the table.
 | Historical record and scored fixtures | 40 | 13 | Dated reviews, release notes, a validation log, the changelog, two benchmark corpora |
 | Persistent state | 12 | 6 | The Postgres database name, and two keys in visitors' browser storage |
 | Internal code | 6 | 4 | npm package metadata and two adversarial test fixtures |
-| Cosmetic | 8 | 5 | Prose, a file header, a CLI description string |
-| **Total** | **330** | **67** | |
+| Cosmetic | 7 | 5 | Prose, a file header, a CLI description string |
+| **Total** | **329** | **67** | |
 
 The distribution is the finding. Two thirds of the remaining namespace is deploy-time identity, and
 almost all of the rest is either a published identifier or a record of the past. The genuinely free
-part of the rename, prose and package metadata, is 12 lines.
+part of the rename, prose and package metadata, is 11 lines.
 
 ## Deploy-time identity
 
@@ -346,7 +346,7 @@ anything.
 
 ## Cosmetic
 
-8 lines in 5 files, everything the filters above did not claim.
+7 lines in 5 files, everything the filters above did not claim.
 
 Four are prose that describes the split honestly and will be wrong the moment any part of it is
 fixed: `docs/architecture/overview.md:22` and `:129`, `docs/getting-started/environment.md:5`,
@@ -354,24 +354,23 @@ fixed: `docs/architecture/overview.md:22` and `:129`, `docs/getting-started/envi
 `argparse` description, `benchmarks/eval.py:2` and `:197`, the second of which prints the old product
 name in `--help`.
 
-The last two are in `.env.example`. Line 2 is the file's title header, and it contains an em-dash,
-which `CONTRIBUTING.md:155` forbids anywhere, so that line is already due for an edit on its own
-merits. Line 60 is `EMAIL_FROM_NAME=CodeSentry`, and it is not cosmetic in effect even though it is
-cosmetic in cost. `services/github-service/src/services/notificationService.js:81` and `:133` use
-that variable as the display name on outbound mail, defaulting to `Mitig8it` when it is unset. A
-self-hoster who copies `.env.example`, which is what the file is for, sends notification email signed
-CodeSentry, and the example file is the only reason they would. This is a one-word fix and it should
-be made.
+The last one is `.env.example:2`, the file's title header, and it contains an em-dash, which
+`CONTRIBUTING.md:155` forbids anywhere, so that line is already due for an edit on its own merits.
+
+This bucket held one more line when the inventory was written: `EMAIL_FROM_NAME=CodeSentry`, read by
+`services/github-service/src/services/notificationService.js` as the display name on outbound mail.
+That file had no callers and no deploy set the credentials it needed, so it and its `nodemailer`
+dependency were removed rather than corrected, which is why the count here is one lower than the
+inventory's own measurement.
 
 ## Staged plan
 
 ### Stage 0, now, one PR, no infrastructure change
 
-Twelve lines, plus the two defects this inventory surfaced.
+Eleven lines, plus the two defects this inventory surfaced.
 
-1. The 8 cosmetic lines. Rewrite the four prose passages to point here instead of restating a
-   partial list, retitle `benchmarks/eval.py`, drop the em-dash header in `.env.example`, and set
-   `EMAIL_FROM_NAME=Mitig8it` so a self-hoster's mail is signed correctly.
+1. The 7 cosmetic lines. Rewrite the four prose passages to point here instead of restating a
+   partial list, retitle `benchmarks/eval.py`, and drop the em-dash header in `.env.example`.
 2. The 4 npm metadata lines, `codesentry-api` to `mitig8it-api`, with the regenerated lockfile in the
    same commit. Land this when no dependency branch is open, or defer it to Stage 0b on its own; it
    is the only item here that can conflict.
@@ -465,8 +464,9 @@ lines are in the documents a new reader hits first, `overview.md`,
 restates a partial and slightly different list of where the old name survives. A reader who finds a
 fourth place the docs did not mention concludes the documentation is approximate. Replacing three
 approximate lists with one link to this page turns a smell into a documented decision, which is the
-actual deliverable. `EMAIL_FROM_NAME` and the `e2e-happy-path.sh` mismatch are real defects with
-one-line fixes and should go out with it.
+actual deliverable. The `e2e-happy-path.sh` mismatch is a real defect with a one-line fix and should
+go out with it. `EMAIL_FROM_NAME`, the other defect this inventory surfaced, is resolved: the mail
+notifier that read it was deleted.
 
 The empty-value guard from Stage 1 is worth landing before launch on its own merits, whether or not
 the nine variables are ever renamed. An undefined `secrets.CODESENTRY_INTERNAL_SECRET` deploys green

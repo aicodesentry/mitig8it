@@ -56,10 +56,6 @@ You still need real GitHub OAuth/App credentials for the full webhook and dashbo
 | `GEMINI_API_KEY` / `OPENAI_API_KEY` | Analysis service | Provider-specific fallback keys for local development. |
 | `ANALYSIS_CACHE_TTL_DAYS` | Analysis service | Cache retention setting used by analysis cache helpers. |
 | `REDIS_URL` | Analysis service | Reserved for cache-backed analysis behavior; the current local Compose stack does not start Redis. |
-| `EMAIL_USER` | GitHub service | Optional SMTP user for email notifications. |
-| `EMAIL_PASSWORD` | GitHub service | Optional SMTP password. |
-| `EMAIL_SERVICE` | GitHub service | Optional SMTP provider, default `gmail`. |
-| `EMAIL_FROM_NAME` | GitHub service | Display name for outbound email. |
 | `WEBHOOK_URL` | GitHub service / local ops | Public URL for local webhook testing, usually an ngrok URL. |
 | `FIREBASE_HOSTING_URL` | API | Additional allowed frontend origin. |
 

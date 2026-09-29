@@ -31,7 +31,6 @@
     "express": "^5.1.0",
     "google-protobuf": "^4.0.2",
     "helmet": "^8.2.0",
-    "nodemailer": "^9.0.1",
     "pg": "^8.21.0",
     "prom-client": "^15.1.3"
   },
