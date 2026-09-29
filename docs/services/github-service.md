@@ -51,13 +51,6 @@ npm test       # Jest
 | `GITHUB_APP_PRIVATE_KEY` | GitHub App private key. |
 | `DATABASE_URL` | PostgreSQL connection string. |
 
-Optional email variables:
-
-- `EMAIL_USER`
-- `EMAIL_PASSWORD`
-- `EMAIL_SERVICE`
-- `EMAIL_FROM_NAME`
-
 ## Endpoints
 
 - `GET /health`
