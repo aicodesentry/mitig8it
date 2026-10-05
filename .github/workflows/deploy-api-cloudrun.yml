@@ -14,10 +14,10 @@ on:
         default: production
       api_min_instances:
         description: >-
-          Instances kept warm. 1 keeps the first review after an idle period off the
-          cold-start path; see docs/deployment/cloud-run-firebase.md for the cost.
+          Instances kept warm. 0 scales to zero; 1 keeps the first review after an idle
+          period off the cold-start path. See docs/deployment/cloud-run-firebase.md for the cost.
         type: string
-        default: '1'
+        default: '0'
   workflow_call:
     inputs:
       environment:
@@ -25,7 +25,7 @@ on:
         default: production
       api_min_instances:
         type: string
-        default: '1'
+        default: '0'
 
 permissions:
   contents: read
@@ -200,7 +200,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          MIN_INSTANCES="${{ inputs.api_min_instances || '1' }}"
+          MIN_INSTANCES="${{ inputs.api_min_instances || '0' }}"
           # The managed Prometheus sidecar is opt-in through the METRICS_SIDECAR_ENABLED
           # repository variable. It needs the codesentry-gmp-config secret, which is an
           # owner step in docs/runbooks/observability.md; without the variable the service
