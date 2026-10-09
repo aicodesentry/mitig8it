@@ -118,6 +118,11 @@ def _strip(result: dict[str, Any]) -> dict[str, Any]:
         trimmed["finding_count"] = len(value.get("findings", []))
         trimmed["files_analyzed"] = value.get("files_analyzed")
         trimmed["test_files_analyzed"] = value.get("test_files_analyzed")
+        # Tier 2 tolerates a per-file scanner error or timeout and records it instead of
+        # failing. A label in such a file is missed for a reason no rule diff explains, so the
+        # record keeps what the stage said.
+        if value.get("analysis_limitations"):
+            trimmed["analysis_limitations"] = value["analysis_limitations"]
     return trimmed
 
 

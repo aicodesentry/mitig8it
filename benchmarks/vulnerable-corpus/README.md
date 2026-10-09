@@ -35,6 +35,7 @@ why `we45/Vulnerable-Flask-App` was considered and dropped in favour of `anxoler
 | `labels.json` | The corpus: the repositories with their pinned refs and licences, and every label. |
 | `adjudications.json` | Hand-read verdicts on findings no label covers, keyed by finding fingerprint. |
 | `harvest_cve_labels.py` | Proposes candidate labels from advisories that name their fixing commit. |
+| `recall-baseline.json` | Per label, whether it is detected and whether a posting rule detects it. Generated; see below. |
 
 A label is one vulnerability:
 
@@ -95,6 +96,49 @@ $PY scripts/replay/score.py results/*.json --labels benchmarks/vulnerable-corpus
     --adjudications benchmarks/vulnerable-corpus/adjudications.json --out /tmp/score.md
 ```
 
+## The recall ratchet
+
+`recall-baseline.json` records, for every label, whether a finding of an expected class lands
+on the labelled lines (`hit`) and whether one of those findings comes from a rule that is
+allowed to post (`posting_hit`). `scripts/replay/ratchet.py check` compares a fresh run with
+it, so a label that is detected today cannot stop being detected without somebody seeing it.
+The precision benchmarks cannot do this: they keep one true positive per rule family, and a
+rule can lose most of its real detections and still match that one.
+
+```sh
+make recall-ratchet     # scan the 23 trees, compare with the baseline
+make recall-baseline    # scan the 23 trees, rewrite the baseline
+```
+
+or, with the result files already on disk:
+
+```sh
+$PY scripts/replay/ratchet.py measure --results results/
+$PY scripts/replay/ratchet.py check results/
+$PY scripts/replay/ratchet.py update results/
+```
+
+`check` exits 1 and names the label ids when a label that was hit is no longer hit, and,
+listed separately, when a label that a posting rule hit is now hit only by a quarantined
+rule. A newly hit label is printed as an improvement and does not fail. It exits 2 when the
+run is not a measurement of the whole corpus (a repository has no result, a batch died, the
+scanner was missing) or when the baseline and `labels.json` name different labels, because a
+batch lost to a timeout is indistinguishable from a rule that stopped matching.
+
+Refresh the baseline in the same change whenever one of these is true, and commit the result:
+
+* a rule change reaches a label it did not reach before, so the gain is held from then on;
+* a label is added to or removed from `labels.json`;
+* a loss is intended, for example a rule is quarantined on measured precision. The label then
+  appears in the baseline's diff, which is where a reviewer is asked to agree to it.
+
+The baseline also carries the rule ids that matched when it was written. They are there so a
+failure can say what used to match, and they decide nothing: a label stays hit when a
+different rule takes it over.
+
+`.github/workflows/recall-ratchet.yml` runs the check on pull requests that touch the rules,
+the scanner wrapper, `scripts/replay/` or this directory.
+
 ## Adding a label
 
 A label is a measurement, so it has to be one someone read.
@@ -113,3 +157,5 @@ A label is a measurement, so it has to be one someone read.
 * For a CVE, take the range from the fix diff's **old side**, at the parent commit's line
   numbers, and check that what the fix deleted really is the vulnerable statement.
   `harvest_cve_labels.py` prints the candidates; it does not decide.
+* Refresh `recall-baseline.json` in the same change. The ratchet refuses to compare while the
+  two files name different labels.
