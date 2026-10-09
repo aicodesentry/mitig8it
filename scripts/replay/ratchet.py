@@ -25,9 +25,11 @@ does not fail. It is not protected until the baseline is refreshed with `update`
 also how a deliberate loss is accepted: the baseline's diff then shows the label in review.
 
 Exit status: 0 when nothing regressed, 1 when a label regressed, 2 when the comparison cannot
-be trusted (a repository was not measured, a batch died, or the baseline and `labels.json`
-name different labels). A run that lost a batch to a timeout looks exactly like a rule that
-stopped matching, so it is refused rather than reported as a regression.
+be trusted (a repository was not measured, a batch died, a stage hit a time or memory ceiling,
+or the baseline and `labels.json` name different labels). A run that lost findings to a timeout
+looks exactly like a rule that stopped matching, so it is refused rather than reported as a
+regression. `measure` lifts tier 1's own time budget for the same reason: with it, which regex
+rules reached the end of a large file depended on how busy the machine was.
 """
 from __future__ import annotations
 
@@ -54,6 +56,12 @@ BASELINE_VERSION = 1
 EXIT_OK = 0
 EXIT_REGRESSED = 1
 EXIT_UNUSABLE = 2
+
+# A limitation a stage records instead of failing. A file the scanner can only partly parse is
+# partly parsed on every machine, so it is part of the measurement. Everything else recorded
+# today is a resource ceiling (tier 1's time budget, a tier 2 per-file timeout or memory limit),
+# and what a ceiling removes depends on how busy the machine was.
+DETERMINISTIC_LIMITATION_KINDS = {"partial_parse"}
 
 REFRESH_HINT = "make recall-baseline, or scripts/replay/ratchet.py update <results>"
 
@@ -84,11 +92,19 @@ def label_status(label_state: dict[str, dict[str, Any]]) -> dict[str, dict[str, 
 def measurement_problems(
     documents: list[dict[str, Any]],
     repositories: Iterable[tuple[str, str]],
+    labelled_files: set[tuple[str, str]] | None = None,
+    tolerated: list[str] | None = None,
 ) -> list[str]:
-    """Every reason this run is not a measurement of the whole corpus.
+    """Every reason this run is not a measurement of every label.
 
-    A missing repository and a batch that died both remove findings, and removed findings are
-    what a regression is made of.
+    A missing repository, a batch that died and a stage that ran out of time all remove
+    findings, and removed findings are what a regression is made of.
+
+    A ceiling reached on one file removes findings from that file only, and a label is joined
+    to findings by path. So when `labelled_files` is given, a per-file ceiling on a file that
+    carries no label cannot have changed any label and is appended to `tolerated` instead: the
+    corpus trees check in minified bundles the scanner times out on under load, and none of
+    them is labelled.
     """
     by_repo: dict[str, list[dict[str, Any]]] = {}
     for document in documents:
@@ -122,15 +138,30 @@ def measurement_problems(
                     if stage.get("ok") is not True:
                         reason = stage.get("error_type") or "no result"
                         problems.append(f"{repo}: batch {batch} {tier} failed ({reason})")
+                        continue
+                    for limitation in stage.get("analysis_limitations") or []:
+                        kind = str(limitation.get("kind") or "")
+                        if kind in DETERMINISTIC_LIMITATION_KINDS:
+                            continue
+                        path = str(limitation.get("path") or "")
+                        text = (
+                            f"{repo}: batch {batch} {tier} gave up on part of the work "
+                            f"({kind}: {path or limitation.get('message') or ''})"
+                        )
+                        if path and labelled_files is not None and (repo, path) not in labelled_files:
+                            if tolerated is not None:
+                                tolerated.append(text)
+                            continue
+                        problems.append(text)
     return problems
 
 
 def scanner_limitations(documents: list[dict[str, Any]]) -> dict[tuple[str, str], list[str]]:
     """Per (repo, path), the kinds of limitation tier 2 reported for that file.
 
-    A per-file scanner timeout is tolerated by the service and recorded rather than raised, so
-    the run is complete and a label in that file is still missed. Naming it beside the label
-    is the difference between reading a rule diff and re-running the job.
+    A file the scanner could only partly parse is recorded by the service rather than raised,
+    so the run is complete and a label in that file can still be missed. Naming it beside the
+    label is the difference between reading a rule diff and reading the file.
     """
     found: dict[tuple[str, str], list[str]] = {}
     for document in documents:
@@ -218,6 +249,7 @@ def render(
     labels: list[dict[str, Any]],
     problems: list[str],
     limitations: dict[tuple[str, str], list[str]] | None = None,
+    tolerated: list[str] | None = None,
 ) -> str:
     by_id = {label["id"]: label for label in labels}
     limitations = limitations or {}
@@ -242,6 +274,10 @@ def render(
         lines.append("")
         lines.append(f"INCOMPLETE MEASUREMENT ({len(problems)}): the comparison below cannot be trusted")
         lines += [f"  {problem}" for problem in problems]
+    if tolerated:
+        lines.append("")
+        lines.append(f"note, a time or memory ceiling on a file with no label ({len(tolerated)}), which no label depends on:")
+        lines += [f"  {item}" for item in tolerated]
     if comparison.lost:
         lines.append("")
         lines.append(f"REGRESSION, no longer hit ({len(comparison.lost)}):")
@@ -359,17 +395,30 @@ def corpus_repositories(labels_path: Path) -> list[tuple[str, str]]:
     return sorted(pinned)
 
 
-def current_state(
-    files: list[str], labels_path: Path
-) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], list[str], dict[tuple[str, str], list[str]]]:
+@dataclass
+class Run:
+    status: dict[str, dict[str, Any]]
+    labels: list[dict[str, Any]]
+    problems: list[str]
+    tolerated: list[str]
+    limitations: dict[tuple[str, str], list[str]]
+
+
+def current_state(files: list[str], labels_path: Path) -> Run:
     labels = score.load_labels(str(labels_path))
     documents = [json.loads(Path(path).read_text(encoding="utf-8")) for path in files]
-    problems = measurement_problems(documents, corpus_repositories(labels_path))
+    tolerated: list[str] = []
+    problems = measurement_problems(
+        documents,
+        corpus_repositories(labels_path),
+        labelled_files={(label["repo"], label["path"]) for label in labels},
+        tolerated=tolerated,
+    )
     findings = score.load_results(
         path for path, document in zip(files, documents) if document.get("mode") == "snapshot"
     )
     _, label_state = score.join(findings, labels, {}, score.quarantined_rule_set())
-    return label_status(label_state), labels, problems, scanner_limitations(documents)
+    return Run(label_status(label_state), labels, problems, tolerated, scanner_limitations(documents))
 
 
 def command_measure(args: argparse.Namespace) -> int:
@@ -385,7 +434,7 @@ def command_measure(args: argparse.Namespace) -> int:
         out.unlink(missing_ok=True)
         command = [
             args.python, str(HERE / "replay.py"), "--snapshot", "--include-quarantined",
-            "--no-remediation", "--repo", repo, "--ref", ref, "--out", str(out),
+            "--no-remediation", "--no-tier1-budget", "--repo", repo, "--ref", ref, "--out", str(out),
             "--cache", args.cache, "--timeout", str(args.timeout),
         ]
         if subprocess.run(command, check=False).returncode != 0 or not out.exists():
@@ -397,26 +446,27 @@ def command_measure(args: argparse.Namespace) -> int:
 
 
 def command_check(args: argparse.Namespace) -> int:
-    current, labels, problems, limitations = current_state(result_files(args.results), Path(args.labels))
+    run = current_state(result_files(args.results), Path(args.labels))
     baseline = load_baseline(Path(args.baseline))
-    comparison = compare(baseline, current)
-    print(render(comparison, baseline, current, labels, problems, limitations))
-    return exit_status(comparison, problems)
+    comparison = compare(baseline, run.status)
+    print(render(comparison, baseline, run.status, run.labels, run.problems, run.limitations, run.tolerated))
+    return exit_status(comparison, run.problems)
 
 
 def command_update(args: argparse.Namespace) -> int:
-    current, labels, problems, limitations = current_state(result_files(args.results), Path(args.labels))
+    run = current_state(result_files(args.results), Path(args.labels))
+    current = run.status
     baseline_path = Path(args.baseline)
     baseline = load_baseline(baseline_path) if baseline_path.exists() else {}
-    if problems:
-        print(f"update: refusing to write a baseline from an incomplete measurement ({len(problems)}):", file=sys.stderr)
-        for problem in problems:
+    if run.problems:
+        print(f"update: refusing to write a baseline from an incomplete measurement ({len(run.problems)}):", file=sys.stderr)
+        for problem in run.problems:
             print(f"  {problem}", file=sys.stderr)
         return EXIT_UNUSABLE
     if baseline:
         # Shown before the file changes, so a refresh that accepts a loss says so in the log
         # as well as in the diff.
-        print(render(compare(baseline, current), baseline, current, labels, [], limitations))
+        print(render(compare(baseline, current), baseline, current, run.labels, [], run.limitations, run.tolerated))
         print()
     baseline_path.write_text(dump_baseline(current), encoding="utf-8")
     total, hit, posting = _counts(current)

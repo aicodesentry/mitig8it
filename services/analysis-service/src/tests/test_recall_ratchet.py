@@ -260,11 +260,50 @@ def test_a_label_removed_from_the_corpus_is_unusable(corpus, capsys):
 def test_a_scanner_limitation_on_the_labelled_file_is_named_beside_the_regression(corpus, capsys):
     analysis = {
         "tier1": {"ok": True},
-        "tier2": {"ok": True, "analysis_limitations": [{"path": "a.py", "kind": "scanner_error", "type": "Timeout"}]},
+        "tier2": {"ok": True, "analysis_limitations": [
+            {"path": "a.py", "kind": "partial_parse", "type": "Syntax error"},
+        ]},
     }
     corpus.run(_result([_finding("b.py", 20, QUARANTINED_RULE)], analysis=analysis))
     assert corpus.ratchet("check") == RATCHET.EXIT_REGRESSED
-    assert "[scanner limitation on this file: Timeout]" in capsys.readouterr().out
+    assert "[scanner limitation on this file: Syntax error]" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("tier, limitation, expected", [
+    ("tier1", {"kind": "budget", "path": "", "message": "Tier 1 stopped after 80 of 120 files (20 s budget)"},
+     "tier1 gave up on part of the work (budget: Tier 1 stopped after 80 of 120 files (20 s budget))"),
+    ("tier1", {"kind": "budget", "path": "a.py", "message": "Tier 1 stopped after 30 of 35 rules"},
+     "tier1 gave up on part of the work (budget: a.py)"),
+    ("tier2", {"kind": "not_analyzed", "path": "a.py", "type": "Timeout"},
+     "tier2 gave up on part of the work (not_analyzed: a.py)"),
+])
+def test_a_stage_that_ran_out_of_time_is_unusable_even_when_every_label_is_still_hit(
+    corpus, capsys, tier, limitation, expected,
+):
+    """What a time budget cuts depends on how busy the machine was, so a run that hit one is
+    not a measurement, whichever way the comparison came out."""
+    analysis = {"tier1": {"ok": True}, "tier2": {"ok": True}}
+    analysis[tier] = {"ok": True, "analysis_limitations": [limitation]}
+    corpus.run(_result(BASELINE_RUN, analysis=analysis))
+    assert corpus.ratchet("check") == RATCHET.EXIT_UNUSABLE
+    assert expected in capsys.readouterr().out
+    assert corpus.ratchet("update") == RATCHET.EXIT_UNUSABLE
+
+
+def test_a_ceiling_on_a_file_with_no_label_is_noted_and_does_not_block(corpus, capsys):
+    """Labels join to findings by path, so a bundle the scanner timed out on cannot have
+    changed any label. Refusing the run for it would make the gate depend on machine load."""
+    analysis = {
+        "tier1": {"ok": True},
+        "tier2": {"ok": True, "analysis_limitations": [
+            {"kind": "not_analyzed", "path": "static/vendor.min.js", "type": "Timeout"},
+        ]},
+    }
+    corpus.run(_result(BASELINE_RUN, analysis=analysis))
+    assert corpus.ratchet("check") == RATCHET.EXIT_OK
+    out = capsys.readouterr().out
+    assert "note, a time or memory ceiling on a file with no label (1)" in out
+    assert "static/vendor.min.js" in out and "result: PASS" in out
 
 
 def test_compare_reads_only_the_two_booleans():

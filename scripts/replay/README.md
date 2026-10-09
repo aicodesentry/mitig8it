@@ -135,8 +135,8 @@ the verdicts back.
 ## Recall ratchet
 
 `ratchet.py` turns the snapshot measurement into a regression gate. `measure` runs
-`replay.py --snapshot --include-quarantined --no-remediation` once per repository pinned in
-`labels.json`, each into its own result file. `check` joins those results to the labels with
+`replay.py --snapshot --include-quarantined --no-remediation --no-tier1-budget` once per
+repository pinned in `labels.json`, each into its own result file. `check` joins those results to the labels with
 `score.join`, reduces each label to two facts (hit, and hit by a rule that posts) and compares
 them with `benchmarks/vulnerable-corpus/recall-baseline.json`. `update` writes that file, and
 refuses to when the run is incomplete.
@@ -145,11 +145,19 @@ refuses to when the run is incomplete.
 | ---: | --- |
 | 0 | No label regressed. Newly hit labels are listed as improvements. |
 | 1 | A label that was hit is not hit, or a posting hit is now a quarantined hit only. The ids are printed. |
-| 2 | Not comparable: a repository has no result or was measured at another ref, a batch or a tier failed, or the baseline and the labels name different labels. |
+| 2 | Not comparable: a repository has no result or was measured at another ref, a batch or a tier failed or ran into a time or memory ceiling, or the baseline and the labels name different labels. |
 
-A regressed label whose file carries a tier 2 scanner limitation (a per-file timeout or parse
-error, which the service tolerates and records) has that limitation printed beside it; the
-worker keeps `analysis_limitations` on the tier 2 stage record for this.
+`--no-tier1-budget` is there because of what a snapshot batch does to tier 1. The service stops
+tier 1 after 20 s per request and 2 s per file (`TIER1_BUDGET_SECONDS`,
+`TIER1_FILE_BUDGET_SECONDS`) and records a limitation. A batch of 120 whole files reaches both:
+on an idle machine four corpus files hit the per-file cap, and under load one run lost 59
+findings in three repositories to the two limits together. The flag sets both to a day, through
+the environment the workers inherit. Without it a snapshot run still works and its tier 1
+findings depend on the machine; the worker keeps each stage's `analysis_limitations` on the
+record, so a run says when that happened, and the ratchet refuses a run in which it did.
+
+A regressed label in a file the scanner could only partly parse has that limitation printed
+beside it.
 
 The comparison is unit-tested without the corpus in
 `services/analysis-service/src/tests/test_recall_ratchet.py`. When to refresh the baseline is

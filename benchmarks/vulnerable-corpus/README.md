@@ -121,9 +121,11 @@ $PY scripts/replay/ratchet.py update results/
 `check` exits 1 and names the label ids when a label that was hit is no longer hit, and,
 listed separately, when a label that a posting rule hit is now hit only by a quarantined
 rule. A newly hit label is printed as an improvement and does not fail. It exits 2 when the
-run is not a measurement of the whole corpus (a repository has no result, a batch died, the
-scanner was missing) or when the baseline and `labels.json` name different labels, because a
-batch lost to a timeout is indistinguishable from a rule that stopped matching.
+run is not a measurement of the whole corpus (a repository has no result, a batch died, a
+stage ran out of time, the scanner was missing) or when the baseline and `labels.json` name
+different labels, because findings lost to a timeout are indistinguishable from a rule that
+stopped matching. `measure` runs tier 1 without its time budget for the same reason;
+`scripts/replay/README.md` says what that budget was doing to snapshot runs.
 
 Refresh the baseline in the same change whenever one of these is true, and commit the result:
 
