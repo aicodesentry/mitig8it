@@ -288,7 +288,7 @@ def render(
     elif comparison.regressed:
         lines.append("result: FAIL")
         lines.append(
-            "A label that was detected is not detected now. Fix the rule, or if the loss is "
+            "A label the baseline holds has regressed. Fix the rule, or if the loss is "
             f"intended, refresh the baseline so the diff shows it: {REFRESH_HINT}"
         )
     else:
