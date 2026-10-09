@@ -41,7 +41,7 @@ jobs:
     name: Orchestrator unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: '3.11'
@@ -65,7 +65,7 @@ jobs:
     name: Build the container and run its tests inside it
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Restore the image layer cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -119,7 +119,7 @@ jobs:
     name: actionlint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       # A workflow file that does not parse fails the whole run before any job starts, with a
       # message that does not say which file or line. This job says both.
       - name: Run actionlint
