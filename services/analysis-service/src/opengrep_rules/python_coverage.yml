@@ -494,6 +494,69 @@ rules:
       confidence: "0.85"
       posting: post
 
+  - id: cwe-22.py-path-join-request-value
+    patterns:
+      # The join is reported wherever it is, not only inside `open(...)`: the two corpus
+      # shapes build the path on one statement and use it on the next, so a pattern that
+      # needs the sink around the join reaches neither. The local is followed one
+      # assignment back, in the same function, and only when it is assigned straight from
+      # the request: `secure_filename(request...)` and every other wrapper is not matched.
+      - pattern-either:
+        - pattern: os.path.join($BASE, ..., request.$ATTR.get(...), ...)
+        - pattern: os.path.join($BASE, ..., request.$ATTR[$K], ...)
+        - patterns:
+          - pattern-inside: |
+              $V = request.$ATTR[$K]
+              ...
+          - pattern: os.path.join($BASE, ..., $V, ...)
+        - patterns:
+          - pattern-inside: |
+              $V = request.$ATTR.get(...)
+              ...
+          - pattern: os.path.join($BASE, ..., $V, ...)
+      # Every branch binds $ATTR, so this constraint is safe at rule level.
+      - metavariable-regex:
+          metavariable: $ATTR
+          regex: "^(args|form|values|GET|POST|query_params|data|json|cookies|COOKIES|headers)$"
+      # A function that goes on to compare a path against its base is doing the containment
+      # this rule asks for. Which path it compares is not checked, so this errs towards
+      # silence.
+      - pattern-not-inside: |
+          def $F(...):
+              ...
+              if <... $P.startswith(...) ...>:
+                  ...
+              ...
+      - pattern-not-inside: |
+          def $F(...):
+              ...
+              if <... os.path.commonpath(...) ...>:
+                  ...
+              ...
+      - pattern-not-inside: |
+          def $F(...):
+              ...
+              if <... $P.is_relative_to(...) ...>:
+                  ...
+              ...
+    message: "Path joined from request input. `os.path.join` does not contain the result: an absolute or `../` value replaces or escapes the base. Resolve with realpath and reject anything outside the base"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-10: 3 findings over 23 repositories, 2 adjudicated by
+        label (pygoat introduction/views.py ssrf_lab, and whoogle-search app/routes.py in
+        CVE-2024-22205) and 1 hand-read and true (whoogle-search app/routes.py line 445, the same
+        request argument joined for a pickle write), precision 1.00. Written from those two labels,
+        so in-sample.
+      posting: post
+
   - id: cwe-22.py-pathlib-join-interpolated
     patterns:
       - pattern: $BASE / f"...{$NAME}..."

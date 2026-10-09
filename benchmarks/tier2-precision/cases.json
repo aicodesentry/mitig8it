@@ -1182,6 +1182,109 @@
       "rule": "cwe-89.py-execute-fstring-direct",
       "path": "positive/py_execute_fstring_unguarded_order_by.py",
       "code": "# The same statement with no membership test guarding the interpolated name. The\n# exclusion that withdraws the allowlisted case must not withdraw this one.\ndef search_orders(cursor, status, sort_column):\n    cursor.execute(\n        f\"SELECT * FROM orders WHERE status = ? ORDER BY {sort_column}\",\n        (status,),\n    )\n    return cursor.fetchall()\n"
+    },
+    {
+      "id": "cwe-22.py-path-join-request-value",
+      "expect": "finding",
+      "rule": "cwe-22.py-path-join-request-value",
+      "path": "positive/cwe-22_py-path-join-request-value.py",
+      "code": "import os\nfrom flask import request\n\nBASE = '/srv/config'\n\ndef load_config():\n    return open(os.path.join(BASE, request.args.get('name')), 'rb').read()\n"
+    },
+    {
+      "id": "corpus.cwe-22.py-path-join-request-value",
+      "expect": "finding",
+      "rule": "cwe-22.py-path-join-request-value",
+      "path": "corpus/cwe-22_py-path-join-request-value.py",
+      "code": "import os\nfrom django.shortcuts import render\n\ndef ssrf_lab(request):\n    file=request.POST[\"blog\"]\n    try :\n        dirname = os.path.dirname(__file__)\n        filename = os.path.join(dirname, file)\n        file = open(filename,\"r\")\n        data = file.read()\n        return render(request,\"Lab/ssrf/ssrf_lab.html\",{\"blog\":data})\n    except:\n        return render(request, \"Lab/ssrf/ssrf_lab.html\", {\"blog\": \"No blog found\"})\n",
+      "note": "adeyosemanputra/pygoat introduction/views.py:926, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json). The request value reaches the join through a local, which is the branch the direct pattern does not cover."
+    },
+    {
+      "id": "py-path-join-request-value-contained",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.py-path-join-request-value"
+      ],
+      "path": "negative/py_path_join_request_value_contained.py",
+      "code": "import os\nfrom flask import abort, request\n\nBASE = '/srv/config'\n\ndef load_config():\n    name = request.args.get('name')\n    full = os.path.realpath(os.path.join(BASE, name))\n    if not full.startswith(BASE + os.sep):\n        abort(400)\n    return open(full, 'rb').read()\n",
+      "note": "Not a replay line: the shape the rule's message asks for. A function that compares a path against its base is excluded, so the repair this rule recommends does not go on being reported."
+    },
+    {
+      "id": "py-path-join-request-value-sanitised-or-unrelated",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.py-path-join-request-value"
+      ],
+      "path": "negative/py_path_join_request_value_unrelated.py",
+      "code": "import os\nfrom flask import request\nfrom werkzeug.utils import secure_filename\n\nBASE = '/srv/uploads'\n\ndef save_upload():\n    name = secure_filename(request.form['name'])\n    return os.path.join(BASE, name)\n\ndef config_path(config):\n    name = config.get('name')\n    return os.path.join(BASE, name)\n",
+      "note": "Not a replay line. A local assigned from a wrapper around the request value, and a local assigned from something that is not the request, are both outside the one assignment the rule follows."
+    },
+    {
+      "id": "cwe-22.js-path-resolve-request-value",
+      "expect": "finding",
+      "rule": "cwe-22.js-path-resolve-request-value",
+      "path": "positive/cwe-22_js-path-resolve-request-value.js",
+      "code": "const fs = require('node:fs');\nconst path = require('node:path');\nfunction preview(req, res) {\n  const target = path.resolve(req.query.file);\n  res.send(fs.readFileSync(target, 'utf8'));\n}\n"
+    },
+    {
+      "id": "corpus.cwe-22.js-path-resolve-request-value",
+      "expect": "finding",
+      "rule": "cwe-22.js-path-resolve-request-value",
+      "path": "corpus/cwe-22_js-path-resolve-request-value.ts",
+      "code": "import path from 'node:path'\nimport { type Request, type Response, type NextFunction } from 'express'\n\nexport function erase (req: Request, res: Response, next: NextFunction) {\n  if (req.body.layout) {\n    const filePath: string = path.resolve(req.body.layout).toLowerCase()\n    const isForbiddenFile: boolean = (filePath.includes('ftp') || filePath.includes('ctf.key') || filePath.includes('encryptionkeys'))\n    if (!isForbiddenFile) {\n      next()\n    }\n  }\n}\n",
+      "note": "juice-shop/juice-shop routes/dataErasure.ts:104, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json), with the handler around it reduced to the statements the label covers."
+    },
+    {
+      "id": "js-path-resolve-with-a-base-or-a-literal",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-path-resolve-request-value"
+      ],
+      "path": "negative/js_path_resolve_with_base.js",
+      "code": "const path = require('node:path');\nfunction asset(req, res) {\n  const index = path.resolve('static', 'index.html');\n  const candidate = path.resolve(ROOT, req.params.name);\n  if (!candidate.startsWith(ROOT + path.sep)) return res.sendStatus(400);\n  res.sendFile(candidate === ROOT ? index : candidate);\n}\n",
+      "note": "Not a replay line. The rule is the single-argument form only: a resolve against a base can be followed by a containment check, as it is here, and is left to the sink rules."
+    },
+    {
+      "id": "cwe-22.js-render-request-object-locals",
+      "expect": "finding",
+      "rule": "cwe-22.js-render-request-object-locals",
+      "path": "positive/cwe-22_js-render-request-object-locals.js",
+      "code": "function showAccount(req, res) {\n  res.render('account', req.body);\n}\n"
+    },
+    {
+      "id": "corpus.cwe-22.js-render-request-object-locals",
+      "expect": "finding",
+      "rule": "cwe-22.js-render-request-object-locals",
+      "path": "corpus/cwe-22_js-render-request-object-locals.js",
+      "code": "var validator = require('validator');\n\nexports.save_account_details = function(req, res, next) {\n  // get the profile details from the JSON\n\tconst profile = req.body\n  // validate the input\n  if (validator.isEmail(profile.email, { allow_display_name: true })\n    && validator.isAscii(profile.firstname)\n  ) {\n    // render the view\n    return res.render('account.hbs', profile)\n  } else {\n    console.log('error in form details')\n    return res.render('account.hbs')\n  }\n}\n",
+      "note": "snyk-labs/nodejs-goof routes/index.js:120, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json), with three of the five validator calls removed."
+    },
+    {
+      "id": "js-render-named-fields-or-loaded-record",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-render-request-object-locals"
+      ],
+      "path": "negative/js_render_named_fields.js",
+      "code": "async function showAccount(req, res) {\n  const profile = await loadProfile(req.user.id);\n  res.render('account', profile);\n}\nfunction showResult(req, res) {\n  res.render('result', { name: req.body.name, email: req.body.email });\n}\n",
+      "note": "Not a replay line. Named fields cannot carry a view option the code did not write, and a record loaded for the user is not the request object."
+    },
+    {
+      "id": "corpus.cwe-22.js-archive-entry-write.concat",
+      "expect": "finding",
+      "rule": "cwe-22.js-archive-entry-write",
+      "path": "corpus/cwe-22_js-archive-entry-write-concat.ts",
+      "code": "import fs from 'node:fs'\nimport path from 'node:path'\nimport { pipeline } from 'node:stream/promises'\nimport unzipper from 'unzipper'\n\nasync function extractZipBuffer (buffer: Buffer) {\n  const directory = await unzipper.Open.buffer(buffer)\n  for (const entry of directory.files) {\n    const fileName = entry.path\n    const absolutePath = path.resolve('uploads/complaints/' + fileName)\n    if (absolutePath.includes(path.resolve('.'))) {\n      await pipeline(entry.stream(), fs.createWriteStream('uploads/complaints/' + fileName))\n    }\n  }\n}\n",
+      "note": "juice-shop/juice-shop routes/fileUpload.ts:34, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json), with the challenge bookkeeping line removed."
+    },
+    {
+      "id": "archive-rule-ignores-a-path-property-that-is-not-an-entry",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-archive-entry-write"
+      ],
+      "path": "negative/js_write_stream_options_path.js",
+      "code": "const fs = require('node:fs');\nfunction openLog(options) {\n  const name = options.path;\n  return fs.createWriteStream('logs/' + name);\n}\n",
+      "note": "Not a replay line. `.path` is a property of many objects; the concatenation branches require the object to be named as an entry, member or header, so a configured log name is not reported as an archive entry."
     }
   ]
 }
