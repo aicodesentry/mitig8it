@@ -550,11 +550,13 @@ rules:
       family: "path_containment"
       confidence: "0.85"
       precision_evidence: >-
-        benchmarks/vulnerable-corpus 2026-10: 3 findings over 23 repositories, 2 adjudicated by
-        label (pygoat introduction/views.py ssrf_lab, and whoogle-search app/routes.py in
-        CVE-2024-22205) and 1 hand-read and true (whoogle-search app/routes.py line 445, the same
-        request argument joined for a pickle write), precision 1.00. Written from those two labels,
-        so in-sample.
+        benchmarks/vulnerable-corpus 2026-10: 2 findings over 23 repositories, both adjudicated by
+        label and true (pygoat introduction/views.py ssrf_lab, and whoogle-search app/routes.py in
+        CVE-2024-22205), precision 1.00. A third match, whoogle-search app/routes.py line 445, is
+        the same request argument joined for a pickle write, read as true; it adds no finding
+        because the service merges it into the cwe-22.py-open-request-path finding already on that
+        statement. Written from those two labels, so in-sample, and under the three adjudicated
+        findings the posting policy asks for.
       posting: post
 
   - id: cwe-22.py-pathlib-join-interpolated

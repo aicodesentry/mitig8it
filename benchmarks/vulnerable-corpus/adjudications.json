@@ -1534,6 +1534,22 @@
       "rule_id": "opengrep.cwe-200.gha-secret-in-untrusted-checkout-job",
       "where": "google/slo-generator .github/workflows/deploy.yml:58",
       "sampled_as": "workflow_tampering_2026_09_27"
+    },
+    {
+      "fingerprint": "d044018cd991da801d4eb5fa902384b05f7a5bce4405d351f4ceebf428452c28",
+      "verdict": "true",
+      "note": "res.render('dataErasureResult', { ...req.body, ...themeVars }): the request body is spread into the view locals, so the request sets `layout`, which is the documented local file read challenge; the label for it is three lines above, on the blocklist check",
+      "rule_id": "opengrep.cwe-22.js-render-request-object-locals",
+      "where": "juice-shop/juice-shop routes/dataErasure.ts:107",
+      "sampled_as": "new_rule_findings_2026_10_08"
+    },
+    {
+      "fingerprint": "fbce2fbc9b567e9aa16dd3f4313bfabbba083127f77477a4fbd07546ec8a08a5",
+      "verdict": "true",
+      "note": "the else branch of the same handler renders with the same spread of req.body and without the blocklist check, so the request-chosen layout is read with nothing in front of it",
+      "rule_id": "opengrep.cwe-22.js-render-request-object-locals",
+      "where": "juice-shop/juice-shop routes/dataErasure.ts:123",
+      "sampled_as": "new_rule_findings_2026_10_08"
     }
   ]
 }
