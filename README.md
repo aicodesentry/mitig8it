@@ -3,6 +3,8 @@
 [![CI](https://github.com/aicodesentry/mitig8it/actions/workflows/ci.yml/badge.svg)](https://github.com/aicodesentry/mitig8it/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+Built and maintained by [Neha Chaudhari](https://github.com/nebullii).
+
 Mitig8it reviews every pull request for exploitable code and posts the fix underneath the finding,
 as a suggestion you commit in one click.
 
