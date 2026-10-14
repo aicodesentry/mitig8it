@@ -284,9 +284,12 @@ const THREADS_QUERY = `query($owner:String!,$repo:String!,$number:Int!,$cursor:S
 
 const RESOLVE_MUTATION = `mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}`;
 
-// A comment that carries a published fix is kept whatever else is true of it. The marker is
-// github-service's own; `retireInlineComments` refuses to delete one for the same reason.
+// A comment that carries a published fix is kept whatever else is true of it. The markers are
+// github-service's own; `retireInlineComments` refuses to delete either for the same reason.
+// The first is a fix still on offer; the second is the form `markFixesApplied` leaves once the
+// finding has gone, which says the fix was applied and carries no suggestion to click.
 const FIX_MARKER = '<!-- mitig8it-fix:';
+const FIX_APPLIED_MARKER = '<!-- mitig8it-fix-applied:';
 
 function createGraphQLClient({ token, url = GRAPHQL_URL, fetchImpl }) {
   const call = fetchImpl || globalThis.fetch;
@@ -385,7 +388,7 @@ async function surveyReviewThreads(request, { graphql }) {
   // many carry our marker, and what became of the stale ones. A reconciliation that matches
   // nothing now says so out loud instead of looking like a run with nothing to do.
   const counters = {
-    seen: 0, ours: 0, stale: 0, resolved: 0, minimized: 0, retired: 0, kept: 0, failed: 0, errors: [],
+    seen: 0, ours: 0, stale: 0, resolved: 0, minimized: 0, retired: 0, applied: 0, kept: 0, failed: 0, errors: [],
   };
   const threads = await ourReviewThreads({
     graphql,
@@ -405,12 +408,25 @@ async function surveyReviewThreads(request, { graphql }) {
 // can be, and otherwise removed by deleting the comment that opened it. A comment carrying a
 // published fix is kept either way and counted apart, so the summary line never claims to have
 // tidied something it deliberately left.
-async function reconcileReviewThreads(survey, { graphql, operations, base }) {
+//
+// Kept is not the same as unchanged. The September trial committed a suggestion and the next
+// run logged "1 kept for a published fix" while the comment still read as an open critical
+// finding, with a suggestion block whose content was now the line it sat on. A finding that has
+// gone while its comment offers a fix is the fix having been applied, so the comment is
+// rewritten to say that, by the service's own `markFixesApplied`, and its thread is resolved
+// when the token may. One already rewritten by an earlier run is left as it is.
+async function reconcileReviewThreads(survey, { graphql, operations, base, headSha }) {
   const { counters, stale } = survey;
   const doomed = [];
+  const applied = [];
   for (const thread of stale) {
-    if (String(thread.body || '').includes(FIX_MARKER)) {
+    const body = String(thread.body || '');
+    if (body.includes(FIX_APPLIED_MARKER)) {
       counters.kept += 1;
+      continue;
+    }
+    if (body.includes(FIX_MARKER)) {
+      applied.push(thread);
       continue;
     }
     try {
@@ -443,6 +459,38 @@ async function reconcileReviewThreads(survey, { graphql, operations, base }) {
   } else if (doomed.length) {
     counters.failed += doomed.length;
     counters.errors.push(`thread ${doomed[0].thread.fingerprint}: ${doomed[0].error.message}`);
+  }
+  if (applied.length) {
+    if (!operations?.markFixesApplied) {
+      counters.kept += applied.length;
+    } else {
+      try {
+        const marked = await operations.markFixesApplied({
+          owner: base.owner,
+          repo: base.repo,
+          pr_number: base.pr_number,
+          installation_id: base.installation_id,
+          fingerprints: applied.map((thread) => thread.fingerprint),
+          head_sha: headSha,
+        });
+        counters.applied += Number(marked?.applied || 0);
+        counters.kept += Number(marked?.unchanged || 0);
+        const unaccounted = applied.length - Number(marked?.applied || 0) - Number(marked?.unchanged || 0);
+        if (unaccounted > 0) {
+          counters.failed += unaccounted;
+          counters.errors.push(`thread ${applied[0].fingerprint}: ${unaccounted} fix comment(s) not found to mark applied`);
+        }
+        // The thread of an applied fix is the one a maintainer most wants collapsed. Resolving
+        // is best effort for the same reason it is above: the workflow token often may not,
+        // and the comment now says what is true whether or not the thread folds.
+        for (const thread of applied) {
+          try { await graphql(RESOLVE_MUTATION, { id: thread.id }); } catch { /* the body carries the truth */ }
+        }
+      } catch (error) {
+        counters.failed += applied.length;
+        counters.errors.push(`thread ${applied[0].fingerprint}: ${error.message}`);
+      }
+    }
   }
   return counters;
 }
@@ -485,7 +533,7 @@ async function publish(request, { fetchImpl, graphql } = {}) {
     survey = await surveyReviewThreads(request, { graphql: graphqlClient });
   } catch (error) {
     results.threads = {
-      seen: 0, ours: 0, stale: 0, resolved: 0, minimized: 0, retired: 0, kept: 0,
+      seen: 0, ours: 0, stale: 0, resolved: 0, minimized: 0, retired: 0, applied: 0, kept: 0,
       failed: 0, errors: [], unavailable: error.message,
     };
   }
@@ -567,7 +615,7 @@ async function publish(request, { fetchImpl, graphql } = {}) {
   // the orchestrator states it on the one summary line it logs.
   if (survey) {
     try {
-      results.threads = await reconcileReviewThreads(survey, { graphql: graphqlClient, operations, base });
+      results.threads = await reconcileReviewThreads(survey, { graphql: graphqlClient, operations, base, headSha: request.head_sha });
     } catch (error) {
       results.threads = { ...survey.counters, unavailable: error.message };
     }
