@@ -399,7 +399,7 @@ async function retireInlineComments({ owner, repo, pr_number, installation_id, f
         const body = String(comment.body || '');
         const marker = FINDING_MARKER_PATTERN.exec(body);
         if (!marker || !wanted.has(marker[1])) continue;
-        if (body.includes('<!-- mitig8it-fix:')) {
+        if (body.includes('<!-- mitig8it-fix:') || body.includes(FIX_APPLIED_MARKER)) {
           kept += 1;
           continue;
         }
@@ -823,6 +823,106 @@ function withPreservedFixBlocks(nextBody, existingBody) {
   const preserved = extractFixBlocks(existingBody);
   if (!preserved.length) return nextBody;
   return `${stripFixBlocks(nextBody)}\n\n${preserved.join('\n\n')}`;
+}
+
+// --- the comment a fix leaves behind once it has been applied ------------------------
+//
+// A finding comment carrying a published fix outlives the finding. When the fix is committed,
+// the fresh analysis stops reporting the finding, and housekeeping keeps the comment, because
+// deleting it would hide what a reviewer acted on. What it kept, in the September trial, was
+// the comment word for word: a critical header, "Read it from the environment", and a
+// suggestion block whose content was now identical to the line it sat on. A maintainer read
+// an open critical finding on a line they had just fixed, and "Commit suggestion" would have
+// produced an empty commit. The comment is still kept; it is rewritten to say what is true.
+
+// The marker the applied form carries in place of its fix block. It names the candidate the
+// fix came from, and every housekeeping path that keeps a comment for a fix block keeps a
+// comment for this marker too. It is deliberately not matched by FIX_BLOCK_PATTERN: if the
+// finding comes back, the re-rendered comment must not inherit a "Fixed" line.
+function fixAppliedMarker(candidateId) { return `<!-- mitig8it-fix-applied:${candidateId} -->`; }
+const FIX_APPLIED_MARKER = '<!-- mitig8it-fix-applied:';
+const FIX_CANDIDATE_PATTERN = /<!-- mitig8it-fix:([^>\s]+) -->/;
+
+// The bold title a finding comment opens with, whichever of the two renderers wrote it.
+function findingTitle(body) {
+  for (const line of String(body || '').split('\n')) {
+    const match = /^\*\*(.+?)\*\*/.exec(line.trim());
+    if (match) return match[1].trim();
+  }
+  return '';
+}
+
+// What is true once the finding has gone: it is no longer reported, and the suggestion is
+// withdrawn. Nothing about severity or what to do, because there is nothing left to do. The
+// finding marker stays so a later run still finds this comment; the fix block is replaced by
+// the applied marker so nothing deletes it.
+function fixAppliedBody(existingBody, headSha) {
+  const body = String(existingBody || '');
+  const fingerprint = FINDING_MARKER_PATTERN.exec(body)?.[1];
+  const candidate = FIX_CANDIDATE_PATTERN.exec(body)?.[1] || 'unknown';
+  const title = findingTitle(stripFixBlocks(body));
+  const sha = String(headSha || '').trim();
+  const reanalysis = /^[0-9a-f]{7,64}$/i.test(sha) ? `The re-analysis of \`${sha.slice(0, 7)}\`` : 'The latest re-analysis';
+  const lines = [];
+  if (fingerprint) lines.push(findingMarker(fingerprint));
+  lines.push(fixAppliedMarker(candidate));
+  lines.push(title ? `**Fixed: ${title}**` : '**Fixed**');
+  lines.push(`${reanalysis} no longer reports this finding. The suggested fix that was here has been withdrawn, so there is nothing left to commit.`);
+  return lines.join('\n');
+}
+
+// Rewrite the comments of findings the analysis no longer reports and whose comment carries a
+// published fix. Only this app's own comments are touched, only ones whose finding marker
+// names a fingerprint the caller passed, and only ones carrying a fix block; a comment with no
+// fix is `retireInlineComments`'s to deal with, and one already in the applied form is left
+// alone, so a re-run changes nothing. No head check, for the same reason retiring has none:
+// whether a finding is still reported is the caller's knowledge, and a newer run that reports
+// it again re-renders the comment over this body.
+async function markFixesApplied({ owner, repo, pr_number, installation_id, fingerprints, head_sha }) {
+  if (!owner || !repo || !pr_number || !installation_id) {
+    throw badRequest('owner, repo, pr_number and installation_id are required');
+  }
+  validateOwnerRepo(owner, repo);
+
+  const wanted = new Set((fingerprints || []).filter(Boolean).map(String));
+  if (wanted.size === 0) return { applied: 0, unchanged: 0 };
+
+  try {
+    const token = await githubIdentity.token(installation_id);
+    const botLogin = await githubIdentity.botLogin();
+    const targets = [];
+    let unchanged = 0;
+
+    for (let page = 1; ; page += 1) {
+      const existing = await githubRequest('get',
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/comments?per_page=100&page=${page}`, token);
+      const comments = Array.isArray(existing.data) ? existing.data : [];
+      for (const comment of comments) {
+        if (botLogin && comment.user?.login !== botLogin) continue;
+        const body = String(comment.body || '');
+        const marker = FINDING_MARKER_PATTERN.exec(body);
+        if (!marker || !wanted.has(marker[1])) continue;
+        if (body.includes(FIX_APPLIED_MARKER)) {
+          unchanged += 1;
+          continue;
+        }
+        if (!FIX_CANDIDATE_PATTERN.test(body)) continue;
+        targets.push(comment);
+      }
+      if (comments.length < 100) break;
+    }
+
+    for (const comment of targets) {
+      await githubAnalysisWrite('patch',
+        `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${comment.id}`, token,
+        { body: fixAppliedBody(comment.body, head_sha) });
+    }
+
+    return { applied: targets.length, unchanged };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    throw externalError('Failed to mark fixes applied', error);
+  }
 }
 
 function safeMarkerText(value, name, maxLength) {
@@ -1299,8 +1399,10 @@ module.exports = {
   githubRestMutation,
   githubWriter,
   postInlineComment,
+  markFixesApplied,
   retireInlineComments,
   remediationVerificationCheckName,
   submitPullRequestReview,
   withPreservedFixBlocks,
+  fixAppliedBody,
 };
