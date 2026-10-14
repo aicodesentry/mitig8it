@@ -625,6 +625,20 @@ produce an empty commit. Keeping the comment is right; keeping it word for word 
 a comment is kept for a published fix, replace its body with a line saying the fix was applied and
 drop the suggestion block, in the retirement path in `action/publisher/publish.js`.
 
+*Fixed, 2026-10-14.* The note named the right place. `reconcileReviewThreads` in
+`action/publisher/publish.js` now hands a stale thread carrying a fix block to github-service's
+new `markFixesApplied`, which rewrites the comment to a bold `Fixed: <title>` line and one
+sentence saying the re-analysis of the head no longer reports the finding and the suggestion is
+withdrawn. The finding marker stays so a later run still finds the comment; the fix block is
+replaced by a `mitig8it-fix-applied` marker that every housekeeping path keeps and that the
+re-render on a returning finding does not inherit. The thread is resolved when the token may. The
+summary line gained a clause, so the run above would now read `0 resolved, 0 retired, 1 marked
+fixed, 0 kept for a published fix`; `kept` is now a comment already in the applied form, or one
+the publisher could not rewrite. The App's analysis path does not yet call `markFixesApplied` for
+a finding that `markFixed` closes while its comment carries a fix: that needs the operation on
+both internal transports and is the next change. Tests: `analysisLifecycle.test.js` and
+`test_rerun_idempotency.py`. Not yet re-run on a trial repository.
+
 ### Would I keep it installed now
 
 **fastify, got, sequelize:** yes, without reservation. Three clean repositories, three green
