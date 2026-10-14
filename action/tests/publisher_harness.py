@@ -136,6 +136,35 @@ module.exports = {
     return { retired, kept };
   },
 
+  // The contract markFixesApplied documents: rewrite my own comment for each fingerprint the
+  // caller names that carries a fix block, to the applied form; leave one already in that form.
+  markFixesApplied: async (p) => {
+    await roundTrip();
+    const state = load();
+    const wanted = new Set(p.fingerprints || []);
+    let applied = 0;
+    let unchanged = 0;
+    for (const comment of state.comments) {
+      const body = String(comment.body || '');
+      const match = /<!--\s*mitig8it-finding:([^\s>]+)\s*-->/.exec(body);
+      if (!match || !wanted.has(match[1]) || comment.user.login !== state.botLogin) continue;
+      if (body.includes('<!-- mitig8it-fix-applied:')) { unchanged += 1; continue; }
+      const candidate = /<!-- mitig8it-fix:([^>\s]+) -->/.exec(body);
+      if (!candidate) continue;
+      const title = /^\*\*(.+?)\*\*/m.exec(stripFixBlocks(body))?.[1] || '';
+      comment.body = [
+        `<!-- mitig8it-finding:${match[1]} -->`,
+        `<!-- mitig8it-fix-applied:${candidate[1]} -->`,
+        title ? `**Fixed: ${title}**` : '**Fixed**',
+        `The re-analysis of \`${String(p.head_sha || '').slice(0, 7)}\` no longer reports this finding. The suggested fix that was here has been withdrawn, so there is nothing left to commit.`,
+      ].join('\n');
+      applied += 1;
+    }
+    record(state, 'fix-applied', { fingerprints: (p.fingerprints || []).length, applied, unchanged });
+    save(state);
+    return { applied, unchanged };
+  },
+
   publishFindingFixSections: async (p) => {
     validateEnvelope(p);
     const state = load(); record(state, 'fixes', { sections: p.sections.length }); save(state);
