@@ -207,11 +207,12 @@ A finding that has gone away has its thread closed. The action resolves the thre
 may, and otherwise deletes its own comment, which removes the conversation rather than folding it
 away: a minimized thread still counts as unresolved, so a repository that requires every
 conversation resolved would stay blocked by a finding its author had already fixed. A comment
-carrying a published fix is kept either way. Every run logs one line saying what it saw and what
-it did:
+carrying a published fix is kept either way: once the finding has gone, the comment is rewritten
+to say the fix was applied, so it no longer reads as an open finding with a suggestion to commit.
+Every run logs one line saying what it saw and what it did:
 
-> Review threads: 8 seen, 8 with our marker, 0 resolved, 1 retired, 0 kept for a published fix,
-> 0 failed.
+> Review threads: 8 seen, 8 with our marker, 0 resolved, 1 retired, 1 marked fixed, 0 kept for a
+> published fix, 0 failed.
 
 ## What this is not
 
