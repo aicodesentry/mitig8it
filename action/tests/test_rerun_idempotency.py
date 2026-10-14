@@ -282,40 +282,87 @@ def test_deleting_our_own_comment_is_the_fallback_when_a_token_may_not_resolve(t
         assert [c["body"] for c in publisher.state()["comments"] if marker("fp-old") in c["body"]] == []
         threads = json.loads(completed.stdout)["threads"]
         assert run.thread_summary_line(threads) == (
-            "Review threads: 1 seen, 1 with our marker, 0 resolved, 1 retired, "
+            "Review threads: 1 seen, 1 with our marker, 0 resolved, 1 retired, 0 marked fixed, "
             "0 kept for a published fix, 0 failed."
         )
     finally:
         server.stop()
 
 
-def test_a_stale_comment_carrying_a_published_fix_is_kept(tmp_path):
-    """A suggestion a reader can still click is worth more than a tidy thread list."""
+def _with_published_fix(publisher, server):
+    """One run, then a verified fix appended under its comment, the way the fix publisher does."""
+    publisher.run(a_request([finding("fp-old")]))
+    state = publisher.state()
+    fixed = (
+        state["comments"][0]["body"]
+        + "\n\n<!-- mitig8it-fix:cand-1 -->\n```suggestion\nsafe()\n```\n<!-- /mitig8it-fix:cand-1 -->"
+    )
+    state["comments"][0]["body"] = fixed
+    publisher.state_path.write_text(json.dumps(state), encoding="utf-8")
+    server.add_thread(fixed)
+    publisher.clear_calls()
+    return fixed
+
+
+def test_a_stale_comment_carrying_a_published_fix_is_kept_and_says_the_fix_was_applied(tmp_path):
+    """The trial committed a suggestion and the next run logged "1 kept for a published fix" while
+    the comment still read as an open critical finding, with a suggestion block whose content was
+    now the line it sat on. The comment stays, because a reviewer acted on it; it says so."""
     if not publisher_harness.node_available():
         pytest.skip("node is not on PATH")
     server = fake_graphql.FakeGraphQL(resolve_fails=True).start()
     try:
         publisher = publisher_harness.Publisher(tmp_path, graphql_url=server.url())
-        publisher.run(a_request([finding("fp-old")]))
-        state = publisher.state()
-        fixed = (
-            state["comments"][0]["body"]
-            + "\n\n<!-- mitig8it-fix:cand-1 -->\n```suggestion\nsafe()\n```\n<!-- /mitig8it-fix:cand-1 -->"
-        )
-        state["comments"][0]["body"] = fixed
-        publisher.state_path.write_text(json.dumps(state), encoding="utf-8")
-        server.add_thread(fixed)
-        publisher.clear_calls()
+        fixed = _with_published_fix(publisher, server)
 
         completed = publisher.run(a_request([finding("fp-new", line=13)]))
 
         assert completed.returncode == 0, completed.stderr
         assert [call for call in publisher.calls() if call["name"] == "retire"] == []
-        assert publisher.state()["comments"][0]["body"] == fixed
+        marked = [call for call in publisher.calls() if call["name"] == "fix-applied"]
+        assert marked == [{"name": "fix-applied", "fingerprints": 1, "applied": 1, "unchanged": 0}]
+        body = publisher.state()["comments"][0]["body"]
+        assert body != fixed
+        assert body.startswith("<!-- mitig8it-finding:")
+        assert "<!-- mitig8it-fix-applied:cand-1 -->" in body
+        assert "**Fixed: " in body
+        assert "no longer reports this finding" in body
+        for gone in ("```suggestion", "Severity", "<!-- mitig8it-fix:cand-1 -->"):
+            assert gone not in body
+        # Resolving was attempted for the applied fix too; this token may not, and that is not an error.
+        assert any(call.startswith("resolve:") for call in server.calls)
         threads = json.loads(completed.stdout)["threads"]
         assert run.thread_summary_line(threads) == (
             "Review threads: 1 seen, 1 with our marker, 0 resolved, 0 retired, "
-            "1 kept for a published fix, 0 failed."
+            "1 marked fixed, 0 kept for a published fix, 0 failed."
+        )
+    finally:
+        server.stop()
+
+
+def test_a_comment_already_marked_fixed_is_left_alone_on_the_next_run(tmp_path):
+    """Re-running converges: the second run finds the applied form and writes nothing."""
+    if not publisher_harness.node_available():
+        pytest.skip("node is not on PATH")
+    server = fake_graphql.FakeGraphQL(resolve_fails=True).start()
+    try:
+        publisher = publisher_harness.Publisher(tmp_path, graphql_url=server.url())
+        _with_published_fix(publisher, server)
+        publisher.run(a_request([finding("fp-new", line=13)]))
+        applied_body = publisher.state()["comments"][0]["body"]
+        # The thread store is what the publisher reads back, and the comment has changed under it.
+        server.threads[0].body = applied_body
+        publisher.clear_calls()
+
+        completed = publisher.run(a_request([finding("fp-new", line=13)]))
+
+        assert completed.returncode == 0, completed.stderr
+        assert [call for call in publisher.calls() if call["name"] in ("retire", "fix-applied")] == []
+        assert publisher.state()["comments"][0]["body"] == applied_body
+        threads = json.loads(completed.stdout)["threads"]
+        assert run.thread_summary_line(threads) == (
+            "Review threads: 1 seen, 1 with our marker, 0 resolved, 0 retired, "
+            "0 marked fixed, 1 kept for a published fix, 0 failed."
         )
     finally:
         server.stop()
@@ -345,7 +392,7 @@ def test_a_thread_that_can_be_neither_resolved_nor_deleted_is_reported(tmp_path)
         assert results["errors"] == [], "a thread failure must not reach the publish error list"
         line = run.thread_summary_line(results["threads"])
         assert line.startswith(
-            "Review threads: 1 seen, 1 with our marker, 0 resolved, 0 retired, "
+            "Review threads: 1 seen, 1 with our marker, 0 resolved, 0 retired, 0 marked fixed, "
             "0 kept for a published fix, 1 failed."
         )
         assert "First failure: thread fp-old:" in line
@@ -396,7 +443,7 @@ def test_the_run_reports_the_threads_it_saw_even_when_none_were_ours(publisher, 
     assert completed.returncode == 0, completed.stderr
     threads = json.loads(completed.stdout)["threads"]
     assert run.thread_summary_line(threads) == (
-        "Review threads: 2 seen, 1 with our marker, 1 resolved, 0 retired, 0 kept for a published fix, 0 failed."
+        "Review threads: 2 seen, 1 with our marker, 1 resolved, 0 retired, 0 marked fixed, 0 kept for a published fix, 0 failed."
     )
 
 
@@ -453,7 +500,7 @@ def test_the_summary_line_is_produced_even_when_the_api_was_unreachable():
          "unavailable": "GraphQL HTTP 403"}
     )
     assert line == (
-        "Review threads: 0 seen, 0 with our marker, 0 resolved, 0 retired, 0 kept for a published fix, 0 failed."
+        "Review threads: 0 seen, 0 with our marker, 0 resolved, 0 retired, 0 marked fixed, 0 kept for a published fix, 0 failed."
         " The GraphQL API could not be reached: GraphQL HTTP 403"
     )
 
@@ -468,6 +515,6 @@ def test_the_summary_line_names_only_the_first_failure():
          "errors": ["thread fp-a: denied", "thread fp-b: denied"]}
     )
     assert line == (
-        "Review threads: 9 seen, 3 with our marker, 1 resolved, 0 retired, 0 kept for a published fix, 2 failed."
+        "Review threads: 9 seen, 3 with our marker, 1 resolved, 0 retired, 0 marked fixed, 0 kept for a published fix, 2 failed."
         " First failure: thread fp-a: denied"
     )
