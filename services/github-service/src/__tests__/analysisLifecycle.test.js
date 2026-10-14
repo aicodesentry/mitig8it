@@ -126,6 +126,63 @@ test('no fingerprints means no GitHub call at all', async () => {
   .toEqual({retired:0, kept:0});
  expect(axios).not.toHaveBeenCalled();
 });
+// The comment a published fix leaves behind once the finding is gone. It is kept, and it says
+// the fix was applied, instead of reading as an open critical finding with a suggestion block
+// whose content is now the line it sits on.
+const {markFixesApplied, fixAppliedBody, withPreservedFixBlocks} = require('../services/githubInternalOperations');
+function patchableComments(comments) {
+ const patches = [];
+ axios.mockImplementation(async r => {
+  if (r.url.includes('/comments?')) return {data: /[?&]page=1(&|$)/.test(r.url) ? comments : []};
+  if (r.method === 'patch') { patches.push({id: Number(r.url.split('/').pop()), body: r.data.body}); return {data:{}}; }
+  return {data:{head:{sha:'head-a'}}};
+ });
+ return patches;
+}
+const OPEN_FINDING = '<!-- mitig8it-finding:fp-fixed -->\n**SQL injection in `query`**\nSeverity: critical\nBuild the statement with parameters.\n\n' + FIX_BLOCK;
+test('the comment of a finding whose fix was applied is rewritten to say so', async () => {
+ const patches = patchableComments([
+  ours(1, OPEN_FINDING),
+  ours(2, '<!-- mitig8it-finding:fp-open -->\n**Still here**\n\n' + FIX_BLOCK),
+  ours(3, '<!-- mitig8it-finding:fp-fixed -->\n**A finding with no fix published**'),
+  {id:4, body:OPEN_FINDING, user:{type:'User',login:'reviewer'}, path:'a.py'},
+ ]);
+ expect(await markFixesApplied({owner:'owner',repo:'repo',pr_number:1,installation_id:1,fingerprints:['fp-fixed'],head_sha:'0123456789abcdef0123456789abcdef01234567'}))
+  .toEqual({applied:1, unchanged:0});
+ expect(patches.map(p => p.id)).toEqual([1]);
+ const body = patches[0].body;
+ expect(body).toBe([
+  '<!-- mitig8it-finding:fp-fixed -->',
+  '<!-- mitig8it-fix-applied:cand-1 -->',
+  '**Fixed: SQL injection in `query`**',
+  'The re-analysis of `0123456` no longer reports this finding. The suggested fix that was here has been withdrawn, so there is nothing left to commit.',
+ ].join('\n'));
+ expect(body).not.toMatch(/suggestion|Severity|critical|<!-- mitig8it-fix:/);
+});
+test('a comment already in the applied form is left alone, so a re-run writes nothing', async () => {
+ const applied = fixAppliedBody(OPEN_FINDING, 'head-a');
+ const patches = patchableComments([ours(1, applied)]);
+ expect(await markFixesApplied({owner:'owner',repo:'repo',pr_number:1,installation_id:1,fingerprints:['fp-fixed']}))
+  .toEqual({applied:0, unchanged:1});
+ expect(patches).toEqual([]);
+ expect(applied).toContain('The latest re-analysis no longer reports this finding.');
+});
+test('housekeeping keeps an applied-form comment the way it keeps a fix block', async () => {
+ const remaining = reviewComments([ours(1, fixAppliedBody(OPEN_FINDING, 'head-a'))]);
+ expect(await retireInlineComments({owner:'owner',repo:'repo',pr_number:1,installation_id:1,fingerprints:['fp-fixed']}))
+  .toEqual({retired:0, kept:1});
+ expect(remaining.map(c => c.id)).toEqual([1]);
+});
+test('a finding that comes back is re-rendered over the applied form without inheriting it', () => {
+ const fresh = '<!-- mitig8it-finding:fp-fixed -->\n**SQL injection in `query`**\nSeverity: critical';
+ expect(withPreservedFixBlocks(fresh, fixAppliedBody(OPEN_FINDING, 'head-a'))).toBe(fresh);
+});
+test('marking fixes applied with no fingerprints makes no GitHub call', async () => {
+ axios.mockImplementation(async () => { throw new Error('no request may be made'); });
+ expect(await markFixesApplied({owner:'owner',repo:'repo',pr_number:1,installation_id:1,fingerprints:[]}))
+  .toEqual({applied:0, unchanged:0});
+ expect(axios).not.toHaveBeenCalled();
+});
 // A pull request over the cap is reviewed as far as the cap allows. Refusing it was the
 // one case where a developer got no review at all, and a partial review that says so is
 // worth more than nothing. The selection must be deterministic and must be declared.
