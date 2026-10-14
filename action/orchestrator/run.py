@@ -302,17 +302,22 @@ def thread_summary_line(threads: Optional[Dict[str, Any]]) -> str:
     `minimized` is gone and `retired` and `kept` are in its place. A minimized thread is still an
     unresolved conversation, so the trial's fixed finding left the pull request blocked; the
     action deletes its own stale comment now instead, and keeps the one carrying a published fix.
+
+    `marked fixed` is the comment of a fix that was applied: the finding has gone and the
+    comment, kept, now says so instead of still offering the suggestion. `kept` is one that was
+    already in that form, or one the publisher could not rewrite and left as it was.
     """
     if not isinstance(threads, dict):
         return "Review threads: the publisher reported no reconciliation."
     numbers = {
         key: int(threads.get(key) or 0)
-        for key in ("seen", "ours", "resolved", "retired", "kept", "failed")
+        for key in ("seen", "ours", "resolved", "retired", "applied", "kept", "failed")
     }
     line = (
         f"Review threads: {numbers['seen']} seen, {numbers['ours']} with our marker, "
         f"{numbers['resolved']} resolved, {numbers['retired']} retired, "
-        f"{numbers['kept']} kept for a published fix, {numbers['failed']} failed."
+        f"{numbers['applied']} marked fixed, {numbers['kept']} kept for a published fix, "
+        f"{numbers['failed']} failed."
     )
     unavailable = str(threads.get("unavailable") or "")
     if unavailable:
