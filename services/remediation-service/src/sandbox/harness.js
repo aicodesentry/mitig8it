@@ -7,6 +7,7 @@ const { EventEmitter } = require('node:events');
 const { Readable } = require('node:stream');
 const realFs = require('node:fs');
 const realCrypto = require('node:crypto');
+const { pathToFileURL, fileURLToPath } = require('node:url');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -17,6 +18,7 @@ const ROOT = path.resolve(__dirname, '..');
 // writes for a `.ts` source both fail to resolve. Both are resolved here instead, for the
 // module a test loads and for every relative import that module makes.
 const TS_SUFFIXES = ['.ts', '.mts', '.cts'];
+const tsSuffix = (file) => TS_SUFFIXES.some((suffix) => file.endsWith(suffix));
 const isFile = (target) => { try { return realFs.statSync(target).isFile(); } catch { return false; } };
 const withSuffix = (base) => TS_SUFFIXES.map((suffix) => base + suffix).find(isFile) || null;
 // The `.ts` source an absolute specifier names, or null when none exists: the file itself, the
@@ -30,6 +32,9 @@ function tsSource(absolute) {
   }
   return withSuffix(absolute) || withSuffix(path.join(absolute, 'index'));
 }
+// The ES module resolver adds no suffix, so a relative specifier is also tried as .js/.mjs/.cjs.
+const JS_SUFFIXES = ['.js', '.mjs', '.cjs'];
+const findSource = (absolute) => tsSource(absolute) || [absolute, path.join(absolute, 'index')].flatMap((b) => JS_SUFFIXES.map((x) => b + x)).find(isFile) || null;
 const isRelative = (request) => request.startsWith('.') || path.isAbsolute(request);
 const state = { express: { routes: [] }, pg: { queries: [] }, child_process: { calls: [] }, fs: { reads: [] }, env: { reads: [] }, code: { calls: [] }, crypto: { digests: [], kdfs: [] }, cookies: { calls: [] } };
 let config = {};
@@ -204,19 +209,31 @@ fs.createReadStream = (file) => (seen(file), Readable.from([encode(content(file)
 Object.defineProperty(fs, 'promises', { value: Object.create(realFs.promises) });
 fs.promises.readFile = (file, options) => (seen(file), exists(file) ? Promise.resolve(encode(content(file), options)) : Promise.reject(enoent(file)));
 
-// Every way a module can turn a string into running code is recorded and none of them runs. A
-// code_injection_eval repair is proven by the payload never being compiled, so an interpreter
-// that still ran it would prove the opposite of what the test claims. `eval`, `Function`, and a
-// string timer are resolved through the global scope chain, so replacing the global binding is
-// what the module under test sees; `vm` is a fake module like the others. Each entry is
-// { kind, source }: the call that would have compiled, and the text it was given.
+// Every way a module can turn a string into running code is recorded, and all but `Function` run
+// nothing: a code_injection_eval repair is proven by the payload never being compiled. `eval`,
+// `Function`, and a string timer are resolved through the global scope chain, so replacing the
+// global binding is what the module under test sees; `vm` is a fake module like the others. Each
+// entry is { kind, source }: the call that would have compiled, and the text it was given.
 const recordCode = (kind, source) => { state.code.calls.push({ kind, source: String(source) }); };
 const noop = function compiledByHarness() {};
 global.eval = (source) => { recordCode('eval', source); };
+// `Function` is recorded and still compiles, because packages build wrappers with it at import
+// (depd). Identity is kept; a caller under node_modules is not recorded (test-harness-v1.md).
 const RealFunction = global.Function;
-const FakeFunction = function Function(...args) { recordCode('Function', args.length ? args[args.length - 1] : ''); return noop; };
-FakeFunction.prototype = RealFunction.prototype;
-global.Function = FakeFunction;
+const fromDependency = () => {
+  const prepare = Error.prepareStackTrace;
+  Error.prepareStackTrace = (_, frames) => frames;
+  const frames = new Error().stack;
+  Error.prepareStackTrace = prepare;
+  const caller = list(frames).map((f) => f.getFileName() || '').find((f) => f && f !== __filename && !f.startsWith('node:'));
+  return Boolean(caller) && /[\\/]node_modules[\\/]/.test(caller.startsWith('file:') ? fileURLToPath(caller) : caller);
+};
+const recordFunction = (args) => fromDependency() || recordCode('Function', args.length ? args[args.length - 1] : '');
+global.Function = new Proxy(RealFunction, {
+  apply: (target, self, args) => (recordFunction(args), Reflect.apply(target, self, args)),
+  construct: (target, args, newTarget) => (recordFunction(args), Reflect.construct(target, args, newTarget === global.Function ? target : newTarget)),
+});
+RealFunction.prototype.constructor = global.Function;
 const realTimer = { setTimeout: global.setTimeout, setInterval: global.setInterval };
 for (const name of ['setTimeout', 'setInterval']) {
   global[name] = (handler, ...rest) => (typeof handler === 'string' ? recordCode(name, handler) : realTimer[name](handler, ...rest));
@@ -276,12 +293,11 @@ Module._load = function load(request, parent, isMain) {
     return originalLoad.call(this, found, parent, isMain);
   }
 };
-// A module written with `import`/`export` is loaded by the ES module loader, which never consults
-// `Module._load`, so both of that loader's jobs are done through the synchronous hooks Node 22.15
-// and later expose: a relative specifier is redirected to the `.ts` source it names, and a faked
-// specifier is redirected to a synthetic module that re-exports the same fake object a CommonJS
-// module gets. Everything else falls through to the real resolver.
+// The ES module loader never consults `Module._load`, so the synchronous hooks (Node 22.15+, which
+// see `require` too) redirect a relative specifier to its source file, a faked specifier to a
+// synthetic module over the same `fakes` table, and a fresh entry to a URL of its own.
 const FAKE_SCHEME = 'mitig8it-fake:';
+const FRESH = '?mitig8it-load=';
 const FAKES_KEY = Symbol.for('mitig8it.harness.fakes');
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 // `length`, `name` and the rest are a function's own machinery, and reading `caller` throws.
@@ -297,38 +313,61 @@ function exported(value) {
   }
   return [...names];
 }
+// The format Node gave each loaded file; an ambiguous one is decided by top-level import/export.
+const formats = new Map();
+const ESM_SYNTAX = /^[ \t]*(?:import[\s{*'"]|export[\s{*])/m;
+function moduleFormat(file) {
+  const url = pathToFileURL(file).href;
+  const known = String(formats.get(url));
+  if (!formats.has(url) || /^(commonjs|json|builtin|wasm)/.test(known)) return null;
+  const format = /^module/.test(known) ? known : ESM_SYNTAX.test(realFs.readFileSync(file, 'utf8')) ? (tsSuffix(file) ? 'module-typescript' : 'module') : null;
+  if (format) formats.set(url, format);
+  return format;
+}
+let generation = 0;
 globalThis[FAKES_KEY] = (name) => fakes[name];
 if (typeof Module.registerHooks === 'function') {
   Module.registerHooks({
     resolve(specifier, context, nextResolve) {
       const written = String(specifier);
       const name = written.replace(/^node:/, '');
-      if (Object.prototype.hasOwnProperty.call(fakes, name)) return { url: FAKE_SCHEME + name, shortCircuit: true, format: 'module' };
-      if (isRelative(written)) {
-        let from = ROOT;
-        try { from = path.dirname(new URL(context.parentURL).pathname); } catch { from = ROOT; }
-        const found = tsSource(path.resolve(from, written));
-        if (found) return { url: new URL(`file://${found}`).href, shortCircuit: true };
+      // The generation in the URL gives each load() a synthetic module over its own stubs.
+      if (Object.prototype.hasOwnProperty.call(fakes, name)) return { url: `${FAKE_SCHEME}${generation}:${encodeURIComponent(name)}`, shortCircuit: true, format: 'module' };
+      if (written.includes(FRESH)) return { url: pathToFileURL(written).href, shortCircuit: true, format: formats.get(pathToFileURL(written.split(FRESH)[0]).href) };
+      if (!isRelative(written)) return nextResolve(specifier, context);
+      let from = ROOT;
+      try { from = path.dirname(fileURLToPath(context.parentURL)); } catch { from = ROOT; }
+      const found = tsSource(path.resolve(from, written));
+      if (found) return { url: pathToFileURL(found).href, shortCircuit: true };
+      try {
+        return nextResolve(specifier, context);
+      } catch (error) {
+        const other = findSource(path.resolve(from, written));
+        if (!other) throw error;
+        return { url: pathToFileURL(other).href, shortCircuit: true };
       }
-      return nextResolve(specifier, context);
     },
     load(url, context, nextLoad) {
       const written = String(url);
-      if (!written.startsWith(FAKE_SCHEME)) return nextLoad(url, context);
-      const name = written.slice(FAKE_SCHEME.length);
-      const value = fakes[name];
-      const read = `globalThis[Symbol.for('mitig8it.harness.fakes')](${JSON.stringify(name)})`;
-      const names = exported(value);
+      if (written.startsWith('file:') && fileURLToPath(written).includes(FRESH)) {
+        const real = fileURLToPath(written).split(FRESH)[0];
+        return { format: formats.get(pathToFileURL(real).href), source: realFs.readFileSync(real, 'utf8'), shortCircuit: true };
+      }
+      if (!written.startsWith(FAKE_SCHEME)) {
+        const result = nextLoad(url, context);
+        formats.set(written, result.format);
+        return result;
+      }
+      const name = decodeURIComponent(written.slice(written.indexOf(':', FAKE_SCHEME.length) + 1));
+      const names = exported(fakes[name]);
       // Each binding is named `e<n>` and aliased on the way out, because an export alias may be
       // any identifier name and a `const` may not: `express.static` is a strict-mode reserved
-      // word, and `export const static` would not parse.
-      const source = [`const v = ${read};`, 'export default v;']
+      // word, and `export const static` would not parse. The fake is read at evaluation, so the
+      // module sees the same recorders the test asserts on.
+      const source = [`const v = globalThis[Symbol.for('mitig8it.harness.fakes')](${JSON.stringify(name)});`, 'export default v;']
         .concat(names.map((key, index) => `const e${index} = v[${JSON.stringify(key)}];`))
         .concat(names.length ? [`export { ${names.map((key, index) => `e${index} as ${key}`).join(', ')} };`] : [])
         .join('\n');
-      // The fake object itself is read at evaluation, so the module sees the same recorders the
-      // test asserts on. The ES module registry caches this module for the process, so a second
-      // load() that supplies a different stub for the same name does not re-evaluate it.
       return { format: 'module', source, shortCircuit: true };
     },
   });
@@ -370,12 +409,15 @@ function load(target, options = {}) {
   try {
     resolved = require.resolve(absolute);
   } catch (error) {
-    resolved = tsSource(absolute);
+    resolved = findSource(absolute);
     if (!resolved) throw error;
   }
   delete require.cache[resolved];
   loadedFile = resolved;
-  return require(resolved);
+  generation += 1;
+  // An ES module registry entry cannot be evicted, so a known ES module is required under a path
+  // of its own whose source the hooks read from the real file (contracts/test-harness-v1.md).
+  return require(moduleFormat(resolved) ? resolved + FRESH + generation : resolved);
 }
 
 const fail = (message, detail) => { throw Object.assign(new Error(detail === undefined ? message : `${message}: ${util.inspect(detail)}`), { name: 'HarnessAssertion' }); };

@@ -209,6 +209,14 @@ TypeScript source but does not answer for the entry module, so a `.ts` subject l
 ES module loader raises `ERR_MODULE_NOT_FOUND` on itself; and an installed `@angular` puts files
 in the closure that Node's strip-only mode cannot parse.
 
+**Measured again in October 2026** (`docs/validation/esm-proof-2026-10.md`). The `Function`
+recorder, the resolver and a second gap the list above missed, that a second `h.load` of an ES
+module returned its first evaluation, are fixed. The `module_scope_source_not_controllable`
+findings are not module-scope secrets: credential proofs never reach that refusal, and the 11 on
+the current cache are path and command sinks no test can drive, so the refusal stands. Verified
+pairs stay at 8, because no ES module finding on the corpus gets past
+`dependency_not_available_in_sandbox`. A root `"type": "module"` is the next ES module limit.
+
 **Three rules the corpus could not decide.** `xss.unsafe_html_render` (16 findings, 2
 adjudicated, 0.50), `auth.bypass.missing_check` (8 findings, 1 adjudicated, 0.00) and
 `opengrep.cwe-798.hardcoded-secret-js` (5 findings, 2 adjudicated, 0.50) are all below the

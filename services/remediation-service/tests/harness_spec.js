@@ -472,3 +472,122 @@ h.run(async () => { h.load('services/missing.mjs'); });
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /Cannot find package 'js-yaml'/);
 });
+
+// --- ES modules: fresh loads, resolution, and a dependency that compiles at import ------------
+
+test('an ES module is evaluated again on every load, with that load\'s env and stubs', () => {
+  // The ES module registry never forgets a URL, so before this a second load() of an ES module
+  // handed back the first evaluation: a module-scope proof that loads once per payload saw only
+  // the first payload, and a module that threw on import threw the same error on every load.
+  write('services/keyed.ts', `import { greet } from 'greeter'
+import { suffix } from './suffix'
+export const KEY: string = process.env.API_KEY as string
+if (KEY === 'refuse') throw new Error('refused on import')
+export const said = greet() + suffix
+`);
+  write('services/suffix.js', `export const suffix = '!'
+`);
+  write('.mitig8it/regression/esm-fresh.test.js', `const h = require('../harness');
+h.run(async () => {
+  const first = h.load('services/keyed.ts', { env: { API_KEY: 'one' }, stubs: { greeter: { greet: () => 'hi' } } });
+  const refused = h.call(() => h.load('services/keyed.ts', { env: { API_KEY: 'refuse' }, stubs: { greeter: { greet: () => 'x' } } }));
+  h.assert(!refused.ok, 'the second load must evaluate the module again and throw');
+  const third = h.load('services/keyed', { env: { API_KEY: 'two' }, stubs: { greeter: { greet: () => 'hello' } } });
+  h.assert.envRead('API_KEY');
+  h.assert.equal(first.KEY, 'one');
+  h.assert.equal(third.KEY, 'two');
+  h.assert.equal(first.said, 'hi!');
+  h.assert.equal(third.said, 'hello!');
+  h.assert.notInSource(third, 'sk-live');
+});
+`);
+  const result = runTest('esm-fresh.test.js');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'harness: ok');
+});
+
+test('a CommonJS module loaded twice is still evaluated twice, and not as an ES module', () => {
+  write('services/cjs-keyed.js', `module.exports = { KEY: process.env.API_KEY };
+`);
+  write('.mitig8it/regression/cjs-fresh.test.js', `const h = require('../harness');
+h.run(async () => {
+  h.assert.equal(h.load('services/cjs-keyed.js', { env: { API_KEY: 'one' } }).KEY, 'one');
+  h.assert.equal(h.load('services/cjs-keyed.js', { env: { API_KEY: 'two' } }).KEY, 'two');
+});
+`);
+  const result = runTest('cjs-fresh.test.js');
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('an ES module entry resolves as .mjs without its suffix, and so does a .js it imports', () => {
+  write('services/entry.mjs', `import { value } from './plain'
+import { other } from './nested'
+export const both = value + other
+`);
+  write('services/plain.js', `export const value = 'a'
+`);
+  write('services/nested/index.mjs', `export const other = 'b'
+`);
+  write('.mitig8it/regression/esm-suffix.test.js', `const h = require('../harness');
+h.run(async () => { h.assert.equal(h.load('services/entry').both, 'ab'); });
+`);
+  const result = runTest('esm-suffix.test.js');
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('a workspace whose path needs percent-encoding still resolves relative imports', () => {
+  // A file URL percent-encodes a space, a `#` and a `%`; reading its pathname as a path used to
+  // look for `/my%20dir/...` and miss every relative TypeScript import.
+  const odd = realFs.mkdtempSync(pathReal.join(os.tmpdir(), 'mitig8it harness #%-'));
+  realFs.mkdirSync(pathReal.join(odd, '.mitig8it', 'regression'), { recursive: true });
+  realFs.copyFileSync(source, pathReal.join(odd, '.mitig8it', 'harness.js'));
+  realFs.mkdirSync(pathReal.join(odd, 'lib'));
+  realFs.writeFileSync(pathReal.join(odd, 'lib', 'paths.ts'), `import { base } from './base'
+export const where = (name: string): string => base + name
+`);
+  realFs.writeFileSync(pathReal.join(odd, 'lib', 'base.ts'), `export const base: string = '/srv/'
+`);
+  realFs.writeFileSync(pathReal.join(odd, '.mitig8it', 'regression', 'odd.test.js'), `const h = require('../harness');
+h.run(async () => { h.assert.equal(h.load('lib/paths.ts').where('x'), '/srv/x'); });
+`);
+  const result = cp.spawnSync(process.execPath, [...TS_FLAGS, pathReal.join('.mitig8it', 'regression', 'odd.test.js')], { cwd: odd, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('a dependency that builds a wrapper with new Function at import loads, and is not recorded', () => {
+  // depd, under express and body-parser, does exactly this. The recorder used to hand back a
+  // no-op, so `module.exports = deprecate.function(...)` was undefined and every module above
+  // it failed to load, on both trees.
+  write('node_modules/depd-like/package.json', '{ "name": "depd-like", "main": "index.js" }\n');
+  write('node_modules/depd-like/index.js', `module.exports = function wrap(fn) {
+  const make = new Function('fn', '"use strict"\\nreturn function wrapped() { return fn.apply(this, arguments) }');
+  return make(fn);
+};
+`);
+  write('services/uses-depd.js', `const wrap = require('depd-like');
+module.exports = wrap(function json(v) { return JSON.stringify(v); });
+module.exports.compile = (text) => new Function('row', 'return ' + text);
+`);
+  write('services/uses-depd.mjs', `import wrap from 'depd-like'
+export const json = wrap((v) => JSON.stringify(v))
+`);
+  write('.mitig8it/regression/depd.test.js', `const h = require('../harness');
+h.run(async () => {
+  const m = h.load('services/uses-depd.js');
+  h.assert.equal(m({ a: 1 }), '{"a":1}', 'the wrapper the dependency compiled must work');
+  h.assert.equal(h.load('services/uses-depd.mjs').json([1]), '[1]');
+  h.assert.noCode('a dependency compiling its own wrapper is not the code under test');
+  h.assert.equal(m.compile('row + 1')(1), 2, 'new Function must hand back a working function');
+  h.assert.equal(h.code.calls.length, 1);
+  h.assert.equal(h.code.calls[0].kind, 'Function');
+  h.assert.equal(h.code.calls[0].source, 'return row + 1');
+  h.assert((function () {}).constructor === Function, 'fn.constructor must still be Function');
+  h.assert(Object.getPrototypeOf(m.compile('1')) === Function.prototype, 'Function.prototype must be intact');
+  h.assert(m.compile('1') instanceof Function, 'instanceof Function must still hold');
+  h.assert.equal(Function.name, 'Function');
+});
+`);
+  const result = runTest('depd.test.js');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'harness: ok');
+});

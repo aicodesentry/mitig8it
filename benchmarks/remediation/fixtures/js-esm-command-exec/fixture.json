@@ -1,0 +1,59 @@
+{
+  "schema_version": "v1",
+  "id": "js-esm-command-exec-001",
+  "repository_id": "fixture-js-esm-backups-c",
+  "split": "train",
+  "family": "command_arguments",
+  "kind": "supported",
+  "expected_state": "ready",
+  "source": "app.js",
+  "reference_repair": "expected/app.js",
+  "finding": {
+    "id": "js-esm-command-exec-1",
+    "rule_id": "cwe-78.child-process-exec",
+    "cwe_id": "CWE-78",
+    "category": "command injection",
+    "message": "A directory name is interpolated into a shell command run with exec, bound through a named ES import.",
+    "path": "app.js",
+    "line_start": 5,
+    "line_end": 5
+  },
+  "trusted_fixture_test": {
+    "runtime": "node",
+    "path": "tests/verify.cjs",
+    "timeout_seconds": 5
+  },
+  "budget": {
+    "max_tool_calls": 20,
+    "max_attempts": 3,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 120000,
+    "max_cost_usd": 2.0
+  },
+  "verification_checks": [
+    {
+      "check_id": "exploit",
+      "kind": "exploit",
+      "argv": [
+        "node",
+        "tests/verify.cjs",
+        "--exploit"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "failed",
+      "expected_candidate": "passed"
+    },
+    {
+      "check_id": "behavior",
+      "kind": "behavior",
+      "argv": [
+        "node",
+        "tests/verify.cjs",
+        "--behavior"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    }
+  ]
+}

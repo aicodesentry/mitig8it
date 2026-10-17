@@ -480,6 +480,7 @@ def scope_lines_near(start_line: int, end_line: int, line: int) -> list[int]:
 _JS_ENV_RE = re.compile(r"process\.env(?:\.(?P<name>[\w$]+)|\[\s*['\"](?P<bracket>[^'\"]+)['\"]\s*\])")
 _JS_ARGV_RE = re.compile(r"process\.argv\s*\[\s*(?P<index>\d+)\s*\]")
 _JS_REQUIRE_CALL_RE = re.compile(r"require\(\s*['\"](?P<module>[^'\"]+)['\"]\s*\)")
+_JS_NAMED_IMPORT_RE = re.compile(r"require\('(?P<module>[^']+)'\)\.(?P<member>[A-Za-z_$][\w$]*)")
 _JS_TOP_BINDING_RE = re.compile(
     r"^(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=\s*(?P<value>.+?);?\s*$"
 )
@@ -514,10 +515,13 @@ def _js_top_bindings(lines: list[str]) -> dict[str, str]:
             for name in [imported.group("default"), imported.group("star")]:
                 if name:
                     bindings.setdefault(name, specifier)
+            # A named import is a member of the module it names, read once at import: `import {
+            # dsn } from './config'` is `require('./config').dsn`, and a stub has to carry `dsn`.
             for item in (imported.group("named") or "").split(","):
-                bound = item.split(" as ")[-1].strip()
-                if re.fullmatch(r"[A-Za-z_$][\w$]*", bound):
-                    bindings.setdefault(bound, specifier)
+                original, _, alias = item.strip().removeprefix("type ").partition(" as ")
+                bound = (alias or original).strip()
+                if re.fullmatch(r"[A-Za-z_$][\w$]*", bound) and re.fullmatch(r"[A-Za-z_$][\w$]*", original.strip()):
+                    bindings.setdefault(bound, f"{specifier}.{original.strip()}")
     return bindings
 
 
@@ -551,6 +555,9 @@ def js_module_scope(source: str, line: int) -> ModuleScope:
             seen.add(name)
             value = bindings[name]
             required = _JS_REQUIRE_CALL_RE.search(value)
+            named = _JS_NAMED_IMPORT_RE.fullmatch(value)
+            if named and named.group("module").startswith("."):
+                return ModuleScope(len(lines), "config", named.group("module"), named.group("member"))
             # Only a module of this repository is a config a test may stand in for, and only a
             # member it reads as a value: `os.userInfo()` is a call whose result no stub decides,
             # and replacing the function with a payload would break the module instead of driving
@@ -723,8 +730,13 @@ def js_module_exports_name(source: str, name: str) -> bool:
 
 
 def js_require_line(source: str, module: str) -> tuple[int, str] | None:
-    """The 1-based line and text of the top-level require of `module` (with or without node:)."""
-    pattern = re.compile(rf"""^(?:const|let|var)\s+.+?=\s*require\(\s*['"](?:node:)?{re.escape(module)}['"]\s*\)""")
+    """The 1-based line and text of the top-level require of `module` (with or without node:).
+
+    A named ES import of it counts too, because it binds names the same way a destructuring
+    require does and is widened the same way: `import { exec } from 'node:child_process'`.
+    """
+    quoted = rf"""['"](?:node:)?{re.escape(module)}['"]"""
+    pattern = re.compile(rf"""^(?:(?:const|let|var)\s+.+?=\s*require\(\s*{quoted}\s*\)|import\s*\{{[^}}]*\}}\s*from\s*{quoted})""")
     for number, text in enumerate(source.splitlines(), 1):
         if pattern.match(text):
             return number, text
@@ -1159,13 +1171,14 @@ def js_bound_names(source: str, module: str) -> tuple[str | None, set[str]]:
     if not found:
         return None, set()
     text = found[1]
-    braces = re.match(r"^(?:const|let|var)\s+\{([^}]*)\}\s*=", text)
+    braces = re.match(r"^(?:(?:const|let|var)\s+\{([^}]*)\}\s*=|import\s*\{([^}]*)\})", text)
     if braces:
         names = set()
-        for part in braces.group(1).split(","):
+        for part in (braces.group(1) or braces.group(2) or "").split(","):
             item = part.strip()
-            if ":" in item:
-                item = item.split(":", 1)[1].strip()
+            for separator in (":", " as "):
+                if separator in item:
+                    item = item.split(separator, 1)[1].strip()
             if item:
                 names.add(item)
         return None, names

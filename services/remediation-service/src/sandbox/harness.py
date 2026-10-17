@@ -40,9 +40,11 @@ PYTHON_HARNESS_MODULES = frozenset(
 # resolution, then 28 KiB until the fakes were served to the ES module loader as well as to the
 # require hook. 32 KiB is the next size that leaves room to extend an assertion without another
 # budget change in the same commit. The `crypto` recorder, the session-middleware fakes and their
-# two assertions (`password_hashing`, `cookie_flags`) took it to about 31 KiB, so the next
-# recorder needs a budget change; the Python harness is in the same position at about 39 of 40.
-MAX_HARNESS_BYTES = 32 * 1024
+# two assertions (`password_hashing`, `cookie_flags`) took it to about 31 KiB, and fresh ES module
+# loads with per-load fakes and the compiling `Function` recorder took it to 33,903 bytes, so the
+# budget is 34 KiB, the smallest whole KiB that fits; the next recorder needs a budget change. The
+# Python harness is in the same position at about 39 of 40.
+MAX_HARNESS_BYTES = 34 * 1024
 MAX_PYTHON_HARNESS_BYTES = 40 * 1024
 HARNESS_OCCUPIED_LIMITATION = (
     f"the repository already carries {HARNESS_PATH}, so the service test harness was not materialized"

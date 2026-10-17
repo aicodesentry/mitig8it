@@ -57,17 +57,17 @@ class RemediationHarnessTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
-        # 67 supported, 10 negative and 4 adversarial across 81 fixtures. Asserted rather
+        # 72 supported, 10 negative and 4 adversarial across 86 fixtures. Asserted rather
         # than derived so adding a fixture is a deliberate change here too; these counts had
         # fallen behind the fixture set more than once before.
-        self.assertEqual(report["summary"]["eligible_supported_cases"], 67)
+        self.assertEqual(report["summary"]["eligible_supported_cases"], 72)
         self.assertEqual(report["summary"]["negative_adversarial_cases"], 14)
         self.assertEqual(report["summary"]["failures"], [])
 
     def test_five_fixtures_declare_the_static_assertion_and_no_other_fixture_may_reach_it(self):
         """The level's share of the corpus, asserted rather than derived.
 
-        Five of the 67 supported fixtures declare `static_assertion`; every other supported
+        Five of the 72 supported fixtures declare `static_assertion`; every other supported
         fixture is held to an executed level. A repair that quietly stopped being executed would
         otherwise still read as a pass, which is the whole reason the field exists.
         """
