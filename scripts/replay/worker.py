@@ -102,12 +102,123 @@ def run_analysis(payload: dict[str, Any]) -> dict[str, Any]:
         if result["ok"]:
             findings.extend(result["value"]["findings"])
 
-    return {
+    analysis: dict[str, Any] = {
         "tier1": _strip(tier1),
         "tier2": _strip(tier2),
         "findings": findings,
         "tier3": {"stage": "tier3", "ok": None, "skipped": "no_model_key_llm_triage_disabled"},
     }
+    provider = os.environ.get(SWEEP_PROVIDER_ENV, "").strip()
+    if provider:
+        file_patches = {item["path"]: item["patch"] for item in payload["files"]}
+        sweep = _stage("sweep", lambda: run_sweep(file_patches, provider))
+        analysis["sweep"] = {key: value for key, value in sweep.items() if key != "value"}
+        if sweep["ok"]:
+            analysis["sweep"]["summary"] = sweep["value"]["summary"]
+            analysis["sweep_findings"] = sweep["value"]["findings"]
+        else:
+            analysis["sweep_findings"] = []
+    return analysis
+
+
+# --- tier 3 sweep ---------------------------------------------------------------------------
+
+# Set by `replay.py --sweep-provider`. Unset, the sweep does not run and nothing below is
+# imported. The sweep's findings are kept apart from tiers 1 and 2 (`sweep_findings` in the
+# record), so remediation never sees them and `score.py` counts their hits separately.
+SWEEP_PROVIDER_ENV = "REPLAY_SWEEP_PROVIDER"
+
+# The service's per-request budget is a production cost envelope for one pull request. A
+# snapshot batch is up to a few hundred whole files, and a measurement of what the detector
+# finds would otherwise be a measurement of where the budget ran out. They are raised here
+# unless the caller set them, and any file still skipped is a limitation in the summary.
+SWEEP_MEASUREMENT_BUDGETS = {
+    "LLM_SWEEP_MAX_CALLS": "100000",
+    "LLM_SWEEP_TOKEN_BUDGET": "1000000000",
+    "LLM_SWEEP_MAX_FINDINGS": "100000",
+}
+
+
+def sweep_cache_key(system_prompt: str, user_prompt: str) -> str:
+    """One recorded response per exact prompt pair, so a changed prompt is a cache miss."""
+    import hashlib  # noqa: PLC0415
+
+    digest = hashlib.sha256()
+    digest.update(system_prompt.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(user_prompt.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def sweep_caller(provider: str):
+    """The function that stands in for `llm_sweep._call_sweep_llm`, by provider mode.
+
+    `live` calls the configured provider. `record:DIR` does the same and writes each response
+    to DIR. `recorded:DIR` reads them back and raises on a miss, which the sweep records as a
+    failed call rather than a quiet empty answer. `fake` answers `[]` to every call: it proves
+    the plumbing and measures nothing.
+    """
+    import llm_sweep  # noqa: PLC0415
+    from llm_client import LLMResponse  # noqa: PLC0415
+
+    live = llm_sweep._call_sweep_llm
+    mode, _, location = provider.partition(":")
+    directory = Path(location) if location else None
+
+    if mode == "live":
+        return live
+    if mode == "fake":
+        return lambda user_prompt: LLMResponse(text="[]", input_tokens=0, output_tokens=0, provider="fake", model="fake")
+    if mode == "record" and directory is not None:
+        directory.mkdir(parents=True, exist_ok=True)
+
+        def record(user_prompt: str):
+            response = live(user_prompt)
+            key = sweep_cache_key(llm_sweep.SYSTEM_PROMPT, user_prompt)
+            (directory / f"{key}.json").write_text(json.dumps({
+                "text": response.text, "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens, "provider": response.provider, "model": response.model,
+            }), encoding="utf-8")
+            return response
+
+        return record
+    if mode == "recorded" and directory is not None:
+
+        def replay(user_prompt: str):
+            key = sweep_cache_key(llm_sweep.SYSTEM_PROMPT, user_prompt)
+            path = directory / f"{key}.json"
+            if not path.is_file():
+                raise LookupError(f"no recorded sweep response {key[:12]} in {directory}")
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            return LLMResponse(
+                text=str(stored.get("text", "")),
+                input_tokens=int(stored.get("input_tokens") or 0),
+                output_tokens=int(stored.get("output_tokens") or 0),
+                provider=str(stored.get("provider") or "recorded"),
+                model=str(stored.get("model") or "recorded"),
+            )
+
+        return replay
+    raise ValueError(f"unknown sweep provider {provider!r}: use live, fake, record:DIR or recorded:DIR")
+
+
+def run_sweep(file_patches: dict[str, str], provider: str) -> dict[str, Any]:
+    """Every candidate the sweep accepts, unfiltered by the posting policy.
+
+    The service quarantines every sweep class today, so its own handler would return none of
+    them; the measurement wants all of them, and `score.py` re-applies the policy.
+    """
+    import llm_sweep  # noqa: PLC0415
+
+    os.environ["LLM_SWEEP_ENABLED"] = "true"
+    for name, value in SWEEP_MEASUREMENT_BUDGETS.items():
+        os.environ.setdefault(name, value)
+    llm_sweep._call_sweep_llm = sweep_caller(provider)
+    if not provider.startswith(("live", "record:")):
+        # A recorded or fake run needs no credential, and the flag check asks for one.
+        llm_sweep.is_llm_provider_configured = lambda: True
+    findings, summary = llm_sweep.sweep_with_summary(file_patches, None)
+    return {"findings": findings, "summary": summary}
 
 
 def _strip(result: dict[str, Any]) -> dict[str, Any]:
@@ -786,8 +897,9 @@ def main() -> int:
         "files_with_content": sum(1 for item in payload["files"] if item.get("content")),
         "bytes_patch": sum(len(item["patch"].encode("utf-8")) for item in payload["files"]),
         "bytes_content": sum(len(item.get("content", "").encode("utf-8")) for item in payload["files"]),
-        "analysis": {key: value for key, value in analysis.items() if key != "findings"},
+        "analysis": {key: value for key, value in analysis.items() if key not in ("findings", "sweep_findings")},
         "findings": analysis["findings"],
+        "sweep_findings": analysis.get("sweep_findings", []),
         "remediation": remediation_result.get("value") if remediation_result["ok"] else None,
         "remediation_stage": _strip(remediation_result),
         "limitations": payload.get("limitations", []),
