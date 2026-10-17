@@ -14,6 +14,7 @@ produced it. Nothing in this directory is an estimate.
 | [static-assertion-2026-09.md](static-assertion-2026-09.md) | What the static assertion reaches on that same corpus: how many findings with a patch and no proof the level carries, how many it refuses and on which clause, and what an assertion is and is not worth. |
 | [concatenation-arity-2026-09.md](concatenation-arity-2026-09.md) | A detection gate on how many pieces a concatenated sink was built from, per language pack before and after, what removing it cost on every gate that measures precision, and the adjudicated pull request that found it. |
 | [guarded-values-2026-09.md](guarded-values-2026-09.md) | Three rules that reported correct code on that same pull request: what each one was actually matching, what withdrew it, and what the change cost on every gate. |
+| [fix-placement-and-calibration-2026-10.md](fix-placement-and-calibration-2026-10.md) | Where a finding is anchored for two property rules, before and after; which fix shapes may be a suggestion when part of the fix is outside the diff; and the per-rule precision formula that pools each rule's corpus measurement with reviewer outcomes, with what is and is not yet measured. |
 
 Two more documents belong to the same record without being measurements:
 [../legal/third-party-rules.md](../legal/third-party-rules.md) is why every rule in the tree is
