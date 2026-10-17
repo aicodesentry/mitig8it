@@ -7,6 +7,7 @@ const { EventEmitter } = require('node:events');
 const { Readable } = require('node:stream');
 const realFs = require('node:fs');
 const realCrypto = require('node:crypto');
+const { pathToFileURL, fileURLToPath } = require('node:url');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -17,6 +18,7 @@ const ROOT = path.resolve(__dirname, '..');
 // writes for a `.ts` source both fail to resolve. Both are resolved here instead, for the
 // module a test loads and for every relative import that module makes.
 const TS_SUFFIXES = ['.ts', '.mts', '.cts'];
+const tsSuffix = (file) => TS_SUFFIXES.some((suffix) => file.endsWith(suffix));
 const isFile = (target) => { try { return realFs.statSync(target).isFile(); } catch { return false; } };
 const withSuffix = (base) => TS_SUFFIXES.map((suffix) => base + suffix).find(isFile) || null;
 // The `.ts` source an absolute specifier names, or null when none exists: the file itself, the
@@ -30,6 +32,11 @@ function tsSource(absolute) {
   }
   return withSuffix(absolute) || withSuffix(path.join(absolute, 'index'));
 }
+// The ES module resolver adds no suffix at all, so `import './db'` beside a `db.js` fails there
+// although `require('./db')` finds it. A relative specifier is tried as TypeScript first and then
+// as the JavaScript file or directory index it names.
+const JS_SUFFIXES = ['.js', '.mjs', '.cjs'];
+const findSource = (absolute) => tsSource(absolute) || [absolute, path.join(absolute, 'index')].flatMap((b) => JS_SUFFIXES.map((x) => b + x)).find(isFile) || null;
 const isRelative = (request) => request.startsWith('.') || path.isAbsolute(request);
 const state = { express: { routes: [] }, pg: { queries: [] }, child_process: { calls: [] }, fs: { reads: [] }, env: { reads: [] }, code: { calls: [] }, crypto: { digests: [], kdfs: [] }, cookies: { calls: [] } };
 let config = {};
@@ -285,11 +292,13 @@ Module._load = function load(request, parent, isMain) {
   }
 };
 // A module written with `import`/`export` is loaded by the ES module loader, which never consults
-// `Module._load`, so both of that loader's jobs are done through the synchronous hooks Node 22.15
-// and later expose: a relative specifier is redirected to the `.ts` source it names, and a faked
-// specifier is redirected to a synthetic module that re-exports the same fake object a CommonJS
-// module gets. Everything else falls through to the real resolver.
+// `Module._load`, so its jobs are done through the synchronous hooks Node 22.15 and later expose
+// (they see `require` too): a relative specifier is redirected to the source file it names, a
+// faked specifier to a synthetic module that re-exports the same fake object a CommonJS module
+// gets, and an entry load() wants evaluated again to a URL of its own. Everything else falls
+// through to the real resolver.
 const FAKE_SCHEME = 'mitig8it-fake:';
+const FRESH = '?mitig8it-load=';
 const FAKES_KEY = Symbol.for('mitig8it.harness.fakes');
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 // `length`, `name` and the rest are a function's own machinery, and reading `caller` throws.
@@ -305,38 +314,64 @@ function exported(value) {
   }
   return [...names];
 }
+// The format Node gave each file it loaded, so load() knows which entries are ES modules. A `.ts`
+// or a `.js` outside a typed package comes back ambiguous (`typescript`, or no format) and Node
+// decides by syntax, so that is decided here the same way, from a top-level import or export.
+const formats = new Map();
+const ESM_SYNTAX = /^[ \t]*(?:import[\s{*'"]|export[\s{*])/m;
+function moduleFormat(file) {
+  const url = pathToFileURL(file).href;
+  const known = String(formats.get(url));
+  if (!formats.has(url) || /^(commonjs|json|builtin|wasm)/.test(known)) return null;
+  const format = /^module/.test(known) ? known : ESM_SYNTAX.test(realFs.readFileSync(file, 'utf8')) ? (tsSuffix(file) ? 'module-typescript' : 'module') : null;
+  if (format) formats.set(url, format);
+  return format;
+}
+let generation = 0;
 globalThis[FAKES_KEY] = (name) => fakes[name];
 if (typeof Module.registerHooks === 'function') {
   Module.registerHooks({
     resolve(specifier, context, nextResolve) {
       const written = String(specifier);
       const name = written.replace(/^node:/, '');
-      if (Object.prototype.hasOwnProperty.call(fakes, name)) return { url: FAKE_SCHEME + name, shortCircuit: true, format: 'module' };
-      if (isRelative(written)) {
-        let from = ROOT;
-        try { from = path.dirname(new URL(context.parentURL).pathname); } catch { from = ROOT; }
-        const found = tsSource(path.resolve(from, written));
-        if (found) return { url: new URL(`file://${found}`).href, shortCircuit: true };
+      // The load generation is part of the URL, so each load() gets a synthetic module that reads
+      // the stubs of that load rather than the first one the registry cached.
+      if (Object.prototype.hasOwnProperty.call(fakes, name)) return { url: `${FAKE_SCHEME}${generation}:${encodeURIComponent(name)}`, shortCircuit: true, format: 'module' };
+      if (written.includes(FRESH)) return { url: pathToFileURL(written).href, shortCircuit: true, format: formats.get(pathToFileURL(written.split(FRESH)[0]).href) };
+      if (!isRelative(written)) return nextResolve(specifier, context);
+      let from = ROOT;
+      try { from = path.dirname(fileURLToPath(context.parentURL)); } catch { from = ROOT; }
+      const found = tsSource(path.resolve(from, written));
+      if (found) return { url: pathToFileURL(found).href, shortCircuit: true };
+      try {
+        return nextResolve(specifier, context);
+      } catch (error) {
+        const other = findSource(path.resolve(from, written));
+        if (!other) throw error;
+        return { url: pathToFileURL(other).href, shortCircuit: true };
       }
-      return nextResolve(specifier, context);
     },
     load(url, context, nextLoad) {
       const written = String(url);
-      if (!written.startsWith(FAKE_SCHEME)) return nextLoad(url, context);
-      const name = written.slice(FAKE_SCHEME.length);
-      const value = fakes[name];
-      const read = `globalThis[Symbol.for('mitig8it.harness.fakes')](${JSON.stringify(name)})`;
-      const names = exported(value);
+      if (written.startsWith('file:') && fileURLToPath(written).includes(FRESH)) {
+        const real = fileURLToPath(written).split(FRESH)[0];
+        return { format: formats.get(pathToFileURL(real).href), source: realFs.readFileSync(real, 'utf8'), shortCircuit: true };
+      }
+      if (!written.startsWith(FAKE_SCHEME)) {
+        const result = nextLoad(url, context);
+        formats.set(written, result.format);
+        return result;
+      }
+      const name = decodeURIComponent(written.slice(written.indexOf(':', FAKE_SCHEME.length) + 1));
+      const names = exported(fakes[name]);
       // Each binding is named `e<n>` and aliased on the way out, because an export alias may be
       // any identifier name and a `const` may not: `express.static` is a strict-mode reserved
-      // word, and `export const static` would not parse.
-      const source = [`const v = ${read};`, 'export default v;']
+      // word, and `export const static` would not parse. The fake is read at evaluation, so the
+      // module sees the same recorders the test asserts on.
+      const source = [`const v = globalThis[Symbol.for('mitig8it.harness.fakes')](${JSON.stringify(name)});`, 'export default v;']
         .concat(names.map((key, index) => `const e${index} = v[${JSON.stringify(key)}];`))
         .concat(names.length ? [`export { ${names.map((key, index) => `e${index} as ${key}`).join(', ')} };`] : [])
         .join('\n');
-      // The fake object itself is read at evaluation, so the module sees the same recorders the
-      // test asserts on. The ES module registry caches this module for the process, so a second
-      // load() that supplies a different stub for the same name does not re-evaluate it.
       return { format: 'module', source, shortCircuit: true };
     },
   });
@@ -378,12 +413,17 @@ function load(target, options = {}) {
   try {
     resolved = require.resolve(absolute);
   } catch (error) {
-    resolved = tsSource(absolute);
+    resolved = findSource(absolute);
     if (!resolved) throw error;
   }
   delete require.cache[resolved];
   loadedFile = resolved;
-  return require(resolved);
+  generation += 1;
+  // A CommonJS module is evaluated again once its cache entry is gone. An ES module is not: its
+  // registry is keyed by URL for the life of the process and nothing can evict an entry. So once a
+  // file is known to be an ES module, it is loaded under a URL of its own for this load, which the
+  // hooks read back from the real file. Only the entry is fresh, as under CommonJS.
+  return require(moduleFormat(resolved) ? resolved + FRESH + generation : resolved);
 }
 
 const fail = (message, detail) => { throw Object.assign(new Error(detail === undefined ? message : `${message}: ${util.inspect(detail)}`), { name: 'HarnessAssertion' }); };
