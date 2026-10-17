@@ -83,7 +83,7 @@ Each entry states what the issue is, where it is, and why it was left. None of t
 | `services/remediation-service/src/patches.py` | `_occurrences` | Naive substring search over file lines, used by `locate_hunk`. |
 | `services/remediation-service/src/splitting.py` | `is_import_only`, `attribute_hunks` | List scans inside list comprehensions, and findings by hunks by prerequisites. |
 
-**Why deferred.** Every input is bounded by policy: `max_files` is 5, `max_changed_lines` is 200, and a job carries a handful of findings, so the largest of these runs over single-digit collections. `cluster_findings` is the one that scales with something a user controls, the number of findings in a pull request, and it is the one to fix first if analysis latency becomes a complaint. PR 421 moved the combine loop onto a worker thread so it stops starving the lease heartbeat; the quadratic work itself was left in place deliberately, because the heartbeat was the defect and the cost was not.
+**Why deferred.** Every input is bounded by policy: `max_files` is 5, `max_changed_lines` is 200, and a job carries a handful of findings, so the largest of these runs over single-digit collections. `cluster_findings` is the one that scales with something a user controls, the number of findings in a pull request, and it is the one to fix first if analysis latency becomes a complaint. PR 421 moved the combine loop onto a worker thread so it stops starving the lease heartbeat; the quadratic work itself was left in place deliberately, because the heartbeat was the defect and the cost was not. Since tier 1 began reporting every match (October 2026) a pull request can carry more findings, so `cluster_findings` was timed: 200 same-rule findings in one file take about 11 ms, 200 tier 1 findings with 200 tier 2 twins about 50 ms, and 1,000 same-rule findings about 0.86 s. Tier 1 cannot produce the last case from one file, because a rule stops at 25 matches per file; `docs/validation/every-match-2026-10.md` has the script.
 
 ## Quarantined tier 1 rules
 
@@ -134,13 +134,13 @@ CVE-2026-49255 sites) build the command on one line and run it on the next. Matc
 `exec($VAR)` for any variable is how a rule reaches a precision of 0.02, so this needs one
 hop of data flow, which the AST pattern engine does not provide.
 
-**A tier 1 rule reports one finding per file.** `pattern_findings` in
-`services/analysis-service/src/main.py` emits at most one finding per rule per file, at the
-first match. `enrocrypt/hashing.py` offers eight digests including MD5; `crypto.weak.hash`
-reports the first one and the CVE is at the eighth. Nine of the 18 labels that were found in
-the file but not on the line are this. It keeps a file with fifty weak hashes from producing
-fifty comments, which is why it is there, and it caps recall on any file with more than one
-instance of the same defect.
+**A tier 1 rule reports one finding per file. Closed October 2026.** `pattern_findings` in
+`services/analysis-service/src/main.py` used to emit at most one finding per rule per file, at
+the first match, which is why `crypto.weak.hash` reported the first of eight digests in
+`enrocrypt/hashing.py` and not the CVE at the eighth. It now reports every matching line, one
+finding each, up to `TIER1_MAX_MATCHES_PER_RULE_PER_FILE` (25), and states a `match_cap`
+limitation past that. The review bodies roll identical rules up to one row per rule per file.
+What was measured and what was not is in `docs/validation/every-match-2026-10.md`.
 
 **Repair templates still need a sink they can name.** The route requirement and the enclosing
 function requirement this entry used to describe are both gone: `sites.js_site_for_line` falls
