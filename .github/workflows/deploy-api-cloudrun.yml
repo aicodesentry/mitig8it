@@ -182,6 +182,16 @@ jobs:
         run: |
           docker push "$IMAGE"
 
+      # Migrations run before the deploy and they are forward-only: no down migration
+      # exists anywhere in this repository, and docs/runbooks/rollback.md section 5 is
+      # about what that costs. Staging the revision below lengthens the window in which
+      # the new schema is live while the OLD revision is still serving, because the
+      # candidate now has to pass its checks before it gets any traffic. That window is
+      # not new, it is longer, and it is the trade this file is making on purpose: the
+      # alternative is the bad revision serving immediately on top of the same
+      # irreversible schema. An additive migration is invisible to the old revision; one
+      # that drops or tightens something the old revision reads is not, and that is a
+      # thing to settle when the migration is reviewed, not when the deploy is running.
       - name: Run API migrations from release image
         env:
           NODE_ENV: production
@@ -191,6 +201,40 @@ jobs:
             -e NODE_ENV="$NODE_ENV" \
             "$IMAGE" \
             npm run db:migrate
+
+      # Where traffic points right now, so the promote below has somewhere to put it
+      # back. The entry that actually carries traffic, not the newest revision: after a
+      # promote that failed halfway those are different revisions.
+      - name: Record the serving revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! DESCRIBED=$(gcloud run services describe "$SERVICE" \
+            --region '${{ vars.GCP_REGION }}' \
+            --project '${{ vars.GCP_PROJECT_ID }}' \
+            --format=json 2>/dev/null); then
+            # No service yet, so this run creates it. deploy-staging.yml does exactly
+            # that, and --no-traffic on a service with no other revision would leave it
+            # serving nothing at all, so a first deploy takes traffic the way every
+            # deploy used to and has no promote step to reach.
+            {
+              echo "FIRST_DEPLOY=true"
+              echo "PREVIOUS_REVISION="
+            } >> "$GITHUB_ENV"
+            echo "$SERVICE does not exist yet: creating it with traffic, nothing to stage behind."
+            exit 0
+          fi
+          PREVIOUS=$(jq -r '
+            [.status.traffic[]? | select((.revisionName // "") != "")] as $t
+            | (($t | map(select(.percent == 100)) | .[0].revisionName)
+               // ($t | sort_by(.percent // 0) | last | .revisionName)
+               // "")
+          ' <<<"$DESCRIBED")
+          {
+            echo "FIRST_DEPLOY=false"
+            echo "PREVIOUS_REVISION=$PREVIOUS"
+          } >> "$GITHUB_ENV"
+          echo "Serving revision: ${PREVIOUS:-none found}"
 
       # Two containers in one instance. The application serves ingress; the managed
       # Prometheus sidecar scrapes the loopback metrics listener every 30 seconds and
@@ -244,6 +288,16 @@ jobs:
             --min-instances "$MIN_INSTANCES"
             --allow-unauthenticated
           )
+          # The revision is created without traffic and reachable only through the
+          # `candidate` tag, so the checks below run against the new code before anybody
+          # is served by it. This is not about a revision that cannot start: gcloud
+          # already waits for Ready and fails the deploy without moving traffic. It is
+          # about the application-level checks, which until now ran after the fact. The
+          # tag is the literal string `candidate` in every service, so it never
+          # accumulates: each deploy replaces it and the promote removes it.
+          if [ "$FIRST_DEPLOY" != "true" ]; then
+            COMMON+=(--no-traffic --tag candidate)
+          fi
           if [ "$SIDECAR" = "true" ]; then
             gcloud run deploy "$SERVICE" "${COMMON[@]}" \
               --container api-1 \
@@ -265,29 +319,113 @@ jobs:
           # loopback port either way, and the series are separated by the Cloud Run
           # service name that Managed Prometheus attaches as a resource label.
 
-      - name: Smoke (Cloud Run URL → /health)
+      # Everything below this point reads the candidate, never the service URL and never
+      # the service's latest template, because the service still answers from the old
+      # revision until the promote. On a first deploy there is no tag and the service URL
+      # is the new revision, which is the same thing.
+      - name: Resolve the candidate
         shell: bash
         run: |
           set -euo pipefail
-          URL=$(gcloud run services describe "$SERVICE" \
+          DESCRIBED=$(gcloud run services describe "$SERVICE" \
             --region '${{ vars.GCP_REGION }}' \
             --project '${{ vars.GCP_PROJECT_ID }}' \
-            --format='value(status.url)')
-          curl -sfS --connect-timeout 15 --max-time 45 "${URL}/health"
+            --format=json)
+          if [ "$FIRST_DEPLOY" = "true" ]; then
+            CANDIDATE_REVISION=$(jq -r '.status.latestCreatedRevisionName // ""' <<<"$DESCRIBED")
+            SMOKE_URL=$(jq -r '.status.url // ""' <<<"$DESCRIBED")
+          else
+            # Read the revision out of the tag itself rather than trusting
+            # latestCreatedRevisionName, so the checks and the name they report are the
+            # same revision the tag resolves to.
+            CANDIDATE=$(jq -c '
+              [.status.traffic[]? | select(.tag == "candidate")] | first // {}
+            ' <<<"$DESCRIBED")
+            CANDIDATE_REVISION=$(jq -r '.revisionName // ""' <<<"$CANDIDATE")
+            SMOKE_URL=$(jq -r '.url // ""' <<<"$CANDIDATE")
+          fi
+          if [ -z "$SMOKE_URL" ] || [ -z "$CANDIDATE_REVISION" ]; then
+            echo "Could not resolve the candidate for $SERVICE: url='${SMOKE_URL}' revision='${CANDIDATE_REVISION}'." >&2
+            echo "Traffic has not been moved. See docs/runbooks/rollback.md." >&2
+            exit 1
+          fi
+          {
+            echo "CANDIDATE_REVISION=$CANDIDATE_REVISION"
+            echo "SMOKE_URL=$SMOKE_URL"
+          } >> "$GITHUB_ENV"
+          echo "Candidate $CANDIDATE_REVISION at $SMOKE_URL"
 
-      # A scrape that silently stopped is the failure mode the stall alert cannot see
-      # on its own, so the deploy asserts the sidecar is present in the new revision.
-      - name: Assert the metrics sidecar is in the deployed revision
+      - name: Smoke the candidate (candidate URL → /health)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # codesentry-api is deployed --allow-unauthenticated, and a tag URL answers
+          # under the same IAM policy as the service, so a plain curl reaches it.
+          curl -sfS --connect-timeout 15 --max-time 45 "${SMOKE_URL}/health"
+
+      # A scrape that silently stopped is the failure mode the stall alert cannot see on
+      # its own, so the deploy asserts the sidecar is present. Against the candidate
+      # revision by name, not the service's latest template: the template is what was
+      # asked for, the revision is what exists, and only the revision can be wrong in a
+      # way worth failing a deploy over.
+      - name: Assert the metrics sidecar is in the candidate revision
         if: vars.METRICS_SIDECAR_ENABLED == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          CONTAINERS=$(gcloud run services describe "$SERVICE" \
+          CONTAINERS=$(gcloud run revisions describe "$CANDIDATE_REVISION" \
             --region '${{ vars.GCP_REGION }}' \
             --project '${{ vars.GCP_PROJECT_ID }}' \
-            --format='value(spec.template.spec.containers[].name)')
-          echo "Containers: $CONTAINERS"
+            --format='value(spec.containers[].name)')
+          echo "Containers in $CANDIDATE_REVISION: $CONTAINERS"
           case "$CONTAINERS" in
             *collector*) ;;
-            *) echo "The managed Prometheus sidecar is missing from the revision" >&2; exit 1 ;;
+            *) echo "The managed Prometheus sidecar is missing from $CANDIDATE_REVISION" >&2; exit 1 ;;
           esac
+
+      # Reached only when a check above failed. Traffic never moved, so there is nothing
+      # to undo and this step changes nothing; it says where the bad revision is.
+      - name: Report a candidate that failed its checks
+        if: failure() && env.FIRST_DEPLOY == 'false' && env.CANDIDATE_REVISION != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "A check against the candidate revision failed. Traffic was NOT moved."
+            echo "Still serving: ${PREVIOUS_REVISION:-unknown}"
+            echo "Candidate, serving nobody: ${CANDIDATE_REVISION} at ${SMOKE_URL:-unresolved}"
+            echo "The candidate tag is left in place on purpose: it is how you reach that"
+            echo "revision to debug it, and the next deploy replaces it."
+            echo "See docs/runbooks/rollback.md."
+          } | tee -a "$GITHUB_STEP_SUMMARY" >&2
+          exit 1
+
+      # Only now, with every check green against the candidate. --to-latest hands it all
+      # the traffic and also unpins a service that a rollback left pinned to a named
+      # revision, which is the state section 3 of docs/runbooks/rollback.md warns leaves
+      # deploys looking green while serving old code.
+      - name: Promote the candidate
+        if: env.FIRST_DEPLOY != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gcloud run services update-traffic "$SERVICE" \
+            --region '${{ vars.GCP_REGION }}' \
+            --project '${{ vars.GCP_PROJECT_ID }}' \
+            --to-latest --remove-tags candidate; then
+            exit 0
+          fi
+          # A promote that failed partway can leave traffic split across two revisions,
+          # which is worse than either end of it, so put it back where it was.
+          echo "Promoting ${CANDIDATE_REVISION} failed." >&2
+          if [ -n "${PREVIOUS_REVISION}" ]; then
+            echo "Returning all traffic to ${PREVIOUS_REVISION}." >&2
+            gcloud run services update-traffic "$SERVICE" \
+              --region '${{ vars.GCP_REGION }}' \
+              --project '${{ vars.GCP_PROJECT_ID }}' \
+              --to-revisions "${PREVIOUS_REVISION}=100" \
+              || echo "That failed too. Traffic may be split right now: docs/runbooks/rollback.md section 3." >&2
+          else
+            echo "No previous revision was recorded, so traffic is left as it is: docs/runbooks/rollback.md section 3." >&2
+          fi
+          exit 1
