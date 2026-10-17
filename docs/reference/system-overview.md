@@ -184,7 +184,7 @@ python benchmarks/remediation/evaluate.py --suite seed
 python -m unittest benchmarks.remediation.tests.test_evaluate
 ```
 
-CI runs Gitleaks, dependency review on pull requests, npm audits, `pip-audit`, Bandit, every suite above, and Docker image builds for the backend services. A separate `remediation.yml` workflow runs the repair service tests, the offline fixture and release evaluator gate, `terraform fmt` and `validate`, and a Kustomize render. It deploys nothing.
+CI runs Gitleaks, dependency review on pull requests, Bandit, every suite above, and Docker image builds for the backend services. `npm audit` and `pip-audit` run daily in `security-audit.yml` instead, because an advisory feed moves without the code moving. A separate `remediation.yml` workflow runs the repair service tests, the offline fixture and release evaluator gate, `terraform fmt` and `validate`, and a Kustomize render. It deploys nothing.
 
 ## Deployment
 
