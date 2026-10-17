@@ -9,6 +9,11 @@ name: Recall ratchet
 
 on:
   workflow_dispatch:
+  # The full corpus once a week as well as on the pull requests below. A scanner, a base image or
+  # a dependency can change what a rule matches without any of the paths below changing, and the
+  # required check in ci.yml covers only the committed subset.
+  schedule:
+    - cron: '17 6 * * 1'
   pull_request:
     paths:
       # The rules.

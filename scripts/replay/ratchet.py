@@ -434,7 +434,7 @@ def command_measure(args: argparse.Namespace) -> int:
         out.unlink(missing_ok=True)
         command = [
             args.python, str(HERE / "replay.py"), "--snapshot", "--include-quarantined",
-            "--no-remediation", "--no-tier1-budget", "--repo", repo, "--ref", ref, "--out", str(out),
+            "--no-remediation", "--no-tier1-budget", "--no-scanner-timeouts", "--repo", repo, "--ref", ref, "--out", str(out),
             "--cache", args.cache, "--timeout", str(args.timeout),
         ]
         if subprocess.run(command, check=False).returncode != 0 or not out.exists():

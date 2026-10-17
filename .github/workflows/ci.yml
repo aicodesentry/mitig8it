@@ -212,6 +212,29 @@ jobs:
           -s B608
       - run: pytest tests -q
 
+  # Labelled vulnerabilities that are detected today must stay detected. The full corpus is 23
+  # downloaded trees and runs in recall-ratchet.yml; this is the part that needs no download:
+  # every labelled file the recall baseline holds as hit, committed under its own licence in
+  # benchmarks/vulnerable-corpus/fixture-subset/, scanned and compared with expected.json there.
+  # It runs on every pull request, with no path filter, so it can be required.
+  recall-floor:
+    name: Recall floor (committed corpus subset)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: services/analysis-service/src/requirements.txt
+      # The service's own requirements pin the scanner, so this installs the version it runs.
+      - run: pip install -r services/analysis-service/src/requirements.txt
+      # Exits 2 rather than passing when the scanner is missing or a tier failed, so a scan that
+      # did not happen is never read as a scan that found everything.
+      - name: Labelled vulnerabilities in the subset are still detected
+        run: python scripts/replay/fixture_subset.py check
+
   docker-build:
     name: Docker image (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -326,6 +349,7 @@ jobs:
       - api-tests
       - github-service-tests
       - analysis-tests
+      - recall-floor
       - docker-build
       - remediation-integration-tests
       - remediation-github-tests

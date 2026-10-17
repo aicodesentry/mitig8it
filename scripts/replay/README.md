@@ -135,7 +135,7 @@ the verdicts back.
 ## Recall ratchet
 
 `ratchet.py` turns the snapshot measurement into a regression gate. `measure` runs
-`replay.py --snapshot --include-quarantined --no-remediation --no-tier1-budget` once per
+`replay.py --snapshot --include-quarantined --no-remediation --no-tier1-budget --no-scanner-timeouts` once per
 repository pinned in `labels.json`, each into its own result file. `check` joins those results to the labels with
 `score.join`, reduces each label to two facts (hit, and hit by a rule that posts) and compares
 them with `benchmarks/vulnerable-corpus/recall-baseline.json`. `update` writes that file, and
@@ -156,8 +156,18 @@ the environment the workers inherit. Without it a snapshot run still works and i
 findings depend on the machine; the worker keeps each stage's `analysis_limitations` on the
 record, so a run says when that happened, and the ratchet refuses a run in which it did.
 
+`--no-scanner-timeouts` does the same for tier 2. The scanner drops a rule on a file after 30 s
+(`OPENGREP_RULE_TIMEOUT_SECONDS`) and fails a batch after 120 s
+(`OPENGREP_PROCESS_TIMEOUT_SECONDS`), and which rule on which file a busy machine loses is not
+something a rule diff explains. The flag sets both to a day; the batch wall clock (`--timeout`)
+still bounds a hung scanner, and a batch it kills is refused by the ratchet, not scored.
+
 A regressed label in a file the scanner could only partly parse has that limitation printed
 beside it.
+
+`fixture_subset.py` is the same comparison over the labelled files committed in
+`benchmarks/vulnerable-corpus/fixture-subset/`, which needs no download and runs as the
+required `recall-floor` job in CI. It scans in process, with both tiers' limits lifted.
 
 The comparison is unit-tested without the corpus in
 `services/analysis-service/src/tests/test_recall_ratchet.py`. When to refresh the baseline is

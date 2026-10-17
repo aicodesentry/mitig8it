@@ -370,6 +370,9 @@ def main() -> int:
     parser.add_argument("--no-tier1-budget", action="store_true",
                         help="lift tier 1's wall clock budget and per-file cap, so what a regex rule "
                              "finds does not depend on how fast this machine is")
+    parser.add_argument("--no-scanner-timeouts", action="store_true",
+                        help="lift the scanner's per-rule timeout and its per-batch process timeout, so "
+                             "what tier 2 finds does not depend on how fast this machine is")
     parser.add_argument("--pairs", action="store_true",
                         help="measure both repair halves over the findings of earlier snapshot runs, "
                              "and run every complete pair's proof on the original and the patched tree")
@@ -391,6 +394,13 @@ def main() -> int:
         # environment, and the workers inherit it.
         os.environ["TIER1_BUDGET_SECONDS"] = TIER1_BUDGET_LIFTED_SECONDS
         os.environ["TIER1_FILE_BUDGET_SECONDS"] = TIER1_BUDGET_LIFTED_SECONDS
+    if args.no_scanner_timeouts:
+        # The same argument for tier 2. The scanner's `--timeout` drops a rule on a file that
+        # takes longer than 30 s and its process timeout fails a batch after 120 s; which rule
+        # on which file depends on load. The batch wall clock (`--timeout`) still bounds a hung
+        # scanner, and a batch that dies is refused by the ratchet rather than scored.
+        os.environ["OPENGREP_RULE_TIMEOUT_SECONDS"] = TIER1_BUDGET_LIFTED_SECONDS
+        os.environ["OPENGREP_PROCESS_TIMEOUT_SECONDS"] = TIER1_BUDGET_LIFTED_SECONDS
 
     if args.pairs:
         if not args.results:
