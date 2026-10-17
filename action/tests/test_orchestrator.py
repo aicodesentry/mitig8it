@@ -213,6 +213,42 @@ def test_a_model_key_enables_triage(monkeypatch):
     assert analysis.model_triage_enabled() is True
 
 
+# --- what the analysis gave up on ----------------------------------------------------------
+
+def test_the_analysis_limitations_reach_the_action(monkeypatch):
+    """A tier 1 per-file cap used to vanish here, so a finding it cost looked like no finding."""
+    budget = {"kind": "budget", "path": "introduction/views.py",
+              "message": "Tier 1 stopped after 40 of 120 rules on this file (2 s per-file cap)"}
+
+    class FakeMain:
+        class AnalyzePRRequest:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        @staticmethod
+        def analyze_pull_request_payload(request):
+            return {"findings": [{"rule_id": "x"}], "analysis_limitations": [budget]}
+
+    monkeypatch.setattr(analysis, "_analysis_main", lambda: FakeMain)
+    findings, limitations = analysis.analyze_with_limitations(REPO, 1, HEAD_SHA, [])
+    assert findings == [{"rule_id": "x"}]
+    assert limitations == [budget]
+    assert analysis.analyze(REPO, 1, HEAD_SHA, []) == findings
+
+
+def test_each_limitation_is_one_log_line_naming_the_file():
+    lines = analysis.limitation_lines([
+        {"kind": "budget", "path": "", "message": "Tier 1 stopped after 3 of 9 files (20 s budget)"},
+        {"kind": "budget", "path": "a.py", "message": "Tier 1 stopped after 4 of 120 rules on this file"},
+        {"kind": "partial_parse", "path": "b.js", "type": "Syntax error", "message": ""},
+    ])
+    assert lines == [
+        "Not fully analysed (budget), the whole request: Tier 1 stopped after 3 of 9 files (20 s budget)",
+        "Not fully analysed (budget), a.py: Tier 1 stopped after 4 of 120 rules on this file",
+        "Not fully analysed (partial_parse), b.js: Syntax error",
+    ]
+
+
 def test_the_publisher_states_the_no_key_case_in_the_review_body(tmp_path):
     """The review must say which half of the product ran, on every keyless run."""
     publisher = Path(__file__).resolve().parents[1] / "publisher/publish.js"

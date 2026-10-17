@@ -633,6 +633,26 @@ def batch_max_bytes() -> int:
     return _batch_limit("OPENGREP_BATCH_MAX_BYTES", DEFAULT_BATCH_MAX_BYTES)
 
 
+# The scanner's two clocks. `--timeout` is per rule per file: a file that takes longer is
+# reported as a `Timeout` error, which `_classify_scanner_errors` records as a `not_analyzed`
+# limitation and the batch keeps its other findings. The subprocess timeout bounds the whole
+# batch and fails the tier closed. Both are right for a webhook with a deadline, and both make
+# a scan over identical input depend on how busy the machine is: what a timeout removes is
+# whatever had not finished yet. A measurement lifts them through the environment, the way
+# `TIER1_BUDGET_SECONDS` lifts tier 1's budget, so a finding that is missing is missing because
+# no rule matched and not because the scanner was slow that day.
+DEFAULT_RULE_TIMEOUT_SECONDS = 30
+DEFAULT_PROCESS_TIMEOUT_SECONDS = 120
+
+
+def rule_timeout_seconds() -> int:
+    return _batch_limit("OPENGREP_RULE_TIMEOUT_SECONDS", DEFAULT_RULE_TIMEOUT_SECONDS)
+
+
+def process_timeout_seconds() -> int:
+    return _batch_limit("OPENGREP_PROCESS_TIMEOUT_SECONDS", DEFAULT_PROCESS_TIMEOUT_SECONDS)
+
+
 def build_scan_batches(
     prepared: List[Dict[str, Any]],
     max_files: Optional[int] = None,
@@ -848,6 +868,7 @@ def _run_semgrep(target_dir: str, config: Optional[str] = None) -> Dict[str, Any
     Tolerable per-file scanner errors are attached to the returned output under
     `analysis_limitations`; fatal ones raise.
     """
+    process_timeout = process_timeout_seconds()
     try:
         result = subprocess.run(
             [
@@ -858,16 +879,16 @@ def _run_semgrep(target_dir: str, config: Optional[str] = None) -> Dict[str, Any
                 "--quiet",
                 "--metrics=off",
                 "--disable-version-check",
-                "--timeout", "30",
+                "--timeout", str(rule_timeout_seconds()),
                 "--max-target-bytes", "500000",
                 target_dir,
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=process_timeout,
         )
     except subprocess.TimeoutExpired:
-        raise RuntimeError("OpenGrep timed out after 120s")
+        raise RuntimeError(f"OpenGrep timed out after {process_timeout}s")
     except FileNotFoundError:
         # Its own error class: a caller deciding a static assertion has to be able to tell this
         # from a scan that ran and found nothing.
@@ -1135,7 +1156,34 @@ def run_opengrep_with_limitations(files: List[Dict[str, Any]]) -> tuple:
         findings.extend(batch_findings)
         limitations.extend(batch_limitations)
 
+    # In file order, not scanner order. The scanner runs rules over files on several cores
+    # and nothing in its contract says which match it prints first; downstream, the order
+    # decides which finding of a cluster survives a tie and which rule ids ride along as
+    # supporting detections. Sorting here, once, is what lets two scans of the same input
+    # produce the same response byte for byte.
+    findings.sort(key=_finding_order)
+    # The whole entry is in the key, because the dedupe below keeps the first of each
+    # (path, kind) and two entries with the same key can differ in type, line and message.
+    limitations.sort(
+        key=lambda item: (
+            str(item.get("path") or ""),
+            str(item.get("kind") or ""),
+            str(item.get("type") or ""),
+            int(item.get("line") or 0),
+            str(item.get("message") or ""),
+        )
+    )
     return classify_findings(findings), _dedupe_limitations(limitations)
+
+
+def _finding_order(finding: Dict[str, Any]) -> tuple:
+    return (
+        str(finding.get("file_path") or ""),
+        int(finding.get("line_start") or 0),
+        int(finding.get("line_end") or 0),
+        str(finding.get("rule_id") or ""),
+        str(finding.get("fingerprint") or ""),
+    )
 
 
 def _dedupe_limitations(limitations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -686,7 +686,9 @@ def _run() -> int:
 
     analysis_files = pr_scope.build_analysis_files(scoped, contents)
     log("Scanning.")
-    findings = analysis.analyze(repository, pr_number, head_sha, analysis_files)
+    findings, limitations = analysis.analyze_with_limitations(repository, pr_number, head_sha, analysis_files)
+    for line in analysis.limitation_lines(limitations):
+        log(line)
     counts = analysis.severity_counts(findings)
     log(
         f"{plural(len(findings), 'finding')}: {counts['critical']} critical, "

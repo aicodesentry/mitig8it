@@ -16,7 +16,7 @@ import os
 import sys
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
 
 ANALYSIS_SRC_ENV = "MITIG8IT_ANALYSIS_SRC"
 DEFAULT_ANALYSIS_SRC = "/opt/mitig8it/services/analysis-service/src"
@@ -67,6 +67,24 @@ def analyze(
     Tier 2 fails the call closed: a scanner that did not run must never be reported as a scanner
     that found nothing, so an exception here ends the run without publishing a clean result.
     """
+    findings, _ = analyze_with_limitations(repository_full_name, pull_request_number, commit_sha, files)
+    return findings
+
+
+def analyze_with_limitations(
+    repository_full_name: str,
+    pull_request_number: int,
+    commit_sha: str,
+    files: Sequence[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """The findings, and what either tier recorded instead of finishing.
+
+    Tier 1 stops a file after its per-file time cap and the request after its total budget;
+    tier 2 records a file the scanner could only partly parse or gave up on. Both keep the
+    findings they made and say so in `analysis_limitations`. Dropping that list made a finding
+    lost to a busy runner indistinguishable from a finding the code no longer earns, which is
+    one way a re-run on identical code can come back different.
+    """
     main = _analysis_main()
     request = main.AnalyzePRRequest(
         repository_full_name=repository_full_name,
@@ -78,7 +96,19 @@ def analyze(
     findings = result.get("findings")
     if not isinstance(findings, list):
         raise RuntimeError("Incomplete analysis response: findings missing")
-    return findings
+    limitations = result.get("analysis_limitations") or []
+    return findings, [item for item in limitations if isinstance(item, dict)]
+
+
+def limitation_lines(limitations: Sequence[Dict[str, Any]]) -> List[str]:
+    """One log line per limitation, naming the file when there is one."""
+    lines = []
+    for item in limitations:
+        where = str(item.get("path") or "") or "the whole request"
+        kind = str(item.get("kind") or "limitation")
+        message = str(item.get("message") or item.get("type") or "").strip()
+        lines.append(f"Not fully analysed ({kind}), {where}: {message}" if message else f"Not fully analysed ({kind}), {where}.")
+    return lines
 
 
 def is_informational(finding: Dict[str, Any]) -> bool:

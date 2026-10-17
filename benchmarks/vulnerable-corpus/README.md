@@ -36,6 +36,8 @@ why `we45/Vulnerable-Flask-App` was considered and dropped in favour of `anxoler
 | `adjudications.json` | Hand-read verdicts on findings no label covers, keyed by finding fingerprint. |
 | `harvest_cve_labels.py` | Proposes candidate labels from advisories that name their fixing commit. |
 | `recall-baseline.json` | Per label, whether it is detected and whether a posting rule detects it. Generated; see below. |
+| `fixture-subset/` | The labelled files the baseline holds as hit, with their licences, for the required recall floor. Generated; see below. |
+| `adjudicate.py` | Model-proposed verdicts for unjudged findings, kept in `adjudications-model.json`, never in the human file. |
 
 A label is one vulnerability:
 
@@ -58,11 +60,16 @@ vocabulary the product groups findings by; `score.py` refuses a label that inven
 It lists every class a correct scanner could report for that line, so a finding that names
 any of them counts as a hit.
 
-## No source tree is committed
+## Only the labelled files are committed
 
 The snapshots are downloaded, not vendored: a corpus of intentionally vulnerable
 applications inside this repository would be a supply of exploitable code in every clone,
-and would drag six upstream licences into the tree. `scripts/replay/corpus.py` downloads
+and would drag every upstream licence into the tree. The one exception is
+`fixture-subset/`: the 59 files that carry a label the recall baseline holds as hit, each
+copied at its pinned ref beside the licence of the repository it came from, so that a check
+which needs no download can run on every pull request (see "The recall floor" below). They
+are scanned, never installed or executed, and `.mitig8it.yml` keeps them out of review. Every
+whole tree stays downloaded. `scripts/replay/corpus.py` downloads
 the tarball for a `(repo, ref)` pair into `scripts/replay/.cache/snapshots/`, which
 `.gitignore` covers, and extracts it there. A member whose path escapes the extraction root
 is refused.
@@ -139,7 +146,47 @@ failure can say what used to match, and they decide nothing: a label stays hit w
 different rule takes it over.
 
 `.github/workflows/recall-ratchet.yml` runs the check on pull requests that touch the rules,
-the scanner wrapper, `scripts/replay/` or this directory.
+the scanner wrapper, `scripts/replay/` or this directory, and every Monday on its own, because
+a scanner or dependency change can move a match without touching any of those paths.
+
+## The recall floor
+
+The ratchet downloads 23 trees, so it is path-filtered and cannot be a required check. The
+floor is the part that can: `fixture-subset/` holds every labelled file whose label the
+baseline holds as hit, from repositories whose licence in `labels.json` is permissive (all
+of them today), and the `recall-floor` job in `.github/workflows/ci.yml` scans it on every
+pull request and is one of the jobs `Required CI` waits for.
+
+```sh
+scripts/replay/fixture_subset.py check    # scan the subset, compare with fixture-subset/expected.json
+scripts/replay/fixture_subset.py update   # rewrite expected.json from a complete run
+scripts/replay/fixture_subset.py build --gitleaks --snapshots scripts/replay/.cache/snapshots
+```
+
+`check` scans the subset the way a snapshot run scans a tree, quarantined rules included and
+both tiers' time limits lifted, and compares with `expected.json` using the ratchet's own
+comparison. It exits 1 when a label that was hit is no longer hit, when a posting hit is now
+quarantined only, or when the hit count falls below the floor `expected.json` records, and 2
+when the scanner is missing, a tier failed or the files differ from `manifest.json`.
+
+`build` copies the files out of a local snapshot cache. A secret gitleaks reports is
+overwritten with `x` of the same length, so every line number stays as pinned and the
+repository's own secret scan stays green; the redactions are listed in `manifest.json`. Run
+`build` and then `update` whenever the baseline gains or loses a hit label, and commit both.
+`tests/test_recall_floor_subset.py` in the analysis suite fails when the subset no longer
+carries every permissive label the baseline holds as hit.
+
+## Model-proposed verdicts
+
+`adjudications.json` is hand-read. `adjudicate.py propose results/*.json` sends findings no
+label or person has judged to the model configured for tier 3 (`call_llm`), asking for a
+verdict, a quote from the flagged line and one sentence, and writes the answers to
+`adjudications-model.json` with `source: model`, the model id and the prompt version. A quote
+that is not on the flagged line is recorded as such and never counted. `--calibrate` also
+re-judges the 71 findings of the original hand-read sample, and `adjudicate.py report` prints
+Cohen's kappa and a confusion table against those. Nothing reaches the human file except
+through `adjudicate.py accept <fingerprint>... --reviewer NAME`, which copies only the named
+entries and records who read them.
 
 ## Adding a label
 

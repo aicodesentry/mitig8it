@@ -1,5 +1,6 @@
 import hashlib
 import re
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional
 
 from comment_stripper import strip_lines
@@ -63,7 +64,31 @@ def is_transcript_artifact_line(line: str) -> bool:
     return False
 
 
+# Entries for the last few (patch, path, content) triples. Tier 1 asks for the same file's
+# entries once per rule, and building them runs the comment stripper over the whole head file
+# twice; on pygoat `introduction/views.py` (48 kB) that was 35 strips per file and 8 to 26 s,
+# against a 2 s per-file cap. The cap then stopped tier 1 after 6 to 9 of 35 rules, a different
+# number on each run, which is how the September 2026 action trial lost `views.py:963` and
+# `views.py:291` and saw `auth.weak_password_hash` come and go on `views.py:1026`.
+PARSE_CACHE_SIZE = 32
+
+
 def parse_patch_entries(patch: str, path: Any = None, content: Any = None) -> List[Dict[str, Any]]:
+    """`_parse_patch_entries`, built once per (patch, path, content) and copied per caller."""
+    try:
+        cached = _parse_patch_entries_cached(patch, path, content)
+    except TypeError:
+        # An unhashable argument; nothing in the service passes one, but a caller may.
+        return _parse_patch_entries(patch, path, content)
+    return [dict(entry) for entry in cached]
+
+
+@lru_cache(maxsize=PARSE_CACHE_SIZE)
+def _parse_patch_entries_cached(patch: str, path: Any, content: Any) -> tuple:
+    return tuple(_parse_patch_entries(patch, path, content))
+
+
+def _parse_patch_entries(patch: str, path: Any = None, content: Any = None) -> List[Dict[str, Any]]:
     """Reviewable lines of `patch`, in file order, each with its new-side line number.
 
     When `path` names a language the comment stripper models, every entry also carries
@@ -521,19 +546,29 @@ def _record_supporting_detections(
     `merged_rule_ids` names every rule that matched, in the survivor's own evidence and in the
     extras map that crosses the gRPC contract intact.
     """
-    supporting_rules = _merge_unique(
-        [
-            finding.get("rule_id")
-            for finding in supporting
-            if finding.get("rule_id") != survivor.get("rule_id")
-        ]
+    # Sorted, not in arrival order. The members of a cluster arrive in the order the two
+    # tiers produced them, and tier 2's order is the scanner's; the September 2026 action
+    # trial watched `introduction/views.py:1026` lose `auth.weak_password_hash` from this
+    # list between two runs over the same file. The evidence sentence and `merged_rule_ids`
+    # are part of what a reviewer sees and what the comment marker is compared against, so
+    # they must not depend on which thread or which scanner process finished first.
+    supporting_rules = sorted(
+        _merge_unique(
+            [
+                finding.get("rule_id")
+                for finding in supporting
+                if finding.get("rule_id") != survivor.get("rule_id")
+            ]
+        )
     )
-    supporting_detectors = _merge_unique(
-        [
-            detector_kind(finding)
-            for finding in supporting
-            if detector_kind(finding) != detector_kind(survivor)
-        ]
+    supporting_detectors = sorted(
+        _merge_unique(
+            [
+                detector_kind(finding)
+                for finding in supporting
+                if detector_kind(finding) != detector_kind(survivor)
+            ]
+        )
     )
 
     merged = dict(survivor)
@@ -709,12 +744,19 @@ def cluster_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # folds is a cluster survivor rather than one member of a cluster.
     clustered = _apply_subsumption(clustered)
 
+    # The last three keys only break ties. Two findings of equal severity and confidence on
+    # the same line used to keep their arrival order, which for tier 2 is the scanner's, so
+    # the same input could come back in two orders. The sort is stable, and with the rule id
+    # and the fingerprint in the key there is nothing left for arrival order to decide.
     clustered.sort(
         key=lambda finding: (
             -SEVERITY_RANK.get(str(finding.get("severity") or "").lower(), 0),
             -(float(finding.get("confidence") or 0)),
             str(finding.get("file_path") or ""),
             int(finding.get("line_start") or 0),
+            int(finding.get("line_end") or 0),
+            str(finding.get("rule_id") or ""),
+            str(finding.get("fingerprint") or ""),
         )
     )
     return clustered
