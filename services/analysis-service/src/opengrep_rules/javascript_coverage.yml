@@ -223,6 +223,148 @@ rules:
       confidence: "0.85"
       posting: post
 
+  # One hop of data flow for the shape cwe-78.js-exec-interpolated cannot see: the command
+  # string is built on one line and run on the next. systeminformation (CVE-2026-50289) and
+  # electerm (CVE-2026-49255) both do this. Matching `exec($VAR)` for any variable is the
+  # shape docs/validation/vulnerable-corpus-2026-09.md says ends at a precision of 0.02, so
+  # the variable has to be traced back to something that carries outside input: a request
+  # field, `process.argv`, or a value interpolated or concatenated into the command string.
+  # A command built inside the call itself is excluded, because that is
+  # cwe-78.js-exec-interpolated's shape and it posts on its own evidence.
+  #
+  # A value whose own name says it was escaped (`ifaceSanitized`, `quotedName`) is not a
+  # source, and a call to a function named as an escaper is a sanitizer: systeminformation
+  # passes every interface name through `util.sanitizeString` before it reaches a shell, and
+  # without both exclusions the rule reported each of those calls again at the interpolation.
+  # The intraprocedural engine cannot follow a command into a local wrapper, so electerm's
+  # `run(cmd)` is not reached; docs/validation/taint-one-hop-2026-10.md has the measurement.
+  - id: cwe-78.js-exec-tainted
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: req.params
+        - pattern: req.query
+        - pattern: req.body
+        - pattern: req.headers
+        - pattern: process.argv
+        - patterns:
+          - pattern-either:
+            - patterns:
+              - pattern-inside: "`...${$SRC}...`"
+              - pattern: $SRC
+            - patterns:
+              - pattern-inside: '"..." + $SRC'
+              - pattern: $SRC
+            - patterns:
+              - pattern-inside: '$SRC + "..."'
+              - pattern: $SRC
+          - metavariable-regex:
+              metavariable: $SRC
+              regex: ^(?!.*(?i:sanitiz|escap|quot))[^'"`]*$
+    pattern-sanitizers:
+      - pattern-either:
+        # shell-quote
+        - pattern: quote(...)
+        - pattern: shellQuote.quote(...)
+        - pattern: shellquote.quote(...)
+        - pattern: shellescape(...)
+        - pattern: shellEscape(...)
+        - patterns:
+          - pattern-either:
+            - pattern: $FN(...)
+            - pattern: $O.$FN(...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: (?i)^(?:sanitize|escape|quote)\w*$
+        # An allowlist test: inside the branch that passed it, or after the branch that
+        # rejected it.
+        - patterns:
+          - pattern-inside: |
+              if (<... $ALLOW.includes($X) ...>) { ... }
+          - pattern: $X
+        - patterns:
+          - pattern-inside: |
+              if (<... $ALLOW.has($X) ...>) { ... }
+          - pattern: $X
+        - patterns:
+          - pattern-inside: |
+              if (!$ALLOW.includes($X)) { ... }
+              ...
+          - pattern: $X
+        - patterns:
+          - pattern-inside: |
+              if (!$ALLOW.has($X)) { ... }
+              ...
+          - pattern: $X
+        - patterns:
+          - pattern-inside: |
+              if (!/$RE/.test($X)) { ... }
+              ...
+          - pattern: $X
+    pattern-sinks:
+      - patterns:
+        - pattern-either:
+          - pattern: exec($CMD, ...)
+          - pattern: execSync($CMD, ...)
+          # The receiver is named for the same reason as in cwe-78.js-exec-interpolated:
+          # `RegExp.prototype.exec` is the common `.exec`.
+          - patterns:
+            - pattern-either:
+              - pattern: $CP.exec($CMD, ...)
+              - pattern: $CP.execSync($CMD, ...)
+            - metavariable-regex:
+                metavariable: $CP
+                regex: ^(?:child_process|childProcess|node_child_process|cp)$
+          - pattern: require("child_process").exec($CMD, ...)
+          - pattern: require("child_process").execSync($CMD, ...)
+          - pattern: require("node:child_process").exec($CMD, ...)
+          - pattern: require("node:child_process").execSync($CMD, ...)
+          # The constraint is nested in its own branch: at rule level it would drop every
+          # match that does not bind $SPAWN.
+          - patterns:
+            - pattern-either:
+              - pattern: '$SPAWN($CMD, { ..., shell: true, ... })'
+              - pattern: '$SPAWN($CMD, $ARGS, { ..., shell: true, ... })'
+              - pattern: '$SPAWN($BIN, $CMD, { ..., shell: true, ... })'
+              - pattern: '$CP.$SPAWN($CMD, { ..., shell: true, ... })'
+              - pattern: '$CP.$SPAWN($CMD, $ARGS, { ..., shell: true, ... })'
+              - pattern: '$CP.$SPAWN($BIN, $CMD, { ..., shell: true, ... })'
+            - metavariable-regex:
+                metavariable: $SPAWN
+                regex: ^(?:spawn|spawnSync|execFile|execFileSync)$
+        - pattern-not: $F(`...`, ...)
+        - pattern-not: $F(<... "..." + $B ...>, ...)
+        - pattern-not: $F(<... $A + "..." ...>, ...)
+        - pattern-not: $O.$F(`...`, ...)
+        - pattern-not: $O.$F(<... "..." + $B ...>, ...)
+        - pattern-not: $O.$F(<... $A + "..." ...>, ...)
+        - focus-metavariable: $CMD
+    message: "Shell command built from outside input on an earlier line. Use execFile or spawn with an argument list"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021"
+      category: "command injection"
+      internal_type: "command_injection"
+      family: "command_arguments"
+      confidence: "0.75"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "request field, process.argv, or a value interpolated into the command string"
+      sink_description: "shell command execution"
+      sanitizer_description: "shell-quote quote(), a function named as an escaper, an allowlist or regex test"
+      sink_var: "$CMD"
+      trace_summary: "Taint-tracked flow from outside input into a command string a shell runs."
+      precision_evidence: >-
+        Unmeasured on the corpus, taint variant of cwe-78.js-exec-interpolated. What was run
+        and what was not is in docs/validation/taint-one-hop-2026-10.md.
+      posting: quarantine
+      posting_evidence: >-
+        Unmeasured. The posting policy lets a rule with no adjudicated findings post only when
+        its pattern is sink-only and makes no data-flow assumption, and a taint rule is a
+        data-flow assumption, so it is quarantined until it has three adjudicated findings.
+        The command that measures it is in docs/validation/taint-one-hop-2026-10.md.
+
   # ── Code injection ─────────────────────────────────────────────────────
 
   - id: cwe-95.js-new-function-dynamic
@@ -483,6 +625,95 @@ rules:
       confidence: "0.85"
       posting: post
 
+  # The taint variant of tier 1's `path.traversal.user_path`, which is quarantined at 0.43
+  # because a regex cannot tell a request-controlled path from an options object's brace.
+  # This asks where the path came from: a request field or `process.argv`, through any number
+  # of local assignments and joins, into a filesystem call or a response file.
+  #
+  # The sanitizer is the containment check the path_containment repair family writes: the
+  # value `path.resolve` (or `realpathSync`) returned, tested with `startsWith`, either inside
+  # the branch that passed or after the branch that rejected. A `startsWith` on the raw input
+  # is not containment, because `/srv/../etc/passwd` starts with `/srv/`. `path.basename` is
+  # not a sanitizer either, consistent with the family's assertion in
+  # services/remediation-service/src/families.py.
+  - id: cwe-22.js-fs-tainted-path
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: req.params
+        - pattern: req.query
+        - pattern: req.body
+        - pattern: req.headers
+        - pattern: process.argv
+    pattern-sanitizers:
+      - patterns:
+        - pattern-either:
+          - pattern-inside: |
+              $P = path.resolve(...);
+              ...
+          - pattern-inside: |
+              $P = $FS.realpathSync(...);
+              ...
+        - pattern-either:
+          - pattern-inside: |
+              if (!$P.startsWith(...)) { ... }
+              ...
+          - pattern-inside: |
+              if ($P.startsWith(...)) { ... }
+        - pattern: $P
+    pattern-sinks:
+      - patterns:
+        - pattern-either:
+          - patterns:
+            - pattern-either:
+              - pattern: $FS.$OP($P, ...)
+              - pattern: $FS.promises.$OP($P, ...)
+            - metavariable-regex:
+                metavariable: $FS
+                regex: ^(?:fs|fsp|fss|fsPromises|fse|fsExtra|require\(['"](?:node:)?fs(?:/promises)?['"]\))$
+            - metavariable-regex:
+                metavariable: $OP
+                regex: ^(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream|unlink|unlinkSync|rm|rmSync|rmdir|rmdirSync|readdir|readdirSync|open|openSync|copyFile|copyFileSync|rename|renameSync|readJson|readJsonSync|outputFile|remove|removeSync)$
+          - patterns:
+            - pattern: $OP($P, ...)
+            - metavariable-regex:
+                metavariable: $OP
+                regex: ^(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync|unlink|unlinkSync)$
+          - patterns:
+            - pattern-either:
+              - pattern: $RES.sendFile($P, ...)
+              - pattern: $RES.download($P, ...)
+            - metavariable-regex:
+                metavariable: $RES
+                regex: ^(?:res|resp|response)$
+        - focus-metavariable: $P
+    message: "File path taken from request input reaches the filesystem. Resolve it against the base and reject anything outside it"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.75"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "request field or process.argv"
+      sink_description: "filesystem access or response file"
+      sanitizer_description: "path.resolve or realpathSync result tested with startsWith before use; path.basename is not one"
+      sink_var: "$P"
+      trace_summary: "Taint-tracked flow from request input into a filesystem path with no containment check."
+      precision_evidence: >-
+        Unmeasured on the corpus, taint variant of path.traversal.user_path (tier 1,
+        quarantined at 0.43). What was run and what was not is in
+        docs/validation/taint-one-hop-2026-10.md.
+      posting: quarantine
+      posting_evidence: >-
+        Unmeasured. The posting policy lets a rule with no adjudicated findings post only when
+        its pattern is sink-only and makes no data-flow assumption, and a taint rule is a
+        data-flow assumption, so it is quarantined until it has three adjudicated findings.
+        The command that measures it is in docs/validation/taint-one-hop-2026-10.md.
+
   # ── XSS ────────────────────────────────────────────────────────────────
 
   - id: cwe-79.js-response-html-interpolated
@@ -565,6 +796,118 @@ rules:
         from and whether anything escaped it on the way, which the AST pattern engine does
         not give. Re-enable it when the rule set can answer that; the recall it would buy
         is six labels, and is recorded in docs/validation/vulnerable-corpus-2026-09.md.
+
+  # The taint variant of cwe-79.js-html-string-interpolated, which is quarantined above at
+  # 0.47 because it cannot see an escaping wrapper or tell data from already-built markup.
+  # This one asks both questions. A value reaches markup only from a source that carries
+  # outside text: a request field, the page's own URL, or an attribute read back out of a
+  # parsed document, which is how defuddle's CVE-2026-61824 arrives (`getAttribute('content')`
+  # into `<img src="...">`). Composition (`${parts.join('\n')}`) is not a source, and any
+  # escaper on the way is a sanitizer, so dicebear's `escape.xml(...)` and defuddle's
+  # `escapeHtml(...)` lines stay silent.
+  - id: cwe-79.js-html-tainted-interpolation
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: req.params
+        - pattern: req.query
+        - pattern: req.body
+        - pattern: req.headers
+        - pattern: req.cookies
+        - pattern: location.search
+        - pattern: location.hash
+        - pattern: location.href
+        - pattern: window.location.search
+        - pattern: window.location.hash
+        - pattern: window.location.href
+        - pattern: document.location.search
+        - pattern: document.location.hash
+        - pattern: document.location.href
+        - pattern: document.URL
+        - pattern: document.documentURI
+        - pattern: document.referrer
+        - pattern: window.name
+        - pattern: $EL.getAttribute(...)
+    pattern-sanitizers:
+      - pattern-either:
+        - pattern: DOMPurify.sanitize(...)
+        - pattern: he.encode(...)
+        - pattern: he.escape(...)
+        - pattern: escape.xml(...)
+        - pattern: escape.html(...)
+        - pattern: encodeURIComponent(...)
+        - pattern: _.escape(...)
+        - pattern: lodash.escape(...)
+        - pattern: validator.escape(...)
+        - pattern: sanitizeHtml(...)
+        - pattern: filterXSS(...)
+        - pattern: Handlebars.escapeExpression(...)
+        - pattern: Handlebars.Utils.escapeExpression(...)
+        - pattern: Mustache.escape(...)
+        # A project's own helper, named as one: escapeHtml, escapeXml, sanitizeUrl.
+        - patterns:
+          - pattern-either:
+            - pattern: $FN(...)
+            - pattern: $O.$FN(...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: (?i)^(?:escape|sanitize|encode)\w*$
+    pattern-sinks:
+      - pattern-either:
+        - patterns:
+          - pattern-either:
+            - pattern: $RES.send($V)
+            - pattern: $RES.write($V, ...)
+            - pattern: $RES.end($V, ...)
+          - pattern-not: "$RES.send({...})"
+          - metavariable-regex:
+              metavariable: $RES
+              regex: ^(?:res|resp|response)$
+          - focus-metavariable: $V
+        - patterns:
+          - pattern-either:
+            - pattern: $EL.innerHTML = $V
+            - pattern: $EL.outerHTML = $V
+            - pattern: $EL.innerHTML += $V
+            - pattern: document.write($V)
+            - pattern: document.writeln($V)
+            - pattern: $EL.insertAdjacentHTML($POS, $V)
+          - focus-metavariable: $V
+        # Markup assembled anywhere, by a template literal or a concatenation that opens a
+        # tag before the value goes in. The tag test is a regex beside the template pattern
+        # rather than a metavariable-regex on `$HTML`: binding every expression in the file to
+        # `$HTML` first cost 7.5 seconds on a 366 KB vendored file, against 1.6 this way.
+        - patterns:
+          - pattern: "`...${$X}...`"
+          - pattern-regex: "`[^`]*<[a-zA-Z/][^`]*\\$\\{"
+        - patterns:
+          - pattern: $LIT + $X
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: "^['\"][^'\"]*<[a-zA-Z/]"
+    message: "Outside text reaches HTML with no escaping on the way. Escape it for the context it lands in, or build the node rather than the markup"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.75"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "request field, page URL, or an attribute read from a parsed document"
+      sink_description: "HTML markup or an HTML sink"
+      sanitizer_description: "escapeHtml, escape.xml, he.encode, DOMPurify.sanitize, encodeURIComponent, a framework escape helper, or a function named as an escaper"
+      trace_summary: "Taint-tracked flow from outside text into HTML markup with no escaping on the way."
+      precision_evidence: >-
+        Unmeasured on the corpus, taint variant of cwe-79.js-html-string-interpolated. What was
+        run and what was not is in docs/validation/taint-one-hop-2026-10.md.
+      posting: quarantine
+      posting_evidence: >-
+        Unmeasured. The posting policy lets a rule with no adjudicated findings post only when
+        its pattern is sink-only and makes no data-flow assumption, and a taint rule is a
+        data-flow assumption, so it is quarantined until it has three adjudicated findings.
+        The command that measures it is in docs/validation/taint-one-hop-2026-10.md.
 
   - id: cwe-79.js-template-autoescape-disabled
     patterns:

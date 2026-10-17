@@ -211,6 +211,131 @@ rules:
       confidence: "0.88"
       posting: post
 
+  # The Python half of cwe-78.js-exec-tainted: a command string built on one line and run by
+  # a shell on the next, which the three interpolated rules above cannot see because each
+  # needs the string built inside the call. The same exclusions apply for the same reasons:
+  # a command built inside the call is those rules' shape, and a value whose name says it was
+  # escaped is not a source. A Flask route's own parameters are a source, because the URL
+  # fills them.
+  - id: cwe-78.py-subprocess-tainted
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: request.args
+        - pattern: request.form
+        - pattern: request.values
+        - pattern: request.json
+        - pattern: request.get_json(...)
+        - pattern: request.headers
+        - pattern: request.cookies
+        - pattern: request.GET
+        - pattern: request.POST
+        - pattern: sys.argv
+        - patterns:
+          - pattern-inside: |
+              @$APP.route(...)
+              def $F(..., $SRC, ...):
+                ...
+          - pattern: $SRC
+        - patterns:
+          - pattern-either:
+            - patterns:
+              - pattern-inside: f"...{$SRC}..."
+              - pattern: $SRC
+            - patterns:
+              - pattern-inside: '"..." + $SRC'
+              - pattern: $SRC
+            - patterns:
+              - pattern-inside: '$SRC + "..."'
+              - pattern: $SRC
+            - patterns:
+              - pattern-inside: '"..." % $SRC'
+              - pattern: $SRC
+            - patterns:
+              - pattern-inside: '"...".format(..., $SRC, ...)'
+              - pattern: $SRC
+          - metavariable-regex:
+              metavariable: $SRC
+              regex: ^(?!.*(?i:sanitiz|escap|quot))[^'"]*$
+    pattern-sanitizers:
+      - pattern-either:
+        - pattern: shlex.quote(...)
+        - pattern: shlex.join(...)
+        - pattern: pipes.quote(...)
+        - pattern: quote(...)
+        - patterns:
+          - pattern-either:
+            - pattern: $FN(...)
+            - pattern: $O.$FN(...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: (?i)^(?:sanitize|escape|quote)\w*$
+        # An allowlist or a full-match test: inside the branch that passed it, or after the
+        # branch that rejected it.
+        - patterns:
+          - pattern-inside: |
+              if $X in $ALLOW:
+                ...
+          - pattern: $X
+        - patterns:
+          - pattern-inside: |
+              if $X not in $ALLOW:
+                ...
+              ...
+          - pattern: $X
+        - patterns:
+          - pattern-inside: |
+              if not re.fullmatch(..., $X):
+                ...
+              ...
+          - pattern: $X
+        - patterns:
+          - pattern-inside: |
+              if not re.match(..., $X):
+                ...
+              ...
+          - pattern: $X
+    pattern-sinks:
+      - patterns:
+        - pattern-either:
+          - pattern: os.system($CMD)
+          - pattern: os.popen($CMD, ...)
+          - pattern: subprocess.$FN($CMD, ..., shell=True, ...)
+          - pattern: commands.getoutput($CMD)
+          - pattern: commands.getstatusoutput($CMD)
+        - pattern-not: $M.$F(f"...", ...)
+        - pattern-not: $M.$F(<... "..." + $B ...>, ...)
+        - pattern-not: $M.$F(<... $A + "..." ...>, ...)
+        - pattern-not: $M.$F("..." % $A, ...)
+        - pattern-not: $M.$F("...".format(...), ...)
+        - focus-metavariable: $CMD
+    message: "Shell command built from outside input on an earlier line. Pass an argument list and drop shell=True"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021"
+      category: "command injection"
+      internal_type: "command_injection"
+      family: "command_arguments"
+      confidence: "0.75"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "request field, sys.argv, a Flask route parameter, or a value interpolated into the command string"
+      sink_description: "shell command execution"
+      sanitizer_description: "shlex.quote, a function named as an escaper, an allowlist or full-match test"
+      sink_var: "$CMD"
+      trace_summary: "Taint-tracked flow from outside input into a command string a shell runs."
+      precision_evidence: >-
+        Unmeasured on the corpus, taint variant of cwe-78.py-subprocess-shell-interpolated and
+        cwe-78.py-os-system-interpolated. What was run and what was not is in
+        docs/validation/taint-one-hop-2026-10.md.
+      posting: quarantine
+      posting_evidence: >-
+        Unmeasured. The posting policy lets a rule with no adjudicated findings post only when
+        its pattern is sink-only and makes no data-flow assumption, and a taint rule is a
+        data-flow assumption, so it is quarantined until it has three adjudicated findings.
+        The command that measures it is in docs/validation/taint-one-hop-2026-10.md.
+
   # ── Code injection ─────────────────────────────────────────────────────
 
   - id: cwe-95.py-eval-request-value
@@ -508,6 +633,111 @@ rules:
       family: "path_containment"
       confidence: "0.85"
       posting: post
+
+  # The Python half of cwe-22.js-fs-tainted-path. Sources are request fields, `sys.argv` and
+  # a Flask route's own parameters. Sanitizers are `safe_join` and `secure_filename`, and the
+  # containment check the path_containment family writes: a `realpath`, `abspath` or
+  # `Path.resolve()` result tested with `startswith` or `is_relative_to`. `os.path.basename`
+  # is not a sanitizer. `send_from_directory` is not a sink, because it joins safely itself.
+  - id: cwe-22.py-open-tainted-path
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: request.args
+        - pattern: request.form
+        - pattern: request.values
+        - pattern: request.json
+        - pattern: request.get_json(...)
+        - pattern: request.headers
+        - pattern: request.cookies
+        - pattern: request.files
+        - pattern: request.GET
+        - pattern: request.POST
+        - pattern: sys.argv
+        - patterns:
+          - pattern-inside: |
+              @$APP.route(...)
+              def $F(..., $SRC, ...):
+                ...
+          - pattern: $SRC
+    pattern-sanitizers:
+      - pattern-either:
+        - pattern: safe_join(...)
+        - pattern: $W.safe_join(...)
+        - pattern: secure_filename(...)
+        - pattern: $W.secure_filename(...)
+        - patterns:
+          - pattern-either:
+            - pattern-inside: |
+                $P = os.path.realpath(...)
+                ...
+            - pattern-inside: |
+                $P = os.path.abspath(...)
+                ...
+            - pattern-inside: |
+                $P = $X.resolve(...)
+                ...
+          - pattern-either:
+            - pattern-inside: |
+                if not $P.startswith(...):
+                  ...
+                ...
+            - pattern-inside: |
+                if $P.startswith(...):
+                  ...
+            - pattern-inside: |
+                if not $P.is_relative_to(...):
+                  ...
+                ...
+            - pattern-inside: |
+                if $P.is_relative_to(...):
+                  ...
+          - pattern: $P
+    pattern-sinks:
+      - patterns:
+        - pattern-either:
+          - pattern: open($P, ...)
+          - pattern: io.open($P, ...)
+          - pattern: codecs.open($P, ...)
+          - pattern: send_file($P, ...)
+          - pattern: flask.send_file($P, ...)
+          - pattern: os.remove($P)
+          - pattern: os.unlink($P)
+          - pattern: shutil.rmtree($P, ...)
+          - pattern: $P.read_text(...)
+          - pattern: $P.read_bytes(...)
+          - pattern: $P.write_text(...)
+          - pattern: $P.write_bytes(...)
+          - pattern: $P.open(...)
+          - pattern: pathlib.Path($P).$M(...)
+          - pattern: Path($P).$M(...)
+        - focus-metavariable: $P
+    message: "File path taken from request input reaches the filesystem. Resolve it with realpath and abort before any access outside the base"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.75"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "request field, sys.argv, or a Flask route parameter"
+      sink_description: "filesystem access or response file"
+      sanitizer_description: "safe_join, secure_filename, or a realpath, abspath or resolve() result tested with startswith or is_relative_to; os.path.basename is not one"
+      sink_var: "$P"
+      trace_summary: "Taint-tracked flow from request input into a filesystem path with no containment check."
+      precision_evidence: >-
+        Unmeasured on the corpus, taint variant of path.traversal.user_path (tier 1,
+        quarantined at 0.43) and cwe-22.py-open-request-path. What was run and what was not is
+        in docs/validation/taint-one-hop-2026-10.md.
+      posting: quarantine
+      posting_evidence: >-
+        Unmeasured. The posting policy lets a rule with no adjudicated findings post only when
+        its pattern is sink-only and makes no data-flow assumption, and a taint rule is a
+        data-flow assumption, so it is quarantined until it has three adjudicated findings.
+        The command that measures it is in docs/validation/taint-one-hop-2026-10.md.
 
   # ── SSRF ───────────────────────────────────────────────────────────────
 

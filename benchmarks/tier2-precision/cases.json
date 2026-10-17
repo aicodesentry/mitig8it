@@ -1182,6 +1182,185 @@
       "rule": "cwe-89.py-execute-fstring-direct",
       "path": "positive/py_execute_fstring_unguarded_order_by.py",
       "code": "# The same statement with no membership test guarding the interpolated name. The\n# exclusion that withdraws the allowlisted case must not withdraw this one.\ndef search_orders(cursor, status, sort_column):\n    cursor.execute(\n        f\"SELECT * FROM orders WHERE status = ? ORDER BY {sort_column}\",\n        (status,),\n    )\n    return cursor.fetchall()\n"
+    },
+    {
+      "id": "cwe-78.js-exec-tainted",
+      "expect": "finding",
+      "rule": "cwe-78.js-exec-tainted",
+      "path": "positive/cwe-78_js-exec-tainted.js",
+      "code": "const { exec } = require('child_process')\n\n// The two-line shape of electerm's rmrf (CVE-2026-49255): the command is built on one\n// line and run on the next, so no single call carries the interpolation.\nconst rmrf = (localFolderPath) => {\n  const cmd = isWin\n    ? `Remove-Item '${localFolderPath}' -Force -Recurse -ErrorAction SilentlyContinue`\n    : `rm -rf \"${localFolderPath}\"`\n  return exec(cmd)\n}\n\nmodule.exports = { rmrf }\n",
+      "note": "electerm/electerm src/app/lib/fs.js:115 at fde153d677a170c5816368f6586647f3af4ef284, with the command handed to child_process.exec. electerm itself hands it to a local run() wrapper, which an intraprocedural rule cannot follow; that is recorded in docs/validation/taint-one-hop-2026-10.md rather than papered over here."
+    },
+    {
+      "id": "cwe-78.js-exec-tainted.request-field",
+      "expect": "finding",
+      "rule": "cwe-78.js-exec-tainted",
+      "path": "positive/cwe-78_js-exec-tainted-request.js",
+      "code": "const { execSync } = require('child_process')\n\napp.get('/archive', (req, res) => {\n  const target = req.query.target\n  const output = execSync(target, { encoding: 'utf8' })\n  res.send(output)\n})\n",
+      "note": "A request field run as the whole command, one variable away. Nothing is interpolated, so the interpolated rule has no shape to match."
+    },
+    {
+      "id": "corpus.cwe-78.js-exec-tainted",
+      "expect": "finding",
+      "rule": "cwe-78.js-exec-tainted",
+      "path": "corpus/cwe-78_js-exec-tainted.js",
+      "code": "const { execSync } = require('child_process');\n\nfunction checkLinuxDCHPInterfaces(file) {\n  let result = [];\n  try {\n    const cmd = `cat ${file} 2> /dev/null | grep 'iface\\\\|source'`;\n    const lines = execSync(cmd, util.execOptsLinux).toString().split('\\n');\n    return lines;\n  } catch {\n    return result;\n  }\n}\n",
+      "note": "sebhildebrandt/systeminformation lib/network.js:551 at da1cbf5eb09907cf5c3431f4c9ea441b7a227617, GHSA-5xpp-75jx-m839 / CVE-2026-50289, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json). The require line and the closing lines were added so the function parses on its own."
+    },
+    {
+      "id": "cwe-78.py-subprocess-tainted",
+      "expect": "finding",
+      "rule": "cwe-78.py-subprocess-tainted",
+      "path": "positive/cwe-78_py-subprocess-tainted.py",
+      "code": "import subprocess\nfrom flask import Flask, request\n\napp = Flask(__name__)\n\n\n@app.route(\"/ping\")\ndef ping():\n    host = request.args.get(\"host\")\n    cmd = f\"ping -c 1 {host}\"\n    return subprocess.check_output(cmd, shell=True)\n"
+    },
+    {
+      "id": "cwe-78.js-exec-tainted.regexp-exec-is-not-a-shell",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-78.js-exec-tainted"
+      ],
+      "path": "negative/js_exec_tainted_regexp_exec.ts",
+      "code": "export function parseSocket(url: URL) {\n  let unixSocketGroups;\n  unixSocketGroups = /^(?<socketPath>[^:]+):(?<path>.+)$/v.exec(`${url.pathname}${url.search}`)?.groups as typeof unixSocketGroups;\n  return unixSocketGroups;\n}\n",
+      "note": "sindresorhus/got source/core/options.ts, the line all six of cwe-78.js-exec-interpolated's replay findings were (docs/validation/tier2-coverage-2026-09.md). An interpolated value is a source for the taint rule, so it reaches this `.exec` too; the sink names the child_process receiver for the same reason the pattern rule does."
+    },
+    {
+      "id": "corpus.cwe-78.js-exec-tainted.sanitized-interface-name",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-78.js-exec-tainted"
+      ],
+      "path": "negative/js_exec_tainted_sanitized_iface.js",
+      "code": "const { exec } = require('child_process');\n\nfunction networkStatsSingle(iface) {\n  const ifaceSanitized = util.sanitizeString(iface);\n  let cmd;\n  if (_freebsd || _openbsd || _netbsd) {\n    cmd = 'netstat -ibndI ' + ifaceSanitized; // lgtm [js/shell-command-constructed-from-input]\n    exec(cmd, (error, stdout) => {\n      return stdout;\n    });\n  }\n}\n",
+      "note": "sebhildebrandt/systeminformation lib/network.js:1339 and 1413 at da1cbf5eb09907cf5c3431f4c9ea441b7a227617, the same file as the CVE. The interface name goes through the library's own util.sanitizeString before it reaches the shell. Without the escaper-name sanitizer and source exclusion the taint rule reported this and four more lines like it in network.js when the rule was written."
+    },
+    {
+      "id": "cwe-78.js-exec-tainted.shell-quoted-and-allowlisted",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-78.js-exec-tainted"
+      ],
+      "path": "negative/js_exec_tainted_sanitized.js",
+      "code": "const { exec } = require('child_process')\nconst { quote } = require('shell-quote')\n\nfunction remove (localFolderPath) {\n  const cmd = `rm -rf ${quote([localFolderPath])}`\n  return exec(cmd)\n}\n\nfunction checkout (branch) {\n  if (!ALLOWED_BRANCHES.includes(branch)) {\n    throw new Error('unknown branch')\n  }\n  const cmd = `git checkout ${branch}`\n  return exec(cmd)\n}\n\nfunction listing () {\n  const cmd = 'ls -la'\n  return exec(cmd)\n}\n",
+      "note": "Authored, not lifted: the three sanitizers the rule claims to honour (shell-quote, an allowlist rejected before use) and a constant command. A rule that claims a sanitizer and does not honour it is the false positive class that quarantined cwe-79.js-html-string-interpolated."
+    },
+    {
+      "id": "cwe-78.py-subprocess-tainted.quoted-allowlisted-and-argv-list",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-78.py-subprocess-tainted"
+      ],
+      "path": "negative/py_subprocess_tainted_sanitized.py",
+      "code": "import os\nimport shlex\nimport subprocess\n\n\ndef archive(name):\n    command = \"tar czf /tmp/out.tgz \" + shlex.quote(name)\n    os.system(command)\n\n\ndef checkout(branch):\n    if branch not in ALLOWED_BRANCHES:\n        raise ValueError(branch)\n    command = f\"git checkout {branch}\"\n    os.system(command)\n\n\ndef listing(name):\n    subprocess.run([\"ls\", name], check=True)\n",
+      "note": "Authored, not lifted: shlex.quote, an allowlist rejected before use, and an argument list with no shell."
+    },
+    {
+      "id": "cwe-22.js-fs-tainted-path",
+      "expect": "finding",
+      "rule": "cwe-22.js-fs-tainted-path",
+      "path": "positive/cwe-22_js-fs-tainted-path.js",
+      "code": "const fs = require('fs')\nconst path = require('path')\n\napp.get('/docs', (req, res) => {\n  const name = req.query.name\n  const file = path.join(__dirname, 'docs', name)\n  fs.readFile(file, 'utf8', (err, body) => {\n    if (err) return res.status(404).end()\n    res.send(body)\n  })\n})\n",
+      "note": "A req.query path read two assignments away from the request. The tier 2 pattern rules need the request field inside the call, and the tier 1 regex that reached this shape is quarantined at 0.43."
+    },
+    {
+      "id": "cwe-22.js-fs-tainted-path.basename-is-not-containment",
+      "expect": "finding",
+      "rule": "cwe-22.js-fs-tainted-path",
+      "path": "positive/cwe-22_js-fs-tainted-path-basename.js",
+      "code": "const path = require('path')\n\napp.get('/avatar/:file', (req, res) => {\n  const file = path.join(AVATAR_DIR, path.basename(req.params.file))\n  res.sendFile(file)\n})\n",
+      "note": "path.basename is not a sanitizer, consistent with the path_containment family assertion in services/remediation-service/src/families.py: path.basename('..') is '..', and the join then names the parent of the served directory."
+    },
+    {
+      "id": "corpus.cwe-22.py-open-tainted-path",
+      "expect": "finding",
+      "rule": "cwe-22.py-open-tainted-path",
+      "path": "corpus/cwe-22_py-open-tainted-path.py",
+      "code": "import json\nimport os\nimport pickle\n\nfrom flask import request, session\n\n\ndef config():\n    if 'name' in request.args:\n        config_pkl = os.path.join(\n            app.config['CONFIG_PATH'],\n            request.args.get('name'))\n        session['config'] = (pickle.load(open(config_pkl, 'rb'))\n                             if os.path.exists(config_pkl)\n                             else session['config'])\n        return json.dumps(session['config'])\n    return json.dumps({})\n",
+      "note": "benbusby/whoogle-search app/routes.py:427 at 8830615a, GHSA-3q6g-qmpx-rqw4 / CVE-2024-22205, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json). The route decorators and the method branches around it were dropped; the join and the open are as they are in the tree."
+    },
+    {
+      "id": "cwe-22.py-open-tainted-path",
+      "expect": "finding",
+      "rule": "cwe-22.py-open-tainted-path",
+      "path": "positive/cwe-22_py-open-tainted-path.py",
+      "code": "from pathlib import Path\n\nfrom flask import Flask\n\napp = Flask(__name__)\nREPORTS = Path(\"/srv/reports\")\n\n\n@app.route(\"/reports/<name>\")\ndef report(name):\n    target = REPORTS / name\n    return target.read_text()\n",
+      "note": "A Flask route parameter joined with pathlib and read. The URL fills the parameter, and `/` does not contain the result."
+    },
+    {
+      "id": "corpus.cwe-22.js-fs-tainted-path.constant-template-path",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-fs-tainted-path"
+      ],
+      "path": "negative/js_fs_tainted_constant_path.ts",
+      "code": "import { type Request, type Response, type NextFunction } from 'express'\nimport fs from 'node:fs/promises'\n\nexport function getUserProfile () {\n  return async (req: Request, res: Response, next: NextFunction) => {\n    let template: string\n    try {\n      template = await fs.readFile('views/userProfile.pug', { encoding: 'utf-8' })\n    } catch (err) {\n      next(err)\n      return\n    }\n    const loggedInUser = security.authenticatedUsers.get(req.cookies.token)\n    res.send(template)\n  }\n}\n",
+      "note": "juice-shop/juice-shop routes/userProfile.ts:28 at 1618a611, one of the four false positives that quarantined path.traversal.user_path (docs/validation/vulnerable-corpus-2026-09.md): the path is a constant and the `{` is the options object. The handler reads the request two lines later, so this also checks that a request in scope does not taint a constant."
+    },
+    {
+      "id": "cwe-22.js-fs-tainted-path.resolve-and-startswith-guard",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-fs-tainted-path"
+      ],
+      "path": "negative/js_fs_tainted_guarded.js",
+      "code": "const fs = require('fs')\nconst path = require('path')\n\nconst BASE = path.resolve(__dirname, 'files')\n\napp.get('/files', (req, res) => {\n  const target = path.resolve(BASE, req.query.name)\n  if (!target.startsWith(BASE + path.sep)) {\n    return res.status(400).end()\n  }\n  fs.readFile(target, (err, body) => res.send(body))\n})\n\napp.get('/download', (req, res) => {\n  const target = path.resolve(BASE, req.query.name)\n  if (target.startsWith(BASE + path.sep)) {\n    res.sendFile(target)\n  }\n})\n",
+      "note": "Authored, not lifted: the containment check the path_containment family writes, in both of its forms (reject and return, or act only inside the passing branch)."
+    },
+    {
+      "id": "cwe-22.py-open-tainted-path.realpath-guard-and-safe-join",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.py-open-tainted-path"
+      ],
+      "path": "negative/py_open_tainted_guarded.py",
+      "code": "import os\n\nfrom flask import abort, request, send_file\nfrom werkzeug.utils import safe_join, secure_filename\n\n\n@app.route(\"/guarded\")\ndef guarded():\n    name = request.args.get(\"name\")\n    full = os.path.realpath(os.path.join(BASE, name))\n    if not full.startswith(BASE + os.sep):\n        abort(400)\n    with open(full) as fh:\n        return fh.read()\n\n\n@app.route(\"/joined\")\ndef joined():\n    return send_file(safe_join(BASE, request.args.get(\"name\")))\n\n\n@app.route(\"/upload-name\")\ndef upload_name():\n    with open(os.path.join(BASE, secure_filename(request.args.get(\"name\")))) as fh:\n        return fh.read()\n",
+      "note": "Authored, not lifted: the realpath-and-startswith check the path_containment family writes for Python, safe_join and secure_filename."
+    },
+    {
+      "id": "cwe-79.js-html-tainted-interpolation",
+      "expect": "finding",
+      "rule": "cwe-79.js-html-tainted-interpolation",
+      "path": "positive/cwe-79_js-html-tainted-interpolation.js",
+      "code": "function imageTag (req) {\n  const src = req.query.src\n  return `<img src=\"${src}\">`\n}\n\nmodule.exports = { imageTag }\n",
+      "note": "An interpolated `<img src=\"${src}\">` returned from a helper, with the value one assignment from the request. A quoted attribute is broken out of with a single `\"`."
+    },
+    {
+      "id": "corpus.cwe-79.js-html-tainted-interpolation",
+      "expect": "finding",
+      "rule": "cwe-79.js-html-tainted-interpolation",
+      "path": "corpus/cwe-79_js-html-tainted-interpolation.ts",
+      "code": "export class SubstackExtractor {\n\tprivate buildImageHtml(): string {\n\t\tif (!this.noteImage) return '';\n\n\t\tconst ogImage = this.document.querySelector('meta[property=\"og:image\"]')?.getAttribute('content');\n\t\tif (ogImage) return `<img src=\"${ogImage}\" alt=\"\" />`;\n\n\t\treturn '';\n\t}\n}\n",
+      "note": "kepano/defuddle src/extractors/substack.ts:181 at 19520add, GHSA-jg4p-g6xj-4qmf / CVE-2026-61824, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json). getAttribute returns decoded text, and putting it back into markup unescaped re-opens whatever the page encoded. The class wrapper was added so the method parses on its own; the srcset branch after it was dropped because its value arrives through a method call the intraprocedural engine does not follow."
+    },
+    {
+      "id": "corpus.cwe-79.js-html-tainted-interpolation.defuddle-escaped-link-card",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.js-html-tainted-interpolation"
+      ],
+      "path": "negative/js_html_tainted_defuddle_escaped.ts",
+      "code": "export class BlueskyExtractor {\n\tprivate extractLinkCard(item: Element): string {\n\t\tconst links = item.querySelectorAll('a[aria-label][href^=\"http\"]');\n\t\tfor (const link of Array.from(links)) {\n\t\t\tconst hasBorder = link.querySelector('div[style*=\"border\"]');\n\t\t\tif (!hasBorder) continue;\n\n\t\t\tconst href = link.getAttribute('href') || '';\n\t\t\tconst title = link.getAttribute('aria-label') || '';\n\t\t\tconst img = link.querySelector('img');\n\n\t\t\tif (title) {\n\t\t\t\tlet html = '';\n\t\t\t\tif (img) {\n\t\t\t\t\tconst src = img.getAttribute('src') || '';\n\t\t\t\t\thtml += `<a href=\"${escapeHtml(href)}\"><img src=\"${escapeHtml(src)}\" alt=\"${escapeHtml(title)}\" /></a>\\n`;\n\t\t\t\t}\n\t\t\t\thtml += `<p><a href=\"${escapeHtml(href)}\">${escapeHtml(title)}</a></p>`;\n\t\t\t\treturn html;\n\t\t\t}\n\t\t}\n\n\t\treturn '';\n\t}\n}\n",
+      "note": "kepano/defuddle src/extractors/bluesky.ts:276 at 19520add, the escaped-wrapper false positive class that quarantined cwe-79.js-html-string-interpolated (docs/validation/vulnerable-corpus-2026-09.md). The values come from the same getAttribute source the CVE does, so this is silent because escapeHtml is honoured, not because nothing is tainted. The class wrapper was added so the method parses on its own."
+    },
+    {
+      "id": "corpus.cwe-79.js-html-tainted-interpolation.dicebear-escaped-color",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.js-html-tainted-interpolation"
+      ],
+      "path": "negative/js_html_tainted_dicebear_escaped.ts",
+      "code": "import { escape } from '@dicebear/core';\nimport type {\n  ComponentGroup,\n  ComponentPickCollection,\n  ColorPickCollection,\n} from '../types.js';\n\nexport const row2: ComponentGroup = {\n  xooox: (components: ComponentPickCollection, colors: ColorPickCollection) =>\n    `<path d=\"M1 1H0v1h1V1ZM5 1H4v1h1V1Z\" fill=\"${escape.xml(`${colors.row}`)}\"/>`,\n  xxoxx: (components: ComponentPickCollection, colors: ColorPickCollection) =>\n    `<path d=\"M2 1H0v1h2V1ZM5 1H3v1h2V1Z\" fill=\"${escape.xml(`${colors.row}`)}\"/>`,\n};\n",
+      "note": "dicebear/dicebear packages/@dicebear/identicon/src/components/row2.ts:15 at efe62f27, the generated component shape that produced most of cwe-79.js-html-string-interpolated's 678 findings. Every interpolation is wrapped in escape.xml. No source in this rule reaches a component's colours, so this would be silent without the sanitizer too; the defuddle case beside it is the one that exercises the escaper."
+    },
+    {
+      "id": "cwe-79.js-html-tainted-interpolation.escaped-and-json",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.js-html-tainted-interpolation"
+      ],
+      "path": "negative/js_html_tainted_escaped.js",
+      "code": "const he = require('he')\n\napp.get('/hello', (req, res) => {\n  const name = req.query.name\n  res.send(`<h1>Hello ${he.encode(name)}</h1>`)\n})\n\napp.get('/search', (req, res) => {\n  const q = req.query.q\n  res.send({ query: q, results: [] })\n})\n\nfunction link (req) {\n  const next = req.query.next\n  return `<a href=\"/login?next=${encodeURIComponent(next)}\">Sign in</a>`\n}\n",
+      "note": "Authored, not lifted: he.encode in text, encodeURIComponent in an attribute, and an object sent as JSON, which Express serialises rather than renders."
     }
   ]
 }

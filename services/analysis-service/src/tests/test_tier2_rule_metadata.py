@@ -15,6 +15,7 @@ from opengrep_runner import (
     POSTING_POST,
     POSTING_QUARANTINE,
     RULES_DIR,
+    _build_evidence_details,
     canonical_check_id,
     load_rule_metadata,
     quarantined_rule_ids,
@@ -116,6 +117,22 @@ class TestRuleShape:
                 f"{rule['id']} is quarantined with no evidence; a rule is withheld on a "
                 "measurement, and the measurement is what lets someone re-enable it"
             )
+
+    @pytest.mark.parametrize(
+        "rule",
+        [rule for _, rule in COVERAGE_RULES if rule.get("mode") == "taint"],
+        ids=[rule["id"] for _, rule in COVERAGE_RULES if rule.get("mode") == "taint"],
+    )
+    def test_a_taint_rule_says_so_to_the_runner(self, rule):
+        """`opengrep_runner` reads `analysis_scope` to set `is_taint_based` and to build the
+        source-to-sink trace a reviewer sees. A taint rule that leaves it out arrives looking
+        like a pattern match, with no source and no trace."""
+        metadata = rule.get("metadata") or {}
+        assert str(metadata.get("analysis_scope", "")).startswith("taint"), rule["id"]
+        assert str(metadata.get("source_description", "")).strip(), rule["id"]
+        assert str(metadata.get("sink_description", "")).strip(), rule["id"]
+        assert str(metadata.get("sanitizer_description", "")).strip(), rule["id"]
+        assert _build_evidence_details(metadata)["is_taint_based"] is True
 
     @pytest.mark.parametrize("rule", [rule for _, rule in COVERAGE_RULES], ids=IDS)
     def test_precision_evidence_names_the_corpus_it_was_measured_on(self, rule):
