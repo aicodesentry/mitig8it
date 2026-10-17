@@ -1,10 +1,10 @@
 # Remediation benchmark seed
 
 This is an offline seed harness for repository-level repairs. It is deliberately not a quality
-claim: it contains sixty-three authored fixtures, while the release manifest requires 120
+claim: it contains eighty-one authored fixtures, while the release manifest requires 120
 externally reviewed cases before a release gate can pass.
 
-Fifty-one fixtures are supported repairs, eight are negatives that must be abstained on, and
+Sixty-seven fixtures are supported repairs, ten are negatives that must be abstained on, and
 four are adversarial repositories whose own content tries to steer the agent. By family and
 toolchain, the supported cases are:
 
@@ -15,9 +15,11 @@ toolchain, the supported cases are:
 | `path_containment` | 8 | 3 |
 | `hardcoded_credential` | 7 | 3 |
 | `code_injection_eval` | 2 | 2 |
-| Total | 34 | 17 |
+| `password_hashing` | 4 | 4 |
+| `cookie_flags` | 4 | 4 |
+| Total | 42 | 25 |
 
-Forty-six of the fifty-one are verified by execution: a regression test fails on the vulnerable
+Sixty-two of the sixty-seven are verified by execution: a regression test fails on the vulnerable
 tree and passes on the repaired one. The other five are verified at `static_assertion`, the
 weakest level the product has, where nothing is executed and the rule that produced the finding
 is re-run over the original and the patched file instead. A fixture says which with
@@ -25,7 +27,7 @@ is re-run over the original and the patched file instead. A fixture says which w
 that quietly stopped being executed fails rather than reading as a pass.
 
 Every cell is filled because `LANGUAGE_FAMILIES` in
-`services/remediation-service/src/families.py` now repairs all five families in both toolchains.
+`services/remediation-service/src/families.py` now repairs all seven families in both toolchains.
 The Node harness records environment reads, which is what let `hardcoded_credential` cross over,
 and it records `eval`, `new Function`, the `vm` compile calls, and a string timer without
 running any of them, which is what let `code_injection_eval` follow. What still decides support
@@ -77,6 +79,22 @@ The supported fixtures:
 | `python-credential-service-token` | Python | credential | A service token literal read by a header helper |
 | `python-eval` | Python | eval | Replacing `eval` with `ast.literal_eval` |
 | `python-exec-payload` | Python | eval | Replacing `exec` of a rule literal with `ast.literal_eval` |
+| `js-password-md5-verify` | JavaScript | password | An MD5 hex digest of a password and the verifier that compares it |
+| `js-password-sha1-member` | JavaScript | password | A SHA-1 digest bound to a constant, compared with `!==` against a member of the user record |
+| `js-password-arrow-base64` | JavaScript | password | An expression-bodied arrow returning a base64 MD5, compared with the stored value on the left |
+| `js-password-two-comparisons` | JavaScript | password | Two comparisons in one module, a login and a password change, both rewritten to the verifier |
+| `python-password-md5` | Python | password | `hashlib.md5(password.encode()).hexdigest()` and an `==` verifier |
+| `python-password-sha1-docstring` | Python | password | A SHA-1 digest under a docstring, bound then returned, and a `!=` verifier with its arguments reversed |
+| `python-password-sha256-from-import` | Python | password | `from hashlib import sha256`, so the repair adds `import hashlib` beside `hmac` and `os` |
+| `python-password-alias-crypto-weak-hash` | Python | password | `import hashlib as hl`, reported by tier 1's CWE-327 `crypto.weak.hash` and named a weak password hash by its internal type |
+| `js-cookie-express-session` | JavaScript | cookie | The `cookie` object of an express-session call, single line |
+| `js-cookie-session-multiline` | JavaScript | cookie | cookie-session options across lines, one flag present, one false, one missing |
+| `js-res-cookie-route` | JavaScript | cookie | `res.cookie` in an Express route with `httpOnly: false` |
+| `js-res-cookie-router-multiline` | JavaScript | cookie | `res.cookie` options across lines in a `Router` module under `routes/` |
+| `python-cookie-django-session-secure` | Python | cookie | `SESSION_COOKIE_SECURE = False` in a Django settings module |
+| `python-cookie-django-csrf-secure` | Python | cookie | `CSRF_COOKIE_SECURE = False` with a trailing comment, beside settings already on |
+| `python-cookie-flask-config` | Python | cookie | `app.config["SESSION_COOKIE_HTTPONLY"] = False` |
+| `python-cookie-flask-set-cookie` | Python | cookie | `set_cookie(..., secure=False)` in a Flask view, given all three flags |
 
 The four `js-static-assertion-*` fixtures each require a package the sandbox has no copy of, so
 the proof generator refuses the site with `dependency_not_available_in_sandbox:js-yaml` and the
@@ -94,7 +112,7 @@ so the engine now ships the template's repair for it at `static_assertion`. Keep
 abstention would have asserted that nothing is shipped here, which had stopped being true. The
 fixture records the decision and its date.
 
-The eight negatives, which must abstain:
+The ten negatives, which must abstain:
 
 | Fixture | Language | Why abstention is correct |
 | --- | --- | --- |
@@ -106,6 +124,16 @@ The eight negatives, which must abstain:
 | `python-command-pipeline` | Python | A shell pipeline an argv list cannot express |
 | `python-sql-parameterized-safe` | Python | The statement already binds a sqlite3 parameter |
 | `js-path-identifier-shadowed` | JavaScript | The module already calls something else `path`, so the import a repair would add is shadowed: `path_identifier_shadowed` |
+| `js-password-lookup` | JavaScript | The digest is a lookup key in a query, which a salted hash can never match: `password_hash_used_for_lookup` |
+| `js-cookie-samesite-none` | JavaScript | The cookie is cross-site on purpose (`sameSite: 'none'`), so choosing Lax is a design decision: `cookie_samesite_none_is_deliberate` |
+
+The `password_hashing` and `cookie_flags` fixtures were added in October 2026, and each family's
+repair carries a caveat in the candidate's own description that no fixture here can observe. A
+password repair changes the stored format to a 104-character `scrypt$<salt>$<key>`, so digests
+stored before it no longer verify and those accounts need a reset. A cookie marked Secure is not
+sent over plain HTTP, so a development server without TLS stops keeping its session. The fixtures
+start from an empty store and run no server. What was measured and what was not is in
+[docs/validation/families-password-hashing-cookie-flags-2026-10.md](../../docs/validation/families-password-hashing-cookie-flags-2026-10.md).
 
 The four adversarial fixtures all ship already-safe sources beside hostile repository content, so
 a repair is not merely unnecessary but unprovable, and the content is what the fixture tests:
@@ -209,7 +237,7 @@ A report carries `provider_kind`, `verification_levels`, `results_kind`, sample 
 - A pass rate from `engine-local` measures whether the pipeline carries a finding from intake to a verified candidate, given a scripted provider replaying that fixture's reviewed repair. It is `results_kind=pipeline_integrity`. It is not repair quality, and it cannot be compared with a real-model number.
 - An abstention on a negative or adversarial fixture is the expected outcome, so coverage below 100% is correct by construction. Read precision and abstention together, never precision alone.
 - Every in-process adapter verifies in the local subprocess sandbox, so every executed candidate is `development_unverified` and no result satisfies an isolation gate. The five statically asserted cases ran in no sandbox at all; `summary.passed_by_verification_level` says which cases passed at which level, so the two are never read as one pass count.
-- The corpus is 63 fixtures against a release manifest that requires 120 externally reviewed cases, 20 supported per family, 30 negatives, and 30 adversarial cases. No family reaches 20 supported cases and there are no external review signatures, so the gate stays closed. Sixty-three authored cases cannot establish a rate; treat any percentage from this suite as a statement about those files.
+- The corpus is 81 fixtures against a release manifest that requires 120 externally reviewed cases, 20 supported per family, 30 negatives, and 30 adversarial cases. No family reaches 20 supported cases and there are no external review signatures, so the gate stays closed. Eighty-one authored cases cannot establish a rate; treat any percentage from this suite as a statement about those files.
 - Nothing here measures the deployed system. No quality metric is collected from live runs, so live precision and abstention rates are unknown.
 
 Known gaps: this seed has no independent external-review signatures, no production sandbox/broker run, and no cryptographic signature verifier. The local driver used by `engine-local` and `engine-live` has no network, kernel, or filesystem isolation, so no result here satisfies an isolation gate. The seed must remain non-promotable until those controls and the configured minimum corpus are supplied.

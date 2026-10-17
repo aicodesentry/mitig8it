@@ -15,7 +15,9 @@ from pathlib import PurePosixPath
 from .families import (
     CODE_INJECTION_EVAL,
     COMMAND_ARGUMENTS,
+    COOKIE_FLAGS,
     JAVASCRIPT,
+    PASSWORD_HASHING,
     PYTHON,
     SQL_PARAMETERIZATION,
     STATIC_ASSERTION,
@@ -24,6 +26,7 @@ from .families import (
 )
 from .models import FindingSnapshot
 from .retrieval import Snapshot
+from .sites import SiteError, cookie_site, password_hash_site
 from .verification.verifier import STATIC_ASSERTION_VERIFICATION_LEVEL, VERIFICATION_LEVELS
 
 UNSUPPORTED_LANGUAGE_MESSAGE = (
@@ -51,6 +54,31 @@ DYNAMIC_CODE_MESSAGE = (
     "calls hand back something callable later, which no data parser can stand in for. Replacing "
     "it means deciding what the strings are allowed to compute, which is a design decision, not "
     "a rewrite."
+)
+
+PASSWORD_LOOKUP_MESSAGE = (
+    "The password digest is looked up in a store rather than compared, and a salted hash is "
+    "different every time it is computed, so no lookup by it can ever match. Repairing it means "
+    "fetching the account by its identifier and verifying the stored hash, which changes the "
+    "query and the schema, not one function."
+)
+PASSWORD_OTHER_MODULE_MESSAGE = (
+    "Another module calls this hashing function, and the repair changes what it returns. Those "
+    "callers would compare a salted hash with a fresh one and reject every password, so the "
+    "change is not made from this file alone."
+)
+# A site refusal that is a property of the code, not of what the template recognizes: no
+# repair of the hashing function alone is safe here, written by a template or a model.
+PASSWORD_GATE_REFUSALS = {
+    "password_hash_used_for_lookup": PASSWORD_LOOKUP_MESSAGE,
+    "password_hash_called_from_other_module": PASSWORD_OTHER_MODULE_MESSAGE,
+}
+
+COOKIE_SAMESITE_NONE_MESSAGE = (
+    "The cookie is set with SameSite=None, which is how a cookie is made to travel on cross-site "
+    "requests on purpose, for an embed or a cross-site sign-in. Setting it to Lax would break that "
+    "flow rather than repair it, so whether the cookie should be cross-site at all is a design "
+    "decision this change does not make."
 )
 
 # Python database APIs whose placeholder syntax the Python harness knows and the prompt names.
@@ -247,6 +275,18 @@ def static_gate(snapshot: Snapshot, finding: FindingSnapshot, family: str, langu
         # Nothing below applies: a workflow has no package manifest, no shell call and no
         # compiled string. The only gate it has is the one above.
         return None
+    if family == PASSWORD_HASHING:
+        try:
+            password_hash_site(snapshot, finding, language)
+        except SiteError as exc:
+            if exc.code in PASSWORD_GATE_REFUSALS:
+                return exc.code, PASSWORD_GATE_REFUSALS[exc.code]
+    if family == COOKIE_FLAGS:
+        try:
+            cookie_site(snapshot, finding, language)
+        except SiteError as exc:
+            if exc.code == "cookie_samesite_none_is_deliberate":
+                return exc.code, COOKIE_SAMESITE_NONE_MESSAGE
     if language == JAVASCRIPT:
         if family == SQL_PARAMETERIZATION and not pg_dependency_proven(snapshot):
             return "pg_dependency_not_proven", PG_NOT_PROVEN_MESSAGE

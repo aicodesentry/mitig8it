@@ -137,6 +137,8 @@ class RepairPolicy(StrictModel):
             "hardcoded_credential",
             "code_injection_eval",
             "workflow_hardening",
+            "password_hashing",
+            "cookie_flags",
         ]
     ] = Field(
         default_factory=lambda: [
@@ -146,6 +148,8 @@ class RepairPolicy(StrictModel):
             "hardcoded_credential",
             "code_injection_eval",
             "workflow_hardening",
+            "password_hashing",
+            "cookie_flags",
         ]
     )
     sandbox_image_digest: str | None = None

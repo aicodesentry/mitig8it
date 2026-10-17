@@ -179,6 +179,13 @@ CWE_INTERNAL_TYPE_MAP: Dict[str, str] = {
     "CWE-352": "csrf_protection_disabled",
     "CWE-613": "jwt_expiration_ignored",
     "CWE-1275": "insecure_cookie_flags",
+    # A cookie without HttpOnly. CWE-614 is the missing Secure flag; both are the
+    # `cookie_flags` repair family, so a rule may declare either.
+    "CWE-1004": "insecure_cookie_flags",
+    # A weak hash, as distinct from a weak cipher. Named the same as CWE-327 so the two tiers
+    # cluster; a weak hash of a credential is renamed `weak_password_hash` by the snippet check
+    # in `canonicalize_internal_type` either way.
+    "CWE-328": "weak_cipher_algorithm",
     "CWE-1321": "prototype_pollution",
     # The workflow tampering rules. Each of these rules declares its own `internal_type`, so
     # this map is only the fallback for a finding that carries the CWE and no declared type.

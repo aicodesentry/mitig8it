@@ -23,6 +23,20 @@ CODE_INJECTION_EVAL = "code_injection_eval"
 # and an expression interpolation inside a `run:` script, and neither has a call site, a
 # parameter list or a module to load.
 WORKFLOW_HARDENING = "workflow_hardening"
+# A password digested with a fast unsalted hash (MD5, SHA-1, SHA-256), repaired to a salted
+# key-derivation function from the standard library: `crypto.scryptSync` in Node,
+# `hashlib.scrypt` in Python. The repair changes the stored format, so the family also rewrites
+# the module's own comparisons of the digest into a verifier, and refuses by name a module that
+# looks a digest up instead of comparing it, because a salted hash cannot be looked up.
+PASSWORD_HASHING = "password_hashing"
+# A session or response cookie set without HttpOnly, Secure, or SameSite. The repair sets all
+# three on the options the code already passes (`httpOnly: true, secure: true, sameSite: 'lax'`,
+# Flask `secure=True, httponly=True, samesite="Lax"`), keeping every other key, or turns the one
+# Django or Flask setting the finding names to True. SameSite is Lax rather than Strict: Strict
+# drops the cookie on every top-level navigation from another site, so a user following a link
+# into the application arrives signed out, while Lax still withholds it from the cross-site
+# POSTs and subresource requests that CSRF relies on, and it is what browsers already default to.
+COOKIE_FLAGS = "cookie_flags"
 
 ALL_FAMILIES = (
     SQL_PARAMETERIZATION,
@@ -31,6 +45,8 @@ ALL_FAMILIES = (
     HARDCODED_CREDENTIAL,
     CODE_INJECTION_EVAL,
     WORKFLOW_HARDENING,
+    PASSWORD_HASHING,
+    COOKIE_FLAGS,
 )
 
 # The families the sandbox toolchains can repair *and prove by running a regression test*. This
@@ -42,6 +58,8 @@ SANDBOX_PROVEN_FAMILIES = (
     PATH_CONTAINMENT,
     HARDCODED_CREDENTIAL,
     CODE_INJECTION_EVAL,
+    PASSWORD_HASHING,
+    COOKIE_FLAGS,
 )
 
 JAVASCRIPT = "javascript"
@@ -81,6 +99,8 @@ FAMILY_VERIFICATION: dict[str, str] = {
     HARDCODED_CREDENTIAL: SANDBOX_REGRESSION_TEST,
     CODE_INJECTION_EVAL: SANDBOX_REGRESSION_TEST,
     WORKFLOW_HARDENING: STATIC_ASSERTION,
+    PASSWORD_HASHING: SANDBOX_REGRESSION_TEST,
+    COOKIE_FLAGS: SANDBOX_REGRESSION_TEST,
 }
 
 # The families each toolchain can repair and prove. A family is listed for a language only once
@@ -127,6 +147,18 @@ FAMILY_ASSERTIONS: dict[str, str] = {
         "'[1,2]'): the payload must never be compiled (eval, new Function, the vm compile calls, and "
         "a string setTimeout/setInterval are stubbed and recorded) while a JSON document still parses"
     ),
+    PASSWORD_HASHING: (
+        "with HASH and VERIFY the module's own functions: const a = h.call(m.HASH, pw).value, "
+        "b = h.call(m.HASH, pw).value; h.assert(a !== b); h.assert.passwordHash(pw); "
+        "h.assert(h.call(m.VERIFY, pw, a).value); h.assert(!h.call(m.VERIFY, 'wrong', a).value): "
+        "createHash/createHmac are recorded, so the password must reach crypto.scryptSync or "
+        "pbkdf2Sync with a random per-call salt and never a fast digest"
+    ),
+    COOKIE_FLAGS: (
+        "const m = h.load(path) (and h.invoke the route for res.cookie); h.assert.cookieFlags(KIND[, name]) "
+        "with KIND 'express-session', 'cookie-session' or 'res.cookie': every recorded cookie of that "
+        "kind must carry httpOnly: true, secure: true and sameSite 'lax' or 'strict'"
+    ),
 }
 
 # The Python harness assertions (contracts/test-harness-python-v1.md).
@@ -157,6 +189,18 @@ PYTHON_FAMILY_ASSERTIONS: dict[str, str] = {
         "with FUNC the function at the finding: h.call(m.FUNC, \"__import__('os').system('id')\"); "
         "h.assert_no_commands(); h.assert_equal(h.call(m.FUNC, '[1, 2]').value, [1, 2]): the payload "
         "must never run (os.system and subprocess are stubbed and recorded) while a literal still parses"
+    ),
+    PASSWORD_HASHING: (
+        "with HASH and VERIFY the module's own functions: a = h.call(m.HASH, pw).value; "
+        "b = h.call(m.HASH, pw).value; h.assert_true(a != b); h.assert_password_hash(pw); "
+        "h.assert_true(h.call(m.VERIFY, pw, a).value); h.assert_true(not h.call(m.VERIFY, 'wrong', a).value): "
+        "hashlib digests are recorded, so the password must reach hashlib.scrypt or pbkdf2_hmac "
+        "with an os.urandom salt and never md5, sha1 or sha256"
+    ),
+    COOKIE_FLAGS: (
+        "for a setting: m = h.load(path); h.assert_equal(m.NAME, True) (or m.app.config['NAME']); for "
+        "set_cookie: h.invoke the view, then h.assert_cookie_flags(name): secure=True, httponly=True "
+        "and samesite 'Lax' or 'Strict' on every recorded cookie of that name"
     ),
 }
 
@@ -247,6 +291,20 @@ def rule_family(finding: Any) -> str | None:
     # where the CWE is not.
     if "workflow_script_injection" in text or "unpinned_action_reference" in text or ".gha-" in text:
         return WORKFLOW_HARDENING
+    # A weak password hash is named by its CWE (916) or its internal type. CWE-327 alone is not
+    # enough: tier 1's `crypto.weak.hash` declares it for every MD5 or SHA-1 call, and the
+    # analysis service renames the finding `weak_password_hash` only when the digested value is a
+    # credential. A digest of anything else (a cache key, an ETag) is not a password and has no
+    # verifier to rewrite, so it stays outside the family.
+    if "cwe-916" in text or "weak_password_hash" in text or "auth.weak_password_hash" in text:
+        return PASSWORD_HASHING
+    # CWE-1275 (SameSite=None) shares the internal type but not the repair: None is how a cookie
+    # is made to travel cross-site on purpose, and lowering it to Lax would break that embed or
+    # login flow rather than fix it. Only the missing-flag findings are this family.
+    if "cwe-1275" not in text and (
+        "cwe-614" in text or "cwe-1004" in text or "insecure_cookie_flags" in text or "session.insecure_cookie" in text
+    ):
+        return COOKIE_FLAGS
     if "cwe-89" in text or "sql injection" in text or "sql.injection" in text:
         return SQL_PARAMETERIZATION
     if "cwe-78" in text or "command injection" in text or "command.injection" in text:

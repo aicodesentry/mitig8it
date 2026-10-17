@@ -1,0 +1,58 @@
+{
+  "schema_version": "v1",
+  "id": "js-res-cookie-route-001",
+  "repository_id": "fixture-js-res-cookie-login",
+  "split": "holdout",
+  "family": "cookie_flags",
+  "kind": "supported",
+  "expected_state": "ready",
+  "source": "app.js",
+  "reference_repair": "expected/app.js",
+  "finding": {
+    "id": "js-res-cookie-route-1",
+    "rule_id": "session.insecure_cookie",
+    "cwe_id": "CWE-614",
+    "category": "session management",
+    "path": "app.js",
+    "line_start": 8,
+    "line_end": 8
+  },
+  "trusted_fixture_test": {
+    "runtime": "node",
+    "path": "tests/verify.js",
+    "timeout_seconds": 10
+  },
+  "budget": {
+    "max_tool_calls": 20,
+    "max_attempts": 3,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 120000,
+    "max_cost_usd": 2.0
+  },
+  "verification_checks": [
+    {
+      "check_id": "exploit",
+      "kind": "exploit",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--exploit"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "failed",
+      "expected_candidate": "passed"
+    },
+    {
+      "check_id": "behavior",
+      "kind": "behavior",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--behavior"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    }
+  ]
+}

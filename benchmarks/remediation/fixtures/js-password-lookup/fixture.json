@@ -1,0 +1,54 @@
+{
+  "schema_version": "v1",
+  "id": "js-password-lookup-001",
+  "repository_id": "fixture-js-password-lookup",
+  "split": "validation",
+  "family": "password_hashing",
+  "kind": "negative",
+  "expected_state": "unsupported",
+  "source": "users.js",
+  "finding": {
+    "id": "js-password-lookup-1",
+    "rule_id": "cwe-916.js-password-weak-hash",
+    "cwe_id": "CWE-916",
+    "category": "weak password hashing",
+    "internal_type": "weak_password_hash",
+    "path": "users.js",
+    "line_start": 4,
+    "line_end": 4
+  },
+  "reason": "The digest is looked up in the users table instead of compared: the query matches on password_hash = $2. A salted hash differs on every call, so the same lookup with a repaired hash could never match and every login would fail. Repairing it means fetching the account by email and verifying the stored hash, which changes the query and the schema rather than one function, so the engine skips the finding as password_hash_used_for_lookup.",
+  "budget": {
+    "max_tool_calls": 20,
+    "max_attempts": 3,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 120000,
+    "max_cost_usd": 2.0
+  },
+  "verification_checks": [
+    {
+      "check_id": "exploit",
+      "kind": "exploit",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--exploit"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "failed",
+      "expected_candidate": "passed"
+    },
+    {
+      "check_id": "behavior",
+      "kind": "behavior",
+      "argv": [
+        "node",
+        "tests/verify.js",
+        "--behavior"
+      ],
+      "timeout_seconds": 20,
+      "expected_baseline": "passed",
+      "expected_candidate": "passed"
+    }
+  ]
+}

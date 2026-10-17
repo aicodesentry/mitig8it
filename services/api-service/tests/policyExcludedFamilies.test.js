@@ -15,7 +15,7 @@ describe('a repair family this build ships that the policy leaves out', () => {
       'sql_parameterization', 'command_arguments', 'path_containment',
       'hardcoded_credential', 'code_injection_eval',
     ]);
-    expect(report().rule_families_excluded_by_policy).toEqual(['workflow_hardening']);
+    expect(report().rule_families_excluded_by_policy).toEqual(['workflow_hardening', 'password_hashing', 'cookie_flags']);
   });
 
   test('no list means nothing is excluded, because the build default is every family', () => {

@@ -6,6 +6,7 @@ const util = require('node:util');
 const { EventEmitter } = require('node:events');
 const { Readable } = require('node:stream');
 const realFs = require('node:fs');
+const realCrypto = require('node:crypto');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -30,7 +31,7 @@ function tsSource(absolute) {
   return withSuffix(absolute) || withSuffix(path.join(absolute, 'index'));
 }
 const isRelative = (request) => request.startsWith('.') || path.isAbsolute(request);
-const state = { express: { routes: [] }, pg: { queries: [] }, child_process: { calls: [] }, fs: { reads: [] }, env: { reads: [] }, code: { calls: [] } };
+const state = { express: { routes: [] }, pg: { queries: [] }, child_process: { calls: [] }, fs: { reads: [] }, env: { reads: [] }, code: { calls: [] }, crypto: { digests: [], kdfs: [] }, cookies: { calls: [] } };
 let config = {};
 let fakes = {};
 const later = (fn) => setImmediate(fn);
@@ -93,9 +94,11 @@ function response(ended = () => {}) {
     set(n, v) { for (const [k, x] of Object.entries(typeof n === 'object' ? n : { [n]: v })) out.headers[k.toLowerCase()] = x; return res; },
     redirect(a, b) { out.redirect = out.headers.location = b === undefined ? a : b; out.status = b === undefined ? 302 : Number(a); return end(''); },
   });
+  // A cookie is recorded rather than sent: { kind: 'res.cookie', name, options }.
+  base.cookie = (name, value, options) => { state.cookies.calls.push({ kind: 'res.cookie', name: String(name), options: obj(options) }); return res; };
   base.header = base.setHeader = base.set;
   base.contentType = base.type;
-  // Other response methods (cookie, vary, sendFile, ...) are chainable no-ops.
+  // Other response methods (vary, sendFile, ...) are chainable no-ops.
   const res = new Proxy(base, { get: (t, k) => (k in t ? t[k] : k === 'then' || typeof k === 'symbol' ? undefined : () => res) });
   return res;
 }
@@ -227,7 +230,34 @@ const vm = {
   Script: class Script { constructor(code) { recordCode('vm.Script', code); } runInNewContext() {} runInThisContext() {} runInContext() {} },
 };
 
-const builtinFakes = { express, pg, child_process, fs, 'fs/promises': fs.promises, vm };
+// crypto is the real module with its digests and key-derivation functions recorded. A
+// password_hashing repair is proven by what the password reached: never a fast digest
+// (createHash, createHmac), and a KDF (scrypt, pbkdf2) with a salt. digests: { algorithm, data };
+// kdfs: { kind, password }.
+const crypto = Object.create(realCrypto);
+const text = (v) => (Buffer.isBuffer(v) || ArrayBuffer.isView(v) ? Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString() : String(v));
+const digest = (algorithm, made) => {
+  const entry = { algorithm: String(algorithm).toLowerCase(), data: [] };
+  state.crypto.digests.push(entry);
+  const update = made.update.bind(made);
+  made.update = (data, ...rest) => (entry.data.push(text(data)), update(data, ...rest), made);
+  return made;
+};
+crypto.createHash = (a, ...r) => digest(a, realCrypto.createHash(a, ...r));
+crypto.createHmac = (a, ...r) => digest(a, realCrypto.createHmac(a, ...r));
+for (const [name, kind] of [['scrypt', 'scrypt'], ['scryptSync', 'scrypt'], ['pbkdf2', 'pbkdf2'], ['pbkdf2Sync', 'pbkdf2']]) {
+  crypto[name] = (password, ...rest) => (state.crypto.kdfs.push({ kind, password: text(password) }), realCrypto[name](password, ...rest));
+}
+
+// express-session and cookie-session record the cookie options they were configured with and
+// pass every request through. express-session keeps them under `cookie`, cookie-session at the top.
+const pass = () => (req, res, next) => next && next();
+const session = (o) => { state.cookies.calls.push({ kind: 'express-session', name: obj(o).name || 'connect.sid', options: obj(obj(o).cookie) }); return pass(); };
+session.Store = class Store extends EventEmitter {};
+session.MemoryStore = class MemoryStore extends session.Store {};
+const cookieSession = (o) => { state.cookies.calls.push({ kind: 'cookie-session', name: obj(o).name || 'session', options: obj(o) }); return pass(); };
+
+const builtinFakes = { express, pg, child_process, fs, 'fs/promises': fs.promises, vm, crypto, 'express-session': session, 'cookie-session': cookieSession };
 const originalLoad = Module._load;
 Module._load = function load(request, parent, isMain) {
   const written = String(request);
@@ -395,6 +425,22 @@ assert.argv = (call, payload, message) => { if (!call) fail(message || 'no child
 // noCode(message): nothing the module did turned a string into code. It is the whole proof of a
 // code_injection_eval repair, so it names what would have been compiled when it fails.
 assert.noCode = (message) => { if (state.code.calls.length) fail(message || 'expected no string to be compiled or evaluated', state.code.calls.map((c) => `${c.kind}: ${c.source}`)); };
+// passwordHash(password): the password never reached a fast digest and did reach a KDF.
+assert.passwordHash = (password, message) => {
+  const want = String(password);
+  const fast = state.crypto.digests.filter((d) => d.data.some((x) => x.includes(want)));
+  if (fast.length) fail(message || 'the password was digested with a fast hash', fast.map((d) => d.algorithm));
+  if (!state.crypto.kdfs.some((k) => k.password === want)) fail(message || 'expected the password to reach crypto.scrypt or crypto.pbkdf2', state.crypto.kdfs.map((k) => k.kind));
+};
+// cookieFlags(kind[, name]): every recorded cookie of that kind (and name) is HttpOnly, Secure and SameSite Lax or Strict.
+assert.cookieFlags = (kind, name, message) => {
+  const found = state.cookies.calls.filter((c) => c.kind === kind && (name === undefined || c.name === String(name)));
+  if (!found.length) fail(message || `no ${kind} cookie${name === undefined ? '' : ` named ${name}`} was recorded`, state.cookies.calls.map((c) => `${c.kind}:${c.name}`));
+  for (const { options: o, name: n } of found) {
+    const same = o.sameSite === true ? 'strict' : String(o.sameSite).toLowerCase();
+    if (o.httpOnly !== true || o.secure !== true || !['lax', 'strict'].includes(same)) fail(message || `cookie ${n} lacks httpOnly, secure or sameSite`, o);
+  }
+};
 // call(fn, ...args): calls a plain exported function and never throws. Returns { ok, value, error },
 // so one test can send a payload that is meant to be rejected and a document that must still parse.
 const call = (fn, ...args) => {
@@ -413,4 +459,4 @@ const run = (body) => Promise.resolve().then(body).then(
   (error) => { process.stderr.write(`harness: ${(error && error.stack) || error}\n`); process.exit(1); },
 );
 
-module.exports = { version: 1, root: ROOT, load, invoke, res: response, call, run, assert, reset, db, express: state.express, pg: state.pg, child_process: state.child_process, fs: state.fs, code: state.code, app };
+module.exports = { version: 1, root: ROOT, load, invoke, res: response, call, run, assert, reset, db, express: state.express, pg: state.pg, child_process: state.child_process, fs: state.fs, code: state.code, crypto: state.crypto, cookies: state.cookies, app };

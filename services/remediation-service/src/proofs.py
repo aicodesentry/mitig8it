@@ -21,8 +21,10 @@ from typing import Any
 from .families import (
     CODE_INJECTION_EVAL,
     COMMAND_ARGUMENTS,
+    COOKIE_FLAGS,
     HARDCODED_CREDENTIAL,
     JAVASCRIPT,
+    PASSWORD_HASHING,
     PATH_CONTAINMENT,
     PYTHON,
     SQL_PARAMETERIZATION,
@@ -39,6 +41,7 @@ from .sites import (
     ModuleScope,
     PyFunction,
     SiteError,
+    cookie_site,
     js_environment_name,
     js_eval_site,
     js_literal_assignment,
@@ -47,8 +50,12 @@ from .sites import (
     js_module_constant,
     js_module_exports_name,
     js_path_site_in_scope,
+    js_function_for_line,
+    js_route_for_line,
     js_site_for_line,
     module_directory,
+    password_hash_site,
+    python_function_for_line,
     python_flask_app_name,
     python_site_for_line,
     python_module_assignment,
@@ -296,7 +303,7 @@ _TS_UNSTRIPPABLE = (
 # supplies the second; there is no network and no `node_modules`, so a module that reaches
 # anything else while it is being imported does not load, on the repaired tree exactly as on the
 # vulnerable one. `contracts/test-harness-v1.md` is the source of the fake list.
-HARNESS_FAKED_MODULES = frozenset({"express", "pg", "child_process", "fs", "fs/promises", "vm"})
+HARNESS_FAKED_MODULES = frozenset({"express", "pg", "child_process", "fs", "fs/promises", "vm", "express-session", "cookie-session"})
 NODE_BUILTIN_MODULES = frozenset(
     """assert assert/strict async_hooks buffer child_process cluster console constants crypto dgram
     diagnostics_channel dns dns/promises domain events fs fs/promises http http2 https inspector
@@ -1349,6 +1356,184 @@ def _py_module_scope_proof(snapshot: Snapshot, finding: FindingSnapshot, scope: 
     raise SiteError("family_not_generated_at_module_scope")
 
 
+# --- password hashing -----------------------------------------------------------------------
+#
+# Three facts prove the repair, each failing on a fast digest for its own reason: the same
+# password hashes differently on two calls (a fast digest is deterministic), the password never
+# reached a fast digest and did reach a key-derivation function (the harness records both), and
+# the module's own verifier still accepts the right password and rejects a wrong one, which is
+# what stops a repair that salts the hash and breaks every login.
+
+PASSWORD = "correct horse battery staple"
+WRONG_PASSWORD = "wrong horse battery staple"
+
+
+def _password_verifier(site: Any, find_function: Any, lines: list[str]) -> tuple[Any, Any]:
+    """The first comparison inside a callable function whose arguments a test can supply."""
+    for comparison in site.comparisons:
+        try:
+            function = find_function(comparison.line)
+        except SiteError:
+            continue
+        if getattr(function, "kind", "function") != "function":
+            continue
+        root = comparison.stored.split(".")[0]
+        if comparison.password in function.parameters and root in function.parameters and root != comparison.password:
+            return function, comparison
+    raise SiteError("password_verifier_not_callable")
+
+
+def _js_password_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedProof:
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    site = password_hash_site(snapshot, finding, JAVASCRIPT)
+    if not js_module_exports_name(source, site.function):
+        raise SiteError("password_hash_function_not_exported")
+    function, comparison = _password_verifier(site, lambda line: js_function_for_line(source, line), source.splitlines())
+    if not js_module_exports_name(source, function.name):
+        raise SiteError("password_verifier_not_exported")
+    members = comparison.stored.split(".")
+    stored = "stored"
+    for member in reversed(members[1:]):
+        stored = "{ " + _js(member) + ": " + stored + " }"
+
+    def arguments(password: str) -> str:
+        placed = []
+        for parameter in function.parameter_model or tuple(JsParameter(name, name) for name in function.parameters):
+            if parameter.name == comparison.password:
+                placed.append(password)
+            elif parameter.name == members[0]:
+                placed.append(stored)
+            else:
+                placed.append("{}")
+        return ", ".join(placed)
+
+    body = [
+        "const h = require('../harness');",
+        "h.run(async () => {",
+        f"  const m = h.load({_js(path)});",
+        f"  const password = {_js(PASSWORD)};",
+        f"  const first = await h.call(m.{site.function}, password).value;",
+        f"  const second = await h.call(m.{site.function}, password).value;",
+        "  h.assert(typeof first === 'string' && first !== second, 'expected two hashes of one password to differ: a per-call salt');",
+        "  h.assert.passwordHash(password);",
+        "  const stored = first;",
+        f"  h.assert(await h.call(m.{function.name}, {arguments('password')}).value, 'expected the right password to verify');",
+        f"  h.assert(!(await h.call(m.{function.name}, {arguments(_js(WRONG_PASSWORD))}).value), 'expected a wrong password to be rejected');",
+        "});",
+        "",
+    ]
+    return GeneratedProof(
+        finding.stable_id, PASSWORD_HASHING, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
+        f"{site.function} salts every hash and never feeds the password to a fast digest; {function.name} accepts the right password and rejects a wrong one",
+        None,
+    )
+
+
+def _py_password_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedProof:
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    site = password_hash_site(snapshot, finding, PYTHON)
+    function, comparison = _password_verifier(site, lambda line: python_function_for_line(source, line), source.splitlines())
+    if comparison.stored not in function.parameters:
+        raise SiteError("password_verifier_not_callable")
+
+    def arguments(password: str) -> str:
+        return ", ".join(
+            password if name == comparison.password else "stored" if name == comparison.stored else "None"
+            for name in function.parameters
+        )
+
+    body = _py_header(path) + [
+        f"    password = {_py(PASSWORD)}",
+        f"    first = h.call(m.{site.function}, password).value",
+        f"    second = h.call(m.{site.function}, password).value",
+        "    h.assert_true(isinstance(first, str) and first != second, 'expected two hashes of one password to differ: a per-call salt')",
+        "    h.assert_password_hash(password)",
+        "    stored = first",
+        f"    h.assert_true(h.call(m.{function.name}, {arguments('password')}).value, 'expected the right password to verify')",
+        f"    h.assert_true(not h.call(m.{function.name}, {arguments(_py(WRONG_PASSWORD))}).value, 'expected a wrong password to be rejected')",
+    ] + _py_footer()
+    return GeneratedProof(
+        finding.stable_id, PASSWORD_HASHING, PYTHON, test_path(finding.stable_id, PYTHON), "\n".join(body),
+        f"{site.function} salts every hash and never feeds the password to a fast digest; {function.name} accepts the right password and rejects a wrong one",
+        None,
+    )
+
+
+# --- cookie flags ---------------------------------------------------------------------------
+#
+# The harness records every cookie the module configures (express-session, cookie-session) or
+# sets (`res.cookie`, Flask `set_cookie`) with the options it carried, so the proof reaches the
+# site the way the application does and asserts on the record. A setting is read back off the
+# loaded module, which is what "the settings module loads and exposes it" means.
+
+def _js_cookie_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedProof:
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    site = cookie_site(snapshot, finding, JAVASCRIPT)
+    if site.kind == "res.cookie":
+        try:
+            route = js_route_for_line(source, site.start_line)
+        except SiteError as exc:
+            raise SiteError("cookie_route_not_found") from exc
+        name = f", {_js(site.name)}" if site.name else ""
+        body = _js_header(path) + [
+            f"  await h.invoke(app, {_js(route.method)}, {_js(route.route)}, {_js_invoke_options(route, None, BENIGN_VALUE)});",
+            f"  h.assert.cookieFlags('res.cookie'{name});",
+            "});",
+            "",
+        ]
+        what = f"{route.method.upper()} {route.route} sets {site.name or 'its cookie'}"
+    else:
+        try:
+            js_function_for_line(source, site.start_line)
+        except SiteError:
+            pass
+        else:
+            # Configured inside a function the proof would have to find and call: the import
+            # alone never reaches it, so the record would be empty on both trees.
+            raise SiteError("cookie_options_not_at_module_scope")
+        body = _js_module_header(path) + [f"  h.assert.cookieFlags({_js(site.kind)});", "});", ""]
+        what = f"the {site.kind} middleware the module configures"
+    return GeneratedProof(
+        finding.stable_id, COOKIE_FLAGS, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
+        f"{what}: the cookie must carry httpOnly: true, secure: true and sameSite lax or strict", None,
+    )
+
+
+def _py_cookie_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedProof:
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    site = cookie_site(snapshot, finding, PYTHON)
+    function = None
+    if site.kind == "setting":
+        assertions = [f"    h.assert_equal(m.{site.name}, True, {_py(site.name + ' must be True')})"]
+        what = f"the settings module exposes {site.name} = True"
+    elif site.kind == "flask_config":
+        assertions = [f"    h.assert_equal(m.{site.app}.config[{_py(site.name)}], True, {_py(site.name + ' must be True')})"]
+        what = f"{site.app}.config[{site.name!r}] is True once the module loads"
+    else:
+        try:
+            function = python_function_for_line(source, site.start_line)
+        except SiteError as exc:
+            raise SiteError("cookie_route_not_found") from exc
+        if not function.route:
+            raise SiteError("cookie_route_not_found")
+        name = _py(site.name) if site.name else ""
+        assertions = [
+            _py_app_line(source),
+            f"    {_py_view_invoke(function, None, _py(BENIGN_VALUE))}",
+            f"    h.assert_cookie_flags({name})",
+        ]
+        what = f"{function.methods[0] if function.methods else 'GET'} {function.route} sets {site.name or 'its cookie'}"
+    body = _py_header(path) + assertions + _py_footer()
+    return GeneratedProof(
+        finding.stable_id, COOKIE_FLAGS, PYTHON, test_path(finding.stable_id, PYTHON), "\n".join(body),
+        f"{what}: secure, httponly and samesite Lax or Strict" if function else what, function,
+    )
+
+
 # --- entry point ----------------------------------------------------------------------------
 
 def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, language: str) -> GeneratedProof | ProofFallback:
@@ -1364,6 +1549,10 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
                 return _js_credential_proof(snapshot, finding)
             if family == CODE_INJECTION_EVAL:
                 return _js_eval_proof(snapshot, finding)
+            if family == PASSWORD_HASHING:
+                return _js_password_proof(snapshot, finding)
+            if family == COOKIE_FLAGS:
+                return _js_cookie_proof(snapshot, finding)
             site = js_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if isinstance(site, ModuleScope):
                 return _js_module_scope_proof(snapshot, finding, site, family)
@@ -1377,6 +1566,10 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
         if language == PYTHON:
             if family == HARDCODED_CREDENTIAL:
                 return _py_credential_proof(snapshot, finding)
+            if family == PASSWORD_HASHING:
+                return _py_password_proof(snapshot, finding)
+            if family == COOKIE_FLAGS:
+                return _py_cookie_proof(snapshot, finding)
             function = python_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if isinstance(function, ModuleScope):
                 return _py_module_scope_proof(snapshot, finding, function, family)

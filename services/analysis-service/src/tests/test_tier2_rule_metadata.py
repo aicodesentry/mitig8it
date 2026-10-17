@@ -44,6 +44,14 @@ FAMILY_CWE = {
     "hardcoded_credential": frozenset({"CWE-798"}),
     "code_injection_eval": frozenset({"CWE-95"}),
     "workflow_hardening": frozenset({"CWE-78", "CWE-1357"}),
+    # A weak password hash is declared as CWE-916 by the rules written for it, and as CWE-327 or
+    # CWE-328 by a weak-digest rule whose finding the analysis service renames
+    # `weak_password_hash` because the digested value is a credential. `rule_family()` reads the
+    # CWE-916 rules directly and the other two only through that internal type.
+    "password_hashing": frozenset({"CWE-916", "CWE-327", "CWE-328"}),
+    # A cookie without Secure is CWE-614 and one without HttpOnly is CWE-1004; the rules declare
+    # whichever one their pattern is mostly about, and both reach the same repair.
+    "cookie_flags": frozenset({"CWE-614", "CWE-1004"}),
 }
 
 

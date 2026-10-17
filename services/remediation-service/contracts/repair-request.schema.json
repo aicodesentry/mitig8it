@@ -304,7 +304,9 @@
               "path_containment",
               "hardcoded_credential",
               "code_injection_eval",
-              "workflow_hardening"
+              "workflow_hardening",
+              "password_hashing",
+              "cookie_flags"
             ],
             "type": "string"
           },

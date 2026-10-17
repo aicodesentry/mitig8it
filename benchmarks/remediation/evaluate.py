@@ -32,7 +32,7 @@ FIXTURES = ROOT / "fixtures"
 KNOWN_FAILURES_FILE = ROOT / "known-failures.json"
 DEFAULT_BUDGET = {"max_tool_calls": 20, "max_attempts": 3, "max_input_tokens": 120000,
                   "max_output_tokens": 120000, "max_cost_usd": 2.0}
-SUPPORTED_FAMILIES = {"sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval"}
+SUPPORTED_FAMILIES = {"sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval", "password_hashing", "cookie_flags"}
 # Trusted fixture tests run under a pinned interpreter by fixed argv: Node for JavaScript
 # fixtures, this Python for Python fixtures.
 FIXTURE_TEST_RUNTIMES = {"node": ["node"], "python3": [sys.executable]}

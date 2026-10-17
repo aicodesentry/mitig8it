@@ -85,6 +85,8 @@ Fakes and their recorders:
 - `sqlite3`, `psycopg2`, `psycopg`, `pymysql`: `connect()` returns a connection whose `cursor()`, `execute(sql, params)`, `executemany`, and `executescript` record `{api, sql, params}` in `h.db.queries` and return the configured rows. `psycopg2.sql.SQL/Identifier/Literal/Placeholder` compose to text; `psycopg2.extras` cursor classes are the same recording cursor.
 - `sqlalchemy`: `text(sql)` keeps its text and `bindparams`; `create_engine().connect()` (or `begin()`) returns a connection whose `execute(statement, params)` records `{api: "sqlalchemy", sql, params}`.
 - `subprocess`: `run`, `call`, `check_call`, `check_output`, `Popen`, `getoutput`, and `getstatusoutput` record `{fn, args, shell, command, options}` in `h.subprocess.calls` (`args` is the argv list, or `None` when a single command string was passed; `shell` is true for a string command or `shell=True`), then report the configured stdout, stderr, and exit code. `os.system` and `os.popen` record with `fn` `os.system`/`os.popen` and `shell` true, without running anything.
+- `hashlib`: the real module, with every digest constructor (`md5`, `sha1`, `sha256`, ..., and `new`) recording `{algorithm, data}` in `h.crypto.digests` (`data` is every value passed in, as bytes), and `scrypt` and `pbkdf2_hmac` recording `{kind, password}` in `h.crypto.kdfs`. Every call still computes the real result.
+- `Response.set_cookie` (on `make_response` and `Response`): records `{name, secure, httponly, samesite}` in `h.cookies`, with Flask's defaults for a flag the call leaves out. `app.config` is a dict that also answers `from_object`, `from_pyfile`, `from_envvar`, `from_mapping`, and `from_file` without loading anything.
 - `os.environ`: a recording mapping; every `[]`, `.get`, `in`, and `os.getenv` read appends the key to `h.env.reads`.
 - `open()` (also `io.open`): a read records `{path, resolved, mode}` in `h.fs.reads`, `resolved` being `os.path.realpath` of the path, and returns the configured content as a text or bytes file; a write records in `h.fs.writes` and returns an in-memory buffer. Imports and the harness itself use the real `open`.
 
@@ -98,6 +100,8 @@ Assertions (each raises `HarnessAssertion` with the message on failure):
 - `h.assert_env_read(name, message)`: the module read environment variable `name`.
 - `h.assert_not_in_source(module, literal, message)`: the module's source text does not contain the literal and no module-level string value carries it.
 - `h.assert_no_commands(message)`: no process call was recorded (`subprocess`, `os.system`, `os.popen`).
+- `h.assert_password_hash(password, message)`: no recorded digest was fed bytes containing the password, and `hashlib.scrypt` or `hashlib.pbkdf2_hmac` received it.
+- `h.assert_cookie_flags(name=None, message=None)`: at least one cookie (of that name) was set, and every one is `secure=True`, `httponly=True`, and `samesite` `"Lax"` or `"Strict"`.
 - `h.fail(message)` fails outright.
 
 `h.ROOT` is the repository root the harness was materialized in.
@@ -109,6 +113,9 @@ Assertions (each raises `HarnessAssertion` with the message on failure):
 - Code injection through `eval` (`code_injection_eval`): with `FUNC` the function at the finding, `h.call(m.FUNC, "__import__('os').system('id')")` then `h.assert_no_commands()`, and `h.assert_equal(h.call(m.FUNC, "[1, 2]").value, [1, 2])`. The repair replaces `eval(x)` with `ast.literal_eval(x)` plus `import ast` when the surrounding code only needs a literal; code that evaluates expressions, names, or calls is not repaired (`eval_semantics_unknown`).
 - Command injection (`command_arguments`): `h.assert_argv(h.subprocess.calls[0], payload)`. The repair passes an argv list with `shell=False` and the untrusted value as its own element; a command line with a pipe is skipped as `shell_pipeline_unsupported`.
 - Path traversal (`path_containment`): for each traversal payload (`../../etc/passwd` and `..%2f..%2fetc%2fpasswd`), `h.fs.reads.clear()`, invoke the view, and `h.assert_inside(h.fs.reads, base, payload=payload)`; then one legitimate name and `h.assert_inside(h.fs.reads, base)`. The repair resolves `os.path.realpath(os.path.join(base, name))` and answers 400 before any file access unless the result is `base` or starts with `base + os.sep`.
+
+- Password hashing (`password_hashing`): with `HASH` the module's hashing function and `VERIFY` a function that compares its result, hash one password twice and assert the values differ, `h.assert_password_hash(password)`, then assert `VERIFY` accepts the password against the first value and rejects a wrong one. The repair derives `scrypt$<salt>$<key>` with `hashlib.scrypt` and an `os.urandom(16)` salt and rewrites each `HASH(x) == stored` into `verify_password_hash(x, stored)`, which compares with `hmac.compare_digest`.
+- Cookie flags (`cookie_flags`): for a Django setting, `m = h.load(path)` then `h.assert_equal(m.NAME, True)`; for a Flask config key, `h.assert_equal(m.app.config["NAME"], True)`; for `set_cookie`, `h.invoke` the view then `h.assert_cookie_flags(name)`.
 
 ## Policy
 

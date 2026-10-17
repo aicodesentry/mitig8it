@@ -92,7 +92,7 @@ describe('remediation verification policy', () => {
     // family by name until the static assertion verification level exists.
     expect(current.allowed_rule_families).toEqual([
       'sql_parameterization', 'command_arguments', 'path_containment', 'hardcoded_credential', 'code_injection_eval',
-      'workflow_hardening',
+      'workflow_hardening', 'password_hashing', 'cookie_flags',
     ]);
     expect(current.allowed_rule_families).toEqual([...policy.DEFAULT_POLICY.allowed_rule_families]);
     expect(current.repair_service_configured).toBe(true);

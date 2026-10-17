@@ -17,8 +17,10 @@ from typing import Any, Callable
 from .families import (
     CODE_INJECTION_EVAL,
     COMMAND_ARGUMENTS,
+    COOKIE_FLAGS,
     HARDCODED_CREDENTIAL,
     JAVASCRIPT,
+    PASSWORD_HASHING,
     PATH_CONTAINMENT,
     PYTHON,
     SQL_PARAMETERIZATION,
@@ -32,14 +34,17 @@ from .retrieval import Snapshot
 from .sites import (
     JS_CALLBACK_PARAMETERS,
     JS_EVAL_ARGUMENT_RE,
+    cookie_site,
     JsFunction,
     JsRoute,
     ModuleScope,
+    PasswordHashSite,
     PyFunction,
     SiteError,
     js_bound_names,
     js_environment_name,
     js_eval_site,
+    password_hash_site,
     js_literal_assignment,
     js_literal_assignment_in_span,
     js_names_in,
@@ -1247,6 +1252,143 @@ def _workflow(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
     raise TemplateError("workflow_shape_not_templated")
 
 
+# --- password hashing -----------------------------------------------------------------------
+#
+# The stored format becomes `scrypt$<16-byte salt hex>$<32-byte key hex>`, 104 characters: the
+# salt travels with the hash, so the verifier needs nothing but the stored string. scrypt is in both standard
+# libraries (Node `crypto.scryptSync`, Python `hashlib.scrypt`), so the repair adds no
+# dependency, and its default cost (N=2^14, r=8, p=1) is the one both document.
+#
+# What the repair cannot do is convert digests already stored: they no longer verify, so the
+# description says so, and a maintainer applies it knowing those accounts need a reset.
+
+PASSWORD_MIGRATION_NOTE = (
+    "digests stored before this change no longer verify and need a password reset, and the stored "
+    "value is now 104 characters"
+)
+
+
+def _rewrite_comparisons(path: str, finding_id: str, lines: list[str], site: PasswordHashSite, negate: str) -> list[dict[str, Any]]:
+    by_line: dict[int, list[Any]] = {}
+    for comparison in site.comparisons:
+        by_line.setdefault(comparison.line, []).append(comparison)
+    changes = []
+    for number, items in sorted(by_line.items()):
+        text = lines[number - 1]
+        rewritten = text
+        for comparison in sorted(items, key=lambda item: item.start, reverse=True):
+            call = f"{site.verifier}({comparison.password}, {comparison.stored})"
+            rewritten = rewritten[: comparison.start] + (negate + call if comparison.negated else call) + rewritten[comparison.end :]
+        changes.append(_hunk(path, finding_id, number, [text], [rewritten]))
+    return changes
+
+
+def _js_password(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """A fast digest of a password becomes `crypto.scryptSync` with a random per-call salt."""
+    path = finding.affected_path
+    lines = snapshot.full_content(path).splitlines()
+    site = password_hash_site(snapshot, finding, JAVASCRIPT)
+    c, p, i, b = site.module, site.parameter, site.indent, site.body_indent
+    body = [
+        f"{b}const salt = {c}.randomBytes(16).toString('hex');",
+        f"{b}return ['scrypt', salt, {c}.scryptSync({p}, salt, 32).toString('hex')].join('$');",
+    ]
+    if site.arrow:
+        declaration = lines[site.start_line - 1]
+        head = declaration[: declaration.index("=>") + 2]
+        function = [f"{head} {{", *body, f"{i}}};"]
+    else:
+        function = [lines[site.start_line - 1], *body, lines[site.end_line - 1]]
+    signature = f"{p}: string, stored: string): boolean" if site.typescript else f"{p}, stored)"
+    verifier = [
+        "",
+        f"{i}function {site.verifier}({signature} {{",
+        f"{b}const [scheme, salt, expected] = String(stored).split('$');",
+        f"{b}if (scheme !== 'scrypt' || !salt || !expected) return false;",
+        f"{b}const actual = {c}.scryptSync({p}, salt, 32);",
+        f"{b}const wanted = Buffer.from(expected, 'hex');",
+        f"{b}return wanted.length === actual.length && {c}.timingSafeEqual(actual, wanted);",
+        f"{i}}}",
+    ]
+    original = lines[site.start_line - 1 : site.end_line]
+    changes = [_hunk(path, finding.stable_id, site.start_line, original, function + verifier)]
+    changes += _rewrite_comparisons(path, finding.stable_id, lines, site, "!")
+    return TemplatePatch(
+        finding.stable_id, PASSWORD_HASHING, sorted(changes, key=lambda change: change["start_line"]),
+        f"{site.function} derives a salted scrypt key instead of a {site.algorithm} digest, and each comparison "
+        f"calls {site.verifier}; {PASSWORD_MIGRATION_NOTE}",
+    )
+
+
+def _py_password(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """The Python counterpart: `hashlib.scrypt` with an `os.urandom` salt, verified with hmac."""
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    lines = source.splitlines()
+    site = password_hash_site(snapshot, finding, PYTHON)
+    h, p, a, i, b = site.module, site.parameter, site.argument, site.indent, site.body_indent
+    cost = "n=2**14, r=8, p=1, dklen=32"
+    function = [
+        *site.keep_lines,
+        f"{b}salt = os.urandom(16)",
+        f"{b}digest = {h}.scrypt({a}, salt=salt, {cost})",
+        f'{b}return "scrypt$" + salt.hex() + "$" + digest.hex()',
+        "",
+        "",
+        f"{i}def {site.verifier}({p}, stored):",
+        f'{b}scheme, _, rest = str(stored).partition("$")',
+        f'{b}salt, _, expected = rest.partition("$")',
+        f'{b}if scheme != "scrypt" or not salt or not expected:',
+        f"{b}    return False",
+        f"{b}try:",
+        f"{b}    digest = {h}.scrypt({a}, salt=bytes.fromhex(salt), {cost})",
+        f"{b}except ValueError:",
+        f"{b}    return False",
+        f"{b}return hmac.compare_digest(digest.hex(), expected)",
+    ]
+    original = lines[site.start_line - 1 : site.end_line]
+    changes = [_hunk(path, finding.stable_id, site.start_line, original, function)]
+    changes += _rewrite_comparisons(path, finding.stable_id, lines, site, "not ")
+    if site.imports_needed:
+        line, after = python_import_anchor(source, site.start_line)
+        anchor = lines[line - 1]
+        added = [f"import {module}" for module in sorted(site.imports_needed)]
+        if line in {change["start_line"] for change in changes}:
+            raise TemplateError("import_anchor_overlaps_repair")
+        changes.append(_hunk(path, finding.stable_id, line, [anchor], [anchor, *added] if after else [*added, anchor]))
+    return TemplatePatch(
+        finding.stable_id, PASSWORD_HASHING, sorted(changes, key=lambda change: change["start_line"]),
+        f"{site.function} derives a salted scrypt key instead of a {site.algorithm} digest, and each comparison "
+        f"calls {site.verifier}; {PASSWORD_MIGRATION_NOTE}",
+    )
+
+
+# --- cookie flags ---------------------------------------------------------------------------
+
+def _cookie(snapshot: Snapshot, finding: FindingSnapshot, language: str) -> TemplatePatch:
+    """HttpOnly, Secure and SameSite=Lax on the options the code already passes, other keys kept.
+
+    Lax rather than Strict, because Strict withholds the cookie on every top-level navigation
+    from another site, so a user arriving from a link is signed out; Lax still withholds it from
+    the cross-site POSTs and subresource requests CSRF depends on.
+    """
+    site = cookie_site(snapshot, finding, language)
+    if list(site.original) == list(site.replacement):
+        raise TemplateError("cookie_flags_already_set")
+    path = finding.affected_path
+    if site.kind in ("setting", "flask_config"):
+        description = f"{site.name} set to True"
+    elif language == PYTHON:
+        description = 'set_cookie with secure=True, httponly=True and samesite="Lax"'
+    else:
+        description = f"{site.kind} cookie options with httpOnly: true, secure: true and sameSite: 'lax'"
+    return TemplatePatch(
+        finding.stable_id, COOKIE_FLAGS,
+        [_hunk(path, finding.stable_id, site.start_line, list(site.original), list(site.replacement))],
+        description + "; a cookie marked Secure is no longer sent over plain HTTP, so a development server without TLS stops keeping the session",
+    )
+
+
 # --- entry points ---------------------------------------------------------------------------
 
 def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str, language: str) -> TemplatePatch | TemplateFallback:
@@ -1264,6 +1406,10 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
                 return _js_credential(snapshot, finding)
             if family == CODE_INJECTION_EVAL:
                 return _js_eval(snapshot, finding)
+            if family == PASSWORD_HASHING:
+                return _js_password(snapshot, finding)
+            if family == COOKIE_FLAGS:
+                return _cookie(snapshot, finding, JAVASCRIPT)
             if family == COMMAND_ARGUMENTS:
                 # The rewrite replaces one call in place, so it needs no enclosing scope.
                 return _js_command(snapshot, finding)
@@ -1275,6 +1421,10 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
         elif language == PYTHON:
             if family == HARDCODED_CREDENTIAL:
                 return _py_credential(snapshot, finding)
+            if family == PASSWORD_HASHING:
+                return _py_password(snapshot, finding)
+            if family == COOKIE_FLAGS:
+                return _cookie(snapshot, finding, PYTHON)
             function = python_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _py_sql(snapshot, finding, function)
