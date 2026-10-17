@@ -33,6 +33,10 @@ $PY scripts/replay/summarize.py results-after/*.json --baseline results-before/*
 $PY scripts/replay/score.py results/*.json --labels benchmarks/vulnerable-corpus/labels.json \
     --adjudications benchmarks/vulnerable-corpus/adjudications.json --out /tmp/score.md
 
+# the recall ratchet: every corpus repository, then the comparison with the committed baseline
+$PY scripts/replay/ratchet.py measure --results results/
+$PY scripts/replay/ratchet.py check results/
+
 # both repair halves over the findings of earlier snapshot runs, and every complete pair's
 # proof run against the original tree and against the patched one
 $PY scripts/replay/replay.py --pairs --results results/*.json --out /tmp/pairs.json
@@ -127,6 +131,37 @@ computed only over adjudicated findings: the ones a label confirms plus the ones
 hand. `--emit-queue` writes the reading list (every finding on a labelled line under an
 unexpected class, plus a seeded random sample of the unlabelled) and `--adjudications` reads
 the verdicts back.
+
+## Recall ratchet
+
+`ratchet.py` turns the snapshot measurement into a regression gate. `measure` runs
+`replay.py --snapshot --include-quarantined --no-remediation --no-tier1-budget` once per
+repository pinned in `labels.json`, each into its own result file. `check` joins those results to the labels with
+`score.join`, reduces each label to two facts (hit, and hit by a rule that posts) and compares
+them with `benchmarks/vulnerable-corpus/recall-baseline.json`. `update` writes that file, and
+refuses to when the run is incomplete.
+
+| Exit | Meaning |
+| ---: | --- |
+| 0 | No label regressed. Newly hit labels are listed as improvements. |
+| 1 | A label that was hit is not hit, or a posting hit is now a quarantined hit only. The ids are printed. |
+| 2 | Not comparable: a repository has no result or was measured at another ref, a batch or a tier failed or ran into a time or memory ceiling, or the baseline and the labels name different labels. |
+
+`--no-tier1-budget` is there because of what a snapshot batch does to tier 1. The service stops
+tier 1 after 20 s per request and 2 s per file (`TIER1_BUDGET_SECONDS`,
+`TIER1_FILE_BUDGET_SECONDS`) and records a limitation. A batch of 120 whole files reaches both:
+on an idle machine four corpus files hit the per-file cap, and under load one run lost 59
+findings in three repositories to the two limits together. The flag sets both to a day, through
+the environment the workers inherit. Without it a snapshot run still works and its tier 1
+findings depend on the machine; the worker keeps each stage's `analysis_limitations` on the
+record, so a run says when that happened, and the ratchet refuses a run in which it did.
+
+A regressed label in a file the scanner could only partly parse has that limitation printed
+beside it.
+
+The comparison is unit-tested without the corpus in
+`services/analysis-service/src/tests/test_recall_ratchet.py`. When to refresh the baseline is
+in `benchmarks/vulnerable-corpus/README.md`.
 
 ## Pairs mode
 

@@ -1,0 +1,92 @@
+name: Recall ratchet
+
+# The precision benchmarks in the CI workflow hold every hand-judged false positive and one true
+# positive per rule family. This holds the other side: every labelled vulnerability of
+# benchmarks/vulnerable-corpus that is detected today, per label, so a rule change cannot lose
+# one without the baseline's diff saying so. It is a separate workflow because it downloads and
+# scans 23 repository trees, which the ordinary suite should not wait for; the comparison logic
+# itself is unit-tested in that suite (tests/test_recall_ratchet.py).
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      # The rules.
+      - 'services/analysis-service/src/opengrep_rules/**'
+      - 'services/analysis-service/src/security_rules.py'
+      - 'services/analysis-service/src/secret_detection.py'
+      # What decides which of a rule's matches become findings, and under which class.
+      - 'services/analysis-service/src/main.py'
+      - 'services/analysis-service/src/opengrep_runner.py'
+      - 'services/analysis-service/src/finding_quality.py'
+      - 'services/analysis-service/src/comment_stripper.py'
+      - 'services/analysis-service/src/taxonomy.py'
+      - 'services/analysis-service/src/test_code_scope.py'
+      # The scanner version is pinned here, and a scanner upgrade can change what a pattern matches.
+      - 'services/analysis-service/src/requirements.txt'
+      - 'scripts/replay/**'
+      - 'benchmarks/vulnerable-corpus/**'
+      - '.github/workflows/recall-ratchet.yml'
+
+concurrency:
+  group: recall-ratchet-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  recall-ratchet:
+    name: Labelled vulnerabilities still detected
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: services/analysis-service/src/requirements.txt
+      # The analysis service's own requirements pin the scanner, so installing them installs the
+      # version the service runs and nothing here restates it. Unlike the remediation job, this
+      # one has no second set of pins to keep the scanner apart from.
+      - run: pip install -r services/analysis-service/src/requirements.txt
+      # A guard rather than a courtesy. Without the scanner tier 2 fails in every batch and the
+      # ratchet reports the run unusable; this says why before 23 trees are downloaded.
+      - name: The scanner must be available here
+        run: |
+          set -euo pipefail
+          semgrep --version
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "services/analysis-service/src")
+          from opengrep_runner import scanner_available
+          if not scanner_available():
+              sys.exit("the scanner is not on PATH, so tier 2 would find nothing")
+          PY
+      # The corpus is pinned by full commit sha in labels.json, so the trees are immutable and
+      # the cache only has to change when that file does. Only the snapshots are cached: the
+      # result files are the measurement and are always made fresh.
+      - name: Restore the corpus snapshots
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: scripts/replay/.cache/snapshots
+          key: vulnerable-corpus-snapshots-${{ hashFiles('benchmarks/vulnerable-corpus/labels.json') }}
+          restore-keys: |
+            vulnerable-corpus-snapshots-
+      # The trees are intentionally vulnerable applications and CVE parents. They are read and
+      # scanned, never installed or executed: the measurement runs with --no-remediation, so no
+      # sandbox and no proof runs against them.
+      - name: Scan the corpus
+        run: python scripts/replay/ratchet.py measure --results "$RUNNER_TEMP/recall-results"
+      # `shell: bash` is what turns pipefail on, so the comparison's exit status survives the tee.
+      - name: Compare with the baseline
+        shell: bash
+        run: python scripts/replay/ratchet.py check "$RUNNER_TEMP/recall-results" | tee "$RUNNER_TEMP/recall-ratchet.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: recall-ratchet
+          path: |
+            ${{ runner.temp }}/recall-ratchet.txt
+            ${{ runner.temp }}/recall-results/*.json

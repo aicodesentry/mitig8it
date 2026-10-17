@@ -358,6 +358,20 @@ def emit_queue(scored: list[dict[str, Any]], path: str, sample: int, seed: int) 
     return len(queue)
 
 
+def quarantined_rule_set() -> set[str]:
+    """The rule ids that are measured but not posted, in both tiers.
+
+    The same two sources `main.QUARANTINED_RULE_IDS` unions, read without importing the
+    FastAPI app: the YAML metadata for tier 2 and the rule objects for tier 1.
+    """
+    from opengrep_runner import quarantined_rule_ids  # noqa: PLC0415
+    from security_rules import POSTING_QUARANTINE, SECURITY_RULES  # noqa: PLC0415
+
+    return set(quarantined_rule_ids()) | {
+        rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("results", nargs="+", help="snapshot result JSON files")
@@ -374,16 +388,7 @@ def main() -> int:
     labels = load_labels(args.labels)
     adjudications = load_adjudications(args.adjudications)
 
-    sys.path.insert(0, str(ANALYSIS_SRC))
-    # The same two sources `main.QUARANTINED_RULE_IDS` unions, read without importing the
-    # FastAPI app: the YAML metadata for tier 2 and the rule objects for tier 1.
-    from opengrep_runner import quarantined_rule_ids  # noqa: PLC0415
-    from security_rules import POSTING_QUARANTINE, SECURITY_RULES  # noqa: PLC0415
-
-    quarantined = set(quarantined_rule_ids()) | {
-        rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE
-    }
-    scored, label_state = join(findings, labels, adjudications, quarantined)
+    scored, label_state = join(findings, labels, adjudications, quarantined_rule_set())
 
     if args.emit_queue:
         count = emit_queue(scored, args.emit_queue, args.sample, args.seed)

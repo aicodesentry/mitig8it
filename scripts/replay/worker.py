@@ -118,6 +118,11 @@ def _strip(result: dict[str, Any]) -> dict[str, Any]:
         trimmed["finding_count"] = len(value.get("findings", []))
         trimmed["files_analyzed"] = value.get("files_analyzed")
         trimmed["test_files_analyzed"] = value.get("test_files_analyzed")
+        # Both tiers record what they gave up on instead of failing: tier 1 its time budget,
+        # tier 2 a per-file parse error or timeout. A finding missing for one of those reasons
+        # is missing for a reason no rule diff explains, so the record keeps what the stage said.
+        if value.get("analysis_limitations"):
+            trimmed["analysis_limitations"] = value["analysis_limitations"]
     return trimmed
 
 

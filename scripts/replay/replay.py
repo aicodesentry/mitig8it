@@ -43,6 +43,9 @@ from prodfilters import (  # noqa: E402
 
 DEFAULT_TIMEOUT_SECONDS = 300
 
+# What `--no-tier1-budget` sets both tier 1 limits to. The batch wall clock still bounds the run.
+TIER1_BUDGET_LIFTED_SECONDS = "86400"
+
 # A snapshot is a whole repository, so it is sent in batches. The analysis service
 # rejects a payload of more than ANALYSIS_FILE_CAP files, and one scanner process over
 # megabytes of source is where a replay hangs, so a batch is bounded by both.
@@ -364,6 +367,9 @@ def main() -> int:
                         help="skip the remediation stage (analysis only)")
     parser.add_argument("--include-quarantined", action="store_true",
                         help="report findings from quarantined rules too, so they can be re-measured")
+    parser.add_argument("--no-tier1-budget", action="store_true",
+                        help="lift tier 1's wall clock budget and per-file cap, so what a regex rule "
+                             "finds does not depend on how fast this machine is")
     parser.add_argument("--pairs", action="store_true",
                         help="measure both repair halves over the findings of earlier snapshot runs, "
                              "and run every complete pair's proof on the original and the patched tree")
@@ -377,6 +383,14 @@ def main() -> int:
 
     if args.include_quarantined:
         os.environ["REPLAY_INCLUDE_QUARANTINED"] = "1"
+    if args.no_tier1_budget:
+        # Tier 1 stops after 20 s per request and 2 s per file and records a limitation,
+        # which is right for a webhook with a deadline and wrong for a measurement: a batch
+        # of 120 whole files runs into both on a busy machine, and the rules that are cut
+        # are simply the ones later in the list. The service reads both from the
+        # environment, and the workers inherit it.
+        os.environ["TIER1_BUDGET_SECONDS"] = TIER1_BUDGET_LIFTED_SECONDS
+        os.environ["TIER1_FILE_BUDGET_SECONDS"] = TIER1_BUDGET_LIFTED_SECONDS
 
     if args.pairs:
         if not args.results:
