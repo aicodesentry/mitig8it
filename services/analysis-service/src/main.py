@@ -36,6 +36,7 @@ from secret_detection import (
 )
 import static_assertion
 from llm_client import redact
+from llm_sweep import quarantined_sweep_rule_ids, sweep_with_summary
 from llm_triage import triage_findings
 from remediation_patches import build_remediation_patch
 from taxonomy import build_taxonomy_metadata
@@ -137,10 +138,11 @@ def tier1_file_budget_seconds() -> float:
 # Rules whose measured precision does not support posting. They still run; see
 # `partition_by_posting_policy` and docs/services/analysis-service.md.
 #
-# Both tiers answer here. Tier 1 declares it on the rule (`posting=POSTING_QUARANTINE`);
+# Every detector answers here. Tier 1 declares it on the rule (`posting=POSTING_QUARANTINE`);
 # tier 2 declares it per rule in its YAML metadata (`posting: quarantine`), read once at
-# import. The two tiers share this one frozenset and the one filter below, so there is a
-# single answer to "does this rule post".
+# import; the tier 3 sweep declares it per class in `llm_sweep_posting.yml`, where every
+# class starts quarantined. All of them share this one frozenset and the one filter below,
+# so there is a single answer to "does this rule post".
 QUARANTINED_RULE_IDS = frozenset(
     {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
     | set(quarantined_rule_ids())
@@ -149,6 +151,7 @@ QUARANTINED_RULE_IDS = frozenset(
         for rule_id, posting in SECRET_DETECTOR_POSTING.items()
         if posting == SECRET_POSTING_QUARANTINE
     }
+    | set(quarantined_sweep_rule_ids())
 )
 
 request_context.configure_logging(os.getenv("LOG_LEVEL", "INFO"))
@@ -500,6 +503,28 @@ def quarantined_counts_by_rule(findings: List[Dict[str, Any]]) -> Dict[str, int]
     return counts
 
 
+def sweep_candidates(
+    file_patches: Dict[str, str],
+    repo_profile: Dict[str, Any] | None,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    """The tier 3 sweep's findings, split by the same posting policy as every other detector.
+
+    Returns (postable, quarantined, summary). Off by default, and non-blocking: when the sweep
+    is disabled or fails, the first two are empty and the summary says which. A sweep finding
+    is a finding like any other from here on: `partition_by_posting_policy` decides whether it
+    reaches the response, and `cluster_findings` folds it into a rule finding on the same line.
+    """
+    try:
+        candidates, summary = sweep_with_summary(file_patches, repo_profile)
+    except Exception as e:  # noqa: BLE001 - the sweep must never fail an analysis.
+        print(f"LLM sweep failed (non-blocking): {redact(e)}")
+        return [], [], {"enabled": True, "status": "failed", "accepted": 0}
+    postable, quarantined = partition_by_posting_policy(candidates)
+    summary["postable"] = len(postable)
+    summary["quarantined"] = len(quarantined)
+    return postable, quarantined, summary
+
+
 def run_tiers_concurrently(
     tier1: Callable[[], List[Dict[str, Any]]],
     tier2: Callable[[], List[Dict[str, Any]]],
@@ -552,11 +577,18 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
     )
     findings, quarantined = partition_by_posting_policy(findings)
 
+    file_patches = {f.path: f.patch for f in scannable_files}
     try:
-        file_patches = {f.path: f.patch for f in scannable_files}
         findings = triage_findings(findings, file_patches, None)
     except Exception as e:
         print(f"LLM triage failed (non-blocking): {redact(e)}")
+
+    # The sweep runs after triage and is not triaged: it is the same model, and asking it to
+    # re-judge its own answer is cost without information. Its findings join the list here so
+    # the clusterer below folds any that land on a rule finding's line.
+    sweep_postable, sweep_quarantined, sweep_summary = sweep_candidates(file_patches, None)
+    findings = [*findings, *sweep_postable]
+    quarantined = [*quarantined, *sweep_quarantined]
     findings = classify_findings(findings)
 
     normalized = cluster_findings(classify_findings(findings))
@@ -575,6 +607,7 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         # when it hits its per-file rule budget, tier 2 when the scanner could not fully
         # read a file or hit a resource ceiling.
         "analysis_limitations": limitations,
+        "sweep": sweep_summary,
     }
 
 
@@ -640,23 +673,24 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
 
 def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
     findings = payload.findings
-    if not findings:
-        return {
-            "repository_full_name": payload.repository_full_name,
-            "pull_request_number": payload.pull_request_number,
-            "commit_sha": payload.commit_sha,
-            "tier": 3,
-            "findings": [],
-            "filtered_count": 0,
-        }
-
     original_count = len(findings)
-    try:
-        findings = triage_findings(findings, payload.file_patches, payload.repo_profile)
-    except Exception as e:
-        print(f"LLM triage failed (non-blocking): {redact(e)}")
+    if findings:
+        try:
+            findings = triage_findings(findings, payload.file_patches, payload.repo_profile)
+        except Exception as e:
+            print(f"LLM triage failed (non-blocking): {redact(e)}")
 
     triaged_count = len(findings)
+
+    # The sweep is the half of tier 3 that can raise recall, so it runs whether or not the
+    # rules found anything: a pull request with no rule finding is exactly where it earns
+    # its keep. This handler is where it lives because this is the one request that carries
+    # the changed hunks and the repository profile. The posting policy applies to its output
+    # before anything else sees it, and today that policy quarantines every class.
+    sweep_postable, sweep_quarantined, sweep_summary = sweep_candidates(
+        payload.file_patches, payload.repo_profile
+    )
+    findings = [*findings, *sweep_postable]
 
     # Triage may adjust severity; test-code findings stay informational.
     findings = classify_findings(findings)
@@ -679,6 +713,10 @@ def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
     #
     # It runs whether or not a model is configured. Tier 3 with no model key returns the
     # findings it was given, and the fold is not a model's judgement.
+    #
+    # The same call folds a sweep finding into the rule finding on its line, as a supporting
+    # detection and never as the survivor (`finding_quality._choose_primary`), so the model
+    # agreeing with a rule is one comment with two names on it rather than two comments.
     findings = cluster_findings(findings)
 
     return {
@@ -691,6 +729,9 @@ def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
         # not a finding being filtered out, and counting it here would overstate what the
         # model removed.
         "filtered_count": original_count - triaged_count,
+        # The sweep's withheld output, counted the way the tier endpoints count theirs.
+        "quarantined_findings": quarantined_counts_by_rule(sweep_quarantined),
+        "sweep": sweep_summary,
     }
 
 

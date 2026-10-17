@@ -97,14 +97,24 @@ def _api_key_for(provider: str) -> Optional[str]:
     return None
 
 
-def is_llm_configured() -> bool:
-    disabled_values = {"0", "false", "no", "off"}
-    if os.getenv("LLM_TRIAGE_ENABLED", "true").strip().lower() in disabled_values:
-        return False
+def is_llm_provider_configured() -> bool:
+    """True when a provider and a key are present, whatever the per-feature flags say.
+
+    Triage and the sweep are switched on separately (`LLM_TRIAGE_ENABLED`,
+    `LLM_SWEEP_ENABLED`) and share one provider configuration, so the credential check is
+    one function and each feature adds its own flag on top.
+    """
     provider = _normalized_provider()
     if provider == "openai_compatible" and not os.getenv("LLM_BASE_URL"):
         return False
     return bool(_api_key_for(provider))
+
+
+def is_llm_configured() -> bool:
+    disabled_values = {"0", "false", "no", "off"}
+    if os.getenv("LLM_TRIAGE_ENABLED", "true").strip().lower() in disabled_values:
+        return False
+    return is_llm_provider_configured()
 
 
 def call_llm(

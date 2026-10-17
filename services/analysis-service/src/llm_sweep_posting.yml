@@ -1,0 +1,168 @@
+# Posting state of the tier 3 sweep, per class. Read by `llm_sweep.load_sweep_posting_policy`
+# and unioned into `main.QUARANTINED_RULE_IDS`, the one filter every detector posts through.
+#
+# A class posts only when `posting` is `post` AND `precision_evidence` names the measurement
+# that justified it. A class missing from this file is quarantined. Every class starts
+# quarantined: the sweep runs and is counted, and nothing it says is posted until the class
+# has been measured. Changing a value here is a product decision with a measurement behind
+# it, not a code change. See docs/validation/tier3-sweep-2026-10.md.
+#
+# This is the same contract a tier 1 rule carries in `security_rules.py` (`precision`,
+# `posting`, `precision_evidence`) and a tier 2 rule carries in its YAML metadata.
+classes:
+  command_injection:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  cross_site_scripting:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  csrf_protection_disabled:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  debug_mode_enabled:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  dependency_version_risk:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  dynamic_code_execution:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  error_detail_exposure:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  excessive_workflow_permissions:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  hardcoded_secret:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  insecure_cookie_flags:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  insecure_randomness:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  jwt_algorithm_none:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  jwt_expiration_ignored:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  jwt_signature_not_verified:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  ldap_injection:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  nosql_injection:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  open_redirect:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  path_traversal:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  permissive_cors_policy:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  prototype_pollution:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  security_header_disabled:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  self_hosted_runner_exposure:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  server_side_request_forgery:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  server_side_template_injection:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  sql_injection:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  static_initialization_vector:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  tls_validation_disabled:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  unpinned_action_reference:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  unrestricted_file_upload:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  unsafe_deserialization:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  untrusted_build_execution:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  untrusted_code_checkout:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  weak_cipher_algorithm:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  weak_password_hash:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  weak_tls_protocol:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  workflow_credential_persistence:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  workflow_script_injection:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  workflow_secret_exposure:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""
+  xml_external_entity:
+    posting: quarantine
+    precision: unmeasured
+    precision_evidence: ""

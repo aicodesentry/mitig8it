@@ -63,11 +63,21 @@ class TestQuarantineSet:
         assert tier2
         assert tier2 <= QUARANTINED_RULE_IDS
 
-    def test_the_set_is_exactly_the_union_of_the_two_tiers(self):
+    def test_every_quarantined_sweep_class_is_in_the_set(self):
+        from llm_sweep import quarantined_sweep_rule_ids
+
+        sweep = frozenset(quarantined_sweep_rule_ids())
+        assert sweep
+        assert sweep <= QUARANTINED_RULE_IDS
+
+    def test_the_set_is_exactly_the_union_of_the_three_sources(self):
+        from llm_sweep import quarantined_sweep_rule_ids
         from opengrep_runner import quarantined_rule_ids
 
         tier1 = {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
-        assert QUARANTINED_RULE_IDS == frozenset(tier1 | set(quarantined_rule_ids()))
+        assert QUARANTINED_RULE_IDS == frozenset(
+            tier1 | set(quarantined_rule_ids()) | set(quarantined_sweep_rule_ids())
+        )
 
     def test_at_least_one_rule_is_quarantined_so_the_path_is_exercised(self):
         assert QUARANTINED_RULE_IDS
@@ -190,12 +200,15 @@ class TestEndpointsReportTheWithheld:
 
 
 class TestLoadedPolicy:
-    def test_the_service_starts_with_the_policy_both_tiers_declare(self):
+    def test_the_service_starts_with_the_policy_every_detector_declares(self):
+        from llm_sweep import quarantined_sweep_rule_ids
         from opengrep_runner import quarantined_rule_ids
         from security_rules import POSTING_QUARANTINE, SECURITY_RULES
 
         tier1 = {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
-        assert main.QUARANTINED_RULE_IDS == frozenset(quarantined_rule_ids()) | tier1
+        assert main.QUARANTINED_RULE_IDS == (
+            frozenset(quarantined_rule_ids()) | tier1 | frozenset(quarantined_sweep_rule_ids())
+        )
 
     def test_at_least_one_rule_is_quarantined_so_the_path_is_exercised(self):
         assert main.QUARANTINED_RULE_IDS

@@ -237,6 +237,7 @@ def run_snapshot(
         "snapshot_downloads": cache.downloads,
         "snapshot_cache_hits": cache.cache_hits,
         "tier3": "skipped: no model key, LLM_TRIAGE_ENABLED=false",
+        "sweep_provider": os.environ.get("REPLAY_SWEEP_PROVIDER") or None,
         "remediation_path": (
             "template only; the model path is refused and counted as agent_needed"
             if run_remediation
@@ -364,6 +365,10 @@ def main() -> int:
                         help="skip the remediation stage (analysis only)")
     parser.add_argument("--include-quarantined", action="store_true",
                         help="report findings from quarantined rules too, so they can be re-measured")
+    parser.add_argument("--sweep-provider", metavar="MODE",
+                        help="also run the tier 3 sweep and record its findings apart from the rules': "
+                             "live, record:DIR (live, saving responses), recorded:DIR (replay saved "
+                             "responses, no key needed) or fake (answers [] to every call)")
     parser.add_argument("--pairs", action="store_true",
                         help="measure both repair halves over the findings of earlier snapshot runs, "
                              "and run every complete pair's proof on the original and the patched tree")
@@ -377,6 +382,9 @@ def main() -> int:
 
     if args.include_quarantined:
         os.environ["REPLAY_INCLUDE_QUARANTINED"] = "1"
+    if args.sweep_provider:
+        # Read by the worker, which runs the sweep after tiers 1 and 2 over the same patches.
+        os.environ["REPLAY_SWEEP_PROVIDER"] = args.sweep_provider
 
     if args.pairs:
         if not args.results:

@@ -83,6 +83,12 @@ def finding_class(finding: dict[str, Any]) -> str:
     )
 
 
+def tier_of(rule_id: str) -> int:
+    if rule_id.startswith("llm.sweep."):
+        return 3
+    return 2 if rule_id.startswith("opengrep.") else 1
+
+
 def overlaps(first: tuple[int, int], second: tuple[int, int], slack: int = LINE_SLACK) -> bool:
     return first[0] - slack <= second[1] and second[0] - slack <= first[1]
 
@@ -90,8 +96,13 @@ def overlaps(first: tuple[int, int], second: tuple[int, int], slack: int = LINE_
 # --- loading ----------------------------------------------------------------------------------
 
 
-def load_results(paths: Iterable[str]) -> list[dict[str, Any]]:
-    """Every finding of every snapshot run, tagged with the run it came from."""
+def load_results(paths: Iterable[str], key: str = "findings") -> list[dict[str, Any]]:
+    """Every finding of every snapshot run, tagged with the run it came from.
+
+    `key` picks the list: `findings` are tiers 1 and 2, `sweep_findings` are the tier 3
+    sweep's, present only in a run made with `replay.py --sweep-provider`. The two are scored
+    apart so a sweep hit is never counted as a rule's.
+    """
     findings: list[dict[str, Any]] = []
     for path in paths:
         document = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -100,7 +111,7 @@ def load_results(paths: Iterable[str]) -> list[dict[str, Any]]:
         if document.get("mode") != "snapshot":
             raise SystemExit(f"{path}: not a snapshot run; score.py joins labels to trees, not to pull requests")
         for record in document.get("records") or []:
-            for finding in record.get("findings") or []:
+            for finding in record.get(key) or []:
                 entry = dict(finding)
                 entry["_repo"] = repo
                 entry["_ref"] = ref
@@ -186,7 +197,7 @@ def join(
         entry = {
             "fingerprint": fingerprint,
             "rule_id": str(finding.get("rule_id") or ""),
-            "tier": 2 if str(finding.get("rule_id") or "").startswith("opengrep.") else 1,
+            "tier": tier_of(str(finding.get("rule_id") or "")),
             "posting": "quarantine" if str(finding.get("rule_id") or "") in quarantined else "post",
             "cwe": str(finding.get("cwe_id") or ""),
             "claimed_class": claimed,
@@ -276,6 +287,51 @@ def recall_table(title: str, label_state: dict[str, dict[str, Any]], key) -> lis
     return lines
 
 
+def sweep_section(
+    sweep_scored: list[dict[str, Any]],
+    sweep_state: dict[str, dict[str, Any]],
+    rule_state: dict[str, dict[str, Any]],
+) -> list[str]:
+    """The tier 3 sweep beside the rules, never mixed into them.
+
+    Recall is the question the sweep exists to answer, so the section leads with what it adds:
+    labels it hit that no rule did. Precision is over adjudicated sweep findings only, the same
+    rule as the headline, and every sweep class is quarantined until this table supports it.
+    """
+    total = len(rule_state)
+    rule_hit = {key for key, state in rule_state.items() if state["hits"]}
+    sweep_hit = {key for key, state in sweep_state.items() if state["hits"]}
+    added = sweep_hit - rule_hit
+    labelled = sum(1 for row in sweep_scored if row["verdict_source"] == "label")
+    hand_true = sum(1 for row in sweep_scored if row["verdict"] == "true" and row["verdict_source"] == "hand-read")
+    hand_false = sum(1 for row in sweep_scored if row["verdict"] == "false")
+    _, _, precision = _precision(sweep_scored)
+    lines = [
+        "## Tier 3 sweep", "",
+        f"{len(sweep_scored)} sweep findings: {labelled} labelled true, {hand_true} hand true, "
+        f"{hand_false} hand false, precision {_fmt(precision)} over adjudicated findings.", "",
+        "| | Labels hit | Recall |",
+        "| --- | ---: | ---: |",
+        f"| Rules (tiers 1 and 2) | {len(rule_hit)} | {len(rule_hit) / total:.2f} |" if total else "| Rules | 0 | n/a |",
+        f"| Sweep alone | {len(sweep_hit)} | {len(sweep_hit) / total:.2f} |" if total else "| Sweep alone | 0 | n/a |",
+        f"| Sweep, not hit by any rule | {len(added)} | {len(added) / total:.2f} |" if total else "| Added | 0 | n/a |",
+        f"| Rules and sweep together | {len(rule_hit | sweep_hit)} | {len(rule_hit | sweep_hit) / total:.2f} |"
+        if total else "| Together | 0 | n/a |",
+        "",
+    ]
+    lines += group_table("Sweep precision by class", sweep_scored, "claimed_class", "Class")
+    if added:
+        lines += ["### Labels only the sweep hit", "", "| Label | Path | Lines | Expected |", "| --- | --- | ---: | --- |"]
+        for key in sorted(added):
+            label = sweep_state[key]["label"]
+            lines.append(
+                f"| `{key}` | `{label['path']}` | {label['line_range'][0]}-{label['line_range'][1]} | "
+                f"{', '.join(label['rule_classes_expected'])} |"
+            )
+        lines.append("")
+    return lines
+
+
 def render(
     scored: list[dict[str, Any]],
     label_state: dict[str, dict[str, Any]],
@@ -358,6 +414,12 @@ def emit_queue(scored: list[dict[str, Any]], path: str, sample: int, seed: int) 
     return len(queue)
 
 
+def _has_sweep(path: str) -> bool:
+    """A run made with the sweep on, even one where it accepted nothing: zero is a result."""
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    return bool(document.get("sweep_provider"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("results", nargs="+", help="snapshot result JSON files")
@@ -371,6 +433,7 @@ def main() -> int:
     args = parser.parse_args()
 
     findings = load_results(args.results)
+    sweep_findings = load_results(args.results, key="sweep_findings")
     labels = load_labels(args.labels)
     adjudications = load_adjudications(args.adjudications)
 
@@ -379,26 +442,37 @@ def main() -> int:
     # FastAPI app: the YAML metadata for tier 2 and the rule objects for tier 1.
     from opengrep_runner import quarantined_rule_ids  # noqa: PLC0415
     from security_rules import POSTING_QUARANTINE, SECURITY_RULES  # noqa: PLC0415
+    from llm_sweep import quarantined_sweep_rule_ids  # noqa: PLC0415
 
     quarantined = set(quarantined_rule_ids()) | {
         rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE
-    }
+    } | set(quarantined_sweep_rule_ids())
     scored, label_state = join(findings, labels, adjudications, quarantined)
+    # Joined on its own, so the rule tables above stay exactly what they were without a sweep.
+    sweep_scored, sweep_state = join(sweep_findings, labels, adjudications, quarantined)
 
     if args.emit_queue:
         count = emit_queue(scored, args.emit_queue, args.sample, args.seed)
         print(f"wrote {count} findings to read to {args.emit_queue}")
+        if sweep_scored:
+            # A queue of its own, so adding the sweep to a run never reshuffles the rules' sample.
+            target = Path(args.emit_queue)
+            sweep_path = str(target.with_name(f"{target.stem}.sweep{target.suffix}"))
+            count = emit_queue(sweep_scored, sweep_path, args.sample, args.seed)
+            print(f"wrote {count} sweep findings to read to {sweep_path}")
         return 0
 
     if args.json_out:
         Path(args.json_out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json_out).write_text(json.dumps(
-            {"findings": scored, "labels": [
+            {"findings": scored, "sweep_findings": sweep_scored, "labels": [
                 {"id": key, "hits": len(state["hits"]), "location_hits": len(state["location_hits"])}
                 for key, state in label_state.items()
             ]}, indent=2), encoding="utf-8")
 
     report = render(scored, label_state, labels)
+    if sweep_findings or any(_has_sweep(path) for path in args.results):
+        report += "\n" + "\n".join(sweep_section(sweep_scored, sweep_state, label_state))
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(report, encoding="utf-8")
