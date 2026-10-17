@@ -96,6 +96,19 @@ describe('generated gRPC request serialization', () => {
     expect(decoded.getRepoProfile()).not.toBeNull();
   });
 
+  it('carries the per-rule outcome counts beside the repo profile, and omits them when empty', () => {
+    const definition = analysisService.triageFindings;
+    const ruleStats = { minimum_outcomes: 20, rules: { 'opengrep.cwe-89.js-sql': { positive: 18, negative: 4 } } };
+    const decoded = definition.requestDeserialize(
+      definition.requestSerialize(buildTriageRequest({ ...triagePayload, rule_stats: ruleStats }))
+    );
+    expect(decoded.getRuleStats().toJavaScript()).toEqual(ruleStats);
+    const without = definition.requestDeserialize(
+      definition.requestSerialize(buildTriageRequest({ ...triagePayload, rule_stats: {} }))
+    );
+    expect(without.hasRuleStats()).toBe(false);
+  });
+
   const githubCases = [
     ['fetchPullRequestFiles', () => {
       const request = new githubPb.FetchPullRequestFilesRequest();

@@ -23,6 +23,8 @@ var global = (function() {
 
 var common_pb = require('./common_pb.js');
 goog.object.extend(proto, common_pb);
+var google_protobuf_struct_pb = require('google-protobuf/google/protobuf/struct_pb.js');
+goog.object.extend(proto, google_protobuf_struct_pb);
 goog.exportSymbol('proto.mitig8it.analysis.v1.AnalyzePullRequestRequest', null, global);
 goog.exportSymbol('proto.mitig8it.analysis.v1.AnalyzePullRequestResponse', null, global);
 goog.exportSymbol('proto.mitig8it.analysis.v1.TriageFindingsRequest', null, global);
@@ -769,7 +771,8 @@ proto.mitig8it.analysis.v1.TriageFindingsRequest.toObject = function(includeInst
     findingsList: jspb.Message.toObjectList(msg.getFindingsList(),
     common_pb.Finding.toObject, includeInstance),
     filePatchesMap: (f = msg.getFilePatchesMap()) ? f.toObject(includeInstance, undefined) : [],
-    repoProfile: (f = msg.getRepoProfile()) && common_pb.RepoProfile.toObject(includeInstance, f)
+    repoProfile: (f = msg.getRepoProfile()) && common_pb.RepoProfile.toObject(includeInstance, f),
+    ruleStats: (f = msg.getRuleStats()) && google_protobuf_struct_pb.Struct.toObject(includeInstance, f)
   };
 
   if (includeInstance) {
@@ -833,6 +836,11 @@ proto.mitig8it.analysis.v1.TriageFindingsRequest.deserializeBinaryFromReader = f
       var value = new common_pb.RepoProfile;
       reader.readMessage(value,common_pb.RepoProfile.deserializeBinaryFromReader);
       msg.setRepoProfile(value);
+      break;
+    case 7:
+      var value = new google_protobuf_struct_pb.Struct;
+      reader.readMessage(value,google_protobuf_struct_pb.Struct.deserializeBinaryFromReader);
+      msg.setRuleStats(value);
       break;
     default:
       reader.skipField();
@@ -902,6 +910,14 @@ proto.mitig8it.analysis.v1.TriageFindingsRequest.serializeBinaryToWriter = funct
       6,
       f,
       common_pb.RepoProfile.serializeBinaryToWriter
+    );
+  }
+  f = message.getRuleStats();
+  if (f != null) {
+    writer.writeMessage(
+      7,
+      f,
+      google_protobuf_struct_pb.Struct.serializeBinaryToWriter
     );
   }
 };
@@ -1055,6 +1071,43 @@ proto.mitig8it.analysis.v1.TriageFindingsRequest.prototype.clearRepoProfile = fu
  */
 proto.mitig8it.analysis.v1.TriageFindingsRequest.prototype.hasRepoProfile = function() {
   return jspb.Message.getField(this, 6) != null;
+};
+
+
+/**
+ * optional google.protobuf.Struct rule_stats = 7;
+ * @return {?proto.google.protobuf.Struct}
+ */
+proto.mitig8it.analysis.v1.TriageFindingsRequest.prototype.getRuleStats = function() {
+  return /** @type{?proto.google.protobuf.Struct} */ (
+    jspb.Message.getWrapperField(this, google_protobuf_struct_pb.Struct, 7));
+};
+
+
+/**
+ * @param {?proto.google.protobuf.Struct|undefined} value
+ * @return {!proto.mitig8it.analysis.v1.TriageFindingsRequest} returns this
+*/
+proto.mitig8it.analysis.v1.TriageFindingsRequest.prototype.setRuleStats = function(value) {
+  return jspb.Message.setWrapperField(this, 7, value);
+};
+
+
+/**
+ * Clears the message field making it undefined.
+ * @return {!proto.mitig8it.analysis.v1.TriageFindingsRequest} returns this
+ */
+proto.mitig8it.analysis.v1.TriageFindingsRequest.prototype.clearRuleStats = function() {
+  return this.setRuleStats(undefined);
+};
+
+
+/**
+ * Returns whether this field is set.
+ * @return {boolean}
+ */
+proto.mitig8it.analysis.v1.TriageFindingsRequest.prototype.hasRuleStats = function() {
+  return jspb.Message.getField(this, 7) != null;
 };
 
 

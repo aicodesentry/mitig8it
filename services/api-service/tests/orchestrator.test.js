@@ -169,6 +169,24 @@ describe('PR Analysis Orchestrator — pure functions', () => {
     expect(body).not.toContain('**Candidate fix code:**');
   });
 
+  // The analysis service says where a finding's confidence came from once calibration is on.
+  // A measured number says how many outcomes it rests on; a static constant says it is a
+  // prior, so a hand-set percentage never reads as a measurement. Without it, no note.
+  test.each([
+    [{ basis: 'measured', precision: 0.65, outcomes: 22, minimum_outcomes: 20 },
+      "**Confidence:** 65% (this rule's measured precision, lower bound over 22 reviewed findings)"],
+    [{ basis: 'static_prior', precision: 0.8, outcomes: 3, minimum_outcomes: 20 },
+      "**Confidence:** 80% (this rule's prior, not yet measured: 3 of 20 reviewed findings)"],
+    [undefined, '**Confidence:** 80%\n'],
+  ])('the confidence line names its basis for %p', (rulePrecision, expected) => {
+    const { __private } = require('../src/services/prAnalysisOrchestrator');
+    const body = __private.buildReviewComment({
+      severity: 'high', title: 'SQL injection', evidence: 'Matched', confidence: 0.8, cwe_id: 'CWE-89',
+      evidence_details: rulePrecision ? { extra: { rule_precision: rulePrecision } } : {},
+    }, {});
+    expect(body).toContain(expected);
+  });
+
   test('buildReviewComment falls back to fix text before Tier 3 validation', () => {
     const { __private } = require('../src/services/prAnalysisOrchestrator');
 
@@ -963,6 +981,60 @@ describe('PR Analysis Orchestrator — pipeline', () => {
       expect.stringContaining("status = 'failed'"), expect.anything()
     );
     expect(axios.post.mock.calls.some(([url, body]) => url.includes('/check-runs') && body.conclusion === 'success')).toBe(false);
+  });
+
+  // Calibration (docs/validation/fix-placement-and-calibration-2026-10.md): with the flag on,
+  // the per-rule outcome counts travel to triage beside the repo profile; with it off, or when
+  // the read fails, triage gets none and every finding keeps its static confidence.
+  describe('rule_stats for triage', () => {
+    afterEach(() => { delete process.env.RULE_CALIBRATION_ENABLED; });
+
+    async function tier3Body(queryImpl) {
+      setupAxiosMocks([
+        { pattern: '/pulls/files', data: { files: [] } },
+        { pattern: '/files/content', data: { files: [] } },
+        { pattern: '/tier1', data: { findings: [], tier: 1 } },
+        { pattern: '/tier2', data: { findings: [], tier: 2 } },
+        { pattern: '/tier3', data: { findings: [], filtered_count: 0, tier: 3 } },
+        { pattern: '/check-runs', data: { check_run_id: 2 } },
+      ]);
+      pool.query.mockImplementation(queryImpl);
+      jest.isolateModules(() => {
+        const mod = require('../src/services/prAnalysisOrchestrator');
+        mod.triggerAnalysisJob(BASE_PAYLOAD);
+      });
+      await flushAsync();
+      const call = axios.post.mock.calls.find(([url]) => url.includes('/analyze/pr/tier3'));
+      return call && call[1];
+    }
+
+    const ruleRows = async (sql) => (String(sql).includes('SUM(outcome_positive)')
+      ? { rowCount: 1, rows: [{ rule_id: 'code.injection.eval', outcome_positive: 18, outcome_negative: 4 }] }
+      : { rowCount: 1, rows: [{ count: 1 }] });
+
+    test('sends the installation\'s per-rule counts when RULE_CALIBRATION_ENABLED is on', async () => {
+      process.env.RULE_CALIBRATION_ENABLED = 'true';
+      const body = await tier3Body(ruleRows);
+      expect(body.rule_stats).toEqual({ minimum_outcomes: 20, rules: { 'code.injection.eval': { positive: 18, negative: 4 } } });
+      const read = pool.query.mock.calls.find(([sql]) => String(sql).includes('SUM(outcome_positive)'));
+      expect(read[1][0]).toBe(12345);
+    });
+
+    test('sends nothing and reads nothing when the flag is off', async () => {
+      const body = await tier3Body(ruleRows);
+      expect(body.rule_stats).toEqual({});
+      expect(pool.query.mock.calls.some(([sql]) => String(sql).includes('SUM(outcome_positive)'))).toBe(false);
+    });
+
+    test('a failed read is logged and the review goes on without counts', async () => {
+      process.env.RULE_CALIBRATION_ENABLED = 'true';
+      const body = await tier3Body(async (sql) => {
+        if (String(sql).includes('SUM(outcome_positive)')) throw new Error('relation does not exist');
+        return { rowCount: 1, rows: [{ count: 1 }] };
+      });
+      expect(body.rule_stats).toEqual({});
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Rule outcome counts could not be read'), expect.anything());
+    });
   });
 
   test('calls GitHub service with correct internal secret header', async () => {

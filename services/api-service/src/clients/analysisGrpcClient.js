@@ -74,6 +74,9 @@ function buildTriageRequest(payload = {}) {
     repoProfile.setData(structPb.Struct.fromJavaScript(payload.repo_profile));
     request.setRepoProfile(repoProfile);
   }
+  if (payload.rule_stats && typeof payload.rule_stats === 'object' && Object.keys(payload.rule_stats).length) {
+    request.setRuleStats(structPb.Struct.fromJavaScript(payload.rule_stats));
+  }
   return request;
 }
 

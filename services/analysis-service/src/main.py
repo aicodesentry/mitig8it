@@ -37,6 +37,7 @@ from secret_detection import (
 import static_assertion
 from llm_client import redact
 from llm_triage import triage_findings
+from rule_precision import apply_rule_stats
 from remediation_patches import build_remediation_patch
 from taxonomy import build_taxonomy_metadata
 from test_code_scope import (
@@ -83,6 +84,10 @@ class TriageRequest(BaseModel):
     findings: List[Dict[str, Any]] = Field(default_factory=list)
     file_patches: Dict[str, str] = Field(default_factory=dict)
     repo_profile: Dict[str, Any] = Field(default_factory=dict)
+    # Per-rule outcome counts from the api-service, `{"minimum_outcomes": n, "rules":
+    # {rule_id: {"positive": p, "negative": q}}}`. Empty unless RULE_CALIBRATION_ENABLED is on
+    # there; see rule_precision.py.
+    rule_stats: Dict[str, Any] = Field(default_factory=dict)
 
 
 REQUEST_COUNT = Counter("codesentry_analysis_requests_total", "Total analysis requests")
@@ -651,6 +656,12 @@ def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
         }
 
     original_count = len(findings)
+    # The rule's measured precision first, so triage reads it as evidence and the comment
+    # prints it. It runs whether or not a model is configured: it is arithmetic, not judgement.
+    try:
+        findings = apply_rule_stats(findings, payload.rule_stats)
+    except Exception as e:
+        print(f"Rule calibration failed (non-blocking): {redact(e)}")
     try:
         findings = triage_findings(findings, payload.file_patches, payload.repo_profile)
     except Exception as e:

@@ -56,6 +56,9 @@ def _triage_request_from_proto(request) -> TriageRequest:
     repo_profile = payload.get("repo_profile") or {}
     if isinstance(repo_profile, dict) and "data" in repo_profile:
         payload["repo_profile"] = repo_profile.get("data") or {}
+    rule_stats = payload.get("rule_stats")
+    if not isinstance(rule_stats, dict):
+        payload["rule_stats"] = {}
     return TriageRequest(**payload)
 
 

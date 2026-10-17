@@ -3,6 +3,7 @@ syntax = "proto3";
 package mitig8it.analysis.v1;
 
 import "common.proto";
+import "google/protobuf/struct.proto";
 
 service AnalysisService {
   rpc AnalyzePullRequest(AnalyzePullRequestRequest) returns (AnalyzePullRequestResponse);
@@ -36,6 +37,10 @@ message TriageFindingsRequest {
   repeated mitig8it.common.v1.Finding findings = 4;
   map<string, string> file_patches = 5;
   mitig8it.common.v1.RepoProfile repo_profile = 6;
+  // Per-rule outcome counts for calibrating each rule's precision, sent only when the
+  // api-service has RULE_CALIBRATION_ENABLED on. Shape: {"minimum_outcomes": n, "rules":
+  // {rule_id: {"positive": p, "negative": q}}}. See services/analysis-service/src/rule_precision.py.
+  google.protobuf.Struct rule_stats = 7;
 }
 
 message TriageFindingsResponse {

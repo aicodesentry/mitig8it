@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from llm_client import call_llm, is_llm_configured, redact
 from prometheus_client import Counter, Histogram
 from remediation_patches import build_remediation_patch
+from rule_precision import BASIS_MEASURED, rule_precision_of
 
 # ── Metrics ─────────────────────────────────────────────────────────────
 
@@ -153,6 +154,9 @@ def _build_finding_context(
         "category": finding.get("category", ""),
         "severity": finding.get("severity", ""),
         "confidence": finding.get("confidence", 0),
+        # Where that confidence came from: the rule's static prior, or its measured precision
+        # with the counts behind it. Absent when the caller sent no rule statistics.
+        "rule_precision": rule_precision_of(finding),
         "cwe_id": finding.get("cwe_id", ""),
         "file_path": file_path,
         "line_start": finding.get("line_start", 0),
@@ -188,6 +192,15 @@ def _build_finding_context(
     }
 
 
+_STRENGTH_ORDER = ("light", "medium", "strong")
+
+# What a rule's measured track record does to the strength its analysis scope implies
+# (rule_precision.py). Only a measured precision moves it: a rule still on its static prior
+# has shown nothing beyond what its scope already says.
+MEASURED_PRECISION_RAISES = 0.8
+MEASURED_PRECISION_LOWERS = 0.5
+
+
 def _evidence_strength(finding: Dict[str, Any]) -> str:
     evidence_details = finding.get("evidence_details") or {}
     analysis_scope = str(
@@ -196,10 +209,22 @@ def _evidence_strength(finding: Dict[str, Any]) -> str:
         or "pattern"
     )
     if analysis_scope.startswith("taint"):
-        return "strong"
-    if analysis_scope in ("ast-pattern", "ast-match"):
-        return "medium"
-    return "light"
+        strength = "strong"
+    elif analysis_scope in ("ast-pattern", "ast-match"):
+        strength = "medium"
+    else:
+        strength = "light"
+    precision = rule_precision_of(finding)
+    if precision and precision.get("basis") == BASIS_MEASURED:
+        try:
+            bound = float(precision.get("precision"))
+        except (TypeError, ValueError):
+            return strength
+        if bound < MEASURED_PRECISION_LOWERS:
+            return "light"
+        if bound >= MEASURED_PRECISION_RAISES:
+            return _STRENGTH_ORDER[min(_STRENGTH_ORDER.index(strength) + 1, len(_STRENGTH_ORDER) - 1)]
+    return strength
 
 
 def _reviewability(finding: Dict[str, Any]) -> str:
