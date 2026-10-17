@@ -17,6 +17,7 @@ compares them against these on the same inputs, so a change on either side fails
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 # remediationInlineFixes.js: const MAX_ALIGNED_LINES = 1500;
@@ -284,3 +285,28 @@ def primary_region(
             best = region
             best_distance = distance
     return best
+
+
+# remediationInlineFixes.js: const COMMENT_ONLY_LINE = /^\s*(?:\/\/|\/\*|\*(?:\s|\/|$)|#(?:\s|$)|<!--)/;
+COMMENT_ONLY_LINE = re.compile(r"^\s*(?://|/\*|\*(?:\s|/|$)|#(?:\s|$)|<!--)")
+
+
+def is_dispensable_region(region: Dict[str, Any]) -> bool:
+    """Whether the rest of a fix is complete without this region. A port of `isDispensableRegion`.
+
+    True only when every line the region adds or removes is blank or a whole-line comment.
+    github-service suggests the regions inside the pull request diff and may leave one outside
+    it out only when this says so; anything else outside the diff turns the whole fix into a
+    diff, because a suggestion of the call site without the `require` it needs is a commit that
+    does not build.
+    """
+    original = region.get("original_lines") if isinstance(region, dict) else None
+    replacement = region.get("replacement_lines") if isinstance(region, dict) else None
+    original = original if isinstance(original, list) else []
+    replacement = replacement if isinstance(replacement, list) else []
+    changed = [line for line in replacement if line not in original] + [
+        line for line in original if line not in replacement
+    ]
+    return bool(changed) and all(
+        not str(line).strip() or COMMENT_ONLY_LINE.match(str(line)) for line in changed
+    )

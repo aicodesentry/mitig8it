@@ -502,7 +502,7 @@ test('a hunk the comment cannot carry and the diff does not show falls back to t
     { handle: (request) => (request.url.includes('/pulls/9/files') ? { data: [{ filename: 'services/orders.js', patch: '@@ -12,1 +12,1 @@\n+  new' }] } : null) });
   const outside = await publishFindingFixSections(fixPayload([fixSection({ hunk: { start_line: 10, end_line: 14, original_lines: [], replacement_lines: ['x'] } })]));
   expect(outside.results[0]).toMatchObject({ mode: 'diff', updated: true, reason: 'the fix changes lines 10-14, and this comment can only carry a suggestion for line 12' });
-  expect(comments[0].body).toContain(`<!-- mitig8it-fix:${CANDIDATE} -->\n\`\`\`diff\n--- a/services/orders.js\n+++ b/services/orders.js\n@@ -12,1 +12,1 @@\n-  old\n+  new\n\`\`\`\nShown as a diff: the fix changes lines 10-14, and this comment can only carry a suggestion for line 12.\n${VERIFIED_LINE}\n\n<details>`);
+  expect(comments[0].body).toContain(`<!-- mitig8it-fix:${CANDIDATE} -->\n\`\`\`diff\n--- a/services/orders.js\n+++ b/services/orders.js\n@@ -12,1 +12,1 @@\n-  old\n+  new\n\`\`\`\nShown as a diff: the fix changes lines 10-14, and this comment can only carry a suggestion for line 12.\nApply the whole change with Apply this fix in [Mitig8it](https://app.example.test/dashboard/pull-requests/pr-1/findings).\n${VERIFIED_LINE}\n\n<details>`);
   expect(comments[0].body).not.toContain('```suggestion');
 
   const regions = await publishFindingFixSections(fixPayload([fixSection({ hunk: null, not_suggestable_reason: 'multiple_files' })]));
@@ -541,21 +541,78 @@ test('an added import in the diff becomes a second suggestion comment on its lin
   expect(github.reviewComments[0].body).toContain(`<!-- mitig8it-fix:${regenerated} -->`);
 });
 
-// The same two regions when the import line is not in the diff: GitHub cannot take a comment
-// there, so the import is folded into a short note under the suggestion. A region that is
-// neither an import nor in the diff means the fix cannot be a suggestion at all.
-test('an added import outside the diff is folded into a note; any other region outside the diff makes the fix a diff', async () => {
+// The same two regions when the import line is not in the diff. This is the September
+// trial's JavaScript shape (docs/validation/action-trial-2026-09.md, "What is still wrong"
+// item 9): the call site is in the diff, the `require` it needs is not. Suggesting the call
+// site alone commits code that does not build, so the fix is not a suggestion at all: the
+// comment carries the whole diff, one sentence saying why, and the apply link.
+test('an added import outside the diff makes the whole fix a diff with the apply link, never half a suggestion', async () => {
+  const github = emptyPullRequestGitHub();
+  const importHunk = { start_line: 2, end_line: 2, original_lines: ["const cp = require('child_process');"], replacement_lines: ["const cp = require('child_process');", "const { execFile } = require('child_process');"] };
+  const result = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY, extra_hunks: [importHunk] })]));
+  expect(result.results[0]).toMatchObject({ mode: 'diff', created: true, reason: 'the fix also changes line 2, outside the pull request diff, and a suggestion without that change would commit half of the verified fix' });
+  expect(github.created.inline).toHaveLength(1);
+  const body = github.reviewComments[0].body;
+  expect(body).not.toContain('```suggestion');
+  expect(body).toContain([
+    '```diff', '--- a/services/orders.js', '+++ b/services/orders.js', '@@ -12,1 +12,1 @@', '-  old', '+  new', '```',
+    'Shown as a diff: the fix also changes line 2, outside the pull request diff, and a suggestion without that change would commit half of the verified fix.',
+    'Apply the whole change with Apply this fix in [Mitig8it](https://app.example.test/dashboard/pull-requests/pr-1/findings).',
+    VERIFIED_LINE,
+  ].join('\n'));
+});
+
+test('any other region outside the diff makes the fix a diff, and two of them are both named', async () => {
+  const github = emptyPullRequestGitHub();
+  const first = { start_line: 40, end_line: 41, original_lines: ['a', 'b'], replacement_lines: ['c'] };
+  const second = { start_line: 60, end_line: 60, original_lines: ['d'], replacement_lines: ['e'] };
+  const result = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY, extra_hunks: [first, second] })]));
+  expect(result.results[0]).toMatchObject({ mode: 'diff', reason: 'the fix also changes lines 40-41 and line 60, outside the pull request diff, and a suggestion without those changes would commit half of the verified fix' });
+  expect(github.reviewComments[0].body).not.toContain('```suggestion');
+  expect(github.created.inline).toHaveLength(1);
+});
+
+// The one case where the in-diff part may still be a suggestion: what is outside the diff
+// changes only comments or blank lines, so the patch is complete without it. The note says
+// what was left out; nothing claims the omitted lines were suggested.
+test('a region outside the diff that changes only comments is left out with a note, and the rest is suggested', async () => {
+  const github = emptyPullRequestGitHub();
+  const commentHunk = { start_line: 2, end_line: 2, original_lines: ['// orders use string SQL'], replacement_lines: ['// orders use parameterised SQL', ''], dispensable: true };
+  const result = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY, extra_hunks: [commentHunk] })]));
+  expect(result.results[0]).toMatchObject({ mode: 'suggestion', created: true });
+  expect(github.created.inline).toHaveLength(1);
+  expect(github.reviewComments[0].body).toContain(`\`\`\`\n${VERIFIED_LINE}\nLeft out: line 2, outside the pull request diff, changes only comments or blank lines; the fix is complete without it.\n\n<details>`);
+  expect(github.reviewComments[0].body).not.toContain('Shown as a diff');
+});
+
+// `dispensable` is the caller's claim, and only the literal `true` counts. A region that says
+// nothing, or says it in another type, is a region the fix needs.
+test.each([[undefined], ['true'], [1]])('a region whose dispensable flag is %p is treated as needed', async (flag) => {
+  const github = emptyPullRequestGitHub();
+  const commentHunk = { start_line: 2, end_line: 2, original_lines: ['// x'], replacement_lines: ['// y'], dispensable: flag };
+  const result = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY, extra_hunks: [commentHunk] })]));
+  expect(result.results[0]).toMatchObject({ mode: 'diff' });
+  expect(github.reviewComments[0].body).not.toContain('```suggestion');
+});
+
+// The Action publishes through this same function with no app behind it, so there is no
+// preview to link. The sentence names the tool that applies the diff as shown instead.
+test('without a preview url the diff names git apply instead of an app link', async () => {
   const github = emptyPullRequestGitHub();
   const importHunk = { start_line: 2, end_line: 2, original_lines: ['import os'], replacement_lines: ['import os', 'import ast'] };
-  const first = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY, extra_hunks: [importHunk] })]));
-  expect(first.results[0]).toMatchObject({ mode: 'suggestion', created: true });
-  expect(github.created.inline).toHaveLength(1);
-  expect(github.reviewComments[0].body).toContain(`\`\`\`\n${VERIFIED_LINE}\nAlso add \`import ast\` at line 2, which is outside the pull request diff.\n\n<details>`);
+  await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY, extra_hunks: [importHunk] })], { preview_url: undefined }));
+  const body = github.reviewComments[0].body;
+  expect(body).toContain('Apply the whole change with `git apply` on a checkout of this branch.');
+  expect(body).not.toContain('Apply this fix in [Mitig8it]');
+});
 
-  const other = { start_line: 40, end_line: 41, original_lines: ['a', 'b'], replacement_lines: ['c'] };
-  const second = await publishFindingFixSections(fixPayload([fixSection({ candidate_id: 'c1d2e3f4-0000-4000-8000-000000000005', finding_body: FINDING_BODY, extra_hunks: [other] })]));
-  expect(second.results[0]).toMatchObject({ mode: 'diff', reason: 'the fix also changes lines 40-41, outside the pull request diff' });
-  expect(github.reviewComments[0].body).toContain('Shown as a diff: the fix also changes lines 40-41, outside the pull request diff.');
+// A fence inside any region would close the suggestion block early. It used to be reported as
+// "outside the pull request diff", which was not the reason.
+test('a code fence in a region says so rather than calling the region outside the diff', async () => {
+  const github = emptyPullRequestGitHub({ patch: '@@ -1,3 +1,5 @@\n context\n+doc\n context\n@@ -10,3 +12,5 @@\n context\n+  x\n+  more\n context\n context' });
+  const fenced = { start_line: 2, end_line: 2, original_lines: ['doc'], replacement_lines: ['```'] };
+  const result = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY, extra_hunks: [fenced] })]));
+  expect(result.results[0]).toMatchObject({ mode: 'diff', reason: 'the fixed lines contain a code fence, which a suggestion cannot carry' });
   expect(github.reviewComments[0].body).not.toContain('```suggestion');
 });
 

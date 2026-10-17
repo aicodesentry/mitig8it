@@ -973,6 +973,11 @@ function parseHunk(hunk) {
       start_line: Number(hunk.start_line), end_line: Number(hunk.end_line),
       original_lines: Array.isArray(hunk.original_lines) ? hunk.original_lines.filter((line) => typeof line === 'string') : [],
       replacement_lines: hunk.replacement_lines,
+      // Set by the caller that computed the regions (api-service `buildSections`, the
+      // action's `fix_sections`): true only when the region changes nothing but blank or
+      // comment lines, so the rest of the fix is complete without it. Anything else, a
+      // missing field included, is a region the fix needs.
+      dispensable: hunk.dispensable === true,
     };
   }
   return null;
@@ -1047,19 +1052,6 @@ function lineRange(hunk) {
   return hunk.start_line === hunk.end_line ? `line ${hunk.start_line}` : `lines ${hunk.start_line}-${hunk.end_line}`;
 }
 
-const IMPORT_LINE = /^\s*(?:import\s+\S|from\s+\S+\s+import\s+\S|(?:const|let|var)\s+.+?=\s*require\()/;
-
-function addedLines(hunk) {
-  return hunk.replacement_lines.filter((line) => !hunk.original_lines.includes(line));
-}
-
-// A hunk that adds or rewrites nothing but import lines.
-function isImportHunk(hunk) {
-  const added = addedLines(hunk);
-  const removed = hunk.original_lines.filter((line) => !hunk.replacement_lines.includes(line));
-  return added.length > 0 && [...added, ...removed].every((line) => !line.trim() || IMPORT_LINE.test(line));
-}
-
 // The collapsed details under the suggestion: the model's own claim, then what the sandbox
 // run established, labelled apart so neither reads as the other, then the human-in-the-loop
 // sentence. Blank lines keep the Markdown rendering inside the HTML block.
@@ -1085,6 +1077,15 @@ function detailsBlock(section, previewUrl) {
   return lines;
 }
 
+// How to apply a fix that is not a suggestion. The App links its own apply action, which
+// commits the whole verified change; the Action has no app to link to, so it names the one
+// tool that applies the diff above as it stands.
+function applyLine(previewUrl) {
+  return previewUrl
+    ? `Apply the whole change with Apply this fix in [Mitig8it](${previewUrl}).`
+    : 'Apply the whole change with `git apply` on a checkout of this branch.';
+}
+
 // The fix section under a finding comment: the suggestion block first (or the diff and one
 // line saying why it is not a suggestion), the verified line, any short notes about regions
 // suggested elsewhere or folded in, then the collapsed details. No prose above the block.
@@ -1095,6 +1096,7 @@ function buildFixSection(section, plan, previewUrl) {
   } else if (!plan.extras.length) {
     lines.push(section.unified_diff ? diffFence(section.unified_diff) : '_(no diff available)_');
     lines.push(`Shown as a diff: ${plan.reason}.`);
+    lines.push(applyLine(previewUrl));
   }
   lines.push(verifiedLine(section));
   lines.push(...plan.notes);
@@ -1114,11 +1116,23 @@ function buildExtraComment(section, hunk, index) {
   ].join('\n');
 }
 
-// Where each region of a section's fix goes: the region on the finding's line is the
-// suggestion in the finding comment when the comment can carry it; every other region in
-// the diff gets its own comment; an added import outside the diff is folded into a note;
-// any other region outside the diff means the fix cannot be a suggestion at all, and the
-// finding comment shows the diff with that reason.
+// Where each region of a section's fix goes. GitHub accepts a suggestion only on lines the
+// pull request diff shows, and a reviewer who presses Commit suggestion commits exactly the
+// lines in that block, so the decision is about which fix the click would commit:
+//
+// - Every region in the diff: one suggestion per contiguous region. The region on the
+//   finding's line goes in the finding comment when the comment can carry it, else in a
+//   comment on its own lines; every other region gets its own comment.
+// - A region outside the diff that the rest of the fix is complete without (blank and comment
+//   lines only, marked `dispensable` by whoever computed the regions): the regions in the
+//   diff are still suggested, and a note says what was left out.
+// - Any other region outside the diff: no suggestion anywhere. The September trial's
+//   JavaScript repairs were this shape, an `execFile` added to a `require` line the pull
+//   request never touched plus the call site that uses it, and suggesting the call site alone
+//   commits code that does not build. The comment shows the whole diff, says why in one
+//   sentence and links the apply action that commits all of it.
+//
+// docs/validation/fix-placement-and-calibration-2026-10.md has the table and its tests.
 async function planSection(section, anchor, placement, readFileLines, diffLinesFor) {
   const plan = { suggestion: null, reason: '', notes: [], extras: [] };
   if (placement !== 'inline') {
@@ -1126,29 +1140,44 @@ async function planSection(section, anchor, placement, readFileLines, diffLinesF
     return plan;
   }
   const primary = await suggestionFor(section, anchor, readFileLines);
+  if (!section.hunk) {
+    plan.reason = primary.reason;
+    return plan;
+  }
   const diffLines = await diffLinesFor(section.path);
   const inDiff = (hunk) => {
     for (let line = hunk.start_line; line <= hunk.end_line; line += 1) if (!diffLines.has(line)) return false;
-    return !hunk.replacement_lines.some((line) => line.includes('```'));
+    return true;
   };
+  const fenced = (hunk) => hunk.replacement_lines.some((line) => line.includes('```'));
+  if ([section.hunk, ...section.extra_hunks].some(fenced)) {
+    plan.reason = NOT_SUGGESTABLE_TEXT.contains_code_fence;
+    return plan;
+  }
+  const needed = section.extra_hunks.filter((hunk) => !inDiff(hunk) && !hunk.dispensable);
+  if (needed.length) {
+    const ranges = needed.map(lineRange).join(' and ');
+    plan.reason = `the fix also changes ${ranges}, outside the pull request diff, and a suggestion without ${needed.length === 1 ? 'that change' : 'those changes'} would commit half of the verified fix`;
+    return plan;
+  }
+  const omitted = [];
   if (primary.ok) {
     plan.suggestion = primary.lines;
-  } else if (section.hunk && inDiff(section.hunk)) {
+  } else if (inDiff(section.hunk)) {
     plan.extras.push(section.hunk);
     plan.notes.push(`The change is suggested in a separate comment on ${lineRange(section.hunk)}.`);
+  } else if (section.hunk.dispensable && section.extra_hunks.some(inDiff)) {
+    omitted.push(section.hunk);
   } else {
     plan.reason = primary.reason;
     return plan;
   }
   for (const hunk of section.extra_hunks) {
-    if (inDiff(hunk)) {
-      plan.extras.push(hunk);
-    } else if (isImportHunk(hunk)) {
-      const added = addedLines(hunk).map((line) => `\`${line.trim()}\``).join(' and ');
-      plan.notes.push(`Also add ${added} at ${lineRange(hunk)}, which is outside the pull request diff.`);
-    } else {
-      return { suggestion: null, reason: `the fix also changes ${lineRange(hunk)}, outside the pull request diff`, notes: [], extras: [] };
-    }
+    if (inDiff(hunk)) plan.extras.push(hunk);
+    else omitted.push(hunk);
+  }
+  if (omitted.length) {
+    plan.notes.push(`Left out: ${omitted.map(lineRange).join(' and ')}, outside the pull request diff, ${omitted.length === 1 ? 'changes' : 'change'} only comments or blank lines; the fix is complete without ${omitted.length === 1 ? 'it' : 'them'}.`);
   }
   return plan;
 }

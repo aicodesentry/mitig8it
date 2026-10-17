@@ -96,6 +96,7 @@ def test_a_single_region_fix_carries_a_hunk():
         "end_line": 5,
         "original_lines": ["SECRET_KEY = 'django-insecure-9a$k2!f3@x0z^1v8p&q7'"],
         "replacement_lines": ["SECRET_KEY = os.environ['DJANGO_SECRET_KEY']"],
+        "dispensable": False,
     }
     assert section["extra_hunks"] == []
     assert section["verification_level"] == "development_unverified"
@@ -120,6 +121,30 @@ def test_a_two_region_fix_keeps_one_hunk_and_carries_the_other():
     assert "execFile(" in section["hunk"]["replacement_lines"][0]
     assert len(section["extra_hunks"]) == 1
     assert "require('child_process')" in "\n".join(section["extra_hunks"][0]["replacement_lines"])
+    # Both regions are needed: github-service may not suggest the call site without the require.
+    assert section["hunk"]["dispensable"] is False
+    assert section["extra_hunks"][0]["dispensable"] is False
+
+
+def test_a_comment_only_region_is_marked_dispensable():
+    """The one region github-service may leave out of a suggestion when it is outside the diff."""
+    original = "// pings a host\n" + PING_ORIGINAL
+    fixed = "// pings a host with execFile\n" + PING_ORIGINAL.replace(
+        "exec('ping -c 2 ' + req.query.host, (err, out) => res.send(out));",
+        "execFile('ping', ['-c', '2', req.query.host], (err, out) => res.send(out));",
+    )
+    finding = {
+        "fingerprint": "fp-1",
+        "rule_id": "cwe-78.child-process-exec",
+        "title": "Command injection",
+        "file_path": "routes/ping.js",
+        "line_start": 6,
+        "severity": "critical",
+    }
+    response = SimpleNamespace(candidates=[candidate([change("routes/ping.js", original, fixed)])])
+    section = remediation.fix_sections(response, {"fp-1": finding})[0]
+    assert section["hunk"]["dispensable"] is False
+    assert [hunk["dispensable"] for hunk in section["extra_hunks"]] == [True]
 
 
 def test_a_fix_in_another_file_says_so_rather_than_suggesting_the_wrong_lines():
