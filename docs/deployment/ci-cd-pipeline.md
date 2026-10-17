@@ -39,8 +39,6 @@ Each deploy workflow first runs a `filter` job that skips the deploy if its comp
 |---|---|
 | `security-gitleaks` | Scans git history for leaked secrets. |
 | `dependency-review` | PR-only. Flags newly added libraries with known high-severity vulnerabilities. |
-| `npm-audit` | Runs `npm audit --audit-level=high` for frontend, API service, GitHub service, and JS proto packages. |
-| `pip-audit` | Runs `pip-audit` for analysis service and Python proto packages. |
 | `frontend-checks` | Frontend: install, lint, test, build. |
 | `api-tests` | API service: install, lint, test, migration verification. |
 | `github-service-tests` | GitHub service: install, lint, test. |
@@ -49,9 +47,12 @@ Each deploy workflow first runs a `filter` job that skips the deploy if its comp
 | `remediation-github-tests` | GitHub adapter remediation subset, including HTTP and gRPC transport parity. |
 | `remediation-browser-tests` | Playwright remediation panel scenarios against the real Vite app with fixture API responses. |
 | `docker-build` | Builds each backend image to confirm it is buildable. Does not push or deploy. |
-| `ci-required` | Aggregator. This is the "Required CI" status the deploy workflows and branch rules key on. |
+| `ci-required` | Aggregator. The deploy workflows key on the CI run's own conclusion rather than on this job; the Dependabot auto-merge workflow keys on this check by name. No branch rule requires it today. |
 
-A separate `remediation.yml` workflow runs the remediation safety checks: the repair service pytest suite, the offline fixture and release evaluator gate, `terraform fmt -check`, `terraform validate` with no backend, and a Kustomize render with throwaway digests and private CIDRs. It never plans against a backend, never applies, and never runs `kubectl apply`. A daily `security-audit.yml` runs audit drift checks that do not gate deploys.
+A separate `remediation.yml` workflow runs the remediation safety checks: the repair service pytest suite, the offline fixture and release evaluator gate, `terraform fmt -check`, `terraform validate` with no backend, and a Kustomize render with throwaway digests and private CIDRs. It never plans against a backend, never applies, and never runs `kubectl apply`. A daily `security-audit.yml` runs `npm audit` and `pip-audit`. They live there rather than in the
+required gate on purpose: they query an advisory feed that changes without the code changing, so an
+advisory published overnight used to turn every open pull request red for a reason its author could
+not act on. A scheduled job reports the same drift without blocking work that did not cause it.
 
 CI does not push images or deploy anything. It only proves the code is safe and the images build.
 
