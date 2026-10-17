@@ -213,10 +213,18 @@ fs.promises.readFile = (file, options) => (seen(file), exists(file) ? Promise.re
 const recordCode = (kind, source) => { state.code.calls.push({ kind, source: String(source) }); };
 const noop = function compiledByHarness() {};
 global.eval = (source) => { recordCode('eval', source); };
+// `Function` is recorded and still compiles. A real package builds its wrappers with `new Function`
+// while it is being imported (`depd`, under express and body-parser), and a constructor that handed
+// back a no-op made `module.exports = deprecate.function(...)` undefined and broke every module
+// above it. The proxy keeps the constructor's identity (`Function.prototype`, `instanceof`, `name`)
+// and records every call; `load()` then discards what the import itself compiled, so `noCode`
+// speaks about the call under test and not about a dependency's wrapper.
 const RealFunction = global.Function;
-const FakeFunction = function Function(...args) { recordCode('Function', args.length ? args[args.length - 1] : ''); return noop; };
-FakeFunction.prototype = RealFunction.prototype;
-global.Function = FakeFunction;
+const recordFunction = (args) => recordCode('Function', args.length ? args[args.length - 1] : '');
+global.Function = new Proxy(RealFunction, {
+  apply: (target, self, args) => (recordFunction(args), Reflect.apply(target, self, args)),
+  construct: (target, args, newTarget) => (recordFunction(args), Reflect.construct(target, args, newTarget === global.Function ? target : newTarget)),
+});
 const realTimer = { setTimeout: global.setTimeout, setInterval: global.setInterval };
 for (const name of ['setTimeout', 'setInterval']) {
   global[name] = (handler, ...rest) => (typeof handler === 'string' ? recordCode(name, handler) : realTimer[name](handler, ...rest));
