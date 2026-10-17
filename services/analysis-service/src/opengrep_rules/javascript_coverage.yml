@@ -874,15 +874,12 @@ rules:
             - pattern: $EL.insertAdjacentHTML($POS, $V)
           - focus-metavariable: $V
         # Markup assembled anywhere, by a template literal or a concatenation that opens a
-        # tag before the value goes in.
+        # tag before the value goes in. The tag test is a regex beside the template pattern
+        # rather than a metavariable-regex on `$HTML`: binding every expression in the file to
+        # `$HTML` first cost 7.5 seconds on a 366 KB vendored file, against 1.6 this way.
         - patterns:
-          - pattern: $HTML
-          - metavariable-pattern:
-              metavariable: $HTML
-              pattern: "`...${$X}...`"
-          - metavariable-regex:
-              metavariable: $HTML
-              regex: "^`[^`]*<[a-zA-Z/][^`]*\\$\\{"
+          - pattern: "`...${$X}...`"
+          - pattern-regex: "`[^`]*<[a-zA-Z/][^`]*\\$\\{"
         - patterns:
           - pattern: $LIT + $X
           - metavariable-regex:

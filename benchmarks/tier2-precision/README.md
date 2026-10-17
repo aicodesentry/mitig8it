@@ -71,6 +71,14 @@ A no-finding case is a line that actually appeared in the replay, with `note` na
 repository, the pull request and what the narrowing was. Do not invent one: a hypothetical
 false positive is an opinion, and this file is for measurements.
 
+The one exception is a taint rule's sanitizers. A taint rule claims to honour `shlex.quote`,
+`escapeHtml` or a resolve-and-`startsWith` check, and that claim is part of the rule as much
+as its sources are, so each taint rule carries an authored no-finding case that exercises the
+sanitizers it names. Those cases say `Authored, not lifted` at the start of their `note`, so
+they cannot be mistaken for a measured false positive. Where the corpus has the sanitized
+shape, as defuddle's `escapeHtml` and systeminformation's `sanitizeString` lines do, the
+lifted line is used instead.
+
 ## The `corpus.` cases
 
 The 27 cases whose id begins `corpus.` are not written, they are lifted. Each is the code of
