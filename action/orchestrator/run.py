@@ -328,6 +328,22 @@ def thread_summary_line(threads: Optional[Dict[str, Any]]) -> str:
     return line
 
 
+def limitation_log_lines(limitations: Sequence[Dict[str, Any]]) -> List[str]:
+    """One line per coverage limitation the analysis reported, deduplicated, in order."""
+    lines: List[str] = []
+    for item in limitations:
+        message = str(item.get("message") or "").strip()
+        path = str(item.get("path") or "").strip()
+        if not message:
+            continue
+        if path and path not in message:
+            message = f"{path}: {message}"
+        line = f"Coverage limitation: {message}."
+        if line not in lines:
+            lines.append(line)
+    return lines
+
+
 def comment_fingerprint(finding: Dict[str, Any]) -> str:
     """The fingerprint the marker carries, which is never empty.
 
@@ -686,7 +702,12 @@ def _run() -> int:
 
     analysis_files = pr_scope.build_analysis_files(scoped, contents)
     log("Scanning.")
-    findings = analysis.analyze(repository, pr_number, head_sha, analysis_files)
+    analysed = analysis.analyze_with_limitations(repository, pr_number, head_sha, analysis_files)
+    findings = analysed["findings"]
+    # Stated the way the file cap is above: a log line in the analysis service's own words,
+    # such as "crypto.weak.hash reported 25 of 40 matches in bulk/hashes.py".
+    for line in limitation_log_lines(analysed["limitations"]):
+        log(line)
     counts = analysis.severity_counts(findings)
     log(
         f"{plural(len(findings), 'finding')}: {counts['critical']} critical, "
