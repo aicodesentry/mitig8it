@@ -211,27 +211,36 @@ fs.createReadStream = (file) => (seen(file), Readable.from([encode(content(file)
 Object.defineProperty(fs, 'promises', { value: Object.create(realFs.promises) });
 fs.promises.readFile = (file, options) => (seen(file), exists(file) ? Promise.resolve(encode(content(file), options)) : Promise.reject(enoent(file)));
 
-// Every way a module can turn a string into running code is recorded and none of them runs. A
-// code_injection_eval repair is proven by the payload never being compiled, so an interpreter
-// that still ran it would prove the opposite of what the test claims. `eval`, `Function`, and a
-// string timer are resolved through the global scope chain, so replacing the global binding is
-// what the module under test sees; `vm` is a fake module like the others. Each entry is
-// { kind, source }: the call that would have compiled, and the text it was given.
+// Every way a module can turn a string into running code is recorded, and all but `Function` run
+// nothing: a code_injection_eval repair is proven by the payload never being compiled. `eval`,
+// `Function`, and a string timer are resolved through the global scope chain, so replacing the
+// global binding is what the module under test sees; `vm` is a fake module like the others. Each
+// entry is { kind, source }: the call that would have compiled, and the text it was given.
 const recordCode = (kind, source) => { state.code.calls.push({ kind, source: String(source) }); };
 const noop = function compiledByHarness() {};
 global.eval = (source) => { recordCode('eval', source); };
-// `Function` is recorded and still compiles. A real package builds its wrappers with `new Function`
-// while it is being imported (`depd`, under express and body-parser), and a constructor that handed
-// back a no-op made `module.exports = deprecate.function(...)` undefined and broke every module
-// above it. The proxy keeps the constructor's identity (`Function.prototype`, `instanceof`, `name`)
-// and records every call; `load()` then discards what the import itself compiled, so `noCode`
-// speaks about the call under test and not about a dependency's wrapper.
+// `Function` is recorded and still compiles. A real package builds wrappers with `new Function` at
+// import (`depd`, under express and body-parser), and a constructor that handed back a no-op made
+// `module.exports = deprecate.function(...)` undefined and broke every module above it. The proxy
+// keeps `Function.prototype`, `instanceof` and `fn.constructor === Function`, and records a call
+// unless it comes from a file under node_modules: a dependency's wrapper is not the code under
+// test, and counting it would fail `noCode` on both trees. The recording, not the refusal to
+// compile, is what a code-injection proof asserts on.
 const RealFunction = global.Function;
-const recordFunction = (args) => recordCode('Function', args.length ? args[args.length - 1] : '');
+const fromDependency = () => {
+  const prepare = Error.prepareStackTrace;
+  Error.prepareStackTrace = (_, frames) => frames;
+  const frames = new Error().stack;
+  Error.prepareStackTrace = prepare;
+  const caller = list(frames).map((f) => f.getFileName() || '').find((f) => f && f !== __filename && !f.startsWith('node:'));
+  return Boolean(caller) && /[\\/]node_modules[\\/]/.test(caller.startsWith('file:') ? fileURLToPath(caller) : caller);
+};
+const recordFunction = (args) => fromDependency() || recordCode('Function', args.length ? args[args.length - 1] : '');
 global.Function = new Proxy(RealFunction, {
   apply: (target, self, args) => (recordFunction(args), Reflect.apply(target, self, args)),
   construct: (target, args, newTarget) => (recordFunction(args), Reflect.construct(target, args, newTarget === global.Function ? target : newTarget)),
 });
+RealFunction.prototype.constructor = global.Function;
 const realTimer = { setTimeout: global.setTimeout, setInterval: global.setInterval };
 for (const name of ['setTimeout', 'setInterval']) {
   global[name] = (handler, ...rest) => (typeof handler === 'string' ? recordCode(name, handler) : realTimer[name](handler, ...rest));
