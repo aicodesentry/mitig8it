@@ -133,11 +133,13 @@ development sandbox rather than isolated sandbox. Nothing is applied until you c
 suggestion**.
 
 A fix that changes more than one region gets a suggestion for the region on the finding's line
-and a second comment for each other region the pull request touches; an added import outside the
-diff becomes a note rather than a comment. A fix that changes several files, or a region the pull
-request does not touch at all, is shown as a diff with one line saying why it cannot be a
-suggestion, because a suggestion covering part of a verified change is not the change that was
-verified.
+and a second comment for each other region the pull request touches. When a region lies outside
+the diff, the fix is a suggestion only if that region changes nothing but comments or blank
+lines, and a note says it was left out. Any other region outside the diff, an added import
+included, and any fix that changes several files, is shown as a diff with one line saying why it
+cannot be a suggestion and how to apply it with `git apply`, because a suggestion covering part
+of a verified change is not the change that was verified: the call site without its import does
+not build.
 
 Five repair families are supported, all of them on both JavaScript and Python:
 `sql_parameterization`, `command_arguments`, `path_containment`, `hardcoded_credential` and

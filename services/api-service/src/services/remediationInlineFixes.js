@@ -305,6 +305,28 @@ function primaryRegion(regions, findingLine) {
   }, null).region;
 }
 
+// Whether the rest of a fix is complete without this region: true only when every line the
+// region adds or removes is blank or a whole-line comment. github-service publishes the
+// regions inside the pull request diff as suggestions and needs to know whether a region
+// outside the diff can be left out of them. A dropped `require` or a dropped guard leaves
+// code that does not build or does not fix anything, so only a region that cannot change
+// what the program does may be left out, and anything this test cannot classify is needed.
+// The comment forms are deliberately narrow: `#` must be followed by a space so a JavaScript
+// private field is code, and `*` must be followed by a space, a slash or nothing so a
+// generator method is code. action/orchestrator/inline_fixes.py ports this function, and
+// action/tests/test_inline_fix_parity.py runs both on the same inputs.
+const COMMENT_ONLY_LINE = /^\s*(?:\/\/|\/\*|\*(?:\s|\/|$)|#(?:\s|$)|<!--)/;
+
+function isDispensableRegion(region) {
+  const original = Array.isArray(region?.original_lines) ? region.original_lines : [];
+  const replacement = Array.isArray(region?.replacement_lines) ? region.replacement_lines : [];
+  const changed = [
+    ...replacement.filter((line) => !original.includes(line)),
+    ...original.filter((line) => !replacement.includes(line)),
+  ];
+  return changed.length > 0 && changed.every((line) => !String(line).trim() || COMMENT_ONLY_LINE.test(String(line)));
+}
+
 // One section per candidate and per finding it proves, one line per finding that a
 // proven finding's candidate covers on the same lines, and one line per remaining
 // finding the repair service reported as skipped. The candidate's change in the
@@ -335,8 +357,9 @@ function buildSections({ job, candidates = [], findings = [] }) {
         const regions = computeRegions(change.original, change.replacement, finding.line_start);
         if (!regions.length) reason = 'no_line_change';
         else {
-          hunk = primaryRegion(regions, finding.line_start);
-          extraHunks = regions.filter((region) => region !== hunk);
+          const marked = regions.map((region) => ({ ...region, dispensable: isDispensableRegion(region) }));
+          hunk = primaryRegion(marked, finding.line_start);
+          extraHunks = marked.filter((region) => region !== hunk);
         }
       }
       const section = {
@@ -509,5 +532,5 @@ async function recordPublishedFixOutcomes(context, sections) {
 
 module.exports = {
   publishInlineFixes, buildSections, attachFindingBodies, computeHunk, computeRegions,
-  evidenceLines, countHunks, proofLine, sameLines, groupByOverlap, publishedFixOutcomes,
+  evidenceLines, countHunks, proofLine, sameLines, groupByOverlap, publishedFixOutcomes, isDispensableRegion,
 };

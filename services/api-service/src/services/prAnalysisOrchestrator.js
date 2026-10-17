@@ -10,6 +10,8 @@ const { validateSuggestedFix, __private: validatorPrivate } = require('./suggest
 const findingsDb = require('../db/findings');
 const analysisRunsDb = require('../db/analysisRuns');
 const repositoriesDb = require('../db/repositories');
+const qualityMetricsDb = require('../db/qualityMetrics');
+const qualityMetrics = require('./qualityMetrics');
 const remediationAutoGenerate = require('./remediationAutoGenerate');
 
 // Mirrors CODE_EXTENSIONS and TEMPLATE_EXTENSIONS in
@@ -414,6 +416,34 @@ function buildPlacementLine(total, options = {}) {
   };
 }
 
+// Where the confidence came from, when the analysis service calibrated it. A measured number
+// says how many outcomes it was measured on; a static constant says it is the rule's prior
+// and how far the rule is from being measured, so a hand-set 80% never reads as a
+// measurement. Without calibration (RULE_CALIBRATION_ENABLED off) the line is unchanged.
+//
+// The printed number is the measured precision when there is one. `finding.confidence` is
+// left as it was, because `explainInlineCommentDecision` gates on it with thresholds tuned to
+// the static constants (services/analysis-service/src/rule_precision.py says why).
+function displayedConfidence(finding) {
+  const precision = evidenceDetailsForFinding(finding)?.extra?.rule_precision;
+  const measured = precision?.basis === 'measured' ? Number(precision.precision) : NaN;
+  return Number.isFinite(measured) ? measured : Number(finding.confidence);
+}
+
+function confidenceBasisNote(finding) {
+  const precision = evidenceDetailsForFinding(finding)?.extra?.rule_precision;
+  if (!precision || typeof precision !== 'object') return '';
+  const outcomes = Number(precision.outcomes) || 0;
+  const minimum = Number(precision.minimum_outcomes) || 0;
+  if (precision.basis === 'measured') {
+    return ` (this rule's measured precision, lower bound over ${outcomes} reviewed finding${outcomes === 1 ? '' : 's'})`;
+  }
+  if (precision.basis === 'static_prior') {
+    return ` (this rule's prior, not yet measured: ${outcomes} of ${minimum} reviewed findings)`;
+  }
+  return '';
+}
+
 function buildReviewComment(finding, options = {}) {
   const suggestionPatch = normalizeSuggestionPatch(finding.remediation_patch);
   const suggestionValidation = validateSuggestedFix({
@@ -441,7 +471,7 @@ function buildReviewComment(finding, options = {}) {
     `> ${markdownEscape(finding.evidence || finding.description)}`,
     '',
     finding.cwe_id ? `**CWE:** ${finding.cwe_id}` : null,
-    `**Confidence:** ${Math.round(Number(finding.confidence) * 100)}%`,
+    `**Confidence:** ${Math.round(displayedConfidence(finding) * 100)}%${confidenceBasisNote(finding)}`,
     inTestCode
       ? `_In test code${scannerSeverity ? `; scanner severity ${scannerSeverity}` : ''}. Informational only, it does not block this pull request._`
       : null,
@@ -1283,6 +1313,20 @@ function observeFindingsPosted(counts = {}) {
   }
 }
 
+// The per-rule outcome counts the analysis service calibrates each rule's precision from
+// (services/analysis-service/src/rule_precision.py). Off unless RULE_CALIBRATION_ENABLED is
+// "true", and never a reason to fail a review: without the counts every finding keeps the
+// static confidence it had before calibration existed.
+async function loadRuleStats(installationId, runId) {
+  if (process.env.RULE_CALIBRATION_ENABLED !== 'true') return {};
+  try {
+    return qualityMetrics.ruleStats(await qualityMetricsDb.readRuleOutcomes({ installationId }));
+  } catch (error) {
+    logger.warn('Rule outcome counts could not be read; findings keep their static confidence', { runId, error: error.message });
+    return {};
+  }
+}
+
 async function runAnalysisJob(payload) {
   const {
     analysis_run_id: runId,
@@ -1386,10 +1430,12 @@ async function runAnalysisJob(payload) {
     } catch (error) {
       logger.warn('Failed to fetch repo profile', { runId, error: error.message });
     }
+    const ruleStats = await loadRuleStats(installationId, runId);
     const tier3 = await requiredTier('/analyze/pr/tier3', {
       ...analysisPayload, findings: allFindings,
       file_patches: Object.fromEntries(files.map(file => [file.path, file.patch || ''])),
       repo_profile: repoProfile,
+      rule_stats: ruleStats,
     }, 120000);
     allFindings = [...new Map(tier3.findings.map(finding => [
       finding.fingerprint || calculateFingerprint(normalizeFinding(finding)), finding,

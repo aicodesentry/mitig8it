@@ -359,6 +359,9 @@ def _hunks_for_finding(
     )
     if not regions:
         return None, [], "no_line_change"
+    regions = [
+        {**region, "dispensable": inline_fixes.is_dispensable_region(region)} for region in regions
+    ]
     hunk = inline_fixes.primary_region(regions, finding_line)
     extras = [region for region in regions if region is not hunk]
     return hunk, extras, ""

@@ -217,3 +217,72 @@ def test_max_diff_chars_matches_the_api_service():
     source = INLINE_FIXES_JS.read_text(encoding="utf-8")
     line = next(line for line in source.splitlines() if line.startswith("const MAX_DIFF_CHARS = "))
     assert int(line.split("=")[1].strip().rstrip(";")) == inline_fixes.MAX_DIFF_CHARS
+
+
+# Placement: whether a region outside the pull request diff may be left out of the suggestion.
+# The answer travels on each region as `dispensable` and github-service acts on it, so the App
+# and the Action must give the same answer on the same region.
+DISPENSABLE_CASES = [
+    {"original_lines": ["// uses string SQL"], "replacement_lines": ["// uses parameterised SQL"]},
+    {"original_lines": ["import os"], "replacement_lines": ["import os", "", "# from the environment"]},
+    {"original_lines": [" * old note"], "replacement_lines": [" * new note", " */"]},
+    {"original_lines": ["<!-- a -->"], "replacement_lines": ["<!-- b -->"]},
+    {
+        "original_lines": ["const cp = require('child_process');"],
+        "replacement_lines": [
+            "const cp = require('child_process');",
+            "const { execFile } = require('child_process');",
+        ],
+    },
+    {"original_lines": ["import os"], "replacement_lines": ["import os", "import ast"]},
+    {"original_lines": ["  #count = 0;"], "replacement_lines": ["  #count = 1;"]},
+    {"original_lines": ["  *items() {"], "replacement_lines": ["  *entries() {"]},
+    {"original_lines": ["// a"], "replacement_lines": ["// b", "validate(id);"]},
+    {"original_lines": ["x"], "replacement_lines": ["x"]},
+    {"original_lines": ["#"], "replacement_lines": ["# note"]},
+    {},
+]
+
+
+def node_dispensable(cases: list[dict]) -> list:
+    source = INLINE_FIXES_JS.read_text(encoding="utf-8")
+    assert "function isDispensableRegion(" in source, "isDispensableRegion is no longer declared"
+    declaration = next(
+        line for line in source.splitlines() if line.startswith("const COMMENT_ONLY_LINE = ")
+    )
+    script = "\n".join(
+        [
+            declaration,
+            extract(source, "function isDispensableRegion("),
+            "const cases = JSON.parse(process.env.PARITY_CASES);",
+            "process.stdout.write(JSON.stringify(cases.map(isDispensableRegion)));",
+        ]
+    )
+    completed = subprocess.run(
+        ["node", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+        env={**os.environ, "PARITY_CASES": json.dumps(cases)},
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.repo_definition
+def test_is_dispensable_region_matches_the_api_service():
+    expected = node_dispensable(DISPENSABLE_CASES)
+    got = [inline_fixes.is_dispensable_region(case) for case in DISPENSABLE_CASES]
+    assert got == expected
+    # And the cases mean what they say: four comment-only regions, then eight that are needed.
+    assert got == [True, True, True, True, False, False, False, False, False, False, True, False]
+
+
+def test_the_trial_shape_import_is_not_dispensable():
+    """The require the call site needs. Left out, the suggestion commits code that does not build."""
+    regions = inline_fixes.compute_regions(TWO_REGION_ORIGINAL, TWO_REGION_REPLACEMENT, 5)
+    hunk = inline_fixes.primary_region(regions, 5)
+    extra = next(region for region in regions if region is not hunk)
+    assert inline_fixes.is_dispensable_region(extra) is False
+    assert inline_fixes.is_dispensable_region(hunk) is False

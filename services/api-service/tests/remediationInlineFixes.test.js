@@ -259,6 +259,51 @@ test('per-finding candidates each get their own section: a suggestion on the fin
   expect(sections[1].evidence[0]).toBe('Regression test .mitig8it/regression/f-eval.test.py failed on the original code and passed on the fix.');
 });
 
+// Placement (docs/validation/fix-placement-and-calibration-2026-10.md). github-service
+// publishes the regions inside the pull request diff as suggestions and may leave a region
+// outside the diff out of them only when the fix is complete without it. That judgement is
+// made here, where the regions are computed, and travels on each region as `dispensable`.
+describe('isDispensableRegion', () => {
+  const region = (original_lines, replacement_lines) => ({ start_line: 1, end_line: original_lines.length || 1, original_lines, replacement_lines });
+
+  test.each([
+    ['a rewritten line comment', region(['// uses string SQL'], ['// uses parameterised SQL'])],
+    ['an added Python comment and a blank line', region(['import os'], ['import os', '', '# keys come from the environment'])],
+    ['a block comment', region([' * old note'], [' * new note', ' */'])],
+    ['an HTML comment', region(['<!-- a -->'], ['<!-- b -->'])],
+  ])('%s is dispensable', (_, value) => {
+    expect(inline.isDispensableRegion(value)).toBe(true);
+  });
+
+  test.each([
+    // The September trial's JavaScript shape: the call site needs this line to build.
+    ['an added require', region(["const cp = require('child_process');"], ["const cp = require('child_process');", "const { execFile } = require('child_process');"])],
+    ['an added Python import', region(['import os'], ['import os', 'import ast'])],
+    ['a rewritten statement', region(['  return rows[0];'], ['  return rows[0] || null;'])],
+    ['a JavaScript private field, which starts with #', region(['  #count = 0;'], ['  #count = 1;'])],
+    ['a generator method, which starts with *', region(['  *items() {'], ['  *entries() {'])],
+    ['a comment plus one line of code', region(['// a'], ['// b', 'validate(id);'])],
+    ['a region that changes nothing', region(['x'], ['x'])],
+    ['a malformed region', {}],
+  ])('%s is needed', (_, value) => {
+    expect(inline.isDispensableRegion(value)).toBe(false);
+  });
+
+  test('buildSections marks every region it sends, the primary one included', () => {
+    const original = ['// orders use string SQL', 'const db = require("./db");', 'async function order(id) {', '  const rows = await db.query(`SELECT * FROM orders WHERE id = ${id}`);', '  return rows[0];', '}'].join('\n') + '\n';
+    const fixed = original
+      .replace('// orders use string SQL', '// orders use parameterised SQL')
+      .replace('db.query(`SELECT * FROM orders WHERE id = ${id}`)', "db.query('SELECT * FROM orders WHERE id = $1', [id])");
+    const [section] = inline.buildSections(context({
+      candidates: [candidate({ preview: { ...candidate().preview, changes: [{ path: 'services/orders.js', original, replacement: fixed, unified_diff: 'diff' }] } })],
+      findings: [{ id: 'f1', title: 'SQL injection', file_path: 'services/orders.js', line_start: 4, line_end: 4, fingerprint: 'fp-sql' }],
+      job: { ...context().job, failure_reason: null },
+    }));
+    expect(section.hunk).toMatchObject({ start_line: 4, dispensable: false });
+    expect(section.extra_hunks).toEqual([expect.objectContaining({ start_line: 1, dispensable: true })]);
+  });
+});
+
 test('publication sends every section once with a stable idempotency key and records the head it was written for', async () => {
   remediationDb.jobPublishContext.mockResolvedValue(context());
   const github = { publishFindingFixSections: jest.fn(async () => ({ state: 'published', results: [{ finding_fingerprint: 'fp-sql', mode: 'suggestion', updated: true }] })) };

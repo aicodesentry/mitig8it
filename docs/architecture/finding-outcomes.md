@@ -88,6 +88,14 @@ their sum is an exact count of distinct findings applied.
 never applied and never re-analysed away. The reviewer closed the thread and nothing was
 fixed, which is a rejection.
 
+`outcome_positive` and `outcome_negative` (migration 0029) are per-rule evidence of whether
+the rule was right. Positive is a fix applied in the app or on GitHub, or a thread resolved
+after the finding was fixed some other way; a thread resolved after an applied fix is the
+apply, not a second positive. Negative is a dismissal for `wrong_rule_match` or
+`not_exploitable`. A test-code dismissal, an accepted risk, a suppression and a thread
+resolved with no fix say nothing about whether the rule matched a real defect and count in
+neither.
+
 The SQL is in `services/api-service/src/db/qualityMetrics.js`. One statement rebuilds all
 four grains through `GROUPING SETS` and upserts on the unique index; a second statement
 prunes any window row the pass did not touch. Running it twice changes nothing.
@@ -127,3 +135,19 @@ the raw log, so a large log cannot make the dashboard slow. A repository the cal
 reach is refused with 404 rather than answered with an empty roll-up.
 
 The dashboard shows the three rates over 30 days; the reports page shows the rule table.
+Each `by_rule` row also carries `outcome_positive`, `outcome_negative`, `outcomes` and
+`outcome_precision_lower_bound`, the Wilson lower bound of the outcomes alone, null below 20
+outcomes.
+
+### Per-rule precision for triage
+
+With `RULE_CALIBRATION_ENABLED=true` the analysis orchestrator reads the installation's
+per-rule outcome sums over 365 days (`readRuleOutcomes`) before tier 3 and sends them to the
+analysis service as `rule_stats`, beside `repo_profile`. The analysis service pools them with
+each rule's corpus measurement and records the result on the finding as
+`evidence_details.extra.rule_precision`. The review comment and the dashboard print the
+measured precision when there is one and say a rule under 20 outcomes is on its static
+prior; `confidence` itself, which the inline-comment gate reads, is left unchanged. The formula, the
+thresholds and a worked example are in
+[fix-placement-and-calibration-2026-10.md](../validation/fix-placement-and-calibration-2026-10.md).
+The flag is off by default, and a failed read sends no counts rather than failing the review.

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 import { findingAPI, DISMISSAL_REASONS } from '../services/api'
 import RemediationPanel from '../components/RemediationPanel'
+import { confidenceLabel } from '../lib/confidence'
 
 export default function FindingDetailPage() {
   const { findingId } = useParams()
@@ -35,7 +36,7 @@ export default function FindingDetailPage() {
         <p className="mt-2 text-sm text-neutral-600">
           {finding.repository_full_name} • PR #{finding.pr_number} • {finding.category}
         </p>
-        <p className="mt-2 text-sm text-neutral-600">Severity: {finding.severity} • Confidence: {Math.round(Number(finding.confidence) * 100)}%</p>
+        <p className="mt-2 text-sm text-neutral-600">Severity: {finding.severity} • Confidence: {confidenceLabel(finding)}</p>
       </div>
 
       <div className="rounded-xl border border-neutral-200 bg-white p-6">

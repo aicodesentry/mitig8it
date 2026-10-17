@@ -8,7 +8,7 @@
 const COUNT_COLUMNS = [
   'findings_new', 'fixes_published', 'applied_in_app', 'applied_on_github', 'dismissed',
   'accepted_risk', 'suppressed', 'thread_resolved', 'thread_resolved_without_fix',
-  'fixed_by_reanalysis', 'residual_after_apply',
+  'fixed_by_reanalysis', 'residual_after_apply', 'outcome_positive', 'outcome_negative',
 ];
 
 // Counts arrive from pg as strings when the column is a bigint and as numbers when it is
@@ -52,6 +52,53 @@ function residualRate(row) {
   return ratio(count(row, 'residual_after_apply'), appliedCount(row));
 }
 
+// Per-rule precision from outcomes. A rule's findings either turned out real (a fix applied,
+// or a thread resolved after the finding was fixed) or the rule was wrong (dismissed as
+// wrong_rule_match or not_exploitable); the roll-up counts both per rule. Below
+// MINIMUM_RULE_OUTCOMES the count is too small to say anything and the bound is null, the
+// same "no denominator" answer the rates give. The analysis service applies the same
+// minimum and pools these counts with the rule's corpus measurement
+// (services/analysis-service/src/rule_precision.py); the number here is the outcomes alone.
+const MINIMUM_RULE_OUTCOMES = 20;
+const WILSON_Z = 1.96;
+
+// The lower end of the Wilson score interval at 95%: the precision a rule has shown at
+// least, given how many times it has been judged. Null with no trials.
+function wilsonLowerBound(successes, trials, z = WILSON_Z) {
+  const n = Number(trials);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const k = Math.min(Math.max(Number(successes) || 0, 0), n);
+  const phat = k / n;
+  const z2 = z * z;
+  const centre = phat + z2 / (2 * n);
+  const margin = z * Math.sqrt((phat * (1 - phat) + z2 / (4 * n)) / n);
+  return Math.max(0, (centre - margin) / (1 + z2 / n));
+}
+
+function outcomePrecision(row) {
+  const positive = count(row, 'outcome_positive');
+  const outcomes = positive + count(row, 'outcome_negative');
+  if (outcomes < MINIMUM_RULE_OUTCOMES) return null;
+  return wilsonLowerBound(positive, outcomes);
+}
+
+// What the analysis service needs to calibrate each rule: the outcome counts, keyed by rule,
+// and the minimum it must apply. The `rules` key is what tells the analysis service that
+// calibration was asked for; an installation with no outcomes yet still sends it, empty, so
+// every finding says its confidence is a prior.
+function ruleStats(rows = []) {
+  const rules = {};
+  for (const row of rows) {
+    const ruleId = String(row?.rule_id || '');
+    if (!ruleId) continue;
+    const current = rules[ruleId] || { positive: 0, negative: 0 };
+    current.positive += count(row, 'outcome_positive');
+    current.negative += count(row, 'outcome_negative');
+    rules[ruleId] = current;
+  }
+  return { minimum_outcomes: MINIMUM_RULE_OUTCOMES, rules };
+}
+
 // Sum a set of daily rows into one. Counts add across days and across grains of the same
 // kind; rates never do, which is why they are computed from the sum and not averaged.
 function totals(rows = []) {
@@ -74,6 +121,8 @@ function summarize(rows = [], extra = {}) {
     apply_rate: applyRate(summed),
     dismiss_rate: dismissRate(summed),
     residual_rate: residualRate(summed),
+    outcomes: count(summed, 'outcome_positive') + count(summed, 'outcome_negative'),
+    outcome_precision_lower_bound: outcomePrecision(summed),
   };
 }
 
@@ -92,6 +141,7 @@ function rankRules(summaries = [], limit = 20) {
 }
 
 module.exports = {
+  MINIMUM_RULE_OUTCOMES, wilsonLowerBound, outcomePrecision, ruleStats,
   COUNT_COLUMNS, ratio, appliedCount, applyRate, dismissRate, residualRate,
   totals, summarize, rankRules,
 };

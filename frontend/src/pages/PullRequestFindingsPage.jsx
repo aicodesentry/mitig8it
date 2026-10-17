@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { findingAPI, suppressionAPI, DISMISSAL_REASONS } from '../services/api'
 import RemediationPanel from '../components/RemediationPanel'
+import { confidenceLabel } from '../lib/confidence'
 import { getPrivateCacheEpoch } from '../services/privateCache'
 
 const severityOrder = { critical: 0, high: 1, medium: 2, low: 3, info: 4 }
@@ -97,7 +98,7 @@ export default function PullRequestFindingsPage() {
             <div>
               <h2 className="text-lg font-semibold text-neutral-900">{finding.title}</h2>
               <p className="text-sm text-neutral-500">
-                {finding.category} • confidence {Math.round(Number(finding.confidence) * 100)}%
+                {finding.category} • confidence {confidenceLabel(finding)}
               </p>
               <p className="mt-1 flex items-center gap-2">
                 <span

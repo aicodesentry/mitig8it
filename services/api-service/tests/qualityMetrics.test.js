@@ -143,3 +143,48 @@ describe('ratio', () => {
     expect(quality.ratio(1, Number.NaN)).toBeNull();
   });
 });
+
+// Per-rule precision from outcomes (docs/validation/fix-placement-and-calibration-2026-10.md).
+// The analysis service pools these counts with each rule's corpus measurement; the number
+// here is the outcomes alone, and the minimum is the same one the analysis service applies.
+describe('rule precision from outcomes', () => {
+  test('the Wilson lower bound matches the values worked by hand in the doc', () => {
+    // 21 of 25: the doc's example, three corpus findings pooled with 22 outcomes.
+    expect(quality.wilsonLowerBound(21, 25)).toBeCloseTo(0.6535, 4);
+    expect(quality.wilsonLowerBound(20, 20)).toBeCloseTo(0.8389, 4);
+    expect(quality.wilsonLowerBound(0, 20)).toBe(0);
+    expect(quality.wilsonLowerBound(3, 3)).toBeCloseTo(0.4385, 4);
+  });
+
+  test('is null, never zero, with no trials', () => {
+    expect(quality.wilsonLowerBound(0, 0)).toBeNull();
+    expect(quality.wilsonLowerBound(5, -1)).toBeNull();
+  });
+
+  test('a rule below the minimum number of outcomes has no measured precision', () => {
+    expect(quality.MINIMUM_RULE_OUTCOMES).toBe(20);
+    expect(quality.outcomePrecision(row({ outcome_positive: 19 }))).toBeNull();
+    expect(quality.outcomePrecision(row({ outcome_positive: 18, outcome_negative: 2 }))).toBeCloseTo(quality.wilsonLowerBound(18, 20), 10);
+  });
+
+  test('summarize carries the outcome counts and the bound beside the three rates', () => {
+    const summary = quality.summarize([row({ outcome_positive: 10, outcome_negative: 1 }), row({ outcome_positive: '9', outcome_negative: '2' })], { rule_id: 'r' });
+    expect(summary).toMatchObject({ rule_id: 'r', outcome_positive: 19, outcome_negative: 3, outcomes: 22 });
+    expect(summary.outcome_precision_lower_bound).toBeCloseTo(quality.wilsonLowerBound(19, 22), 10);
+    expect(quality.summarize([]).outcome_precision_lower_bound).toBeNull();
+  });
+
+  test('ruleStats is the payload the analysis service reads, rules keyed by id', () => {
+    expect(quality.ruleStats([
+      { rule_id: 'opengrep.a', outcome_positive: '4', outcome_negative: 1 },
+      { rule_id: 'opengrep.a', outcome_positive: 1, outcome_negative: 0 },
+      { rule_id: 'path.traversal.user_path', outcome_positive: 0, outcome_negative: 2 },
+      { rule_id: '', outcome_positive: 9 },
+    ])).toEqual({
+      minimum_outcomes: 20,
+      rules: { 'opengrep.a': { positive: 5, negative: 1 }, 'path.traversal.user_path': { positive: 0, negative: 2 } },
+    });
+    // No outcomes yet still says calibration was asked for, so findings can say they carry a prior.
+    expect(quality.ruleStats([])).toEqual({ minimum_outcomes: 20, rules: {} });
+  });
+});

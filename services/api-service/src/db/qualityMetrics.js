@@ -33,7 +33,8 @@ facts AS (
          COALESCE(o.rule_id, 'unknown') AS rule_id,
          o.created_at::date AS day,
          ${FINDING_KEY} AS finding_key,
-         o.outcome
+         o.outcome,
+         o.reason
     FROM finding_outcomes o
     CROSS JOIN bounds b
    WHERE o.installation_id = $1
@@ -48,12 +49,21 @@ fixed_keys AS (
    WHERE o.installation_id = $1
      AND o.outcome IN ('applied_in_app', 'applied_on_github', 'fixed_by_reanalysis')
 ),
+-- Ever applied, whatever day. A thread resolved after an applied fix is the same positive
+-- outcome as the apply and is not counted a second time.
+applied_keys AS (
+  SELECT DISTINCT ${FINDING_KEY} AS finding_key
+    FROM finding_outcomes o
+   WHERE o.installation_id = $1
+     AND o.outcome IN ('applied_in_app', 'applied_on_github')
+),
 per_finding_day AS (
   SELECT repository_id, rule_id, day, finding_key,
          bool_or(outcome = 'fix_published') AS fix_published,
          bool_or(outcome = 'applied_in_app') AS applied_in_app,
          bool_or(outcome = 'applied_on_github') AS applied_on_github,
          bool_or(outcome = 'dismissed') AS dismissed,
+         bool_or(outcome = 'dismissed' AND reason IN ('wrong_rule_match', 'not_exploitable')) AS dismissed_rule_wrong,
          bool_or(outcome = 'accepted_risk') AS accepted_risk,
          bool_or(outcome = 'suppressed') AS suppressed,
          bool_or(outcome = 'thread_resolved') AS thread_resolved,
@@ -73,9 +83,13 @@ outcome_counts AS (
          COUNT(*) FILTER (WHERE p.thread_resolved)::int AS thread_resolved,
          COUNT(*) FILTER (WHERE p.thread_resolved AND k.finding_key IS NULL)::int AS thread_resolved_without_fix,
          COUNT(*) FILTER (WHERE p.fixed_by_reanalysis)::int AS fixed_by_reanalysis,
-         COUNT(*) FILTER (WHERE p.residual_after_apply)::int AS residual_after_apply
+         COUNT(*) FILTER (WHERE p.residual_after_apply)::int AS residual_after_apply,
+         COUNT(*) FILTER (WHERE p.applied_in_app OR p.applied_on_github
+           OR (p.thread_resolved AND k.finding_key IS NOT NULL AND a.finding_key IS NULL))::int AS outcome_positive,
+         COUNT(*) FILTER (WHERE p.dismissed_rule_wrong)::int AS outcome_negative
     FROM per_finding_day p
     LEFT JOIN fixed_keys k ON k.finding_key = p.finding_key
+    LEFT JOIN applied_keys a ON a.finding_key = p.finding_key
    GROUP BY 1, 2, 3
 ),
 base AS (
@@ -92,7 +106,9 @@ base AS (
          COALESCE(c.thread_resolved, 0) AS thread_resolved,
          COALESCE(c.thread_resolved_without_fix, 0) AS thread_resolved_without_fix,
          COALESCE(c.fixed_by_reanalysis, 0) AS fixed_by_reanalysis,
-         COALESCE(c.residual_after_apply, 0) AS residual_after_apply
+         COALESCE(c.residual_after_apply, 0) AS residual_after_apply,
+         COALESCE(c.outcome_positive, 0) AS outcome_positive,
+         COALESCE(c.outcome_negative, 0) AS outcome_negative
     FROM new_findings n
     FULL OUTER JOIN outcome_counts c
       ON c.repository_id = n.repository_id AND c.rule_id = n.rule_id AND c.day = n.day
@@ -101,13 +117,14 @@ INSERT INTO quality_metrics_daily (
   installation_id, repository_id, rule_id, day, findings_new, fixes_published,
   applied_in_app, applied_on_github, dismissed, accepted_risk, suppressed,
   thread_resolved, thread_resolved_without_fix, fixed_by_reanalysis,
-  residual_after_apply, computed_at
+  residual_after_apply, outcome_positive, outcome_negative, computed_at
 )
 SELECT $1, repository_id, rule_id, day,
        SUM(findings_new)::int, SUM(fixes_published)::int, SUM(applied_in_app)::int,
        SUM(applied_on_github)::int, SUM(dismissed)::int, SUM(accepted_risk)::int,
        SUM(suppressed)::int, SUM(thread_resolved)::int, SUM(thread_resolved_without_fix)::int,
-       SUM(fixed_by_reanalysis)::int, SUM(residual_after_apply)::int, $3::timestamptz
+       SUM(fixed_by_reanalysis)::int, SUM(residual_after_apply)::int,
+       SUM(outcome_positive)::int, SUM(outcome_negative)::int, $3::timestamptz
   FROM base
  WHERE day IS NOT NULL
  -- The four grains of the table, written in one statement so they can never disagree.
@@ -127,6 +144,8 @@ DO UPDATE SET
   thread_resolved_without_fix = EXCLUDED.thread_resolved_without_fix,
   fixed_by_reanalysis = EXCLUDED.fixed_by_reanalysis,
   residual_after_apply = EXCLUDED.residual_after_apply,
+  outcome_positive = EXCLUDED.outcome_positive,
+  outcome_negative = EXCLUDED.outcome_negative,
   computed_at = EXCLUDED.computed_at`;
 
 // A day whose findings were all deleted with their repository produces no row this pass.
@@ -193,7 +212,8 @@ async function readWindow({ installationIds = [], days = 30, repositoryId = null
   const result = await pool.query(
     `SELECT installation_id, repository_id, rule_id, day, findings_new, fixes_published,
             applied_in_app, applied_on_github, dismissed, accepted_risk, suppressed,
-            thread_resolved, thread_resolved_without_fix, fixed_by_reanalysis, residual_after_apply
+            thread_resolved, thread_resolved_without_fix, fixed_by_reanalysis, residual_after_apply,
+            outcome_positive, outcome_negative
        FROM quality_metrics_daily
       WHERE installation_id = ANY($1::bigint[])
         AND day >= (CURRENT_DATE - ($2::int - 1))::date
@@ -214,7 +234,32 @@ async function userCanReadRepository(userId, repositoryId) {
   return result.rowCount > 0;
 }
 
+// Per-rule outcome sums for one installation, read from the installation's per-rule grain.
+// The window is long on purpose: a rule earns a measured precision only from a minimum
+// number of outcomes, and most rules collect them slowly. Only rules with at least one
+// outcome are returned.
+const RULE_OUTCOME_WINDOW_DAYS = 365;
+
+async function readRuleOutcomes({ installationId, days = RULE_OUTCOME_WINDOW_DAYS } = {}) {
+  if (installationId == null || installationId === '') return [];
+  const result = await pool.query(
+    `SELECT rule_id,
+            SUM(outcome_positive)::int AS outcome_positive,
+            SUM(outcome_negative)::int AS outcome_negative
+       FROM quality_metrics_daily
+      WHERE installation_id = $1
+        AND repository_id IS NULL
+        AND rule_id IS NOT NULL
+        AND day >= (CURRENT_DATE - ($2::int - 1))::date
+      GROUP BY rule_id
+     HAVING SUM(outcome_positive) + SUM(outcome_negative) > 0`,
+    [installationId, days]
+  );
+  return result.rows;
+}
+
 module.exports = {
+  RULE_OUTCOME_WINDOW_DAYS, readRuleOutcomes,
   DEFAULT_WINDOW_DAYS, recomputeInstallation, installationsWithActivity,
   installationIdsForUser, readWindow, userCanReadRepository,
 };

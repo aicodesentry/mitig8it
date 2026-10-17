@@ -4,6 +4,7 @@
 var grpc = require('@grpc/grpc-js');
 var analysis_pb = require('./analysis_pb.js');
 var common_pb = require('./common_pb.js');
+var google_protobuf_struct_pb = require('google-protobuf/google/protobuf/struct_pb.js');
 
 function serialize_mitig8it_analysis_v1_AnalyzePullRequestRequest(arg) {
   if (!(arg instanceof analysis_pb.AnalyzePullRequestRequest)) {
