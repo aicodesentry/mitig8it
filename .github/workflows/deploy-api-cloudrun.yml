@@ -48,6 +48,7 @@ jobs:
       && github.event.workflow_run.event == 'push'
       && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       deploy: ${{ steps.decide.outputs.deploy }}
     steps:
@@ -81,6 +82,7 @@ jobs:
     needs: filter
     if: needs.filter.outputs.deploy == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -157,9 +159,23 @@ jobs:
       - name: Configure Docker auth
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
+      # Actions redacts only the secrets it issued itself. A connection string read out
+      # of Secret Manager is an ordinary string to the runner, so anything that echoes it
+      # later prints the production database password in a log anyone with read access can
+      # open. Registering it with ::add-mask:: before it reaches $GITHUB_ENV is what makes
+      # the rest of this job safe to log. The value itself is unchanged, so the migration
+      # step below still receives the real connection string.
       - name: Load API migration secrets
+        shell: bash
         run: |
-          echo "DATABASE_URL=$(gcloud secrets versions access latest --secret="codesentry-database-url${SECRET_SUFFIX}" | tr -d '\n')" >> "$GITHUB_ENV"
+          set -euo pipefail
+          database_url="$(gcloud secrets versions access latest --secret="codesentry-database-url${SECRET_SUFFIX}" | tr -d '\n')"
+          if [ -z "${database_url}" ]; then
+            echo "codesentry-database-url${SECRET_SUFFIX} resolved to an empty value" >&2
+            exit 1
+          fi
+          echo "::add-mask::${database_url}"
+          echo "DATABASE_URL=${database_url}" >> "$GITHUB_ENV"
 
       - name: Set release metadata
         shell: bash

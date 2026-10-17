@@ -57,6 +57,7 @@ jobs:
   gate:
     name: Refuse a release that is not ready
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       # Asking whether CI has passed on this commit is a read of the Actions API, and a
@@ -181,6 +182,7 @@ jobs:
     name: Build, publish, attest and tag
     needs: gate
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       # The release commit, the tags and the GitHub release.
       contents: write
