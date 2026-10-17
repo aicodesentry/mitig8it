@@ -117,9 +117,9 @@ sidecar needs and what it costs to skip it.
 
 ### Keeping the API warm
 
-The API deploys with `--min-instances 1` by default, controlled by the
-`api_min_instances` workflow input. Set it to `0` on a `workflow_dispatch` run to go
-back to scale-to-zero.
+The API deploys with `--min-instances 0` by default, controlled by the
+`api_min_instances` workflow input, so it scales to zero when idle. Set it to `1` on a
+`workflow_dispatch` run to keep one instance warm.
 
 The API also warms itself at start-up: it opens the database pool with a real query and,
 in parallel, pings the github and analysis services and pre-mints their Cloud Run
@@ -232,7 +232,7 @@ The endpoint returns current queue stats and requires `x-internal-secret`. Keep 
 - Keep Cloud Run service URLs aligned with the GitHub App callback and webhook configuration.
 - Keep `CODESENTRY_INTERNAL_SECRET` consistent across API, GitHub service, and analysis service.
 - The API's metrics are collected. A managed Prometheus sidecar in the same instance scrapes a loopback listener every 30 seconds and writes to Cloud Monitoring, where the alert policies in `infrastructure/monitoring/` read them; the public `/metrics` route still requires `x-internal-secret`. The github and analysis services are still unscraped, and there is still no trace export: no deploy workflow sets `OTEL_EXPORTER_OTLP_ENDPOINT`.
-- The API keeps one instance warm by default and runs with `--no-cpu-throttling`. The github, analysis and remediation services still scale to zero, so the first call into them after an idle period pays a cold start; the API's start-up warm-up pings them so that cost is paid before the first webhook rather than during it. Cloud Scheduler still wakes the analysis queue.
+- The API scales to zero by default and runs with `--no-cpu-throttling`; `api_min_instances: 1` keeps one instance warm. The github, analysis and remediation services also scale to zero, so the first call into them after an idle period pays a cold start; the API's start-up warm-up pings them so that cost is paid before the first webhook rather than during it. Cloud Scheduler still wakes the analysis queue.
 - A staging environment exists in the workflows but not in the cloud. `deploy-staging.yml` deploys every service to a `-staging` name on a push to the `staging` branch; the secrets, database branch, GitHub App and Firebase site it needs are one-time owner steps in [staging.md](staging.md).
 - The API and frontend are public; GitHub, analysis, and remediation Cloud Run services use `--no-allow-unauthenticated`. The GitHub and analysis workflows grant the API runtime service account `roles/run.invoker` themselves; the remediation workflow does not, so that binding must be created out of band.
 - Rotate GitHub App private keys, OAuth secrets, webhook secrets, JWT secret, encryption key, and internal service secret through GitHub/GCP secret stores, not code.
