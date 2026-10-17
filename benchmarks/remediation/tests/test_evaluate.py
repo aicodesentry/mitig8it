@@ -39,7 +39,7 @@ class RemediationHarnessTests(unittest.TestCase):
     def test_fixture_corpus_has_isolated_repositories_and_supported_families(self):
         fixtures = load_fixtures()
         families = {fixture["family"] for _, fixture in fixtures if fixture["kind"] == "supported"}
-        self.assertEqual(families, {"sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval"})
+        self.assertEqual(families, {"sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval", "password_hashing", "cookie_flags"})
         self.assertEqual(len({fixture["repository_id"] for _, fixture in fixtures}), len(fixtures))
 
     def test_repository_leakage_is_rejected(self):
@@ -57,17 +57,17 @@ class RemediationHarnessTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
-        # 51 supported, 8 negative and 4 adversarial across 63 fixtures. Asserted rather
+        # 67 supported, 10 negative and 4 adversarial across 81 fixtures. Asserted rather
         # than derived so adding a fixture is a deliberate change here too; these counts had
         # fallen behind the fixture set more than once before.
-        self.assertEqual(report["summary"]["eligible_supported_cases"], 51)
-        self.assertEqual(report["summary"]["negative_adversarial_cases"], 12)
+        self.assertEqual(report["summary"]["eligible_supported_cases"], 67)
+        self.assertEqual(report["summary"]["negative_adversarial_cases"], 14)
         self.assertEqual(report["summary"]["failures"], [])
 
     def test_five_fixtures_declare_the_static_assertion_and_no_other_fixture_may_reach_it(self):
         """The level's share of the corpus, asserted rather than derived.
 
-        Five of the 51 supported fixtures declare `static_assertion`; every other supported
+        Five of the 67 supported fixtures declare `static_assertion`; every other supported
         fixture is held to an executed level. A repair that quietly stopped being executed would
         otherwise still read as a pass, which is the whole reason the field exists.
         """
@@ -107,14 +107,14 @@ class RemediationHarnessTests(unittest.TestCase):
     def test_every_supported_family_is_covered_in_both_toolchains_or_recorded_as_an_abstention(self):
         fixtures = [fixture for _, fixture in load_fixtures()]
         supported = {(fixture["family"], fixture["source"].rsplit(".", 1)[-1]) for fixture in fixtures if fixture["kind"] == "supported"}
-        # Both toolchains prove all five families, so every cell of the family table is a
-        # supported fixture and no family is represented only by an abstention.
-        for family in ("sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval"):
+        # Both toolchains prove every family, so every cell of the family table is a supported
+        # fixture and no family is represented only by an abstention.
+        for family in ("sql_parameterization", "command_arguments", "path_containment", "hardcoded_credential", "code_injection_eval", "password_hashing", "cookie_flags"):
             self.assertIn((family, "py"), supported, family)
             self.assertIn((family, "js"), supported, family)
         # Each gate that refuses a shape still has a fixture standing for it.
         abstaining = {(fixture["family"], fixture["source"].rsplit(".", 1)[-1]) for fixture in fixtures if fixture["kind"] == "negative"}
-        for family in ("sql_parameterization", "command_arguments", "code_injection_eval"):
+        for family in ("sql_parameterization", "command_arguments", "code_injection_eval", "password_hashing", "cookie_flags"):
             self.assertIn((family, "js"), abstaining, family)
         self.assertGreaterEqual(sum(1 for fixture in fixtures if fixture["kind"] == "negative"), 6)
         self.assertGreaterEqual(sum(1 for fixture in fixtures if fixture["kind"] == "adversarial"), 4)

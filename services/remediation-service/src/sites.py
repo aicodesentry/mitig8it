@@ -1483,3 +1483,633 @@ def workflow_step_for_line(source: str, line: int) -> WorkflowStep:
             break
 
     return WorkflowStep(start_index + 1, end_index + 1, key_indent, env_line, env_indent)
+
+
+# --- password hashing -----------------------------------------------------------------------
+#
+# The site is the module's own password-hashing function and every comparison of its result.
+# Both have to be found, because the repair changes what the function returns: a salted
+# key-derivation result is different on every call, so `hash(attempt) === stored` can never be
+# true again and each such comparison has to become a call to a verifier. A module that compares
+# the digest somewhere this scan cannot rewrite, or looks it up instead of comparing it, is
+# refused by name rather than given a repair that would lock every user out.
+
+JS_PASSWORD_VERIFIER = "verifyPasswordHash"
+PY_PASSWORD_VERIFIER = "verify_password_hash"
+FAST_DIGESTS = frozenset({"md5", "sha1", "sha-1", "sha224", "sha256", "sha384", "sha512"})
+# What reads a value back by equality inside a store: a salted hash can never match there.
+_LOOKUP_RE = re.compile(r"\.(?:query|execute|find\w*|where|filter\w*|select|get|exists|count)\s*\(|\bWHERE\b", re.I)
+_JS_DIGEST_RE = re.compile(
+    r"(?P<module>[A-Za-z_$][\w$]*)\.createHash\(\s*(?P<q1>['\"])(?P<algorithm>[\w-]+)(?P=q1)\s*\)"
+    r"\s*\.update\(\s*(?P<argument>[A-Za-z_$][\w$]*)\s*(?:,\s*(?P<q2>['\"])(?:utf8|utf-8)(?P=q2)\s*)?\)"
+    r"\s*\.digest\((?P<digest>[^()]*)\)"
+)
+_JS_ARROW_RE = re.compile(
+    r"^(?P<indent>\s*)(?P<head>(?:export\s+)?(?:const|let|var)\s+(?P<name>[\w$]+)\s*=\s*)"
+    r"\((?P<params>[^()]*)\)\s*(?::\s*[\w$<>\[\]| ]+?)?\s*=>\s*(?P<expression>.+?);?\s*$"
+)
+_JS_COMPARISON_OPERATORS = ("===", "!==", "==", "!=")
+_JS_REFERENCE = r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*"
+# What may stand on either side of a rewritten comparison without changing what it binds to: an
+# operator of lower precedence than equality, a bracket, or a statement boundary.
+_JS_BEFORE_OK = re.compile(r"(?:^|[(,;{?:]|&&|\|\||(?<![=!<>])=|=>|\breturn)\s*$")
+_JS_AFTER_OK = re.compile(r"^\s*(?:$|[),;}?:]|&&|\|\|)")
+
+
+@dataclass(frozen=True)
+class PasswordComparison:
+    line: int
+    start: int  # column of the comparison's first character on `line`
+    end: int  # column one past its last character
+    password: str  # the expression hashed for the attempt
+    stored: str  # the expression it is compared with
+    negated: bool
+
+
+@dataclass(frozen=True)
+class PasswordHashSite:
+    language: str
+    function: str
+    parameter: str
+    start_line: int
+    end_line: int
+    indent: str
+    body_indent: str
+    digest_line: int
+    algorithm: str
+    module: str  # the hashlib/crypto binding the repair calls through
+    argument: str  # the expression the digest was fed
+    arrow: bool
+    head: str  # JS arrow form: `const name = `, with any `export`
+    comparisons: tuple[PasswordComparison, ...]
+    verifier: str
+    typescript: bool = False
+    imports_needed: tuple[str, ...] = ()
+    keep_lines: tuple[str, ...] = ()  # Python: the def line and docstring kept above the new body
+
+
+def _js_single_parameter(declared: str) -> str:
+    parts = [part.strip() for part in declared.split(",") if part.strip()]
+    if len(parts) != 1:
+        raise SiteError("password_hash_function_not_single_parameter")
+    name = re.match(r"^([A-Za-z_$][\w$]*)\s*(?::\s*[\w$<>\[\]| ]+)?$", parts[0])
+    if not name:
+        raise SiteError("password_hash_function_not_single_parameter")
+    return name.group(1)
+
+
+def _js_module_stem(path: str) -> str:
+    return PurePosixPath(path).stem
+
+
+def _js_comparisons(lines: list[str], stripped: list[str], name: str, skip: range) -> tuple[list[PasswordComparison], list[int]]:
+    """The rewritable comparisons of `name(...)`, and the lines of every other call of it."""
+    call = rf"(?<![\w$.]){re.escape(name)}\(\s*(?P<a>{_JS_REFERENCE})\s*\)"
+    operator = r"\s*(?P<op>===|!==|==|!=)\s*"
+    forward = re.compile(call + operator + rf"(?P<b>{_JS_REFERENCE})(?![\w$.(\[])")
+    backward = re.compile(rf"(?<![\w$.])(?P<b>{_JS_REFERENCE})" + operator + call.replace("(?<![\\w$.])", ""))
+    any_call = re.compile(rf"(?<![\w$.]){re.escape(name)}\s*\(")
+    found: list[PasswordComparison] = []
+    others: list[int] = []
+    for index, text in enumerate(stripped):
+        number = index + 1
+        if number in skip:
+            continue
+        covered: list[tuple[int, int]] = []
+        for pattern in (forward, backward):
+            for match in pattern.finditer(text):
+                if any(start <= match.start() < end for start, end in covered):
+                    continue
+                if not _JS_BEFORE_OK.search(text[: match.start()]) or not _JS_AFTER_OK.match(text[match.end() :]):
+                    raise SiteError("password_comparison_not_rewritable")
+                original = lines[index][match.start() : match.end()]
+                inner = pattern.match(original)
+                if inner is None:
+                    raise SiteError("password_comparison_not_rewritable")
+                covered.append((match.start(), match.end()))
+                found.append(PasswordComparison(number, match.start(), match.end(), inner.group("a"), inner.group("b"), inner.group("op").startswith("!")))
+        for match in any_call.finditer(text):
+            if not any(start <= match.start() < end for start, end in covered):
+                others.append(number)
+    return found, others
+
+
+def js_password_hash_site(source: str, path: str, line_start: int | None, line_end: int | None, others: dict[str, str] | None = None) -> PasswordHashSite:
+    """The hashing function a password_hashing finding sits in, and the comparisons of its result."""
+    lines = source.splitlines()
+    stripped = js_strip_strings(source).splitlines()
+    first = max(1, int(line_start or 1))
+    last = max(first, int(line_end or first))
+    digest = None
+    for number in range(first, min(last, len(lines)) + 1):
+        digest = _JS_DIGEST_RE.search(lines[number - 1])
+        if digest:
+            break
+    if digest is None:
+        raise SiteError("password_digest_not_recognized")
+    algorithm = digest.group("algorithm").lower()
+    crypto_names = _js_module_bound_to(source, "crypto") | _js_module_bound_to(source, "node:crypto")
+    if algorithm not in FAST_DIGESTS or digest.group("module") not in crypto_names:
+        # A `createHash` on anything but the crypto module is someone's own hasher, and the
+        # repair would call `scryptSync` on it.
+        raise SiteError("password_digest_not_recognized")
+    if not re.fullmatch(r"\s*(['\"])(?:hex|base64)\1\s*", digest.group("digest")):
+        raise SiteError("password_digest_encoding_not_text")
+    arrow = _JS_ARROW_RE.match(lines[number - 1])
+    if arrow and arrow.group("expression").strip() == digest.group(0):
+        name, declared, start, end = arrow.group("name"), arrow.group("params"), number, number
+        indent, body_indent, head = arrow.group("indent"), arrow.group("indent") + "  ", arrow.group("head")
+    else:
+        arrow = None
+        head = ""
+        for index in range(number - 2, -1, -1):
+            declaration = _js_declaration(lines[index])
+            if not declaration or "{" not in stripped[index][declaration[3] :]:
+                continue
+            close = _js_brace_end(stripped, index, declaration[3])
+            if close is None or close < number - 1:
+                continue
+            name, declared, kind, _offset = declaration
+            if kind != "function":
+                raise SiteError("password_hash_in_method")
+            start, end = index + 1, close + 1
+            break
+        else:
+            raise SiteError("password_hash_not_returned_by_function")
+        body = [text.strip() for text in lines[start : end - 1] if text.strip() and not text.strip().startswith("//")]
+        chain = re.escape(digest.group(0))
+        returned = len(body) == 1 and re.fullmatch(rf"return\s+{chain}\s*;?", body[0])
+        bound = len(body) == 2 and re.fullmatch(rf"(?:const|let|var)\s+(?P<v>[\w$]+)\s*=\s*{chain}\s*;?", body[0])
+        if bound and not re.fullmatch(rf"return\s+{re.escape(bound.group('v'))}\s*;?", body[1]):
+            bound = None
+        if not returned and not bound:
+            raise SiteError("password_hash_not_returned_by_function")
+        if lines[end - 1].strip() not in ("}", "};"):
+            raise SiteError("password_hash_not_returned_by_function")
+        indent = re.match(r"\s*", lines[start - 1]).group(0)
+        body_indent = re.match(r"\s*", lines[number - 1]).group(0)
+    parameter = _js_single_parameter(declared)
+    if digest.group("argument") != parameter:
+        raise SiteError("password_hash_input_not_the_parameter")
+    if parameter in {"stored", "salt", "scheme", "expected", "actual", "wanted"}:
+        raise SiteError("password_parameter_name_collides")
+    comparisons, calls = _js_comparisons(lines, stripped, name, range(start, end + 1))
+    for number in calls:
+        if _LOOKUP_RE.search(lines[number - 1]):
+            raise SiteError("password_hash_used_for_lookup")
+    stem = re.escape(_js_module_stem(path))
+    for other_path, other in (others or {}).items():
+        if other_path == path:
+            continue
+        imports_it = re.search(rf"""(?:require\(|from\s+|import\s*\()\s*['"][^'"]*\b{stem}(?:\.[cm]?[jt]s)?['"]""", other)
+        if imports_it and re.search(rf"(?<![\w$]){re.escape(name)}\s*\(", other):
+            raise SiteError("password_hash_called_from_other_module")
+    if not comparisons:
+        raise SiteError("password_verifier_not_found")
+    if js_identifier_is_bound(source, JS_PASSWORD_VERIFIER):
+        raise SiteError("password_verifier_name_taken")
+    return PasswordHashSite(
+        "javascript", name, parameter, start, end, indent, body_indent, number, algorithm, digest.group("module"),
+        parameter, arrow is not None, head, tuple(comparisons), JS_PASSWORD_VERIFIER,
+        typescript=path.endswith((".ts", ".tsx", ".mts", ".cts")),
+    )
+
+
+_PY_HASHLIB_CONSTRUCTORS = frozenset({"md5", "sha1", "sha224", "sha256", "sha384", "sha512"})
+
+
+def _py_hashlib_bindings(tree: ast.Module) -> tuple[str | None, dict[str, str]]:
+    """The name `hashlib` is bound to, and the digest constructors imported from it by name."""
+    module = None
+    named: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "hashlib":
+                    module = alias.asname or "hashlib"
+        elif isinstance(node, ast.ImportFrom) and node.module == "hashlib":
+            for alias in node.names:
+                if alias.name in _PY_HASHLIB_CONSTRUCTORS:
+                    named[alias.asname or alias.name] = alias.name
+    return module, named
+
+
+def _py_digest_call(node: ast.AST, module: str | None, named: dict[str, str]) -> tuple[str, ast.AST] | None:
+    """`(algorithm, argument)` for `hashlib.md5(x)`, `md5(x)` or `hashlib.new("md5", x)`."""
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == module:
+        if func.attr in _PY_HASHLIB_CONSTRUCTORS and len(node.args) == 1:
+            return func.attr, node.args[0]
+        if func.attr == "new" and len(node.args) == 2 and isinstance(node.args[0], ast.Constant) and str(node.args[0].value).lower() in FAST_DIGESTS:
+            return str(node.args[0].value).lower(), node.args[1]
+    if isinstance(func, ast.Name) and func.id in named and len(node.args) == 1:
+        return named[func.id], node.args[0]
+    return None
+
+
+def python_password_hash_site(source: str, path: str, line_start: int | None, others: dict[str, str] | None = None) -> PasswordHashSite:
+    """The Python counterpart of `js_password_hash_site`, read from the `ast`."""
+    tree = python_tree(source)
+    lines = source.splitlines()
+    line = max(1, int(line_start or 1))
+    module, named = _py_hashlib_bindings(tree)
+    function = next(
+        (node for node in tree.body if isinstance(node, ast.FunctionDef) and node.lineno <= line <= (node.end_lineno or node.lineno)),
+        None,
+    )
+    if function is None:
+        inside_class = any(
+            isinstance(node, ast.ClassDef) and node.lineno <= line <= (node.end_lineno or node.lineno) for node in tree.body
+        )
+        raise SiteError("password_hash_in_method" if inside_class else "password_hash_not_returned_by_function")
+    body = list(function.body)
+    keep_until = function.lineno
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        keep_until = body[0].end_lineno or body[0].lineno
+        body = body[1:]
+    chain = None
+    if len(body) == 1 and isinstance(body[0], ast.Return):
+        chain = body[0].value
+    elif (
+        len(body) == 2 and isinstance(body[0], ast.Assign) and len(body[0].targets) == 1 and isinstance(body[0].targets[0], ast.Name)
+        and isinstance(body[1], ast.Return) and isinstance(body[1].value, ast.Name) and body[1].value.id == body[0].targets[0].id
+    ):
+        chain = body[0].value
+    if not (isinstance(chain, ast.Call) and isinstance(chain.func, ast.Attribute) and not chain.args):
+        raise SiteError("password_hash_not_returned_by_function")
+    if chain.func.attr == "digest":
+        raise SiteError("password_digest_encoding_not_text")
+    found = _py_digest_call(chain.func.value, module, named) if chain.func.attr == "hexdigest" else None
+    if found is None:
+        raise SiteError("password_digest_not_recognized")
+    algorithm, argument = found
+    arguments = function.args
+    if arguments.posonlyargs or arguments.kwonlyargs or arguments.vararg or arguments.kwarg or len(arguments.args) != 1 or arguments.defaults:
+        raise SiteError("password_hash_function_not_single_parameter")
+    parameter = arguments.args[0].arg
+    names = {node.id for node in ast.walk(argument) if isinstance(node, ast.Name)}
+    if names != {parameter} or ast.get_source_segment(source, argument) is None:
+        raise SiteError("password_hash_input_not_the_parameter")
+    if parameter in {"stored", "salt", "scheme", "rest", "expected", "digest"}:
+        raise SiteError("password_parameter_name_collides")
+    name = function.name
+    comparisons: list[PasswordComparison] = []
+    counted: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+            continue
+        sides = [node.left, node.comparators[0]]
+        for index, side in enumerate(sides):
+            if isinstance(side, ast.Call) and isinstance(side.func, ast.Name) and side.func.id == name:
+                if not isinstance(node.ops[0], (ast.Eq, ast.NotEq)) or len(side.args) != 1 or side.keywords or node.lineno != node.end_lineno:
+                    raise SiteError("password_comparison_not_rewritable")
+                other = sides[1 - index]
+                text = lines[node.lineno - 1]
+                if not text.isascii():
+                    raise SiteError("password_comparison_not_rewritable")
+                comparisons.append(PasswordComparison(
+                    node.lineno, node.col_offset, node.end_col_offset or node.col_offset,
+                    ast.get_source_segment(source, side.args[0]) or "", ast.get_source_segment(source, other) or "",
+                    isinstance(node.ops[0], ast.NotEq),
+                ))
+                counted.add(id(side))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name and id(node) not in counted:
+            if _LOOKUP_RE.search(lines[node.lineno - 1]):
+                raise SiteError("password_hash_used_for_lookup")
+    stem = re.escape(PurePosixPath(path).stem)
+    for other_path, other in (others or {}).items():
+        if other_path == path:
+            continue
+        if re.search(rf"^\s*from\s+[\w.]*\b{stem}\s+import\s+[^\n]*\b{re.escape(name)}\b", other, re.M) or re.search(rf"\b{stem}\.{re.escape(name)}\s*\(", other):
+            raise SiteError("password_hash_called_from_other_module")
+    if not comparisons:
+        raise SiteError("password_verifier_not_found")
+    bound = {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
+    bound |= {target.id for node in ast.walk(tree) if isinstance(node, ast.Assign) for target in node.targets if isinstance(target, ast.Name)}
+    if PY_PASSWORD_VERIFIER in bound:
+        raise SiteError("password_verifier_name_taken")
+    imports = {alias.asname or alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
+    needed = tuple(sorted({"hmac", "os"} - imports) + ([] if module else ["hashlib"]))
+    def_line = lines[function.lineno - 1]
+    first_body = lines[body[0].lineno - 1]
+    return PasswordHashSite(
+        "python", name, parameter, function.lineno, function.end_lineno or function.lineno,
+        def_line[: len(def_line) - len(def_line.lstrip())], first_body[: len(first_body) - len(first_body.lstrip())],
+        chain.lineno, algorithm, module or "hashlib", ast.get_source_segment(source, argument) or parameter, False, "",
+        tuple(comparisons), PY_PASSWORD_VERIFIER, imports_needed=needed,
+        keep_lines=tuple(lines[function.lineno - 1 : keep_until]),
+    )
+
+
+def other_sources(snapshot: Snapshot, path: str) -> dict[str, str]:
+    """Every other snapshot file in the same toolchain, for the cross-module refusal."""
+    suffixes = (".py",) if path.endswith(".py") else (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
+    return {other: snapshot.full_content(other) for other in snapshot.paths if other != path and other.endswith(suffixes)}
+
+
+def password_hash_site(snapshot: Snapshot, finding: FindingSnapshot, language: str) -> PasswordHashSite:
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    if language == "python":
+        return python_password_hash_site(source, path, finding.line_start, other_sources(snapshot, path))
+    return js_password_hash_site(source, path, finding.line_start, finding.line_end, other_sources(snapshot, path))
+
+
+# --- cookie flags ---------------------------------------------------------------------------
+#
+# The site is the options a cookie is set with, rewritten in place: HttpOnly, Secure and
+# SameSite are set and every other key is kept as written. The shapes are the ones the rules
+# report: the `cookie` object of an express-session call, the options of a cookie-session call,
+# the third argument of `res.cookie`, a Flask `set_cookie` call, and a Django or Flask setting
+# assigned False. Options the code builds somewhere else, a spread that could override what the
+# repair sets, and a flag computed at runtime are refused by name, because the rewrite could
+# not say what the cookie ends up carrying. SameSite=None is refused too: it is how a cookie is
+# made to travel cross-site on purpose.
+
+COOKIE_SETTINGS = frozenset({"SESSION_COOKIE_SECURE", "SESSION_COOKIE_HTTPONLY", "CSRF_COOKIE_SECURE"})
+_JS_FLAG_FALSE_RE = re.compile(r"(?<![\w$])(?:secure|httpOnly)\s*:\s*false(?![\w$])")
+_JS_SAMESITE_NONE_RE = re.compile(r"(?<![\w$])sameSite\s*:\s*(['\"])none\1", re.I)
+_JS_COOKIE_FLAGS = (("httpOnly", "true"), ("secure", "true"), ("sameSite", None))
+
+
+@dataclass(frozen=True)
+class CookieSite:
+    language: str
+    kind: str  # express-session | cookie-session | res.cookie | set_cookie | setting | flask_config
+    name: str | None  # the cookie's literal name, or the setting the finding names
+    start_line: int
+    original: tuple[str, ...]
+    replacement: tuple[str, ...]
+    app: str | None = None  # the Flask application a config setting is read back from
+
+
+def _js_module_bound_to(source: str, module: str) -> set[str]:
+    names = set(re.findall(rf"""(?:const|let|var)\s+([\w$]+)\s*=\s*require\(\s*['"]{re.escape(module)}['"]\s*\)""", source))
+    names |= set(re.findall(rf"""import\s+([\w$]+)\s+from\s+['"]{re.escape(module)}['"]""", source))
+    return names
+
+
+def _matching(stripped: str, start: int, opening: str, closing: str, step: int) -> int | None:
+    """The offset of the bracket that balances the one at `start`, scanning by `step`."""
+    depth = 0
+    index = start
+    while 0 <= index < len(stripped):
+        ch = stripped[index]
+        if ch == (opening if step > 0 else closing):
+            depth += 1
+        elif ch == (closing if step > 0 else opening):
+            depth -= 1
+            if depth == 0:
+                return index
+        index += step
+    return None
+
+
+def _enclosing(stripped: str, offset: int, opening: str, closing: str) -> int | None:
+    """The offset of the unbalanced `opening` bracket that encloses `offset`."""
+    depth = 0
+    for index in range(offset - 1, -1, -1):
+        ch = stripped[index]
+        if ch in ")]}":
+            depth += 1
+        elif ch in "([{":
+            if depth == 0:
+                return index if ch == opening else None
+            depth -= 1
+    return None
+
+
+def _js_object_entries(stripped: str, start: int, end: int) -> list[tuple[str, int, int, int]]:
+    """`(key, entry start, value start, entry end)` for each top-level entry of `{...}`."""
+    entries: list[tuple[str, int, int, int]] = []
+    depth = 0
+    piece = start + 1
+    for index in range(start + 1, end + 1):
+        ch = stripped[index]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}" and index != end:
+            depth -= 1
+        if (ch == "," and depth == 0) or index == end:
+            text = stripped[piece:index]
+            if text.strip():
+                lead = len(text) - len(text.lstrip())
+                found = re.match(r"([A-Za-z_$][\w$]*)\s*:\s*", text[lead:])
+                if text.strip().startswith("..."):
+                    raise SiteError("cookie_options_spread")
+                if not found:
+                    raise SiteError("cookie_options_not_recognized")
+                body_end = piece + len(text.rstrip())
+                entries.append((found.group(1), piece + lead, piece + lead + found.end(), body_end))
+            piece = index + 1
+    return entries
+
+
+def _js_cookie_object(source: str, stripped: str, open_brace: int, close_brace: int) -> str:
+    """The object literal with httpOnly, secure and sameSite set and every other key kept."""
+    entries = _js_object_entries(stripped, open_brace, close_brace)
+    quote = "\"" if re.search(r"\"[^\"\n]*\"", source[open_brace:close_brace]) and "'" not in source[open_brace:close_brace] else "'"
+    edits: list[tuple[int, int, str]] = []
+    present = {key for key, *_ in entries}
+    for key, _start, value_start, end in entries:
+        value = source[value_start:end].strip()
+        if key in ("httpOnly", "secure"):
+            if value not in ("true", "false"):
+                raise SiteError("cookie_flag_value_not_literal")
+            if value == "false":
+                edits.append((value_start, end, "true"))
+        elif key == "sameSite":
+            lowered = value.strip("'\"").lower()
+            if lowered == "none":
+                raise SiteError("cookie_samesite_none_is_deliberate")
+            if value == "false":
+                edits.append((value_start, end, f"{quote}lax{quote}"))
+            elif value != "true" and not re.fullmatch(r"(['\"])(?:lax|strict)\1", value, re.I):
+                raise SiteError("cookie_flag_value_not_literal")
+    missing = [(key, value or f"{quote}lax{quote}") for key, value in _JS_COOKIE_FLAGS if key not in present]
+    text = source[open_brace : close_brace + 1]
+    base = open_brace
+    for start, end, value in sorted(edits, reverse=True):
+        text = text[: start - base] + value + text[end - base :]
+        delta = len(value) - (end - start)
+        close_brace += delta
+    if not missing:
+        return text
+    if not entries:
+        return "{ " + ", ".join(f"{key}: {value}" for key, value in missing) + " }"
+    inner = text[1:-1]
+    multiline = "\n" in inner
+    last_end = len(inner.rstrip())
+    trailing_comma = inner[:last_end].endswith(",")
+    if multiline:
+        last_line = inner[: last_end].rsplit("\n", 1)[-1]
+        indent = last_line[: len(last_line) - len(last_line.lstrip())]
+        added = "".join(f"\n{indent}{key}: {value}," for key, value in missing)
+        if trailing_comma:
+            inner = inner[:last_end] + added + inner[last_end:]
+        else:
+            inner = inner[:last_end] + "," + added[:-1] + inner[last_end:]
+    else:
+        added = ", ".join(f"{key}: {value}" for key, value in missing)
+        body = inner[:last_end].rstrip(",")
+        inner = body + ", " + added + inner[last_end:]
+    return "{" + inner + "}"
+
+
+def js_cookie_site(source: str, line_start: int | None, line_end: int | None) -> CookieSite:
+    """The cookie options a cookie_flags finding names, and their repaired text."""
+    lines = source.splitlines()
+    stripped = js_strip_strings(source)
+    offsets = [0]
+    for text in source.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(text))
+    first = max(1, int(line_start or 1))
+    last = min(len(lines), max(first, int(line_end or first)))
+    region = stripped[offsets[first - 1] : offsets[last]]
+    original_region = source[offsets[first - 1] : offsets[last]]
+    flag = _JS_FLAG_FALSE_RE.search(region)
+    if flag is None:
+        if _JS_SAMESITE_NONE_RE.search(original_region):
+            raise SiteError("cookie_samesite_none_is_deliberate")
+        raise SiteError("cookie_flag_not_found")
+    key_offset = offsets[first - 1] + flag.start()
+    open_brace = _enclosing(stripped, key_offset, "{", "}")
+    if open_brace is None:
+        raise SiteError("cookie_options_not_recognized")
+    close_brace = _matching(stripped, open_brace, "{", "}", 1)
+    if close_brace is None:
+        raise SiteError("cookie_options_not_recognized")
+    before = stripped[:open_brace].rstrip()
+    name: str | None = None
+    if re.search(r"(?<![\w$])cookie\s*:$", before):
+        outer = _enclosing(stripped, open_brace, "{", "}")
+        paren = _enclosing(stripped, outer, "(", ")") if outer is not None else None
+        callee = re.search(r"([\w$]+)\s*$", stripped[:paren]) if paren is not None else None
+        if not callee or callee.group(1) not in _js_module_bound_to(source, "express-session"):
+            raise SiteError("cookie_options_not_recognized")
+        kind = "express-session"
+    elif before.endswith("("):
+        callee = re.search(r"([\w$]+)$", before[:-1].rstrip())
+        if not callee or callee.group(1) not in _js_module_bound_to(source, "cookie-session"):
+            raise SiteError("cookie_options_not_recognized")
+        kind = "cookie-session"
+    elif before.endswith(","):
+        paren = _enclosing(stripped, open_brace, "(", ")")
+        if paren is None or not re.search(r"[\w$]+\.cookie\s*$", stripped[:paren]):
+            raise SiteError("cookie_options_not_recognized")
+        arguments = stripped[paren + 1 : open_brace]
+        depth = 0
+        commas = 0
+        for ch in arguments:
+            depth += ch in "([{"
+            depth -= ch in ")]}"
+            commas += ch == "," and depth == 0
+        if commas != 2:
+            raise SiteError("cookie_options_not_recognized")
+        literal = re.match(r"\s*(['\"])([^'\"\n]+)\1\s*,", source[paren + 1 : open_brace])
+        name = literal.group(2) if literal else None
+        kind = "res.cookie"
+    else:
+        raise SiteError("cookie_options_not_recognized")
+    repaired = _js_cookie_object(source, stripped, open_brace, close_brace)
+    start_line = source.count("\n", 0, open_brace) + 1
+    end_line = source.count("\n", 0, close_brace) + 1
+    head = source[offsets[start_line - 1] : open_brace]
+    tail = source[close_brace + 1 : offsets[end_line]].rstrip("\n")
+    return CookieSite(
+        "javascript", kind, name, start_line, tuple(lines[start_line - 1 : end_line]),
+        tuple((head + repaired + tail).split("\n")),
+    )
+
+
+def python_cookie_site(source: str, line_start: int | None, line_end: int | None) -> CookieSite:
+    """The Python counterpart: a set_cookie call, a Django setting, or a Flask config key."""
+    tree = python_tree(source)
+    lines = source.splitlines()
+    first = max(1, int(line_start or 1))
+    last = max(first, int(line_end or first))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not first <= node.lineno <= last or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id in COOKIE_SETTINGS:
+            setting, app = target.id, None
+        elif (
+            isinstance(target, ast.Subscript) and isinstance(target.value, ast.Attribute) and target.value.attr == "config"
+            and isinstance(target.value.value, ast.Name) and isinstance(target.slice, ast.Constant) and target.slice.value in COOKIE_SETTINGS
+        ):
+            setting, app = str(target.slice.value), target.value.value.id
+        else:
+            continue
+        if not (isinstance(node.value, ast.Constant) and node.value.value is False) or node.lineno != node.end_lineno:
+            raise SiteError("cookie_flag_value_not_literal")
+        text = lines[node.lineno - 1]
+        rewritten = text[: node.value.col_offset] + "True" + text[node.value.end_col_offset :]
+        return CookieSite("python", "setting" if app is None else "flask_config", setting, node.lineno, (text,), (rewritten,), app)
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "set_cookie"):
+            continue
+        if not first <= node.lineno <= last:
+            continue
+        if len(node.args) > 2 or any(isinstance(arg, ast.Starred) for arg in node.args):
+            raise SiteError("cookie_flags_passed_positionally")
+        if any(keyword.arg is None for keyword in node.keywords):
+            raise SiteError("cookie_options_spread")
+        segment = lines[node.lineno - 1 : node.end_lineno]
+        if not all(text.isascii() for text in segment):
+            raise SiteError("cookie_options_not_recognized")
+        offsets = [0]
+        for text in segment:
+            offsets.append(offsets[-1] + len(text) + 1)
+        call_text = "\n".join(segment)
+        position = lambda line, col: offsets[line - node.lineno] + col  # noqa: E731
+        edits: list[tuple[int, int, str]] = []
+        present = set()
+        for keyword in node.keywords:
+            present.add(keyword.arg)
+            value = keyword.value
+            if keyword.arg in ("secure", "httponly"):
+                if not (isinstance(value, ast.Constant) and isinstance(value.value, bool)):
+                    raise SiteError("cookie_flag_value_not_literal")
+                if value.value is False:
+                    edits.append((position(value.lineno, value.col_offset), position(value.end_lineno, value.end_col_offset), "True"))
+            elif keyword.arg == "samesite":
+                if not (isinstance(value, ast.Constant) and (value.value is None or isinstance(value.value, str))):
+                    raise SiteError("cookie_flag_value_not_literal")
+                if isinstance(value.value, str) and value.value.lower() == "none":
+                    raise SiteError("cookie_samesite_none_is_deliberate")
+                if value.value is None:
+                    edits.append((position(value.lineno, value.col_offset), position(value.end_lineno, value.end_col_offset), '"Lax"'))
+        missing = [f"{key}={value}" for key, value in (("secure", "True"), ("httponly", "True"), ("samesite", '"Lax"')) if key not in present]
+        arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
+        last_argument = max(arguments, key=lambda item: (item.end_lineno, item.end_col_offset))
+        insert_at = position(last_argument.end_lineno, last_argument.end_col_offset)
+        if missing:
+            after = call_text[insert_at:]
+            comma = re.match(r"\s*,", after)
+            if node.end_lineno != node.lineno:
+                last_text = segment[last_argument.end_lineno - node.lineno]
+                indent = last_text[: len(last_text) - len(last_text.lstrip())]
+                added = "".join(f"\n{indent}{item}," for item in missing)
+                if comma:
+                    insert_at += comma.end()
+                    edits.append((insert_at, insert_at, added))
+                else:
+                    edits.append((insert_at, insert_at, "," + added[:-1]))
+            else:
+                edits.append((insert_at, insert_at, ", " + ", ".join(missing)))
+        for start, end, value in sorted(edits, reverse=True):
+            call_text = call_text[:start] + value + call_text[end:]
+        name = node.args[0].value if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str) else None
+        return CookieSite("python", "set_cookie", name, node.lineno, tuple(segment), tuple(call_text.split("\n")))
+    raise SiteError("cookie_flag_not_found")
+
+
+def cookie_site(snapshot: Snapshot, finding: FindingSnapshot, language: str) -> CookieSite:
+    source = snapshot.full_content(finding.affected_path)
+    if language == "python":
+        return python_cookie_site(source, finding.line_start, finding.line_end)
+    return js_cookie_site(source, finding.line_start, finding.line_end)

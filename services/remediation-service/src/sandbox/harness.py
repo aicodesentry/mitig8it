@@ -31,7 +31,7 @@ HARNESS_PATHS = frozenset({HARNESS_PATH, PYTHON_HARNESS_PATH})
 # and the proof would assert on nothing. `python_harness_modules()` keeps this in step with the
 # harness source.
 PYTHON_HARNESS_MODULES = frozenset(
-    {"flask", "psycopg", "psycopg2", "pymysql", "sqlalchemy", "sqlite3", "subprocess"}
+    {"flask", "hashlib", "psycopg", "psycopg2", "pymysql", "sqlalchemy", "sqlite3", "subprocess"}
 )
 # Each harness travels inside every verification payload, so it stays small by construction.
 # The Node budget was 16 KiB until the environment recorder and its two assertions were added
@@ -39,7 +39,9 @@ PYTHON_HARNESS_MODULES = frozenset(
 # `assert.noCode`, and `call` were added for `code_injection_eval`, then 24 KiB until TypeScript
 # resolution, then 28 KiB until the fakes were served to the ES module loader as well as to the
 # require hook. 32 KiB is the next size that leaves room to extend an assertion without another
-# budget change in the same commit.
+# budget change in the same commit. The `crypto` recorder, the session-middleware fakes and their
+# two assertions (`password_hashing`, `cookie_flags`) took it to about 31 KiB, so the next
+# recorder needs a budget change; the Python harness is in the same position at about 39 of 40.
 MAX_HARNESS_BYTES = 32 * 1024
 MAX_PYTHON_HARNESS_BYTES = 40 * 1024
 HARNESS_OCCUPIED_LIMITATION = (
