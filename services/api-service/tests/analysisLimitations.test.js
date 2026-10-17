@@ -233,6 +233,32 @@ describe('limitation rendering', () => {
       .toBe('not_analyzed');
   });
 
+  test('a rule over its per-file match ceiling is stated in the analysis service\'s words', () => {
+    const line = buildLimitationSummaryLine([
+      {
+        path: 'bulk/hashes.py', kind: 'match_cap', type: 'crypto.weak.hash reported 25 of 40 matches',
+        message: 'crypto.weak.hash reported 25 of 40 matches in bulk/hashes.py',
+      },
+    ]);
+    expect(line).toBe('crypto.weak.hash reported 25 of 40 matches in bulk/hashes.py.');
+    expect(line).not.toContain('not fully analysed');
+  });
+
+  test('two rules over the ceiling in one file are two limitations beside a partial parse', () => {
+    const limitations = normalizeLimitations([
+      { path: 'bulk/x.py', kind: 'match_cap', message: 'crypto.weak.hash reported 25 of 40 matches in bulk/x.py' },
+      { path: 'bulk/x.py', kind: 'match_cap', message: 'random.insecure reported 25 of 30 matches in bulk/x.py' },
+      { path: 'bulk/x.py', kind: 'match_cap', message: 'random.insecure reported 25 of 30 matches in bulk/x.py' },
+      { path: 'bulk/x.py', kind: 'partial_parse', type: 'Lexical error', line: 9 },
+    ]);
+    expect(limitations.map((item) => item.kind)).toEqual(['match_cap', 'match_cap', 'partial_parse']);
+    expect(buildLimitationSummaryLine(limitations)).toBe(
+      '1 file partially analysed: x.py (lexical error at line 9); '
+      + 'crypto.weak.hash reported 25 of 40 matches in bulk/x.py; '
+      + 'random.insecure reported 25 of 30 matches in bulk/x.py.'
+    );
+  });
+
   test('the clean review body still states the limitation', () => {
     const body = buildReviewBody([], 'run-abcdef12', { limitations: [LEXICAL_LIMITATION] });
     expect(body).toContain('No security issues found');

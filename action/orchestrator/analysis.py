@@ -67,6 +67,24 @@ def analyze(
     Tier 2 fails the call closed: a scanner that did not run must never be reported as a scanner
     that found nothing, so an exception here ends the run without publishing a clean result.
     """
+    return analyze_with_limitations(
+        repository_full_name, pull_request_number, commit_sha, files
+    )["findings"]
+
+
+def analyze_with_limitations(
+    repository_full_name: str,
+    pull_request_number: int,
+    commit_sha: str,
+    files: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """`analyze`, with the coverage limitations the tiers reported beside the findings.
+
+    A limitation is what the analysis did not do: a file tier 2 could only parse partially, a
+    file tier 1 ran out of budget on, or a rule that matched more lines in a file than tier 1
+    reports (`match_cap`). The action used to drop them, so a ceiling the App states in its check
+    summary was invisible here.
+    """
     main = _analysis_main()
     request = main.AnalyzePRRequest(
         repository_full_name=repository_full_name,
@@ -78,7 +96,10 @@ def analyze(
     findings = result.get("findings")
     if not isinstance(findings, list):
         raise RuntimeError("Incomplete analysis response: findings missing")
-    return findings
+    limitations = [
+        item for item in (result.get("analysis_limitations") or []) if isinstance(item, dict)
+    ]
+    return {"findings": findings, "limitations": limitations}
 
 
 def is_informational(finding: Dict[str, Any]) -> bool:

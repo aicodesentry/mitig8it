@@ -181,6 +181,45 @@ def entry_scan_text(entry: Dict[str, Any], *, blank_strings: bool = False) -> st
     return str(entry.get(key, entry.get("content", "")) or "")
 
 
+def find_pattern_match_entries(
+    patch: str,
+    pattern,
+    *,
+    path: Any = None,
+    exclusion=None,
+    blank_strings: bool = False,
+    content: Any = None,
+    entries: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Every reviewable line of `patch` that `pattern` matches and `exclusion` does not.
+
+    Added lines come first in more than order: when any added line matches, only the added
+    matches are returned, and the context lines are consulted only when no added line
+    matched. That is the rule `find_pattern_match_entry` has always applied to pick its one
+    line, generalised to all of them, so a change that touches one weak hash in a file with
+    ten is reported on the line it touched and not on the nine it did not.
+
+    `exclusion` is the second pass that replaces a negative lookahead: the condition is
+    evaluated against the same text the pattern saw, where backtracking cannot defeat it.
+    `entries` lets a caller that has already parsed the patch hand the parse over, since the
+    parse depends on the file and not on the rule.
+    """
+    if entries is None:
+        entries = parse_patch_entries(patch, path, content)
+    added: List[Dict[str, Any]] = []
+    context: List[Dict[str, Any]] = []
+    for entry in entries:
+        if is_transcript_artifact_line(entry["content"]):
+            continue
+        text = entry_scan_text(entry, blank_strings=blank_strings)
+        if not pattern.search(text):
+            continue
+        if exclusion is not None and exclusion.search(text):
+            continue
+        (added if entry["kind"] == "add" else context).append(entry)
+    return added or context
+
+
 def find_pattern_match_entry(
     patch: str,
     pattern,
@@ -189,28 +228,24 @@ def find_pattern_match_entry(
     exclusion=None,
     blank_strings: bool = False,
     content: Any = None,
+    entries: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """First reviewable line of `patch` that `pattern` matches and `exclusion` does not.
+    """First reviewable line of `patch` that `pattern` matches and `exclusion` does not."""
+    matches = find_pattern_match_entries(
+        patch, pattern, path=path, exclusion=exclusion,
+        blank_strings=blank_strings, content=content, entries=entries,
+    )
+    return matches[0] if matches else None
 
-    `exclusion` is the second pass that replaces a negative lookahead: the condition is
-    evaluated against the same text the pattern saw, where backtracking cannot defeat it.
-    """
-    entries = parse_patch_entries(patch, path, content)
-    if not entries:
-        return None
 
-    for require_added in (True, False):
-        for entry in entries:
-            if require_added and entry["kind"] != "add":
-                continue
-            if is_transcript_artifact_line(entry["content"]):
-                continue
-            text = entry_scan_text(entry, blank_strings=blank_strings)
-            if not pattern.search(text):
-                continue
-            if exclusion is not None and exclusion.search(text):
-                continue
-            return entry
+def _index_of_entry(entries: List[Dict[str, Any]], match_entry: Dict[str, Any]) -> Optional[int]:
+    """Where `match_entry` sits in `entries`: by identity when it came from this parse, else by value."""
+    for index, entry in enumerate(entries):
+        if entry is match_entry:
+            return index
+    for index, entry in enumerate(entries):
+        if entry == match_entry:
+            return index
     return None
 
 
@@ -240,11 +275,10 @@ def pattern_match_lines(
 ) -> List[int]:
     """Every reviewable line of `patch` that `pattern` matches, in file order.
 
-    `find_pattern_match_entry` answers "does this rule fire here", which is all tier 1 needs
-    to emit its one finding per rule per file. A static assertion needs more than that: clause
-    1 asks whether the rule matches *the finding's line* and clause 2 asks whether it matches
-    the patched file *anywhere*, and a first-match answer cannot decide either on a file with
-    two instances of the same defect. So this walks every entry rather than stopping.
+    Unlike `find_pattern_match_entries`, added lines take no precedence here: a static
+    assertion reads a whole file presented as context (`whole_file_patch`), and clause 1 asks
+    whether the rule matches *the finding's line* while clause 2 asks whether it matches the
+    patched file *anywhere*. Both are questions about every line, whatever kind it is.
     """
     lines: List[int] = []
     for entry in parse_patch_entries(patch, path, content):
@@ -330,6 +364,8 @@ def has_path_containment_guard(
     exclusion=None,
     blank_strings: bool = False,
     content: Any = None,
+    match_entry: Optional[Dict[str, Any]] = None,
+    entries: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
     """True when a filesystem read matched by `pattern` is guarded by resolve-and-contain.
 
@@ -337,20 +373,22 @@ def has_path_containment_guard(
     of the job on the same value: resolve the candidate path into a variable, and compare that
     variable against the base directory. Either half alone, or a check made on some other value,
     leaves the finding in place.
+
+    `match_entry` names the read being judged; without it the first match is judged, which is
+    what a file with one read needs. A file with several reads is asked once per read, because
+    a guard above the first one says nothing about the third.
     """
-    match_entry = find_pattern_match_entry(
-        patch, pattern, path=path, exclusion=exclusion,
-        blank_strings=blank_strings, content=content,
-    )
+    if entries is None:
+        entries = parse_patch_entries(patch, path, content)
+    if match_entry is None:
+        match_entry = find_pattern_match_entry(
+            patch, pattern, path=path, exclusion=exclusion,
+            blank_strings=blank_strings, content=content, entries=entries,
+        )
     if match_entry is None:
         return False
 
-    entries = parse_patch_entries(patch, path, content)
-    match_index = None
-    for index, entry in enumerate(entries):
-        if entry == match_entry:
-            match_index = index
-            break
+    match_index = _index_of_entry(entries, match_entry)
     if match_index is None:
         return False
 
@@ -373,8 +411,16 @@ def extract_match_context(
     context_before: int = 2,
     context_after: int = 3,
     max_lines: int = 8,
+    match_entry: Optional[Dict[str, Any]] = None,
+    entries: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    entries = parse_patch_entries(patch, path, content)
+    """The line and surrounding snippet a finding quotes.
+
+    `match_entry` is the matched line to describe; without it the first match is described.
+    `entries` is the parse of `patch` when the caller already has one.
+    """
+    if entries is None:
+        entries = parse_patch_entries(patch, path, content)
     if not entries:
         return {
             "line_start": 1,
@@ -383,16 +429,14 @@ def extract_match_context(
             "matched_text": "",
         }
 
-    match_entry = find_pattern_match_entry(
-        patch, pattern, path=path, exclusion=exclusion,
-        blank_strings=blank_strings, content=content,
-    )
+    if match_entry is None:
+        match_entry = find_pattern_match_entry(
+            patch, pattern, path=path, exclusion=exclusion,
+            blank_strings=blank_strings, content=content, entries=entries,
+        )
     match_index = None
     if match_entry is not None:
-        for index, entry in enumerate(entries):
-            if entry == match_entry:
-                match_index = index
-                break
+        match_index = _index_of_entry(entries, match_entry)
 
     if match_index is None:
         snippet_entries = entries[:max_lines]
@@ -476,7 +520,32 @@ def _same_cluster(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     if left.get("internal_type") == "hardcoded_secret" and left_snippet and right_snippet and left_snippet != right_snippet:
         return False
 
-    return True
+    return not _same_rule_on_different_lines(left, right)
+
+
+def _line_distance(left: Dict[str, Any], right: Dict[str, Any]) -> int:
+    """How far apart two findings are, in lines; 0 when either has no line to measure from."""
+    left_line = int(left.get("line_start") or 0)
+    right_line = int(right.get("line_start") or 0)
+    if not left_line or not right_line:
+        return 0
+    return abs(left_line - right_line)
+
+
+def _same_rule_on_different_lines(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Two findings of one rule on two lines: two sites by definition, never one cluster.
+
+    A cluster is one flaw described by more than one detector. One rule describing two lines
+    is two flaws, however close the lines are, and the two-line window exists for detectors
+    that anchor the same flaw a line apart, not for this. Without this test, eight weak hashes
+    on consecutive lines chained through the window into a single comment, and `pattern_findings`
+    reporting every match would have been undone here.
+    """
+    if left.get("rule_id") != right.get("rule_id"):
+        return False
+    left_line = int(left.get("line_start") or 0)
+    right_line = int(right.get("line_start") or 0)
+    return bool(left_line and right_line and left_line != right_line)
 
 
 # One weakness described twice, where the two descriptions are not the same kind of thing.
@@ -666,11 +735,28 @@ def cluster_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     clusters: List[List[Dict[str, Any]]] = []
     for finding in deduped:
+        # Joining is by any member, so a tier 2 finding anchored a line off still meets its
+        # tier 1 twin; but a cluster never holds one rule on two lines, or the chain of
+        # same-rule findings a line apart would collapse a file's sites into one comment. And
+        # with those clusters kept apart, the nearest one wins: a finding on line 6 belongs
+        # with the finding on line 6, not with the one on line 4 that happened to come first.
         target = None
+        best_distance = None
         for cluster in clusters:
-            if any(_same_cluster(existing, finding) for existing in cluster):
-                target = cluster
-                break
+            if any(_same_rule_on_different_lines(existing, finding) for existing in cluster):
+                continue
+            distances = [
+                _line_distance(existing, finding)
+                for existing in cluster
+                if _same_cluster(existing, finding)
+            ]
+            if not distances:
+                continue
+            distance = min(distances)
+            if best_distance is None or distance < best_distance:
+                target, best_distance = cluster, distance
+                if distance == 0:
+                    break
         if target is None:
             clusters.append([finding])
         else:
