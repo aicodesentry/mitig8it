@@ -1315,6 +1315,52 @@
       "path": "negative/py_open_tainted_guarded.py",
       "code": "import os\n\nfrom flask import abort, request, send_file\nfrom werkzeug.utils import safe_join, secure_filename\n\n\n@app.route(\"/guarded\")\ndef guarded():\n    name = request.args.get(\"name\")\n    full = os.path.realpath(os.path.join(BASE, name))\n    if not full.startswith(BASE + os.sep):\n        abort(400)\n    with open(full) as fh:\n        return fh.read()\n\n\n@app.route(\"/joined\")\ndef joined():\n    return send_file(safe_join(BASE, request.args.get(\"name\")))\n\n\n@app.route(\"/upload-name\")\ndef upload_name():\n    with open(os.path.join(BASE, secure_filename(request.args.get(\"name\")))) as fh:\n        return fh.read()\n",
       "note": "Authored, not lifted: the realpath-and-startswith check the path_containment family writes for Python, safe_join and secure_filename."
+    },
+    {
+      "id": "cwe-79.js-html-tainted-interpolation",
+      "expect": "finding",
+      "rule": "cwe-79.js-html-tainted-interpolation",
+      "path": "positive/cwe-79_js-html-tainted-interpolation.js",
+      "code": "function imageTag (req) {\n  const src = req.query.src\n  return `<img src=\"${src}\">`\n}\n\nmodule.exports = { imageTag }\n",
+      "note": "An interpolated `<img src=\"${src}\">` returned from a helper, with the value one assignment from the request. A quoted attribute is broken out of with a single `\"`."
+    },
+    {
+      "id": "corpus.cwe-79.js-html-tainted-interpolation",
+      "expect": "finding",
+      "rule": "cwe-79.js-html-tainted-interpolation",
+      "path": "corpus/cwe-79_js-html-tainted-interpolation.ts",
+      "code": "export class SubstackExtractor {\n\tprivate buildImageHtml(): string {\n\t\tif (!this.noteImage) return '';\n\n\t\tconst ogImage = this.document.querySelector('meta[property=\"og:image\"]')?.getAttribute('content');\n\t\tif (ogImage) return `<img src=\"${ogImage}\" alt=\"\" />`;\n\n\t\treturn '';\n\t}\n}\n",
+      "note": "kepano/defuddle src/extractors/substack.ts:181 at 19520add, GHSA-jg4p-g6xj-4qmf / CVE-2026-61824, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json). getAttribute returns decoded text, and putting it back into markup unescaped re-opens whatever the page encoded. The class wrapper was added so the method parses on its own; the srcset branch after it was dropped because its value arrives through a method call the intraprocedural engine does not follow."
+    },
+    {
+      "id": "corpus.cwe-79.js-html-tainted-interpolation.defuddle-escaped-link-card",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.js-html-tainted-interpolation"
+      ],
+      "path": "negative/js_html_tainted_defuddle_escaped.ts",
+      "code": "export class BlueskyExtractor {\n\tprivate extractLinkCard(item: Element): string {\n\t\tconst links = item.querySelectorAll('a[aria-label][href^=\"http\"]');\n\t\tfor (const link of Array.from(links)) {\n\t\t\tconst hasBorder = link.querySelector('div[style*=\"border\"]');\n\t\t\tif (!hasBorder) continue;\n\n\t\t\tconst href = link.getAttribute('href') || '';\n\t\t\tconst title = link.getAttribute('aria-label') || '';\n\t\t\tconst img = link.querySelector('img');\n\n\t\t\tif (title) {\n\t\t\t\tlet html = '';\n\t\t\t\tif (img) {\n\t\t\t\t\tconst src = img.getAttribute('src') || '';\n\t\t\t\t\thtml += `<a href=\"${escapeHtml(href)}\"><img src=\"${escapeHtml(src)}\" alt=\"${escapeHtml(title)}\" /></a>\\n`;\n\t\t\t\t}\n\t\t\t\thtml += `<p><a href=\"${escapeHtml(href)}\">${escapeHtml(title)}</a></p>`;\n\t\t\t\treturn html;\n\t\t\t}\n\t\t}\n\n\t\treturn '';\n\t}\n}\n",
+      "note": "kepano/defuddle src/extractors/bluesky.ts:276 at 19520add, the escaped-wrapper false positive class that quarantined cwe-79.js-html-string-interpolated (docs/validation/vulnerable-corpus-2026-09.md). The values come from the same getAttribute source the CVE does, so this is silent because escapeHtml is honoured, not because nothing is tainted. The class wrapper was added so the method parses on its own."
+    },
+    {
+      "id": "corpus.cwe-79.js-html-tainted-interpolation.dicebear-escaped-color",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.js-html-tainted-interpolation"
+      ],
+      "path": "negative/js_html_tainted_dicebear_escaped.ts",
+      "code": "import { escape } from '@dicebear/core';\nimport type {\n  ComponentGroup,\n  ComponentPickCollection,\n  ColorPickCollection,\n} from '../types.js';\n\nexport const row2: ComponentGroup = {\n  xooox: (components: ComponentPickCollection, colors: ColorPickCollection) =>\n    `<path d=\"M1 1H0v1h1V1ZM5 1H4v1h1V1Z\" fill=\"${escape.xml(`${colors.row}`)}\"/>`,\n  xxoxx: (components: ComponentPickCollection, colors: ColorPickCollection) =>\n    `<path d=\"M2 1H0v1h2V1ZM5 1H3v1h2V1Z\" fill=\"${escape.xml(`${colors.row}`)}\"/>`,\n};\n",
+      "note": "dicebear/dicebear packages/@dicebear/identicon/src/components/row2.ts:15 at efe62f27, the generated component shape that produced most of cwe-79.js-html-string-interpolated's 678 findings. Every interpolation is wrapped in escape.xml. No source in this rule reaches a component's colours, so this would be silent without the sanitizer too; the defuddle case beside it is the one that exercises the escaper."
+    },
+    {
+      "id": "cwe-79.js-html-tainted-interpolation.escaped-and-json",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.js-html-tainted-interpolation"
+      ],
+      "path": "negative/js_html_tainted_escaped.js",
+      "code": "const he = require('he')\n\napp.get('/hello', (req, res) => {\n  const name = req.query.name\n  res.send(`<h1>Hello ${he.encode(name)}</h1>`)\n})\n\napp.get('/search', (req, res) => {\n  const q = req.query.q\n  res.send({ query: q, results: [] })\n})\n\nfunction link (req) {\n  const next = req.query.next\n  return `<a href=\"/login?next=${encodeURIComponent(next)}\">Sign in</a>`\n}\n",
+      "note": "Authored, not lifted: he.encode in text, encodeURIComponent in an attribute, and an object sent as JSON, which Express serialises rather than renders."
     }
   ]
 }

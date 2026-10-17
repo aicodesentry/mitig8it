@@ -797,6 +797,121 @@ rules:
         not give. Re-enable it when the rule set can answer that; the recall it would buy
         is six labels, and is recorded in docs/validation/vulnerable-corpus-2026-09.md.
 
+  # The taint variant of cwe-79.js-html-string-interpolated, which is quarantined above at
+  # 0.47 because it cannot see an escaping wrapper or tell data from already-built markup.
+  # This one asks both questions. A value reaches markup only from a source that carries
+  # outside text: a request field, the page's own URL, or an attribute read back out of a
+  # parsed document, which is how defuddle's CVE-2026-61824 arrives (`getAttribute('content')`
+  # into `<img src="...">`). Composition (`${parts.join('\n')}`) is not a source, and any
+  # escaper on the way is a sanitizer, so dicebear's `escape.xml(...)` and defuddle's
+  # `escapeHtml(...)` lines stay silent.
+  - id: cwe-79.js-html-tainted-interpolation
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: req.params
+        - pattern: req.query
+        - pattern: req.body
+        - pattern: req.headers
+        - pattern: req.cookies
+        - pattern: location.search
+        - pattern: location.hash
+        - pattern: location.href
+        - pattern: window.location.search
+        - pattern: window.location.hash
+        - pattern: window.location.href
+        - pattern: document.location.search
+        - pattern: document.location.hash
+        - pattern: document.location.href
+        - pattern: document.URL
+        - pattern: document.documentURI
+        - pattern: document.referrer
+        - pattern: window.name
+        - pattern: $EL.getAttribute(...)
+    pattern-sanitizers:
+      - pattern-either:
+        - pattern: DOMPurify.sanitize(...)
+        - pattern: he.encode(...)
+        - pattern: he.escape(...)
+        - pattern: escape.xml(...)
+        - pattern: escape.html(...)
+        - pattern: encodeURIComponent(...)
+        - pattern: _.escape(...)
+        - pattern: lodash.escape(...)
+        - pattern: validator.escape(...)
+        - pattern: sanitizeHtml(...)
+        - pattern: filterXSS(...)
+        - pattern: Handlebars.escapeExpression(...)
+        - pattern: Handlebars.Utils.escapeExpression(...)
+        - pattern: Mustache.escape(...)
+        # A project's own helper, named as one: escapeHtml, escapeXml, sanitizeUrl.
+        - patterns:
+          - pattern-either:
+            - pattern: $FN(...)
+            - pattern: $O.$FN(...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: (?i)^(?:escape|sanitize|encode)\w*$
+    pattern-sinks:
+      - pattern-either:
+        - patterns:
+          - pattern-either:
+            - pattern: $RES.send($V)
+            - pattern: $RES.write($V, ...)
+            - pattern: $RES.end($V, ...)
+          - pattern-not: "$RES.send({...})"
+          - metavariable-regex:
+              metavariable: $RES
+              regex: ^(?:res|resp|response)$
+          - focus-metavariable: $V
+        - patterns:
+          - pattern-either:
+            - pattern: $EL.innerHTML = $V
+            - pattern: $EL.outerHTML = $V
+            - pattern: $EL.innerHTML += $V
+            - pattern: document.write($V)
+            - pattern: document.writeln($V)
+            - pattern: $EL.insertAdjacentHTML($POS, $V)
+          - focus-metavariable: $V
+        # Markup assembled anywhere, by a template literal or a concatenation that opens a
+        # tag before the value goes in.
+        - patterns:
+          - pattern: $HTML
+          - metavariable-pattern:
+              metavariable: $HTML
+              pattern: "`...${$X}...`"
+          - metavariable-regex:
+              metavariable: $HTML
+              regex: "^`[^`]*<[a-zA-Z/][^`]*\\$\\{"
+        - patterns:
+          - pattern: $LIT + $X
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: "^['\"][^'\"]*<[a-zA-Z/]"
+    message: "Outside text reaches HTML with no escaping on the way. Escape it for the context it lands in, or build the node rather than the markup"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.75"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "request field, page URL, or an attribute read from a parsed document"
+      sink_description: "HTML markup or an HTML sink"
+      sanitizer_description: "escapeHtml, escape.xml, he.encode, DOMPurify.sanitize, encodeURIComponent, a framework escape helper, or a function named as an escaper"
+      trace_summary: "Taint-tracked flow from outside text into HTML markup with no escaping on the way."
+      precision_evidence: >-
+        Unmeasured on the corpus, taint variant of cwe-79.js-html-string-interpolated. What was
+        run and what was not is in docs/validation/taint-one-hop-2026-10.md.
+      posting: quarantine
+      posting_evidence: >-
+        Unmeasured. The posting policy lets a rule with no adjudicated findings post only when
+        its pattern is sink-only and makes no data-flow assumption, and a taint rule is a
+        data-flow assumption, so it is quarantined until it has three adjudicated findings.
+        The command that measures it is in docs/validation/taint-one-hop-2026-10.md.
+
   - id: cwe-79.js-template-autoescape-disabled
     patterns:
       - pattern-either:
