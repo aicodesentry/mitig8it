@@ -63,13 +63,24 @@ def _strong_trace_steps():
     ]
 
 
+# Triage now demands an exploit payload on high and critical confirmations and runs a patch
+# critic before attaching fixed_code, both on by default. The end-to-end tests below predate
+# that and describe the behaviour with both off, which the flags must still reach. The new
+# defaults are covered in test_llm_triage_adversarial.py.
+_LEGACY_ENV = {
+    "OPENAI_API_KEY": "sk-test",
+    "LLM_TRIAGE_REQUIRE_PAYLOAD": "false",
+    "LLM_TRIAGE_CRITIC_ENABLED": "false",
+}
+
+
 class TestIsEnabled:
     def test_disabled_when_no_key(self):
         with patch.dict(os.environ, {}, clear=True):
             assert not is_llm_triage_enabled()
 
     def test_enabled_when_key_set(self):
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             assert is_llm_triage_enabled()
 
     def test_enabled_when_generic_gemini_key_set(self):
@@ -794,7 +805,7 @@ class TestTriageFindings:
         assert result == findings
 
     def test_returns_empty_for_empty_findings(self):
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings([], {})
         assert result == []
 
@@ -802,17 +813,25 @@ class TestTriageFindings:
     def test_returns_original_on_api_error(self, mock_call):
         mock_call.side_effect = Exception("API down")
         findings = [_make_finding()]
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings(findings, {})
         assert result == findings
 
     @patch("llm_triage._call_triage_llm")
-    def test_returns_original_on_bad_json(self, mock_call):
+    def test_bad_json_fails_closed_to_uncertain(self, mock_call):
+        # Before this the finding passed through untouched, deterministic patch included. An
+        # answer nobody could read is not a confirmation, so the finding is kept with no
+        # verdict, no boost and no fix.
         mock_call.return_value = ("not valid json", 100, 50)
-        findings = [_make_finding()]
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        findings = [_make_finding(remediation_patch='cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))')]
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings(findings, {})
-        assert result == findings
+        assert len(result) == 1
+        assert result[0]["llm_triage"]["verdict"] == "uncertain"
+        assert result[0]["llm_triage"]["downgrade"] == {"to": "uncertain", "reason": "parse_error"}
+        assert result[0]["evidence_details"]["extra"]["triage_downgrade_reason"] == "parse_error"
+        assert result[0]["confidence"] == findings[0]["confidence"]
+        assert "remediation_patch" not in result[0]
 
     @patch("llm_triage._call_triage_llm")
     def test_filters_false_positives_end_to_end(self, mock_call):
@@ -828,7 +847,7 @@ class TestTriageFindings:
             200,
         )
         findings = [_make_finding()]
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings(findings, {"app.py": "+code here"})
         assert len(result) == 0
 
@@ -851,7 +870,7 @@ class TestTriageFindings:
             analysis_scope="taint-intraprocedural",
             evidence_details={"trace_steps": _strong_trace_steps()},
         )]
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings(findings, {"app.py": "+code"})
         assert len(result) == 1
         assert result[0]["confidence"] == 0.8
@@ -878,7 +897,7 @@ class TestTriageFindings:
             "fix_scope": "line",
             "missing_control_type": "output_encoding",
         })]
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings(findings, {"app.py": "+cursor.execute(query)\n"})
         assert len(result) == 1
         assert result[0]["remediation_patch"] == 'cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))'
@@ -907,7 +926,7 @@ class TestTriageFindings:
                 "missing_control_type": "output_encoding",
             },
         )]
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings(findings, {"app.js": '+db.query("SELECT * FROM users WHERE id = " + userId);\n'})
         assert len(result) == 1
         assert result[0]["remediation_patch"] == 'db.query("SELECT * FROM users WHERE id = ?", [userId]);'
@@ -939,7 +958,7 @@ class TestTriageFindings:
                 "fix_scope": "line",
             },
         )]
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings(findings, {"config.js": '+const apiKey = "sk_live_1234567890abcdef";\n'})
         assert len(result) == 1
         assert result[0]["remediation_patch"] == "const apiKey = process.env.API_KEY;"
@@ -971,7 +990,7 @@ class TestTriageFindings:
                 "fix_scope": "line",
             },
         )]
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings(findings, {"app.js": "+eval(req.body.code);\n"})
         assert len(result) == 1
         assert result[0]["remediation_patch"] == "JSON.parse(req.body.code);"
@@ -1003,7 +1022,7 @@ class TestTriageFindings:
                 "fix_scope": "line",
             },
         )]
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings(findings, {"app.js": "+exec(req.query.cmd);\n"})
         assert len(result) == 1
         assert result[0]["remediation_patch"] == 'return res.status(400).json({ error: "Refusing to execute user-controlled commands" });'
@@ -1036,7 +1055,7 @@ class TestTriageFindings:
                 "missing_control_type": "html_sanitization_or_safe_text_rendering",
             },
         )]
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings(findings, {"app.js": "+element.innerHTML = req.query.name;\n"})
         assert len(result) == 1
         assert result[0]["remediation_patch"] == "element.textContent = req.query.name;"
@@ -1073,7 +1092,7 @@ class TestTriageFindings:
                 "missing_control_type": "secret_manager_or_environment_variable",
             },
         )]
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(os.environ, _LEGACY_ENV):
             result = triage_findings(findings, {"config.js": '+const apiKey = "sk_live_1234567890abcdef";\n'})
         assert len(result) == 1
         assert result[0]["remediation_patch"] == "const apiKey = process.env.API_KEY;"

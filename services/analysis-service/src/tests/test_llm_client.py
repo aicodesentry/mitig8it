@@ -82,6 +82,26 @@ def test_openai_compatible_uses_base_url(mock_openai):
     assert response.model == "local-model"
 
 
+@patch("openai.OpenAI")
+def test_openai_call_model_argument_overrides_configured_model(mock_openai):
+    completion = MagicMock()
+    completion.choices = [MagicMock(message=MagicMock(content="[]"))]
+    completion.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = completion
+    mock_openai.return_value = mock_client
+
+    with patch.dict("os.environ", {"LLM_PROVIDER": "openai", "LLM_MODEL": "gpt-batch", "LLM_API_KEY": "key"}, clear=True):
+        response = llm_client.call_llm(system_prompt="s", user_prompt="u", timeout_seconds=5, model="gpt-isolated")
+        fallback = llm_client.call_llm(system_prompt="s", user_prompt="u", timeout_seconds=5, model="  ")
+
+    calls = mock_client.chat.completions.create.call_args_list
+    assert calls[0].kwargs["model"] == "gpt-isolated"
+    assert calls[1].kwargs["model"] == "gpt-batch"
+    assert response.model == "gpt-isolated"
+    assert fallback.model == "gpt-batch"
+
+
 @patch("llm_client.httpx.Client")
 def test_gemini_call_maps_response_shape(mock_client_cls):
     mock_response = MagicMock()
