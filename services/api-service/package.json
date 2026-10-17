@@ -17,6 +17,9 @@
     "db:verify": "node src/scripts/verifyMigrations.js"
   },
   "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.4",
     "@opentelemetry/api": "1.9.1",

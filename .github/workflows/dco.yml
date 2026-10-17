@@ -31,6 +31,7 @@ jobs:
   signoff:
     name: Sign-off on every commit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check Signed-off-by
         env:

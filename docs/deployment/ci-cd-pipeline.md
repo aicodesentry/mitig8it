@@ -63,7 +63,8 @@ When CI finishes successfully on `main`, the four deploy workflows start (via `w
 Every deploy workflow has two jobs:
 
 - **`filter`**: checks whether this component's files changed in the latest commit. If not, the deploy is skipped.
-- **`deploy`**: runs only if `filter` says yes. Backends build and push a Docker image to Artifact Registry, then deploy to Cloud Run; the frontend builds with npm and deploys to Firebase Hosting. Every deploy ends with a smoke check.
+- **`deploy`**: runs only if `filter` says yes. Backends build and push a Docker image to Artifact Registry, then deploy to Cloud Run; the frontend builds with npm and deploys to Firebase Hosting.
+- **Staging and promotion**: the four Cloud Run deploys create the revision with `--no-traffic --tag candidate`, check it on its own tag URL, and only then run `gcloud run services update-traffic --to-latest --remove-tags candidate`. A failed check leaves traffic on the previous revision and promotes nothing; a failed promote returns traffic to the revision recorded before the deploy started. The first deploy of a service, which is what `deploy-staging.yml` does, skips staging because a service with no other revision would otherwise serve nothing. The frontend has no revision to stage and is live as soon as it deploys. [../runbooks/rollback.md](../runbooks/rollback.md) is what to do when a bad revision did get promoted.
 
 | Component | Target | Workflow |
 |---|---|---|
