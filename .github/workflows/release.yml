@@ -70,7 +70,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       dry-run: ${{ steps.version.outputs.dry-run }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # The whole history and every tag: the ancestry check below needs main, and the release
           # job needs to be able to create a commit on top of this one.
@@ -198,15 +198,15 @@ jobs:
       TAG: ${{ needs.gate.outputs.tag }}
       DRY_RUN: ${{ needs.gate.outputs.dry-run }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.11'
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           # The major the image pins. The action's own test job explains why the host has to match
           # it: a host on a different Node reports failures the image does not have, or passes
@@ -321,7 +321,7 @@ jobs:
       # "what version of semgrep does this review use" is a question a user is entitled to answer
       # without our help.
       - name: Generate an SBOM for the image
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: ${{ env.IMAGE }}:${{ env.VERSION }}
           format: spdx-json
