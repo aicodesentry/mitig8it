@@ -111,7 +111,7 @@ test('sections carry a suggestion hunk, the stated intent, the proof, evidence, 
     hunk: { start_line: 3, end_line: 3 }, not_suggestable_reason: '', verification_level: 'development_unverified',
     stated_intent: 'The order lookup returns the same row for the same id.',
     proof: 'regression test tests/orders.regression.test.js asserts that the SQL injection at services/orders.js:3 is no longer reproducible; it failed on the original code and passed on the fix.',
-    evidence: ['Regression test tests/orders.regression.test.js: failed on the original code, passed on the fix.', 'Syntax check: passed on the fixed file.', 'Evidence digest: cccccccccccc.'],
+    evidence: ['Regression test tests/orders.regression.test.js: failed on the original code, passed on the fix.', 'Syntax check: passed on the fixed file.'],
     limitations: ['verification ran in the development local sandbox without network, kernel, or filesystem isolation'],
     finding_ids: ['f1'], covered_by: '', finding_body: '',
   });
@@ -244,7 +244,6 @@ test('per-finding candidates each get their own section: a suggestion on the fin
       'Regression test .mitig8it/regression/f-cred.test.py failed on the original code and passed on the fix.',
       'Syntax check (generated_python_syntax) passed on the fix.',
       "Not run: the repository's original test suite was not run.",
-      'Evidence digest: sha256:f-cre.',
     ],
   });
   expect(sections[0].unified_diff).not.toContain('literal_eval');

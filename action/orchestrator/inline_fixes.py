@@ -17,6 +17,7 @@ compares them against these on the same inputs, so a change on either side fails
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 # remediationInlineFixes.js: const MAX_ALIGNED_LINES = 1500;
@@ -191,6 +192,14 @@ def evidence_lines(evidence: Dict[str, Any]) -> List[str]:
     was putting that list into `proof` instead, where `str()` on a Python list rendered
     `**Proof:** ['Regression test ...']` into the pull request. Both fields are built here now,
     each from the key the App reads.
+
+    These lines carry no `Evidence digest:`. The evidence document binds a `request_nonce` that
+    `verification/verifier.py` mints per verification, so its digest is different on every run over
+    identical code by design, and a comment that printed it changed whenever the review ran. It is
+    not a value a reviewer can act on either: the durable handle on a fix is the candidate id in the
+    `<!-- mitig8it-fix:... -->` marker, which is derived from the patch. The evidence digest stays in
+    `preview.evidence`, on the persisted verification row and on the dashboard, which is where a
+    per-run audit value belongs.
     """
     summary = [
         str(item).strip()
@@ -198,11 +207,7 @@ def evidence_lines(evidence: Dict[str, Any]) -> List[str]:
         if str(item or "").strip()
     ]
     if summary:
-        lines = summary[:20]
-        digest = str(evidence.get("evidence_digest") or "")
-        if digest:
-            lines = [*lines, f"Evidence digest: {digest[:12]}."]
-        return lines
+        return summary[:20]
 
     tests = [
         str(test.get("path") or test.get("name"))
@@ -224,9 +229,6 @@ def evidence_lines(evidence: Dict[str, Any]) -> List[str]:
         if syntax_not_run
         else "Syntax check: passed on the fixed file."
     )
-    digest = str(evidence.get("evidence_digest") or "")
-    if digest:
-        lines.append(f"Evidence digest: {digest[:12]}.")
     return lines
 
 

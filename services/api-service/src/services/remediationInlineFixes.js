@@ -127,14 +127,17 @@ function computeHunk(original, replacement, preferredLine) {
 // The repair service states each candidate's evidence in full sentences (its regression test
 // failed on the original code and passed on the fix, which checks passed, which did not run);
 // a candidate from an older service version without that summary gets the lines built here.
+//
+// No `Evidence digest:` line. The evidence document binds a `request_nonce` minted per
+// verification in the repair service's `verification/verifier.py`, so its digest necessarily
+// differs on every run over identical code, and printing it into an inline comment meant a
+// re-analysis rewrote a fix block whose suggestion text had not changed. The durable handle a
+// reviewer or an auditor follows is the candidate id in the `<!-- mitig8it-fix:... -->` marker.
+// The digest itself is still persisted on the candidate and still shown on the dashboard.
 function evidenceLines(candidate) {
   const evidence = candidate.preview?.evidence || {};
   const summary = Array.isArray(evidence.summary) ? evidence.summary.map((item) => String(item ?? '').trim()).filter(Boolean) : [];
-  if (summary.length) {
-    const lines = summary.slice(0, 20);
-    if (evidence.evidence_digest) lines.push(`Evidence digest: ${String(evidence.evidence_digest).slice(0, 12)}.`);
-    return lines;
-  }
+  if (summary.length) return summary.slice(0, 20);
   const tests = (Array.isArray(evidence.generated_tests) ? evidence.generated_tests : [])
     .map((test) => test?.path || test?.name).filter(Boolean);
   const limitations = Array.isArray(evidence.limitations) ? evidence.limitations : [];
@@ -144,7 +147,6 @@ function evidenceLines(candidate) {
     : 'Generated regression test: failed on the original code, passed on the fix.');
   const syntaxNotRun = limitations.some((item) => /syntax check (skipped|unavailable)/i.test(String(item)));
   lines.push(syntaxNotRun ? 'Syntax check: not run (see limitations).' : 'Syntax check: passed on the fixed file.');
-  if (evidence.evidence_digest) lines.push(`Evidence digest: ${String(evidence.evidence_digest).slice(0, 12)}.`);
   return lines;
 }
 

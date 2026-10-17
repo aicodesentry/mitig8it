@@ -542,6 +542,29 @@ results that vary run to run, all in the one repository with a large Python file
 that `action/orchestrator/remediation.py` reads; sort the supporting-detection list; and log per
 file whether head content was used, so a fallback is visible rather than silent.
 
+> **The digest half of this was fixed on 29 September 2026, and the cause was not where this note
+> put it.** Nothing in `action/orchestrator/remediation.py` needed changing, and the evidence digest
+> could not be made "a function of the fix": it hashes the broker's evidence document, which binds a
+> `request_nonce` that `verification/verifier.py` mints per verification with
+> `secrets.token_hex(32)` and `sandbox/broker.py` requires to come back unchanged. That is an
+> anti-replay property of the verification contract, so the digest is *required* to differ on every
+> run and stabilising it would have weakened a security property to quiet a cosmetic symptom.
+>
+> The two real defects were that a per-run value was used as a durable identity and shown to
+> reviewers. `candidate_id` in `engine.py` was a digest over `job_id` and `evidence_digest`, and it
+> is the `<!-- mitig8it-fix:... -->` marker the publisher matches a fix block by, so it could never
+> repeat and the block was always rewritten. It is now derived from `finding_ids`,
+> `artifact_digest` and `verified_tree_oid`, which are the patch and what it claims to repair. The
+> Action's `action_id` was a fresh `uuid4` that `manifest_digest` binds, and is now derived from the
+> repository, pull request number and head sha, which is what `idempotency_key` beside it already
+> used. And both comment renderers stopped printing `Evidence digest:` at all, because a nonce-bound
+> audit value is not something a reviewer can act on; it stays on the persisted candidate and on the
+> dashboard. Pinned by `services/remediation-service/tests/test_fix_identity.py`, which also asserts
+> the nonce is still fresh per verification, so a future attempt to stabilise the digest fails a
+> test instead of passing quietly.
+>
+> The supporting-detection ordering and the head-content logging in the note above are not done.
+
 **3. The thread survey under-counts on the run that changes most.** pygoat's first fixed run
 logged `12 seen, 12 with our marker, 0 resolved, 0 retired, 0 kept for a published fix, 0 failed`
 while 16 of its own comments existed at the start of the run and 4 of them disappeared during it.

@@ -166,7 +166,6 @@ def test_proof_and_evidence_come_from_the_keys_the_app_reads():
     assert "tests/test_secret.py" in section["proof"]
     assert section["evidence"] == [
         "Regression test tests/test_secret.py: failed, then passed.",
-        "Evidence digest: abcdef012345.",
     ]
 
 
@@ -194,3 +193,30 @@ def test_the_hunk_survives_the_publish_envelope():
     sent = request["fix_sections"][0]
     assert sent["hunk"]["start_line"] == 5
     assert len(request["manifest_digest"]) == 64
+
+
+def test_the_fallback_evidence_lines_do_not_crash_on_a_candidate_without_a_summary():
+    """`evidence_lines` called `re.search` in a module that never imported `re`.
+
+    The branch is only reached by a candidate from a service version that predates
+    `evidence.summary`, which is why no test had entered it and why the module imported cleanly:
+    the `NameError` waits until the line runs. Both outcomes of the syntax-check sentence are
+    exercised here so the import cannot be dropped again without a failure.
+    """
+    from orchestrator import inline_fixes
+
+    passed = inline_fixes.evidence_lines(
+        {"generated_tests": [{"path": "tests/test_secret.py"}], "limitations": []}
+    )
+    assert passed == [
+        "Regression test tests/test_secret.py: failed on the original code, passed on the fix.",
+        "Syntax check: passed on the fixed file.",
+    ]
+
+    skipped = inline_fixes.evidence_lines(
+        {"generated_tests": [], "limitations": ["syntax check skipped: no checker for .py"]}
+    )
+    assert skipped == [
+        "Generated regression test: failed on the original code, passed on the fix.",
+        "Syntax check: not run (see limitations).",
+    ]
