@@ -11,12 +11,19 @@ item for exactly this reason.
 
 Two things are worth knowing before anything else, because they shape every procedure below.
 
-**No deploy in this repository is staged.** Every Cloud Run deploy runs `gcloud run deploy` with no
-`--no-traffic` and no revision tag, so the new revision takes all the traffic as it is created, and
-the workflow's smoke step runs afterwards. A failing smoke step therefore means the bad revision is
-already serving. The same gap was recorded in
-[docs/history/DEVELOPER-READINESS-REVIEW-2026-08-14.md](../history/DEVELOPER-READINESS-REVIEW-2026-08-14.md)
-and has not changed.
+**The four Cloud Run deploys are staged; the frontend is not.** Each of them deploys with
+`--no-traffic --tag candidate`, runs its checks against the candidate's own URL, and only then runs
+`gcloud run services update-traffic --to-latest --remove-tags candidate`. A failing check therefore
+leaves traffic where it was and there is nothing to roll back: the candidate revision exists, keeps
+its `candidate` tag so you can reach it, and serves nobody. If the promote itself fails, the deploy
+returns traffic to the revision it recorded before starting and still fails.
+
+This is narrower than it sounds. `gcloud run deploy` always waited for a revision to become Ready
+before shifting traffic, so a revision that cannot start was never the gap. The gap was that
+application-level checks ran after the shift, and now they run before it.
+
+The frontend deploys to Firebase Hosting, which has no Cloud Run revision to stage, so section 4 is
+unchanged and a bad frontend release is still live the moment it deploys.
 
 **Rolling back the code does not roll back the schema.** The API deploy runs production migrations
 before it deploys, the migration runner is forward-only, and no down migration exists anywhere in
@@ -85,11 +92,14 @@ an incident:
 
 ### The other signals
 
-- **A red deploy job.** The API smokes `/health` over the public URL, the remediation service
-  smokes an authenticated `/health`, the frontend curls the public site. The github and analysis
-  services only have their URL printed: both run `SERVICE_MODE=grpc` behind `--use-http2` with gRPC
-  startup and liveness probes, so there is no HTTP endpoint to curl and the deploy verifies less
-  about them than it does about the other three.
+- **A red deploy job.** All four Cloud Run deploys now check the candidate revision before any
+  traffic reaches it, so a red deploy job usually means nothing was promoted and the previous
+  revision is still serving. The API curls `/health` on the candidate URL and also asserts the
+  metrics sidecar is in the candidate revision; the remediation service curls an authenticated
+  `/health` with a token minted for the candidate URL; the github and analysis services call
+  `grpc.health.v1.Health/Check` with `grpcurl`, because both run `SERVICE_MODE=grpc` behind
+  `--use-http2` and have no HTTP endpoint to curl. The frontend curls the public site after it is
+  already live.
 - **The API refusing to start.** In production `AUTO_MIGRATE` is not set, so
   `src/services/schemaBootstrap.js` refuses to boot with `Pending database migrations: ...` rather
   than mutating the schema. A revision that cannot boot never becomes Ready, which the stall policy
@@ -540,7 +550,10 @@ runbook with a gap.
    That is the difference between this document and a rollback.
 3. **Does a pinned traffic split stop the next automated deploy from serving?** Section 3 assumes
    Cloud Run's documented behaviour. It has not been tested here, and the consequence of being
-   wrong in either direction is significant.
+   wrong in either direction is significant. Partly mitigated since the deploys were staged: every
+   promote now ends in `--to-latest`, which should unpin a service that a manual `--to-revisions`
+   rollback pinned, so an automated deploy is expected to take over again on its own. Expected, not
+   observed.
 4. **What is the Neon plan's point-in-time restore window?** Not recorded anywhere. Until somebody
    checks, option D in section 5 has an unknown reach as well as an untested procedure.
 5. **How far back can a Firebase Hosting rollback reach?** Hosting version retention is a project
@@ -548,10 +561,13 @@ runbook with a gap.
 6. **Where does an incident get written up?** `docs/history/` holds dated review documents and is
    the closest existing convention, but nothing says that is the place, and no incident has been
    written up yet.
-7. **Should the deploys stage traffic at all?** Every rollback in this document is after the fact
-   because no workflow deploys with `--no-traffic` and a revision tag, which would allow a smoke
-   test against the new revision before it serves anybody. That is a change to five workflows and a
-   decision for the owner, not something this runbook should assume.
+7. **Answered: the four Cloud Run deploys stage traffic.** This was left to the owner and the owner
+   decided it. What is still unverified is the mechanism itself, because no staged deploy has run
+   yet: that a tag URL accepts an identity token minted for the tag's own hostname, that
+   `--to-latest` promotes the candidate in the same call that removes its tag, and that the
+   first-deploy path in `deploy-staging.yml` behaves as written. The first of those is the one to
+   suspect if a staged deploy fails its smoke with an authentication error rather than a health
+   error.
 8. **What is the ordering rule when the API and the github service disagree?** Both read the same
    database and only the API runs migrations. There is no written rule for which to roll back first
    when a commit touched both.
