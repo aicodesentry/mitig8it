@@ -267,6 +267,11 @@ Analysis requests and metrics require `x-internal-secret`. The expected value is
 - `LLM_MODEL` / `LLM_TRIAGE_MODEL`
 - `LLM_API_KEY`
 - `GEMINI_API_KEY` / `OPENAI_API_KEY` provider-specific local fallbacks
+- `LLM_TRIAGE_ISOLATE_SEVERITY` findings at or above it are triaged one per call, default `high`, `none` for one batch
+- `LLM_TRIAGE_MODEL_HIGH` model for those calls and the patch critic, default the batch model
+- `LLM_TRIAGE_REQUIRE_PAYLOAD` a high or critical confirmation without a concrete exploit payload becomes `uncertain`, default true
+- `LLM_TRIAGE_CRITIC_ENABLED` a second call must fail to break a fix before it is attached, default true
+- `LLM_TRIAGE_MAX_CALLS` / `LLM_TRIAGE_MAX_TOKENS` per-run caps, default 24 and 300000; see [triage-adversarial-2026-10.md](../validation/triage-adversarial-2026-10.md)
 - `FRONTEND_URL`
 - `ANALYSIS_CACHE_TTL_DAYS`
 - `OPENGREP_BATCH_MAX_FILES` / `OPENGREP_BATCH_MAX_BYTES` batch bounds for tier 2
