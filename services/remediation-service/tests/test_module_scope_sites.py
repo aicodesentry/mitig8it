@@ -65,6 +65,14 @@ CONFIG_COMMAND = (
     "\n"
     "module.exports = { log };\n"
 )
+# The same config read, written as an ES module: the bound name is a named import, so the member
+# the stub has to carry is the imported name, under whatever alias the module gave it.
+ESM_CONFIG_COMMAND = (
+    "import { execSync } from 'node:child_process'\n"
+    "import { branch as target } from './settings'\n"
+    "\n"
+    "export const log = execSync(`git log ${target}`).toString()\n"
+)
 UNCONTROLLABLE_COMMAND = (
     "const { execSync } = require('child_process');\n"
     "const os = require('node:os');\n"
@@ -90,6 +98,14 @@ class TestTheSiteModel:
     def test_each_controllable_source_is_named(self, source, driver, key):
         site = js_site_for_line(source, 4)
         assert (site.driver, site.key) == (driver, key)
+
+    def test_a_named_import_from_a_repository_module_is_a_config_member(self):
+        site = js_site_for_line(ESM_CONFIG_COMMAND, 4)
+        assert (site.driver, site.key, site.member) == ("config", "./settings", "branch")
+
+    def test_a_named_import_from_a_package_is_still_not_a_config(self):
+        source = ESM_CONFIG_COMMAND.replace("'./settings'", "'settings-package'")
+        assert js_site_for_line(source, 4).driver is None
 
     def test_a_value_from_a_call_at_import_has_no_driver(self):
         assert js_site_for_line(UNCONTROLLABLE_COMMAND, 5).driver is None
@@ -118,6 +134,12 @@ class TestJavaScriptProofs:
         snapshot, finding = _snapshot(request_payload, "app.js", CONFIG_COMMAND, 4)
         proof = generate_proof(snapshot, finding, COMMAND_ARGUMENTS, JAVASCRIPT)
         assert 'h.load("app.js", { stubs: { "./settings": { "branch": payload } } })' in proof.content
+
+    def test_an_es_module_config_is_stubbed_under_the_imported_name(self, request_payload):
+        snapshot, finding = _snapshot(request_payload, "app.mjs", ESM_CONFIG_COMMAND, 4)
+        proof = generate_proof(snapshot, finding, COMMAND_ARGUMENTS, JAVASCRIPT)
+        assert not isinstance(proof, ProofFallback), getattr(proof, "reason", None)
+        assert 'h.load("app.mjs", { stubs: { "./settings": { "branch": payload } } })' in proof.content
 
     def test_an_uncontrollable_source_is_refused_with_its_reason(self, request_payload):
         snapshot, finding = _snapshot(request_payload, "app.js", UNCONTROLLABLE_COMMAND, 5)
