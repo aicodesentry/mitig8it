@@ -98,6 +98,49 @@ test('a failed stage records the underlying error and code, and logs both with t
   }));
 });
 
+test.each([
+  [3, 'INVALID_ARGUMENT'],
+  [9, 'FAILED_PRECONDITION'],
+  [14, 'UNAVAILABLE'],
+])('normalizes numeric gRPC code %s before persistence', async (numericCode, expectedCode) => {
+  withFindings([{ id: 'f-js', file_path: 'services/orders.js' }]);
+  withSnapshot({
+    head_sha: HEAD,
+    base_sha: BASE,
+    head_tree_oid: TREE,
+    skipped: [],
+    files: [{
+      path: 'services/orders.js',
+      content: 'const q = 1;\n',
+      sha: 'e'.repeat(40),
+    }],
+    tree_entries: [{
+      path: 'services/orders.js',
+      mode: '100644',
+      type: 'blob',
+      sha: 'e'.repeat(40),
+    }],
+  });
+
+  const failure = Object.assign(new Error('gRPC remediation failed'), {
+    code: numericCode,
+    response: { status: 400 },
+  });
+  RemediationServiceClient.mockImplementation(() => ({
+    repair: jest.fn(async () => {
+      throw failure;
+    }),
+  }));
+
+  await executeClaimedJob(job());
+
+  const [, completion] = remediationDb.completeStage.mock.calls[0];
+
+  expect(completion.reason.code).toBe(expectedCode);
+  expect(typeof completion.reason.code).toBe('string');
+  expect(completion.outcome).toBe(expectedCode);
+});
+
 test('a long error message is bounded and a transient failure is queued again rather than ended', async () => {
   withFindings([{ id: 'f-js', file_path: 'services/orders.js' }]);
   withSnapshot({ head_sha: HEAD, base_sha: BASE, head_tree_oid: TREE, skipped: [],
