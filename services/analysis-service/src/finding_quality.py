@@ -1,5 +1,6 @@
 import hashlib
 import re
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional
 
 from comment_stripper import strip_lines
@@ -63,7 +64,31 @@ def is_transcript_artifact_line(line: str) -> bool:
     return False
 
 
+# Entries for the last few (patch, path, content) triples. Tier 1 asks for the same file's
+# entries once per rule, and building them runs the comment stripper over the whole head file
+# twice; on pygoat `introduction/views.py` (48 kB) that was 35 strips per file and 8 to 26 s,
+# against a 2 s per-file cap. The cap then stopped tier 1 after 6 to 9 of 35 rules, a different
+# number on each run, which is how the September 2026 action trial lost `views.py:963` and
+# `views.py:291` and saw `auth.weak_password_hash` come and go on `views.py:1026`.
+PARSE_CACHE_SIZE = 32
+
+
 def parse_patch_entries(patch: str, path: Any = None, content: Any = None) -> List[Dict[str, Any]]:
+    """`_parse_patch_entries`, built once per (patch, path, content) and copied per caller."""
+    try:
+        cached = _parse_patch_entries_cached(patch, path, content)
+    except TypeError:
+        # An unhashable argument; nothing in the service passes one, but a caller may.
+        return _parse_patch_entries(patch, path, content)
+    return [dict(entry) for entry in cached]
+
+
+@lru_cache(maxsize=PARSE_CACHE_SIZE)
+def _parse_patch_entries_cached(patch: str, path: Any, content: Any) -> tuple:
+    return tuple(_parse_patch_entries(patch, path, content))
+
+
+def _parse_patch_entries(patch: str, path: Any = None, content: Any = None) -> List[Dict[str, Any]]:
     """Reviewable lines of `patch`, in file order, each with its new-side line number.
 
     When `path` names a language the comment stripper models, every entry also carries
