@@ -578,6 +578,7 @@ rules:
       owasp: "A02:2021"
       category: "weak password hashing"
       internal_type: "weak_password_hash"
+      family: "password_hashing"
       confidence: "0.88"
       precision_evidence: >-
         benchmarks/vulnerable-corpus 2026-09: 3 findings over 2 repositories, all 3 adjudicated by
@@ -924,6 +925,7 @@ rules:
       owasp: "A05:2021"
       category: "session management"
       internal_type: "insecure_cookie_flags"
+      family: "cookie_flags"
       confidence: "0.85"
       posting: post
 

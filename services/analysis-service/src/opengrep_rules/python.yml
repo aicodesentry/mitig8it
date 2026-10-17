@@ -107,6 +107,7 @@ rules:
       cwe: "CWE-916"
       owasp: "A02:2021"
       category: "weak password hashing"
+      family: "password_hashing"
       confidence: "0.88"
 
   # ── SSRF ───────────────────────────────────────────────────────────────
