@@ -14,14 +14,15 @@ Every number in this file links to the run that measured it. None of them is an 
 
 Nothing yet.
 
-## [1.0.0] - unreleased
+## [1.0.0] - 2026-09-29
 
-The first release. `.github/workflows/release.yml` refuses to run until the date above is a real
-one, so this heading is not a placeholder anybody can forget: setting it is step one of
-[docs/releasing.md](docs/releasing.md).
+The first release, and the point at which `uses: aicodesentry/mitig8it/action@v1` starts resolving
+to something. Everything below already existed in the repository and is measured; 1.0.0 is not new
+work, it is the version number that makes the five lines in the README installable by a stranger.
 
-Everything below already exists in the repository and is measured. 1.0.0 is not new work; it is the
-point at which what exists becomes something a stranger can pin.
+Read [docs/validation/README.md](docs/validation/README.md) before trusting any number here. Every
+figure names the run that produced it, including the ones that are weak: recall is 0.40 on labelled
+lines, and the product says so on its own front page.
 
 ### Added
 

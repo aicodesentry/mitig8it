@@ -14,6 +14,7 @@ requirement files). They carry the `repo_definition` marker, so the in-image run
 """
 from __future__ import annotations
 
+import datetime as dt
 import subprocess
 import sys
 from pathlib import Path
@@ -151,10 +152,18 @@ def test_the_changelog_is_keep_a_changelog_shaped():
 
 
 def test_the_changelog_names_no_release_date_nobody_has_chosen():
-    """1.0.0 has not been released, so it does not carry a date, and the gate above enforces that.
+    """A release date is a decision, and it may not be a date nobody could have released on.
 
-    This is the assertion that would fail if somebody "tidied up" the heading by putting today's
-    date in it, which would let a release go out claiming to have happened on a day it did not.
+    This test used to require `1.0.0 - unreleased` outright, and it said that dating the heading
+    should be a deliberate edit to this test rather than a tidy-up. That edit is this one: 1.0.0 was
+    dated 2026-09-29 in order to cut it, because the gate in `release.yml` refuses a heading that
+    still reads `unreleased` and `docs/releasing.md` makes setting it step one.
+
+    What remains worth refusing is the thing the original assertion was really protecting against, a
+    release that claims to have happened on a day it did not. So a dated section has to carry a real
+    ISO date that is not in the future. `unreleased` is still accepted, because that is the honest
+    state of every version this repository has not decided to cut yet, and it is what the next
+    section will read.
     """
     sys.modules.pop("release_changelog", None)
     import importlib.util
@@ -165,11 +174,38 @@ def test_the_changelog_names_no_release_date_nobody_has_chosen():
 
     text = CHANGELOG.read_text(encoding="utf-8")
     section = module.find(text, "1.0.0")
-    assert section["date"] == "unreleased", (
-        f"CHANGELOG.md dates 1.0.0 as {section['date']!r}. If that release has happened, this test "
-        "should be updated deliberately; if it has not, the date is fiction."
-    )
+    date = section["date"]
     assert section["body"].strip(), "the 1.0.0 section is empty"
+
+    if date == "unreleased":
+        return
+
+    assert module.ISO_DATE.match(date), (
+        f"CHANGELOG.md dates 1.0.0 as {date!r}, which is neither 'unreleased' nor an ISO date. The "
+        "release gate reads this heading, so a malformed date fails a release rather than a test."
+    )
+    assert date <= dt.date.today().isoformat(), (
+        f"CHANGELOG.md dates 1.0.0 as {date!r}, which is in the future. A changelog date is the day "
+        "the release went out, not the day somebody hoped it would."
+    )
+
+
+def test_every_dated_section_is_a_date_that_has_happened():
+    """The same rule for every version, so the next release inherits the guard."""
+    sys.modules.pop("release_changelog", None)
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("release_changelog", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    today = dt.date.today().isoformat()
+    for section in module.sections(CHANGELOG.read_text(encoding="utf-8")):
+        date = section["date"]
+        if date == "unreleased" or not module.SEMVER.match(section["version"]):
+            continue
+        assert module.ISO_DATE.match(date), f"{section['version']} carries {date!r}, not an ISO date"
+        assert date <= today, f"{section['version']} is dated {date!r}, which is in the future"
 
 
 # --- the workflow -----------------------------------------------------------------------------
