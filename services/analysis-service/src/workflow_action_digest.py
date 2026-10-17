@@ -15,7 +15,23 @@ Two things are deliberately conservative.
 **It is off by default.** `WORKFLOW_ACTION_DIGEST_LOOKUP` has to be set for any request to leave
 the process. A scanner that quietly makes outbound calls per finding is a scanner nobody can
 reason about, and the Action's contract is that nothing leaves the runner at all, so the default
-has to be the one that is safe in both places. The hosted deployment sets it; the Action does not.
+has to be the one that is safe in both places. The Action must never set it.
+
+The hosted deployment may set it and, until 29 September 2026, this docstring claimed it did.
+Nothing set it: no deploy workflow named the variable, so every workflow pinning repair in both
+products was refused with `action_digest_unresolved`, and the rule those refusals came from is the
+most precise one in the whole set (1.00 over 46 findings,
+`docs/validation/workflow-tampering-2026-09.md`). `deploy-analysis-cloudrun.yml` now passes the
+variable through from a repository variable of the same name, so the switch is reachable, and it is
+still off unless an operator turns it on.
+
+Turning it on without `WORKFLOW_ACTION_DIGEST_LOOKUP_TOKEN` means the unauthenticated GitHub API
+rate limit, 60 requests an hour shared by every instance behind one egress address. Exceeding it
+returns None, which is the same outcome as leaving the lookup off, so the failure is safe and
+silent rather than wrong. It is not good enough to build a product promise on, and the note in the
+validation document's known debt says what a real fix looks like: the App already holds an
+installation token in github-service, and the digest should be resolved there rather than by
+anonymous calls from the scanner.
 
 **A failure is silence, never a guess.** An unreachable API, a rate limit, a tag that does not
 exist, a repository that is private to us: every one of those returns None and the finding simply

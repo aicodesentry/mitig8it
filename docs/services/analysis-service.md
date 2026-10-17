@@ -273,8 +273,14 @@ Analysis requests and metrics require `x-internal-secret`. The expected value is
 - `TIER1_BUDGET_SECONDS` total tier 1 wall clock, default 20
 - `TIER1_FILE_BUDGET_SECONDS` per-file tier 1 wall clock, default 2
 - `WORKFLOW_ACTION_DIGEST_LOOKUP` off unless set: allows one GitHub API request per distinct action
-  reference, to resolve the commit digest the pinning repair needs
-- `WORKFLOW_ACTION_DIGEST_LOOKUP_TOKEN` optional bearer token for that lookup
+  reference, to resolve the commit digest the pinning repair needs. A finding that arrives at the
+  repair service without a digest is refused as `action_digest_unresolved`, so with this off the
+  workflow family reports findings and never ships a fix. `deploy-analysis-cloudrun.yml` passes the
+  repository variable of the same name through; accepted values are `1`, `true`, `yes` and `on`, and
+  anything else is off
+- `WORKFLOW_ACTION_DIGEST_LOOKUP_TOKEN` optional bearer token for that lookup. Without it the
+  lookup uses the unauthenticated GitHub limit of 60 requests an hour per egress address, and
+  exceeding it returns no digest, which is the same outcome as leaving the lookup off
 
 For the full env contract, see [environment.md](../getting-started/environment.md).
 

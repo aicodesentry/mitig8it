@@ -230,10 +230,28 @@ visibility, which the analysis request already knows and does not currently pass
   and cannot be from the workflow alone.
 - **Recall is unmeasured.** There is no labelled workflow corpus, so nothing here says what these
   nine rules miss. The corpus answers noise, as it did for the tier 2 coverage set.
-- **The digest lookup is off by default.** The pinning repair needs the commit a tag resolves to,
-  which has to be looked up while the product still has a network. `WORKFLOW_ACTION_DIGEST_LOOKUP`
-  gates it and is unset by default, so today a finding carries the action reference and no digest,
-  and the repair is refused with `action_digest_unresolved`. The other refusal this family carried,
+- **The digest lookup is off by default, and until 29 September 2026 it was unsettable.** The
+  pinning repair needs the commit a tag resolves to, which has to be looked up while the product
+  still has a network. `WORKFLOW_ACTION_DIGEST_LOOKUP` gates it and is unset by default, so a
+  finding carries the action reference and no digest, and the repair is refused with
+  `action_digest_unresolved`. The variable was read by
+  `services/analysis-service/src/workflow_action_digest.py` and set by no deploy workflow, while
+  that module's own docstring said the hosted deployment set it, so the most precise rule in this
+  document could never produce a fix in either product and nothing said so.
+  `deploy-analysis-cloudrun.yml` now passes a repository variable of the same name through to the
+  service, normalised to `true` or empty, and `tests/test_workflow_action_digest.py` fails if that
+  line is dropped again. It is still off unless an operator sets the variable, which is the right
+  default for the only outbound request this service makes.
+
+  **Turning it on is not yet a fix, and this is the honest part.** Without
+  `WORKFLOW_ACTION_DIGEST_LOOKUP_TOKEN` the lookup uses the unauthenticated GitHub API limit, 60
+  requests an hour shared by every instance behind one egress address. Over that limit the lookup
+  returns None, which lands back on `action_digest_unresolved`, so the failure is safe and silent
+  rather than wrong, and the repair simply stops appearing under load with no signal that it is the
+  rate limit. A product promise cannot rest on that. The App already holds an installation token in
+  github-service, which is the service with GitHub credentials and retry handling, so resolving the
+  digest there and passing it in with the finding is the change worth making. The Action must keep
+  the lookup off whatever happens, because its contract is that nothing leaves the runner. The other refusal this family carried,
   `static_assertion_verification_unavailable`, is gone: the level the family declares now exists
   ([static-assertion-2026-09.md](static-assertion-2026-09.md)). It remains reachable for an
   operator who sets `allow_static_assertion_verification` false, or a deployment with no analysis

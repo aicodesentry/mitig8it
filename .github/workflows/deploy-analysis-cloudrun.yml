@@ -105,11 +105,33 @@ jobs:
             echo "Missing frontend URL variable for the $ENVIRONMENT environment" >&2
             exit 1
           fi
+
+          # Whether the scanner may resolve a GitHub Actions reference to the commit digest that
+          # the workflow pinning repair needs. Off unless the repository variable says otherwise,
+          # because it is the only outbound request the analysis service ever makes and a scanner
+          # that calls out without anyone deciding to is a scanner nobody can reason about.
+          #
+          # This variable existed, was read by `workflow_action_digest.py`, and was set by nothing,
+          # so every workflow pinning repair was refused as `action_digest_unresolved` in both
+          # products. It is normalised to exactly `true` or the empty string rather than passed
+          # through, so a value with a comma or a quote in it cannot break out of the
+          # `--update-env-vars` list below, and anything unrecognised is treated as off.
+          DIGEST_LOOKUP=""
+          case "$(printf '%s' '${{ vars.WORKFLOW_ACTION_DIGEST_LOOKUP }}' | tr '[:upper:]' '[:lower:]')" in
+            1|true|yes|on) DIGEST_LOOKUP="true" ;;
+            ""|0|false|no|off) DIGEST_LOOKUP="" ;;
+            *)
+              echo "::warning::WORKFLOW_ACTION_DIGEST_LOOKUP is set to something unrecognised; \
+          treating it as off. Use 'true' to enable the action digest lookup."
+              ;;
+          esac
+
           {
             echo "ENVIRONMENT=$ENVIRONMENT"
             echo "SECRET_SUFFIX=$SUFFIX"
             echo "SERVICE=codesentry-analysis${SUFFIX}"
             echo "FRONTEND_URL=$FRONTEND_URL"
+            echo "WORKFLOW_ACTION_DIGEST_LOOKUP=$DIGEST_LOOKUP"
           } >> "$GITHUB_ENV"
 
       - name: Authenticate to Google Cloud (Workload Identity)
@@ -169,6 +191,7 @@ jobs:
               SERVICE_MODE=grpc,\
               DEPLOY_ENVIRONMENT=${ENVIRONMENT},\
               FRONTEND_URL=${FRONTEND_URL},\
+              WORKFLOW_ACTION_DIGEST_LOOKUP=${WORKFLOW_ACTION_DIGEST_LOOKUP},\
               ANALYSIS_SERVICE_INTERNAL_SECRET=${{ secrets.CODESENTRY_INTERNAL_SECRET }}" \
             --set-secrets "\
               GEMINI_API_KEY=codesentry-gemini-api-key${SECRET_SUFFIX}:latest" \

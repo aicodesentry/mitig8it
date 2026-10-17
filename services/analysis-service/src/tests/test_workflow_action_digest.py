@@ -10,6 +10,8 @@ and the reference still has to be carried.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import workflow_action_digest as wad
@@ -197,3 +199,47 @@ class TestTheRunnerAttachesIt:
                 continue
             extra = (finding.get("evidence_details") or {}).get("extra") or {}
             assert "workflow_action_reference" not in extra, finding["rule_id"]
+
+
+class TestTheHostedDeploymentCanActuallyTurnItOn:
+    """The variable was read by this module and set by nothing, for as long as it existed.
+
+    `resolve_action_digest` returns None while the flag is off, the finding then carries no
+    `resolved_action_digest`, and the repair service refuses it as `action_digest_unresolved`. So a
+    variable no deployment passes is the same thing as a repair family that can never ship a fix,
+    and the rule those findings come from is the most precise one measured
+    (1.00 over 46 findings, `docs/validation/workflow-tampering-2026-09.md`).
+
+    These read the deploy workflow as text rather than asserting on a running service, which is the
+    most this suite can do. It is still enough to fail if the line is dropped again.
+    """
+
+    WORKFLOW = Path(__file__).resolve().parents[4] / ".github/workflows/deploy-analysis-cloudrun.yml"
+
+    def test_the_deploy_passes_the_variable_to_the_service(self):
+        body = self.WORKFLOW.read_text(encoding="utf-8")
+        assert "WORKFLOW_ACTION_DIGEST_LOOKUP=${WORKFLOW_ACTION_DIGEST_LOOKUP}" in body, (
+            "deploy-analysis-cloudrun.yml no longer passes WORKFLOW_ACTION_DIGEST_LOOKUP to the "
+            "service, so the hosted deployment cannot resolve an action digest and every workflow "
+            "pinning repair is refused as action_digest_unresolved."
+        )
+        assert "vars.WORKFLOW_ACTION_DIGEST_LOOKUP" in body, "the value has to come from somewhere"
+
+    def test_the_deploy_normalises_the_value_rather_than_interpolating_it(self):
+        """A repository variable is operator input, and it lands in a comma-separated list."""
+        body = self.WORKFLOW.read_text(encoding="utf-8")
+        assert 'DIGEST_LOOKUP="true"' in body and 'DIGEST_LOOKUP=""' in body, (
+            "the deploy should map the variable onto exactly true or empty, so a value containing a "
+            "comma or a quote cannot break out of --update-env-vars"
+        )
+        # The raw variable must not reach the env list directly.
+        assert "WORKFLOW_ACTION_DIGEST_LOOKUP=${{ vars." not in body
+
+    def test_the_values_the_deploy_accepts_are_the_values_this_module_accepts(self, monkeypatch):
+        """Two spellings of the same switch in two languages is how a flag silently does nothing."""
+        for value in ("1", "true", "yes", "on", "TRUE", "On"):
+            monkeypatch.setenv("WORKFLOW_ACTION_DIGEST_LOOKUP", value)
+            assert wad.lookup_enabled() is True, value
+        for value in ("", "0", "false", "no", "off", "maybe"):
+            monkeypatch.setenv("WORKFLOW_ACTION_DIGEST_LOOKUP", value)
+            assert wad.lookup_enabled() is False, value
