@@ -222,12 +222,21 @@ jobs:
           - name: api-service
             context: services/api-service
             dockerfile: Dockerfile
+          - name: api-service (prod)
+            context: services/api-service
+            dockerfile: Dockerfile.prod
           - name: github-service
             context: services/github-service
             dockerfile: Dockerfile
+          - name: github-service (prod)
+            context: services/github-service
+            dockerfile: Dockerfile.prod
           - name: analysis-service
             context: services/analysis-service
             dockerfile: Dockerfile
+          - name: analysis-service (prod)
+            context: services/analysis-service
+            dockerfile: Dockerfile.prod
           - name: remediation-service
             context: services/remediation-service
             dockerfile: Dockerfile

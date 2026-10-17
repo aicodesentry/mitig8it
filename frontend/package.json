@@ -13,6 +13,9 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "@radix-ui/react-slot": "^1.0.2",
     "axios": "^1.16.1",

@@ -20,6 +20,9 @@
       "<rootDir>/node_modules"
     ]
   },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.4",
     "@opentelemetry/api": "1.9.1",
