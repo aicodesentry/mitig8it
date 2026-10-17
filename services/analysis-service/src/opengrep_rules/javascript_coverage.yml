@@ -625,6 +625,95 @@ rules:
       confidence: "0.85"
       posting: post
 
+  # The taint variant of tier 1's `path.traversal.user_path`, which is quarantined at 0.43
+  # because a regex cannot tell a request-controlled path from an options object's brace.
+  # This asks where the path came from: a request field or `process.argv`, through any number
+  # of local assignments and joins, into a filesystem call or a response file.
+  #
+  # The sanitizer is the containment check the path_containment repair family writes: the
+  # value `path.resolve` (or `realpathSync`) returned, tested with `startsWith`, either inside
+  # the branch that passed or after the branch that rejected. A `startsWith` on the raw input
+  # is not containment, because `/srv/../etc/passwd` starts with `/srv/`. `path.basename` is
+  # not a sanitizer either, consistent with the family's assertion in
+  # services/remediation-service/src/families.py.
+  - id: cwe-22.js-fs-tainted-path
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: req.params
+        - pattern: req.query
+        - pattern: req.body
+        - pattern: req.headers
+        - pattern: process.argv
+    pattern-sanitizers:
+      - patterns:
+        - pattern-either:
+          - pattern-inside: |
+              $P = path.resolve(...);
+              ...
+          - pattern-inside: |
+              $P = $FS.realpathSync(...);
+              ...
+        - pattern-either:
+          - pattern-inside: |
+              if (!$P.startsWith(...)) { ... }
+              ...
+          - pattern-inside: |
+              if ($P.startsWith(...)) { ... }
+        - pattern: $P
+    pattern-sinks:
+      - patterns:
+        - pattern-either:
+          - patterns:
+            - pattern-either:
+              - pattern: $FS.$OP($P, ...)
+              - pattern: $FS.promises.$OP($P, ...)
+            - metavariable-regex:
+                metavariable: $FS
+                regex: ^(?:fs|fsp|fss|fsPromises|fse|fsExtra|require\(['"](?:node:)?fs(?:/promises)?['"]\))$
+            - metavariable-regex:
+                metavariable: $OP
+                regex: ^(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream|unlink|unlinkSync|rm|rmSync|rmdir|rmdirSync|readdir|readdirSync|open|openSync|copyFile|copyFileSync|rename|renameSync|readJson|readJsonSync|outputFile|remove|removeSync)$
+          - patterns:
+            - pattern: $OP($P, ...)
+            - metavariable-regex:
+                metavariable: $OP
+                regex: ^(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync|unlink|unlinkSync)$
+          - patterns:
+            - pattern-either:
+              - pattern: $RES.sendFile($P, ...)
+              - pattern: $RES.download($P, ...)
+            - metavariable-regex:
+                metavariable: $RES
+                regex: ^(?:res|resp|response)$
+        - focus-metavariable: $P
+    message: "File path taken from request input reaches the filesystem. Resolve it against the base and reject anything outside it"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.75"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "request field or process.argv"
+      sink_description: "filesystem access or response file"
+      sanitizer_description: "path.resolve or realpathSync result tested with startsWith before use; path.basename is not one"
+      sink_var: "$P"
+      trace_summary: "Taint-tracked flow from request input into a filesystem path with no containment check."
+      precision_evidence: >-
+        Unmeasured on the corpus, taint variant of path.traversal.user_path (tier 1,
+        quarantined at 0.43). What was run and what was not is in
+        docs/validation/taint-one-hop-2026-10.md.
+      posting: quarantine
+      posting_evidence: >-
+        Unmeasured. The posting policy lets a rule with no adjudicated findings post only when
+        its pattern is sink-only and makes no data-flow assumption, and a taint rule is a
+        data-flow assumption, so it is quarantined until it has three adjudicated findings.
+        The command that measures it is in docs/validation/taint-one-hop-2026-10.md.
+
   # ── XSS ────────────────────────────────────────────────────────────────
 
   - id: cwe-79.js-response-html-interpolated

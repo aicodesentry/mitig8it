@@ -1253,6 +1253,68 @@
       "path": "negative/py_subprocess_tainted_sanitized.py",
       "code": "import os\nimport shlex\nimport subprocess\n\n\ndef archive(name):\n    command = \"tar czf /tmp/out.tgz \" + shlex.quote(name)\n    os.system(command)\n\n\ndef checkout(branch):\n    if branch not in ALLOWED_BRANCHES:\n        raise ValueError(branch)\n    command = f\"git checkout {branch}\"\n    os.system(command)\n\n\ndef listing(name):\n    subprocess.run([\"ls\", name], check=True)\n",
       "note": "Authored, not lifted: shlex.quote, an allowlist rejected before use, and an argument list with no shell."
+    },
+    {
+      "id": "cwe-22.js-fs-tainted-path",
+      "expect": "finding",
+      "rule": "cwe-22.js-fs-tainted-path",
+      "path": "positive/cwe-22_js-fs-tainted-path.js",
+      "code": "const fs = require('fs')\nconst path = require('path')\n\napp.get('/docs', (req, res) => {\n  const name = req.query.name\n  const file = path.join(__dirname, 'docs', name)\n  fs.readFile(file, 'utf8', (err, body) => {\n    if (err) return res.status(404).end()\n    res.send(body)\n  })\n})\n",
+      "note": "A req.query path read two assignments away from the request. The tier 2 pattern rules need the request field inside the call, and the tier 1 regex that reached this shape is quarantined at 0.43."
+    },
+    {
+      "id": "cwe-22.js-fs-tainted-path.basename-is-not-containment",
+      "expect": "finding",
+      "rule": "cwe-22.js-fs-tainted-path",
+      "path": "positive/cwe-22_js-fs-tainted-path-basename.js",
+      "code": "const path = require('path')\n\napp.get('/avatar/:file', (req, res) => {\n  const file = path.join(AVATAR_DIR, path.basename(req.params.file))\n  res.sendFile(file)\n})\n",
+      "note": "path.basename is not a sanitizer, consistent with the path_containment family assertion in services/remediation-service/src/families.py: path.basename('..') is '..', and the join then names the parent of the served directory."
+    },
+    {
+      "id": "corpus.cwe-22.py-open-tainted-path",
+      "expect": "finding",
+      "rule": "cwe-22.py-open-tainted-path",
+      "path": "corpus/cwe-22_py-open-tainted-path.py",
+      "code": "import json\nimport os\nimport pickle\n\nfrom flask import request, session\n\n\ndef config():\n    if 'name' in request.args:\n        config_pkl = os.path.join(\n            app.config['CONFIG_PATH'],\n            request.args.get('name'))\n        session['config'] = (pickle.load(open(config_pkl, 'rb'))\n                             if os.path.exists(config_pkl)\n                             else session['config'])\n        return json.dumps(session['config'])\n    return json.dumps({})\n",
+      "note": "benbusby/whoogle-search app/routes.py:427 at 8830615a, GHSA-3q6g-qmpx-rqw4 / CVE-2024-22205, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json). The route decorators and the method branches around it were dropped; the join and the open are as they are in the tree."
+    },
+    {
+      "id": "cwe-22.py-open-tainted-path",
+      "expect": "finding",
+      "rule": "cwe-22.py-open-tainted-path",
+      "path": "positive/cwe-22_py-open-tainted-path.py",
+      "code": "from pathlib import Path\n\nfrom flask import Flask\n\napp = Flask(__name__)\nREPORTS = Path(\"/srv/reports\")\n\n\n@app.route(\"/reports/<name>\")\ndef report(name):\n    target = REPORTS / name\n    return target.read_text()\n",
+      "note": "A Flask route parameter joined with pathlib and read. The URL fills the parameter, and `/` does not contain the result."
+    },
+    {
+      "id": "corpus.cwe-22.js-fs-tainted-path.constant-template-path",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-fs-tainted-path"
+      ],
+      "path": "negative/js_fs_tainted_constant_path.ts",
+      "code": "import { type Request, type Response, type NextFunction } from 'express'\nimport fs from 'node:fs/promises'\n\nexport function getUserProfile () {\n  return async (req: Request, res: Response, next: NextFunction) => {\n    let template: string\n    try {\n      template = await fs.readFile('views/userProfile.pug', { encoding: 'utf-8' })\n    } catch (err) {\n      next(err)\n      return\n    }\n    const loggedInUser = security.authenticatedUsers.get(req.cookies.token)\n    res.send(template)\n  }\n}\n",
+      "note": "juice-shop/juice-shop routes/userProfile.ts:28 at 1618a611, one of the four false positives that quarantined path.traversal.user_path (docs/validation/vulnerable-corpus-2026-09.md): the path is a constant and the `{` is the options object. The handler reads the request two lines later, so this also checks that a request in scope does not taint a constant."
+    },
+    {
+      "id": "cwe-22.js-fs-tainted-path.resolve-and-startswith-guard",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-fs-tainted-path"
+      ],
+      "path": "negative/js_fs_tainted_guarded.js",
+      "code": "const fs = require('fs')\nconst path = require('path')\n\nconst BASE = path.resolve(__dirname, 'files')\n\napp.get('/files', (req, res) => {\n  const target = path.resolve(BASE, req.query.name)\n  if (!target.startsWith(BASE + path.sep)) {\n    return res.status(400).end()\n  }\n  fs.readFile(target, (err, body) => res.send(body))\n})\n\napp.get('/download', (req, res) => {\n  const target = path.resolve(BASE, req.query.name)\n  if (target.startsWith(BASE + path.sep)) {\n    res.sendFile(target)\n  }\n})\n",
+      "note": "Authored, not lifted: the containment check the path_containment family writes, in both of its forms (reject and return, or act only inside the passing branch)."
+    },
+    {
+      "id": "cwe-22.py-open-tainted-path.realpath-guard-and-safe-join",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.py-open-tainted-path"
+      ],
+      "path": "negative/py_open_tainted_guarded.py",
+      "code": "import os\n\nfrom flask import abort, request, send_file\nfrom werkzeug.utils import safe_join, secure_filename\n\n\n@app.route(\"/guarded\")\ndef guarded():\n    name = request.args.get(\"name\")\n    full = os.path.realpath(os.path.join(BASE, name))\n    if not full.startswith(BASE + os.sep):\n        abort(400)\n    with open(full) as fh:\n        return fh.read()\n\n\n@app.route(\"/joined\")\ndef joined():\n    return send_file(safe_join(BASE, request.args.get(\"name\")))\n\n\n@app.route(\"/upload-name\")\ndef upload_name():\n    with open(os.path.join(BASE, secure_filename(request.args.get(\"name\")))) as fh:\n        return fh.read()\n",
+      "note": "Authored, not lifted: the realpath-and-startswith check the path_containment family writes for Python, safe_join and secure_filename."
     }
   ]
 }

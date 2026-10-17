@@ -634,6 +634,111 @@ rules:
       confidence: "0.85"
       posting: post
 
+  # The Python half of cwe-22.js-fs-tainted-path. Sources are request fields, `sys.argv` and
+  # a Flask route's own parameters. Sanitizers are `safe_join` and `secure_filename`, and the
+  # containment check the path_containment family writes: a `realpath`, `abspath` or
+  # `Path.resolve()` result tested with `startswith` or `is_relative_to`. `os.path.basename`
+  # is not a sanitizer. `send_from_directory` is not a sink, because it joins safely itself.
+  - id: cwe-22.py-open-tainted-path
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: request.args
+        - pattern: request.form
+        - pattern: request.values
+        - pattern: request.json
+        - pattern: request.get_json(...)
+        - pattern: request.headers
+        - pattern: request.cookies
+        - pattern: request.files
+        - pattern: request.GET
+        - pattern: request.POST
+        - pattern: sys.argv
+        - patterns:
+          - pattern-inside: |
+              @$APP.route(...)
+              def $F(..., $SRC, ...):
+                ...
+          - pattern: $SRC
+    pattern-sanitizers:
+      - pattern-either:
+        - pattern: safe_join(...)
+        - pattern: $W.safe_join(...)
+        - pattern: secure_filename(...)
+        - pattern: $W.secure_filename(...)
+        - patterns:
+          - pattern-either:
+            - pattern-inside: |
+                $P = os.path.realpath(...)
+                ...
+            - pattern-inside: |
+                $P = os.path.abspath(...)
+                ...
+            - pattern-inside: |
+                $P = $X.resolve(...)
+                ...
+          - pattern-either:
+            - pattern-inside: |
+                if not $P.startswith(...):
+                  ...
+                ...
+            - pattern-inside: |
+                if $P.startswith(...):
+                  ...
+            - pattern-inside: |
+                if not $P.is_relative_to(...):
+                  ...
+                ...
+            - pattern-inside: |
+                if $P.is_relative_to(...):
+                  ...
+          - pattern: $P
+    pattern-sinks:
+      - patterns:
+        - pattern-either:
+          - pattern: open($P, ...)
+          - pattern: io.open($P, ...)
+          - pattern: codecs.open($P, ...)
+          - pattern: send_file($P, ...)
+          - pattern: flask.send_file($P, ...)
+          - pattern: os.remove($P)
+          - pattern: os.unlink($P)
+          - pattern: shutil.rmtree($P, ...)
+          - pattern: $P.read_text(...)
+          - pattern: $P.read_bytes(...)
+          - pattern: $P.write_text(...)
+          - pattern: $P.write_bytes(...)
+          - pattern: $P.open(...)
+          - pattern: pathlib.Path($P).$M(...)
+          - pattern: Path($P).$M(...)
+        - focus-metavariable: $P
+    message: "File path taken from request input reaches the filesystem. Resolve it with realpath and abort before any access outside the base"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.75"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "request field, sys.argv, or a Flask route parameter"
+      sink_description: "filesystem access or response file"
+      sanitizer_description: "safe_join, secure_filename, or a realpath, abspath or resolve() result tested with startswith or is_relative_to; os.path.basename is not one"
+      sink_var: "$P"
+      trace_summary: "Taint-tracked flow from request input into a filesystem path with no containment check."
+      precision_evidence: >-
+        Unmeasured on the corpus, taint variant of path.traversal.user_path (tier 1,
+        quarantined at 0.43) and cwe-22.py-open-request-path. What was run and what was not is
+        in docs/validation/taint-one-hop-2026-10.md.
+      posting: quarantine
+      posting_evidence: >-
+        Unmeasured. The posting policy lets a rule with no adjudicated findings post only when
+        its pattern is sink-only and makes no data-flow assumption, and a taint rule is a
+        data-flow assumption, so it is quarantined until it has three adjudicated findings.
+        The command that measures it is in docs/validation/taint-one-hop-2026-10.md.
+
   # ── SSRF ───────────────────────────────────────────────────────────────
 
   - id: cwe-918.py-urlopen-request-url
