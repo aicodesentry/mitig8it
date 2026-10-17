@@ -264,32 +264,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! DESCRIBED=$(gcloud run services describe "$SERVICE" \
+          # Existence is read from a list and not from a failing describe, because describe
+          # fails the same way for a service that is absent and for a credential that
+          # cannot read it, and reading the second as a first deploy would quietly send
+          # this revision straight to traffic with no gate at all.
+          gcloud run services list \
             --region '${{ vars.GCP_REGION }}' \
             --project '${{ vars.GCP_PROJECT_ID }}' \
-            --format=json 2>/dev/null); then
-            # No service yet, so this run creates it. deploy-staging.yml does exactly
-            # that, and --no-traffic on a service with no other revision would leave it
-            # serving nothing at all, so a first deploy takes traffic the way every
-            # deploy used to and has no promote step to reach.
+            --format='value(metadata.name)' > "$RUNNER_TEMP/services.txt"
+          if ! grep -Fxq "$SERVICE" "$RUNNER_TEMP/services.txt"; then
+            # deploy-staging.yml creates services from scratch, and --no-traffic on a
+            # service with no other revision would leave it serving nothing at all, so a
+            # first deploy takes traffic the way every deploy used to and has no promote
+            # step to reach.
             {
               echo "FIRST_DEPLOY=true"
               echo "PREVIOUS_REVISION="
             } >> "$GITHUB_ENV"
-            echo "$SERVICE does not exist yet: creating it with traffic, nothing to stage behind."
+            echo "$SERVICE does not exist yet. It is created serving, and smoked afterwards."
             exit 0
           fi
-          PREVIOUS=$(jq -r '
-            [.status.traffic[]? | select((.revisionName // "") != "")] as $t
-            | (($t | map(select(.percent == 100)) | .[0].revisionName)
-               // ($t | sort_by(.percent // 0) | last | .revisionName)
-               // "")
-          ' <<<"$DESCRIBED")
+          gcloud run services describe "$SERVICE" \
+            --region '${{ vars.GCP_REGION }}' \
+            --project '${{ vars.GCP_PROJECT_ID }}' \
+            --format=json > "$RUNNER_TEMP/service-before.json"
+          PREVIOUS_REVISION=$(jq -r '
+            [.status.traffic[]? | select(.revisionName != null and (.percent // 0) > 0)]
+            | sort_by(.percent) | last | .revisionName // ""' "$RUNNER_TEMP/service-before.json")
           {
             echo "FIRST_DEPLOY=false"
-            echo "PREVIOUS_REVISION=$PREVIOUS"
+            echo "PREVIOUS_REVISION=$PREVIOUS_REVISION"
           } >> "$GITHUB_ENV"
-          echo "Serving revision: ${PREVIOUS:-none found}"
+          echo "$SERVICE is serving ${PREVIOUS_REVISION:-no revision this job can name}."
 
       # One instance, one concurrent request: the local execution store is a per-instance
       # SQLite file. With SANDBOX_DRIVER=local the sandbox also runs checks on this container's

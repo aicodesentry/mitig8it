@@ -194,6 +194,10 @@ jobs:
             --project '${{ vars.GCP_PROJECT_ID }}' \
             --format='value(metadata.name)' > "$RUNNER_TEMP/services.txt"
           if ! grep -Fxq "$SERVICE" "$RUNNER_TEMP/services.txt"; then
+            # deploy-staging.yml creates services from scratch, and --no-traffic on a
+            # service with no other revision would leave it serving nothing at all, so a
+            # first deploy takes traffic the way every deploy used to and has no promote
+            # step to reach.
             {
               echo "FIRST_DEPLOY=true"
               echo "PREVIOUS_REVISION="
