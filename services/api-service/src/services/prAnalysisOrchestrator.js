@@ -5,7 +5,7 @@ const requestContext = require('../utils/requestContext');
 const analysisMetrics = require('./analysisMetrics');
 const { AnalysisGrpcClient } = require('../clients/analysisGrpcClient');
 const { GitHubGrpcClient } = require('../clients/githubGrpcClient');
-const { calculateFingerprint, normalizeFinding } = require('./findingUtils');
+const { calculateFingerprint, isFixRejectedByCritic, normalizeFinding } = require('./findingUtils');
 const { validateSuggestedFix, __private: validatorPrivate } = require('./suggestedFixValidator');
 const findingsDb = require('../db/findings');
 const analysisRunsDb = require('../db/analysisRuns');
@@ -139,6 +139,13 @@ function getGitHubGrpcClient() {
     githubGrpcClient = new GitHubGrpcClient();
   }
   return githubGrpcClient;
+}
+
+// The patch a comment may show, as a suggestion or as a plain code block. A fix the tier 3
+// patch critic rejected is shown in neither form.
+function renderablePatch(finding) {
+  if (isFixRejectedByCritic(finding)) return '';
+  return finding?.remediation_patch || '';
 }
 
 function shouldRenderSuggestion(finding, suggestionPatch) {
@@ -415,7 +422,7 @@ function buildPlacementLine(total, options = {}) {
 }
 
 function buildReviewComment(finding, options = {}) {
-  const suggestionPatch = normalizeSuggestionPatch(finding.remediation_patch);
+  const suggestionPatch = normalizeSuggestionPatch(renderablePatch(finding));
   const suggestionValidation = validateSuggestedFix({
     finding,
     filePatch: options.filePatch || '',
@@ -606,7 +613,7 @@ function prioritizeReviewComments(reviewComments) {
 function hasTier3RenderableSuggestions(findings, files, repoProfile) {
   const filePatchByPath = new Map((files || []).map((f) => [f.path, f.patch || '']));
   return (findings || []).some((finding) => {
-    const suggestionPatch = normalizeSuggestionPatch(finding.remediation_patch);
+    const suggestionPatch = normalizeSuggestionPatch(renderablePatch(finding));
     if (!shouldRenderSuggestion(finding, suggestionPatch)) return false;
 
     const validation = validateSuggestedFix({
@@ -1125,7 +1132,7 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
       .filter((f) => inlineFindingIds.has(f.id || f.finding_id || f.fingerprint))
       .map((f) => {
         const filePatch = filePatchByPath.get(f.file_path) || '';
-        const suggestionPatch = normalizeSuggestionPatch(f.remediation_patch);
+        const suggestionPatch = normalizeSuggestionPatch(renderablePatch(f));
         const suggestionValidation = validateSuggestedFix({
           finding: f,
           filePatch,
