@@ -106,6 +106,31 @@ class TestTruePositives:
         )
 
 
+class TestAnchorLine:
+    """A case that names a `line` is a claim about where the finding is reported.
+
+    The September action trial found three findings anchored on the call or object that
+    contained the defect (`module.exports = {`, `app.use(session({`) rather than on the
+    property that was the defect, so the suggestion sat on the wrong line and duplicated an
+    inline comment that had the right one. A rule whose match is a multi-line construct
+    reports the construct's first line; these cases pin the property line instead
+    (docs/validation/fix-placement-and-calibration-2026-10.md).
+    """
+
+    @pytest.mark.parametrize("case", [c for c in _cases() if c.get("line")], ids=lambda c: c["id"])
+    def test_finding_is_anchored_on_the_named_line(self, case, scan_findings):
+        rule_id = f"opengrep.{case['rule']}"
+        lines = sorted(
+            finding["line_start"]
+            for finding in scan_findings[case["path"]]
+            if finding["rule_id"] == rule_id
+        )
+        assert case["line"] in lines, (
+            f"{case['id']}: {case['rule']} reported line(s) {lines or 'none'}, "
+            f"the defect is on line {case['line']}"
+        )
+
+
 class TestAQuarantinedRuleNeverPosts:
     """A quarantined rule may fire. What it may not do is arrive.
 

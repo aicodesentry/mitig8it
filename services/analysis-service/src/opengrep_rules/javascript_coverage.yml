@@ -768,8 +768,13 @@ rules:
       posting: post
 
   - id: cwe-798.js-credential-config-key
+    # The match is the property, not the object that holds it. Matching the whole object
+    # anchored the finding on `module.exports = {` while the credential sat three lines
+    # lower, so the suggestion landed on the wrong line and duplicated the inline comment
+    # that had the right one (docs/validation/action-trial-2026-09.md, item 7).
     patterns:
-      - pattern: "{ ..., $NAME: \"$VALUE\", ... }"
+      - pattern-inside: "{ ..., $NAME: \"$VALUE\", ... }"
+      - pattern: "$NAME: \"$VALUE\""
       - metavariable-regex:
           metavariable: $NAME
           regex: (?i)^(?!.*(name|path|url|uri|host|header|prefix|suffix|label|field|column|type|kind|env|param|regex|pattern|message|error|placeholder|example)).*(password|passwd|secret|api_?key|apikey|access_?token|auth_?token|private_?key|client_?secret)$
@@ -1040,11 +1045,20 @@ rules:
   # ── Express middleware misconfiguration ────────────────────────────────
 
   - id: cwe-614.js-session-cookie-insecure
+    # The match is the flag, not the `session({ ... })` call around it, for the same reason
+    # as cwe-798.js-credential-config-key: a multi-line call anchored the finding on
+    # `app.use(session({` while the insecure flag was four lines lower.
     patterns:
       - pattern-either:
-        - pattern: 'session({ ..., cookie: { ..., secure: false, ... }, ... })'
-        - pattern: 'session({ ..., cookie: { ..., httpOnly: false, ... }, ... })'
-        - pattern: 'cookieSession({ ..., secure: false, ... })'
+        - patterns:
+          - pattern-inside: 'session({ ..., cookie: { ... }, ... })'
+          - pattern-inside: 'cookie: { ... }'
+          - pattern-either:
+            - pattern: 'secure: false'
+            - pattern: 'httpOnly: false'
+        - patterns:
+          - pattern-inside: 'cookieSession({ ... })'
+          - pattern: 'secure: false'
     message: "Session cookie sent without the secure or httpOnly flag"
     severity: WARNING
     languages: [javascript, typescript]

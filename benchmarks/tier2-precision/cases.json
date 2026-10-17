@@ -210,7 +210,17 @@
       "expect": "finding",
       "rule": "cwe-798.js-credential-config-key",
       "path": "positive/cwe-798_js-credential-config-key.js",
-      "code": "module.exports = {\n  host: 'billing.internal',\n  clientSecret: 'MFyZ2h0LWNsaWVudC1zZWNyZXQ',\n};\n"
+      "code": "module.exports = {\n  host: 'billing.internal',\n  clientSecret: 'MFyZ2h0LWNsaWVudC1zZWNyZXQ',\n};\n",
+      "line": 3
+    },
+    {
+      "id": "anchor.cwe-798.js-credential-config-key.nested-call",
+      "expect": "finding",
+      "rule": "cwe-798.js-credential-config-key",
+      "path": "anchor/cwe-798_js-credential-config-key_nested-call.js",
+      "code": "app.use(oauth({\n  provider: 'billing',\n  clientSecret: 'MFyZ2h0LWNsaWVudC1zZWNyZXQ',\n  callbackPath: '/auth/callback',\n}));\n",
+      "line": 3,
+      "note": "The credential property inside a multi-line call. The finding is anchored on the property line, not on the call that opens the object (docs/validation/fix-placement-and-calibration-2026-10.md)."
     },
     {
       "id": "cwe-798.js-basic-auth-literal",
@@ -301,7 +311,26 @@
       "expect": "finding",
       "rule": "cwe-614.js-session-cookie-insecure",
       "path": "positive/cwe-614_js-session-cookie-insecure.js",
-      "code": "app.use(session({ secret: process.env.SESSION_SECRET, cookie: { maxAge: 60000, secure: false } }));\n"
+      "code": "app.use(session({ secret: process.env.SESSION_SECRET, cookie: { maxAge: 60000, secure: false } }));\n",
+      "line": 1
+    },
+    {
+      "id": "anchor.cwe-614.js-session-cookie-insecure.nested-call",
+      "expect": "finding",
+      "rule": "cwe-614.js-session-cookie-insecure",
+      "path": "anchor/cwe-614_js-session-cookie-insecure_nested-call.js",
+      "code": "app.use(session({\n  secret: process.env.SESSION_SECRET,\n  resave: false,\n  cookie: {\n    maxAge: 60000,\n    httpOnly: false\n  }\n}));\n",
+      "line": 6,
+      "note": "The insecure flag inside a multi-line session() call. The finding is anchored on the flag's line, not on `app.use(session({`."
+    },
+    {
+      "id": "anchor.cwe-614.js-session-cookie-insecure.object-literal",
+      "expect": "finding",
+      "rule": "cwe-614.js-session-cookie-insecure",
+      "path": "anchor/cwe-614_js-session-cookie-insecure_object-literal.js",
+      "code": "app.use(cookieSession({\n  name: 'session',\n  keys: [process.env.COOKIE_KEY],\n  secure: false\n}));\n",
+      "line": 4,
+      "note": "The cookieSession options object spread over several lines. The finding is anchored on `secure: false`."
     },
     {
       "id": "cwe-1275.js-cookie-samesite-none",
@@ -743,7 +772,8 @@
       "rule": "cwe-614.js-session-cookie-insecure",
       "path": "corpus/cwe-614_js-session-cookie-insecure.js",
       "code": "app.use(session({\n  secret: 'keyboard cat',\n  resave: true,\n  saveUninitialized: true,\n  cookie: { secure: false }\n}))\n",
-      "note": "appsecco/dvna server.js:23, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+      "line": 5,
+      "note": "appsecco/dvna server.js:23, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json). The trial reported it on line 23, the `app.use(session({` line; the flag is on line 27, which is line 5 of this excerpt."
     },
     {
       "id": "corpus.cwe-78.child-process-exec",
@@ -783,7 +813,8 @@
       "rule": "cwe-798.js-credential-config-key",
       "path": "corpus/cwe-798_js-credential-config-key.js",
       "code": "module.exports = {\n    port,\n    db,\n    cookieSecret: \"session_cookie_secret_key_here\",\n    cryptoKey: \"a_secure_key_for_crypto_here\",\n    cryptoAlgo: \"aes256\",\n    hostName: \"localhost\",\n    environmentalScripts: []\n};\n",
-      "note": "OWASP/NodeGoat config/env/all.js:5, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+      "line": 4,
+      "note": "OWASP/NodeGoat config/env/all.js:5, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json). The trial reported it on line 5, the `module.exports = {` line; the credential is on line 8, which is line 4 of this excerpt."
     },
     {
       "id": "corpus.cwe-798.js-session-secret-literal",
@@ -791,7 +822,8 @@
       "rule": "cwe-798.js-session-secret-literal",
       "path": "corpus/cwe-798_js-session-secret-literal.js",
       "code": "app.use(session({\n  secret: 'keyboard cat',\n  resave: true,\n  saveUninitialized: true,\n  cookie: { secure: false }\n}))\n",
-      "note": "appsecco/dvna server.js:23, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json)"
+      "line": 2,
+      "note": "appsecco/dvna server.js:23, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json). Anchored on the `secret:` property since action trial item 13."
     },
     {
       "id": "corpus.cwe-798.py-credential-keyword-argument",
