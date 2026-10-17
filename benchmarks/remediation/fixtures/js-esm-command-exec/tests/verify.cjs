@@ -19,19 +19,19 @@ childProcess.execFile = (file, args, callback) => { CALLS.push({ fn: 'execFile',
 Module.syncBuiltinESMExports();
 
 let loads = 0;
-async function archive(file, name) {
+async function archive(file, directory) {
   CALLS.length = 0;
   loads += 1;
   const module_ = await import(`${pathToFileURL(path.resolve(file)).href}?load=${loads}`);
-  module_.archive(name, () => {});
+  module_.archive(directory, () => {});
   return CALLS[0];
 }
 const localPath = () => path.resolve(__dirname, '..', 'app.js');
 
 async function exploit() {
   const call = await archive(localPath(), ATTACK);
-  if (!call || call.args === null || !call.args.includes(`/backups/${ATTACK}.tgz`)) {
-    process.stderr.write('vulnerability present: the archive name reaches a shell command string\n');
+  if (!call || call.args === null || !call.args.includes(ATTACK)) {
+    process.stderr.write('vulnerability present: the directory name reaches a shell command string\n');
     process.exit(1);
   }
   process.exit(0);
@@ -47,7 +47,7 @@ async function behavior() {
 async function compare(originalPath, repairedPath) {
   const original = await archive(originalPath, ATTACK);
   assert.equal(original.args, null, 'the original runs a shell command string');
-  assert.deepEqual(await archive(repairedPath, ATTACK), { fn: 'execFile', command: 'tar', args: ['-czf', `/backups/${ATTACK}.tgz`, '/srv/data'] });
+  assert.deepEqual(await archive(repairedPath, ATTACK), { fn: 'execFile', command: 'tar', args: ['-czf', '/backups/archive.tgz', ATTACK] });
   process.stdout.write(JSON.stringify({ vulnerability_observed: true, behavior_preserved: true }));
 }
 

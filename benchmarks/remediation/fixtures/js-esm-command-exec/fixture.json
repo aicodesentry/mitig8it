@@ -13,7 +13,7 @@
     "rule_id": "cwe-78.child-process-exec",
     "cwe_id": "CWE-78",
     "category": "command injection",
-    "message": "An archive name is interpolated into a shell command run with exec, bound through a named ES import.",
+    "message": "A directory name is interpolated into a shell command run with exec, bound through a named ES import.",
     "path": "app.js",
     "line_start": 5,
     "line_end": 5

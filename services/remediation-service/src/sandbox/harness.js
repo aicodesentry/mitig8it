@@ -32,9 +32,7 @@ function tsSource(absolute) {
   }
   return withSuffix(absolute) || withSuffix(path.join(absolute, 'index'));
 }
-// The ES module resolver adds no suffix at all, so `import './db'` beside a `db.js` fails there
-// although `require('./db')` finds it. A relative specifier is tried as TypeScript first and then
-// as the JavaScript file or directory index it names.
+// The ES module resolver adds no suffix, so a relative specifier is also tried as .js/.mjs/.cjs.
 const JS_SUFFIXES = ['.js', '.mjs', '.cjs'];
 const findSource = (absolute) => tsSource(absolute) || [absolute, path.join(absolute, 'index')].flatMap((b) => JS_SUFFIXES.map((x) => b + x)).find(isFile) || null;
 const isRelative = (request) => request.startsWith('.') || path.isAbsolute(request);
@@ -219,13 +217,8 @@ fs.promises.readFile = (file, options) => (seen(file), exists(file) ? Promise.re
 const recordCode = (kind, source) => { state.code.calls.push({ kind, source: String(source) }); };
 const noop = function compiledByHarness() {};
 global.eval = (source) => { recordCode('eval', source); };
-// `Function` is recorded and still compiles. A real package builds wrappers with `new Function` at
-// import (`depd`, under express and body-parser), and a constructor that handed back a no-op made
-// `module.exports = deprecate.function(...)` undefined and broke every module above it. The proxy
-// keeps `Function.prototype`, `instanceof` and `fn.constructor === Function`, and records a call
-// unless it comes from a file under node_modules: a dependency's wrapper is not the code under
-// test, and counting it would fail `noCode` on both trees. The recording, not the refusal to
-// compile, is what a code-injection proof asserts on.
+// `Function` is recorded and still compiles, because packages build wrappers with it at import
+// (depd). Identity is kept; a caller under node_modules is not recorded (test-harness-v1.md).
 const RealFunction = global.Function;
 const fromDependency = () => {
   const prepare = Error.prepareStackTrace;
@@ -300,12 +293,9 @@ Module._load = function load(request, parent, isMain) {
     return originalLoad.call(this, found, parent, isMain);
   }
 };
-// A module written with `import`/`export` is loaded by the ES module loader, which never consults
-// `Module._load`, so its jobs are done through the synchronous hooks Node 22.15 and later expose
-// (they see `require` too): a relative specifier is redirected to the source file it names, a
-// faked specifier to a synthetic module that re-exports the same fake object a CommonJS module
-// gets, and an entry load() wants evaluated again to a URL of its own. Everything else falls
-// through to the real resolver.
+// The ES module loader never consults `Module._load`, so the synchronous hooks (Node 22.15+, which
+// see `require` too) redirect a relative specifier to its source file, a faked specifier to a
+// synthetic module over the same `fakes` table, and a fresh entry to a URL of its own.
 const FAKE_SCHEME = 'mitig8it-fake:';
 const FRESH = '?mitig8it-load=';
 const FAKES_KEY = Symbol.for('mitig8it.harness.fakes');
@@ -323,9 +313,7 @@ function exported(value) {
   }
   return [...names];
 }
-// The format Node gave each file it loaded, so load() knows which entries are ES modules. A `.ts`
-// or a `.js` outside a typed package comes back ambiguous (`typescript`, or no format) and Node
-// decides by syntax, so that is decided here the same way, from a top-level import or export.
+// The format Node gave each loaded file; an ambiguous one is decided by top-level import/export.
 const formats = new Map();
 const ESM_SYNTAX = /^[ \t]*(?:import[\s{*'"]|export[\s{*])/m;
 function moduleFormat(file) {
@@ -343,8 +331,7 @@ if (typeof Module.registerHooks === 'function') {
     resolve(specifier, context, nextResolve) {
       const written = String(specifier);
       const name = written.replace(/^node:/, '');
-      // The load generation is part of the URL, so each load() gets a synthetic module that reads
-      // the stubs of that load rather than the first one the registry cached.
+      // The generation in the URL gives each load() a synthetic module over its own stubs.
       if (Object.prototype.hasOwnProperty.call(fakes, name)) return { url: `${FAKE_SCHEME}${generation}:${encodeURIComponent(name)}`, shortCircuit: true, format: 'module' };
       if (written.includes(FRESH)) return { url: pathToFileURL(written).href, shortCircuit: true, format: formats.get(pathToFileURL(written.split(FRESH)[0]).href) };
       if (!isRelative(written)) return nextResolve(specifier, context);
@@ -428,10 +415,8 @@ function load(target, options = {}) {
   delete require.cache[resolved];
   loadedFile = resolved;
   generation += 1;
-  // A CommonJS module is evaluated again once its cache entry is gone. An ES module is not: its
-  // registry is keyed by URL for the life of the process and nothing can evict an entry. So once a
-  // file is known to be an ES module, it is loaded under a URL of its own for this load, which the
-  // hooks read back from the real file. Only the entry is fresh, as under CommonJS.
+  // An ES module registry entry cannot be evicted, so a known ES module is required under a path
+  // of its own whose source the hooks read from the real file (contracts/test-harness-v1.md).
   return require(moduleFormat(resolved) ? resolved + FRESH + generation : resolved);
 }
 
