@@ -730,8 +730,13 @@ def js_module_exports_name(source: str, name: str) -> bool:
 
 
 def js_require_line(source: str, module: str) -> tuple[int, str] | None:
-    """The 1-based line and text of the top-level require of `module` (with or without node:)."""
-    pattern = re.compile(rf"""^(?:const|let|var)\s+.+?=\s*require\(\s*['"](?:node:)?{re.escape(module)}['"]\s*\)""")
+    """The 1-based line and text of the top-level require of `module` (with or without node:).
+
+    A named ES import of it counts too, because it binds names the same way a destructuring
+    require does and is widened the same way: `import { exec } from 'node:child_process'`.
+    """
+    quoted = rf"""['"](?:node:)?{re.escape(module)}['"]"""
+    pattern = re.compile(rf"""^(?:(?:const|let|var)\s+.+?=\s*require\(\s*{quoted}\s*\)|import\s*\{{[^}}]*\}}\s*from\s*{quoted})""")
     for number, text in enumerate(source.splitlines(), 1):
         if pattern.match(text):
             return number, text
@@ -1166,13 +1171,14 @@ def js_bound_names(source: str, module: str) -> tuple[str | None, set[str]]:
     if not found:
         return None, set()
     text = found[1]
-    braces = re.match(r"^(?:const|let|var)\s+\{([^}]*)\}\s*=", text)
+    braces = re.match(r"^(?:(?:const|let|var)\s+\{([^}]*)\}\s*=|import\s*\{([^}]*)\})", text)
     if braces:
         names = set()
-        for part in braces.group(1).split(","):
+        for part in (braces.group(1) or braces.group(2) or "").split(","):
             item = part.strip()
-            if ":" in item:
-                item = item.split(":", 1)[1].strip()
+            for separator in (":", " as "):
+                if separator in item:
+                    item = item.split(separator, 1)[1].strip()
             if item:
                 names.add(item)
         return None, names

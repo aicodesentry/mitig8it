@@ -1,0 +1,10 @@
+{
+  "name": "fixture-js-esm-orders-a",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Benchmark fixture package manifest; it declares the dependencies a repair may rely on.",
+  "dependencies": {
+    "express": "4.21.2",
+    "pg": "8.13.0"
+  }
+}
