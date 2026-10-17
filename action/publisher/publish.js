@@ -132,10 +132,45 @@ function permalink(request, path, line) {
 const UNANCHORED_HEADING = 'Findings on lines this pull request did not change';
 const UNANCHORED_ROW_CAP = 50;
 
+// One row per rule per file. A tier 1 rule now reports every line it matches, and before that
+// tier 2 already did: the September trial's pygoat section was 17 rows of
+// `opengrep.cwe-352.py-csrf-exempt`, one per decorator, which is one rule repeated rather than
+// a list a reader can scan. So findings that share a rule and a file share a row, which names
+// how many lines and links each one. A finding with no rule (one moved here by the inline cap)
+// keeps its own row, because two of those may be two different rules.
+function groupUnanchored(findings) {
+  const groups = [];
+  const byKey = new Map();
+  for (const finding of findings) {
+    const rule = String(finding.rule || '');
+    const key = rule ? `${rule}\u0000${finding.path}` : null;
+    if (key && byKey.has(key)) {
+      byKey.get(key).push(finding);
+      continue;
+    }
+    const group = [finding];
+    if (key) byKey.set(key, group);
+    groups.push(group);
+  }
+  return groups;
+}
+
+function unanchoredRow(request, group) {
+  const [first] = group;
+  const rule = first.rule ? `\`${String(first.rule).replace(/[`|]/g, '')}\`` : '-';
+  const path = String(first.path).replace(/[|]/g, '');
+  const location = group.length === 1
+    ? `[${path}:${first.line}](${permalink(request, first.path, first.line)})`
+    : `${path}, ${group.length} lines: `
+      + group.map((finding) => `[${finding.line}](${permalink(request, finding.path, finding.line)})`).join(', ');
+  return `| ${first.severity || 'unknown'} | ${rule} | ${location} |`;
+}
+
 function unanchoredSection(request, totals) {
   const findings = request.unanchored_findings || [];
   if (!findings.length) return [];
-  const shown = findings.slice(0, UNANCHORED_ROW_CAP);
+  const groups = groupUnanchored(findings);
+  const shown = groups.slice(0, UNANCHORED_ROW_CAP);
   const lines = [
     '',
     `#### ${UNANCHORED_HEADING} (${totals.unanchored})`,
@@ -147,14 +182,11 @@ function unanchoredSection(request, totals) {
     '| Severity | Rule | Location |',
     '| --- | --- | --- |',
   ];
-  for (const finding of shown) {
-    const rule = finding.rule ? `\`${String(finding.rule).replace(/[`|]/g, '')}\`` : '-';
-    const location = `[${String(finding.path).replace(/[|]/g, '')}:${finding.line}](${permalink(request, finding.path, finding.line)})`;
-    lines.push(`| ${finding.severity || 'unknown'} | ${rule} | ${location} |`);
-  }
-  if (findings.length > shown.length) {
+  for (const group of shown) lines.push(unanchoredRow(request, group));
+  const listed = shown.reduce((sum, group) => sum + group.length, 0);
+  if (findings.length > listed) {
     lines.push('');
-    lines.push(`${plural(findings.length - shown.length, 'further finding')} not listed here.`);
+    lines.push(`${plural(findings.length - listed, 'further finding')} not listed here.`);
   }
   return lines;
 }

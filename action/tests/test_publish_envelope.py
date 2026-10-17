@@ -277,3 +277,41 @@ def test_a_finding_off_the_diff_is_named_in_the_review_body(tmp_path):
     assert "`cwe-95.eval-injection`" in body
     assert f"https://github.com/acme/widgets/blob/{HEAD}/app/routes/error.js#L10" in body
     assert "app/routes/error.js:10" in body
+
+
+def test_one_rule_on_many_lines_of_one_file_is_one_row(tmp_path):
+    """Trial item 6: 17 of pygoat's 20 rows were one CSRF rule, one per decorator.
+
+    Findings that share a rule and a file share a row naming the line count, each line linked.
+    A finding moved here by the inline cap carries no rule and keeps its own row.
+    """
+    if not publisher_harness.node_available():
+        pytest.skip("node is not on PATH")
+    rule = "opengrep.cwe-352.py-csrf-exempt"
+    unanchored = [
+        {"path": "introduction/views.py", "line": line, "severity": "medium", "rule": rule,
+         "reason": "line_outside_diff"}
+        for line in (12, 40, 70)
+    ]
+    unanchored.append({"path": "introduction/views.py", "line": 90, "severity": "medium", "rule": "",
+                       "reason": "over_inline_cap"})
+    unanchored.append({"path": "introduction/views.py", "line": 91, "severity": "medium", "rule": "",
+                       "reason": "over_inline_cap"})
+    counts = {"critical": 0, "high": 0, "medium": 5, "low": 0, "info": 0}
+    request = a_request([], counts=counts, findings=5, conclusion="success")
+    request["unanchored_findings"] = unanchored
+    request["totals"] = run.review_totals(counts, [], unanchored)
+    completed, recorded = run_publisher(tmp_path, request)
+
+    assert completed.returncode == 0, completed.stderr
+    body = next(call for call in recorded if call["name"] == "review")["body"]
+    rows = [line for line in body.split("\n") if line.startswith("| medium | `") or line.startswith("| medium | -")]
+    assert "Findings on lines this pull request did not change (5)" in body
+    assert len(rows) == 3
+    assert f"`{rule}`" in rows[0]
+    assert "introduction/views.py, 3 lines: " in rows[0]
+    for line in (12, 40, 70):
+        assert f"[{line}](https://github.com/acme/widgets/blob/{HEAD}/introduction/views.py#L{line})" in rows[0]
+    assert "introduction/views.py:90" in rows[1]
+    assert "introduction/views.py:91" in rows[2]
+    assert "not listed here" not in body

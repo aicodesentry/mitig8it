@@ -217,9 +217,15 @@ function didTier3MeaningfullyChangeFindings(previousFindings, nextFindings) {
 // a timeout, as a limitation rather than as a failed scan. Everything else in
 // the pull request was analysed normally, so the run says which files were not
 // and carries on. A limitation never turns the check run red on its own.
+//
+// `match_cap` is different in kind: the file was read whole, and one rule matched more lines
+// in it than tier 1 reports (`TIER1_MAX_MATCHES_PER_RULE_PER_FILE`). It is stated in the
+// analysis service's own words, "<rule> reported 25 of N matches in <path>", the way the file
+// cap is, and two rules over the ceiling in one file are two limitations, not one.
 const LIMITATION_LABELS = {
   partial_parse: 'partially analysed',
   not_analyzed: 'not fully analysed',
+  match_cap: 'match ceiling reached',
 };
 
 function normalizeLimitations(limitations) {
@@ -230,7 +236,7 @@ function normalizeLimitations(limitations) {
     const path = typeof limitation.path === 'string' ? limitation.path : '';
     if (!path) continue;
     const kind = LIMITATION_LABELS[limitation.kind] ? limitation.kind : 'not_analyzed';
-    const key = `${path}::${kind}`;
+    const key = kind === 'match_cap' ? `${path}::${kind}::${limitation.message}` : `${path}::${kind}`;
     if (byKey.has(key)) continue;
     const line = Number(limitation.line);
     byKey.set(key, {
@@ -260,7 +266,10 @@ function buildLimitationSummaryLine(limitations) {
   if (normalized.length === 0) return '';
 
   const partial = normalized.filter((limitation) => limitation.kind === 'partial_parse');
-  const skipped = normalized.filter((limitation) => limitation.kind !== 'partial_parse');
+  const capped = normalized.filter((limitation) => limitation.kind === 'match_cap' && limitation.message);
+  const skipped = normalized.filter(
+    (limitation) => limitation.kind !== 'partial_parse' && !capped.includes(limitation)
+  );
   const clauses = [];
   if (partial.length > 0) {
     clauses.push(
@@ -274,6 +283,7 @@ function buildLimitationSummaryLine(limitations) {
       + skipped.map(describeLimitation).join(', ')
     );
   }
+  for (const limitation of capped) clauses.push(limitation.message);
   return `${clauses.join('; ')}.`;
 }
 
@@ -316,10 +326,37 @@ function permalinkFor(repository, path, line) {
   return `${server}/${repository.owner}/${repository.repo}/blob/${repository.commitSha}/${encoded}#L${line}`;
 }
 
+// One row per rule per file, naming how many lines and linking each. Tier 2 reports every
+// decorator and tier 1 now reports every line a rule matches, so without this the section on
+// the September trial's pygoat was one rule repeated seventeen times. The Action's publisher
+// groups the same way. A finding with no rule id keeps its own row.
+function groupUnanchoredFindings(rows) {
+  const groups = [];
+  const byKey = new Map();
+  for (const finding of rows) {
+    const rule = String(finding.rule_id || '');
+    const key = rule ? `${rule}\u0000${finding.file_path}` : null;
+    if (key && byKey.has(key)) {
+      byKey.get(key).push(finding);
+      continue;
+    }
+    const group = [finding];
+    if (key) byKey.set(key, group);
+    groups.push(group);
+  }
+  return groups;
+}
+
+function unanchoredLocation(finding, repository, label) {
+  const url = permalinkFor(repository, finding.file_path, finding.line_start);
+  return url ? `[${label}](${url})` : label;
+}
+
 function buildUnanchoredSection(findings, repository) {
   const rows = (findings || []).filter((finding) => finding?.file_path && finding?.line_start);
   if (!rows.length) return [];
-  const shown = rows.slice(0, UNANCHORED_ROW_CAP);
+  const groups = groupUnanchoredFindings(rows);
+  const shown = groups.slice(0, UNANCHORED_ROW_CAP);
   const lines = [
     `#### ${UNANCHORED_HEADING} (${rows.length})`,
     '',
@@ -330,16 +367,24 @@ function buildUnanchoredSection(findings, repository) {
     '| Severity | Rule | Location |',
     '| --- | --- | --- |',
   ];
-  for (const finding of shown) {
-    const rule = String(finding.rule_id || finding.title || '').replace(/[`|]/g, '');
-    const path = String(finding.file_path).replace(/[|]/g, '');
-    const url = permalinkFor(repository, finding.file_path, finding.line_start);
-    const location = url ? `[${path}:${finding.line_start}](${url})` : `${path}:${finding.line_start}`;
-    lines.push(`| ${finding.severity || 'unknown'} | ${rule ? `\`${rule}\`` : '-'} | ${location} |`);
+  for (const group of shown) {
+    const [first] = group;
+    const rule = String(first.rule_id || first.title || '').replace(/[`|]/g, '');
+    const path = String(first.file_path).replace(/[|]/g, '');
+    const severity = group
+      .map((finding) => finding.severity)
+      .sort((a, b) => severityRank(b) - severityRank(a))[0];
+    const location = group.length === 1
+      ? unanchoredLocation(first, repository, `${path}:${first.line_start}`)
+      : `${path}, ${group.length} lines: `
+        + group.map((finding) => unanchoredLocation(finding, repository, String(finding.line_start))).join(', ');
+    lines.push(`| ${severity || 'unknown'} | ${rule ? `\`${rule}\`` : '-'} | ${location} |`);
   }
-  if (rows.length > shown.length) {
+  const listed = shown.reduce((sum, group) => sum + group.length, 0);
+  if (rows.length > listed) {
+    const rest = rows.length - listed;
     lines.push('');
-    lines.push(`${rows.length - shown.length} further finding${rows.length - shown.length === 1 ? '' : 's'} not listed here.`);
+    lines.push(`${rest} further finding${rest === 1 ? '' : 's'} not listed here.`);
   }
   lines.push('');
   return lines;
