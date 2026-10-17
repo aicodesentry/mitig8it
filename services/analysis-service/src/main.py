@@ -539,17 +539,22 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         }
         for f in scannable_files
     ]
-    limitations: List[Dict[str, Any]] = []
+    # One list per tier, joined after both have finished. The tiers run on two threads, and
+    # appending both into one list recorded the limitations in whichever order the threads
+    # reached them, so the same request could answer with the same limitations in two orders.
+    tier1_limitations: List[Dict[str, Any]] = []
+    tier2_limitations: List[Dict[str, Any]] = []
 
     def tier2() -> List[Dict[str, Any]]:
-        tier2_findings, tier2_limitations = run_opengrep_with_limitations(opengrep_files)
-        limitations.extend(tier2_limitations)
+        tier2_findings, found_limitations = run_opengrep_with_limitations(opengrep_files)
+        tier2_limitations.extend(found_limitations)
         return tier2_findings
 
     findings = run_tiers_concurrently(
-        lambda: pattern_findings(scannable_files, limitations),
+        lambda: pattern_findings(scannable_files, tier1_limitations),
         tier2,
     )
+    limitations = [*tier1_limitations, *tier2_limitations]
     findings, quarantined = partition_by_posting_policy(findings)
 
     try:
