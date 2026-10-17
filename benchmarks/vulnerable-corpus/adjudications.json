@@ -22,6 +22,13 @@
       "repositories": 27,
       "verdicts": 31,
       "write_up": "docs/validation/workflow-tampering-2026-09.md"
+    },
+    "workflow_supply_chain_pass_2026_10_17": {
+      "description": "Hand verdicts on the four workflow rules added in October 2026 (pwn request checkout, untrusted artifact executed, remote script piped to a shell, write grant on pull_request_target), measured over the same 27 repositories at the same refs as the September pass plus this repository's workflows at the measuring commit: 242 workflow files. Every finding was read; the four rules produced six between them, so no sampling was needed.",
+      "workflow_files": 242,
+      "repositories": 27,
+      "verdicts": 6,
+      "write_up": "docs/validation/workflow-supply-chain-2026-10.md"
     }
   },
   "adjudications": [
@@ -1534,6 +1541,54 @@
       "rule_id": "opengrep.cwe-200.gha-secret-in-untrusted-checkout-job",
       "where": "google/slo-generator .github/workflows/deploy.yml:58",
       "sampled_as": "workflow_tampering_2026_09_27"
+    },
+    {
+      "fingerprint": "522ad723f8f1d67aed6f7610ae13a272535737de5a60d2b31f7d0ef646e5c2b2",
+      "verdict": "true",
+      "note": "the grype installer is fetched from the main branch of anchore/grype and piped into sh; nothing pins what runs, and the job then runs the binary it produced",
+      "rule_id": "opengrep.cwe-494.gha-remote-script-piped-to-shell",
+      "where": "benbusby/whoogle-search .github/workflows/scan.yml:17",
+      "sampled_as": "workflow_supply_chain_2026_10_17"
+    },
+    {
+      "fingerprint": "7e7921dc114de3af21a84e896d245e6b64e276d6a3ba92dddf18798bf3c48528",
+      "verdict": "true",
+      "note": "yarnpkg.com/install.sh piped into bash on a push to main; the script is whatever the server returns that day",
+      "rule_id": "opengrep.cwe-494.gha-remote-script-piped-to-shell",
+      "where": "fastify/fastify .github/workflows/package-manager-ci.yml:72",
+      "sampled_as": "workflow_supply_chain_2026_10_17"
+    },
+    {
+      "fingerprint": "57bb62b57df1ff0f5fb9bcffe1c2f31b7087964a71367d3c30c900a243082613",
+      "verdict": "true",
+      "note": "the Heroku CLI installer piped into sh in the deploy job that later receives the Heroku credentials",
+      "rule_id": "opengrep.cwe-494.gha-remote-script-piped-to-shell",
+      "where": "juice-shop/juice-shop .github/workflows/ci.yml:359",
+      "sampled_as": "workflow_supply_chain_2026_10_17"
+    },
+    {
+      "fingerprint": "f19952e50e17cf6c8bb2d56a0cd001e51ebb2643f235e3690f2a723d8168674f",
+      "verdict": "true",
+      "note": "the wasm-pack installer piped into sh in the release build; nothing pins the script or the binary it downloads",
+      "rule_id": "opengrep.cwe-494.gha-remote-script-piped-to-shell",
+      "where": "vercel/next.js .github/workflows/build_and_deploy.yml:530",
+      "sampled_as": "workflow_supply_chain_2026_10_17"
+    },
+    {
+      "fingerprint": "fcd1a56cfe065cbd807d86f20cf1c8f9d5170050332083789ac48fc9135c4541",
+      "verdict": "false",
+      "note": "contents: write on the backport job, which only runs for a merged pull request and whose whole purpose is pushing a backport branch; the workflow default is contents: read",
+      "rule_id": "opengrep.cwe-732.gha-write-grant-on-pull-request-target",
+      "where": "fastify/fastify .github/workflows/backport.yml:15",
+      "sampled_as": "workflow_supply_chain_2026_10_17"
+    },
+    {
+      "fingerprint": "4643f975a99e1f44eba9e4211a298d9211b307352301bccb73bf8f75c232178e",
+      "verdict": "false",
+      "note": "id-token: write is used to mint a scoped comment token through gh-sts-action; the job checks out github.sha, not the pull request, and is gated on MEMBER authors",
+      "rule_id": "opengrep.cwe-732.gha-write-grant-on-pull-request-target",
+      "where": "vercel/next.js .github/workflows/automated_code_review.yml:27",
+      "sampled_as": "workflow_supply_chain_2026_10_17"
     }
   ]
 }
