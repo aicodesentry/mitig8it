@@ -137,9 +137,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          required='CI Action image'
+          # An array, and quoted on expansion. "Action image" is one workflow whose name
+          # contains a space: as a bare string split on whitespace it became the two names
+          # "Action" and "image", neither of which exists, so the gate reported "none" for
+          # both and refused every release including a dry run.
+          required=("CI" "Action image")
           failed=0
-          for workflow in ${required}; do
+          for workflow in "${required[@]}"; do
             conclusion="$(gh api \
               "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&status=completed" \
               --jq "[.workflow_runs[] | select(.name == \"${workflow}\")] | .[0].conclusion // \"none\"")"
