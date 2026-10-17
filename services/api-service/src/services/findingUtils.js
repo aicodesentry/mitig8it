@@ -99,6 +99,18 @@ function normalizeEvidenceDetails(raw) {
   };
 }
 
+// Tier 3 runs a patch critic over every fix it would attach and drops the fix when the
+// critic finds an input that still reaches the sink. The analysis service records that in
+// evidence_details.extra.fix_critic_accepted. Checking it here as well means a rejected fix
+// is neither stored nor rendered even if a patch reaches this service by another route.
+function isFixRejectedByCritic(finding) {
+  const details = finding && finding.evidence_details;
+  const extra = details && typeof details === 'object' ? details.extra : null;
+  if (!extra || typeof extra !== 'object') return false;
+  const accepted = extra.fix_critic_accepted;
+  return accepted === false || String(accepted).toLowerCase() === 'false';
+}
+
 function normalizeFinding(raw) {
   const taxonomyMappings = normalizeTaxonomyMappings(raw);
   const evidenceDetails = normalizeEvidenceDetails(raw);
@@ -142,13 +154,14 @@ function normalizeFinding(raw) {
     evidence: raw.evidence || raw.description || '',
     exploit_scenario: raw.exploit_scenario || '',
     remediation: raw.remediation || '',
-    remediation_patch: raw.remediation_patch || '',
+    remediation_patch: isFixRejectedByCritic(raw) ? '' : (raw.remediation_patch || ''),
     fingerprint: raw.fingerprint || calculateFingerprint(raw),
   };
 }
 
 module.exports = {
   calculateFingerprint,
+  isFixRejectedByCritic,
   normalizeFinding,
   normalizeEvidenceDetails,
   normalizeTaxonomyMappings,

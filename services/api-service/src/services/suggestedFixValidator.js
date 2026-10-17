@@ -1,3 +1,5 @@
+const { isFixRejectedByCritic } = require('./findingUtils');
+
 function normalizePatch(text) {
   if (!text) return '';
 
@@ -297,6 +299,10 @@ function validateSuggestedFix({ finding, filePatch, tierLabel, repoProfile }) {
 
   if (tierLabel !== 'Tier 3') {
     return { ok: false, reason: 'suggestions are only rendered after Tier 3 triage' };
+  }
+
+  if (isFixRejectedByCritic(finding)) {
+    return { ok: false, reason: 'patch critic found an input that still reaches the sink' };
   }
 
   if (!normalizeAutoFixEligible(finding)) {

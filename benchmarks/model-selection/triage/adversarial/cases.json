@@ -1,0 +1,350 @@
+{
+ "version": 1,
+ "description": "Adversarial cases for tier 3 triage: six authored findings no input reaches, which a model tends to confirm on the function name, and six hand-read true corpus findings. Built by build_inputs.py; read with run_eval.py --manifest/--inputs.",
+ "dataset_sha256": "26eb923d395366cb75d837efa645d69d85a267e9bb98cc7ae5d6cecac6098827",
+ "counts": {
+  "findings": 12,
+  "real": 6,
+  "not_real": 6,
+  "pull_requests": 12
+ },
+ "main_manifest_sha256": "5f94e76187a9eb2f6dd3859bc5c65aa0654b008558b68314e846910a38783220",
+ "findings": [
+  {
+   "id": "adversarial:allowlisted-path-read#e20b550ebe1c",
+   "label": "not_real",
+   "source": "adversarial-authored",
+   "pr_id": "adversarial:allowlisted-path-read",
+   "repo": "acme/app",
+   "ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "path": "app/docs.py",
+   "line_start": 15,
+   "line_end": 15,
+   "rule_id": "opengrep.cwe-22.py-open-request-path",
+   "tier": 2,
+   "cwe": "CWE-22",
+   "severity": "critical",
+   "confidence": 0.85,
+   "in_test_code": false,
+   "fingerprint": "e20b550ebe1ce975d64d04dbe31e362a486093a95f492343dc1f6e87f29fdec4",
+   "provenance": {
+    "kind": "authored",
+    "ref": "sources/allowlisted-path-read/app/docs.py",
+    "note": "the requested name is checked against a fixed set before open"
+   },
+   "expected": {
+    "verdict": "not true_positive",
+    "why": "no input reaches the sink"
+   },
+   "input_sha256": "5d82a7b85d14bb2b2234b16b7de81c1e357b854963f13d0559a22388e26460d1"
+  },
+  {
+   "id": "adversarial:constant-redirect#18d6e267c95c",
+   "label": "not_real",
+   "source": "adversarial-authored",
+   "pr_id": "adversarial:constant-redirect",
+   "repo": "acme/app",
+   "ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "path": "routes/auth.js",
+   "line_start": 12,
+   "line_end": 15,
+   "rule_id": "redirect.open",
+   "tier": 1,
+   "cwe": "CWE-601",
+   "severity": "medium",
+   "confidence": 0.72,
+   "in_test_code": false,
+   "fingerprint": "18d6e267c95cfcaa41a4962efb1286188f27fcb66e1fcecb0fad9ed7bca2ef54",
+   "provenance": {
+    "kind": "authored",
+    "ref": "sources/constant-redirect/routes/auth.js",
+    "note": "res.redirect to a literal relative path"
+   },
+   "expected": {
+    "verdict": "not true_positive",
+    "why": "no input reaches the sink"
+   },
+   "input_sha256": "74ee12042ec718f3f697f9bbd13b423600d8007be00ab2a48bf937191f3244cc"
+  },
+  {
+   "id": "adversarial:constant-vm#64749c14a4e0",
+   "label": "not_real",
+   "source": "adversarial-authored",
+   "pr_id": "adversarial:constant-vm",
+   "repo": "acme/app",
+   "ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "path": "lib/defaults.js",
+   "line_start": 8,
+   "line_end": 11,
+   "rule_id": "code.injection.eval",
+   "tier": 1,
+   "cwe": "CWE-95",
+   "severity": "critical",
+   "confidence": 0.92,
+   "in_test_code": false,
+   "fingerprint": "64749c14a4e0899888ae58da53d3e620f774a17326c697d7fcc9babce712356d",
+   "provenance": {
+    "kind": "authored",
+    "ref": "sources/constant-vm/lib/defaults.js",
+    "note": "vm.runInContext over a module constant; nothing from a caller reaches the expression"
+   },
+   "expected": {
+    "verdict": "not true_positive",
+    "why": "no input reaches the sink"
+   },
+   "input_sha256": "f518ab9e3ea97156f13c60c3d829ee4bc5e3baf1cc698cfcfd84dc7804588fac"
+  },
+  {
+   "id": "adversarial:constant-vm-new-context#f8730708b2a1",
+   "label": "not_real",
+   "source": "adversarial-authored",
+   "pr_id": "adversarial:constant-vm-new-context",
+   "repo": "acme/app",
+   "ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "path": "src/pricing.js",
+   "line_start": 10,
+   "line_end": 13,
+   "rule_id": "code.injection.eval",
+   "tier": 1,
+   "cwe": "CWE-95",
+   "severity": "critical",
+   "confidence": 0.92,
+   "in_test_code": false,
+   "fingerprint": "f8730708b2a1717082adcb537f0392962c6c73e8b98625142192b3376d16c247",
+   "provenance": {
+    "kind": "authored",
+    "ref": "sources/constant-vm-new-context/src/pricing.js",
+    "note": "vm.runInNewContext over a constant rule; the caller's value is a number in the sandbox, not code"
+   },
+   "expected": {
+    "verdict": "not true_positive",
+    "why": "no input reaches the sink"
+   },
+   "input_sha256": "ddddd664b3768ca89412f2f8242b01d671770ccc501b6753e611e3e5d0475cf7"
+  },
+  {
+   "id": "adversarial:corpus:adeyosemanputra/pygoat:introduction/apis.py#7d644cac4cde",
+   "label": "real",
+   "source": "adversarial-corpus",
+   "pr_id": "adversarial:corpus:adeyosemanputra/pygoat:introduction/apis.py#7d644cac4cde",
+   "repo": "adeyosemanputra/pygoat",
+   "ref": "19d17cc8874861142b330636d068bbde54e86b85",
+   "path": "introduction/apis.py",
+   "line_start": 22,
+   "line_end": 22,
+   "rule_id": "opengrep.cwe-352.py-csrf-exempt",
+   "tier": 2,
+   "cwe": "CWE-352",
+   "severity": "high",
+   "confidence": 0.8,
+   "in_test_code": false,
+   "fingerprint": "7d644cac4cde8b42f385dee67f515b4472c1ab7583700b60a31a3bdfc2396467",
+   "provenance": {
+    "kind": "hand-read verdict",
+    "ref": "adjudications.json unlabelled",
+    "note": "@csrf_exempt removes Django's CSRF protection from the view below it",
+    "main_manifest_id": "corpus:adeyosemanputra/pygoat:introduction/apis.py#7d644cac4cde"
+   },
+   "expected": {
+    "verdict": "true_positive with a concrete exploit_payload"
+   },
+   "input_sha256": "f8d644886dcddf9802b9f283d5592733144006e6c5a87769bd85bdd18458ea3a"
+  },
+  {
+   "id": "adversarial:corpus:benbusby/whoogle-search:app/routes.py#c693ee9a159c",
+   "label": "real",
+   "source": "adversarial-corpus",
+   "pr_id": "adversarial:corpus:benbusby/whoogle-search:app/routes.py#c693ee9a159c",
+   "repo": "benbusby/whoogle-search",
+   "ref": "8830615abcf17e0cd3991fbf963debfb161784cd",
+   "path": "app/routes.py",
+   "line_start": 430,
+   "line_end": 430,
+   "rule_id": "opengrep.cwe-502.py-pickle-load-file",
+   "tier": 2,
+   "cwe": "CWE-502",
+   "severity": "critical",
+   "confidence": 0.88,
+   "in_test_code": false,
+   "fingerprint": "c693ee9a159c85fc7d308652fbe62b3eab86c4c2feffb3eb6e6f611abac657df",
+   "provenance": {
+    "kind": "hand-read verdict",
+    "ref": "adjudications.json class_mismatch",
+    "note": "pickle.load on a file whose name comes from a request argument is arbitrary deserialisation",
+    "main_manifest_id": "corpus:benbusby/whoogle-search:app/routes.py#c693ee9a159c"
+   },
+   "expected": {
+    "verdict": "true_positive with a concrete exploit_payload"
+   },
+   "input_sha256": "f1a2f909e69c9672f4f20e6a0e858ac0865177dc4692d37f7ec8a05f074e6ede"
+  },
+  {
+   "id": "adversarial:corpus:juice-shop/juice-shop:data/static/codefixes/localXssChallenge_3.ts#40c1e3082a56",
+   "label": "real",
+   "source": "adversarial-corpus",
+   "pr_id": "adversarial:corpus:juice-shop/juice-shop:data/static/codefixes/localXssChallenge_3.ts#40c1e3082a56",
+   "repo": "juice-shop/juice-shop",
+   "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+   "path": "data/static/codefixes/localXssChallenge_3.ts",
+   "line_start": 6,
+   "line_end": 6,
+   "rule_id": "opengrep.cwe-79.js-angular-bypass-security-trust",
+   "tier": 2,
+   "cwe": "CWE-79",
+   "severity": "critical",
+   "confidence": 0.85,
+   "in_test_code": false,
+   "fingerprint": "40c1e3082a567d01f26f9e74346443ce83fc6ea2e79cbf633af179a13b549f6e",
+   "provenance": {
+    "kind": "hand-read verdict",
+    "ref": "adjudications.json new_rule_2026_09_24",
+    "note": "bypassSecurityTrustScript on a query parameter",
+    "main_manifest_id": "corpus:juice-shop/juice-shop:data/static/codefixes/localXssChallenge_3.ts#40c1e3082a56"
+   },
+   "expected": {
+    "verdict": "true_positive with a concrete exploit_payload"
+   },
+   "input_sha256": "2c525d871a4bc97d110357e3fbc3ec9c2013707b61eb9c135cb361bff935239a"
+  },
+  {
+   "id": "adversarial:corpus:juice-shop/juice-shop:routes/vulnCodeSnippet.ts#02a43b5c77a8",
+   "label": "real",
+   "source": "adversarial-corpus",
+   "pr_id": "adversarial:corpus:juice-shop/juice-shop:routes/vulnCodeSnippet.ts#02a43b5c77a8",
+   "repo": "juice-shop/juice-shop",
+   "ref": "1618a611b173b4bf114028e6e02549950606e29d",
+   "path": "routes/vulnCodeSnippet.ts",
+   "line_start": 90,
+   "line_end": 93,
+   "rule_id": "deserialize.untrusted_data",
+   "tier": 1,
+   "cwe": "CWE-502",
+   "severity": "critical",
+   "confidence": 0.88,
+   "in_test_code": false,
+   "fingerprint": "02a43b5c77a8d87b5ce26f48087bcd582667dd7faface797c576b43aa8f4c633",
+   "provenance": {
+    "kind": "hand-read verdict",
+    "ref": "adjudications.json class_mismatch",
+    "note": "js-yaml is ^3.14 here, where load() uses the full schema and will construct arbitrary types",
+    "main_manifest_id": "corpus:juice-shop/juice-shop:routes/vulnCodeSnippet.ts#02a43b5c77a8"
+   },
+   "expected": {
+    "verdict": "true_positive with a concrete exploit_payload"
+   },
+   "input_sha256": "951438a167e39823f9ce9cec8273eeb873fcfe114d108e026741472332b728ca"
+  },
+  {
+   "id": "adversarial:corpus:stamparm/DSVW:dsvw.py#73f218e0feb5",
+   "label": "real",
+   "source": "adversarial-corpus",
+   "pr_id": "adversarial:corpus:stamparm/DSVW:dsvw.py#73f218e0feb5",
+   "repo": "stamparm/DSVW",
+   "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+   "path": "dsvw.py",
+   "line_start": 55,
+   "line_end": 55,
+   "rule_id": "opengrep.cwe-79.py-html-percent-format",
+   "tier": 2,
+   "cwe": "CWE-79",
+   "severity": "critical",
+   "confidence": 0.8500000000000001,
+   "in_test_code": false,
+   "fingerprint": "73f218e0feb5af14498230ce44162731269d5813789944d82ce8aab750fb23c3",
+   "provenance": {
+    "kind": "hand-read verdict",
+    "ref": "adjudications.json new_rule_2026_09_24",
+    "note": "a request-supplied template string rendered into the page",
+    "main_manifest_id": "corpus:stamparm/DSVW:dsvw.py#73f218e0feb5"
+   },
+   "expected": {
+    "verdict": "true_positive with a concrete exploit_payload"
+   },
+   "input_sha256": "e620426efacdf6c072cc6fd2fb80b471e1f3489d3e3c2b6bb0c7dc6fad8160d0"
+  },
+  {
+   "id": "adversarial:corpus:stamparm/DSVW:dsvw.py#d1255eb1f135",
+   "label": "real",
+   "source": "adversarial-corpus",
+   "pr_id": "adversarial:corpus:stamparm/DSVW:dsvw.py#d1255eb1f135",
+   "repo": "stamparm/DSVW",
+   "ref": "9ca3c9acf3defa0a6148d40e5f5cebeb5dcbb908",
+   "path": "dsvw.py",
+   "line_start": 7,
+   "line_end": 7,
+   "rule_id": "opengrep.cwe-918.py-urlopen-request-url",
+   "tier": 2,
+   "cwe": "CWE-918",
+   "severity": "critical",
+   "confidence": 0.85,
+   "in_test_code": false,
+   "fingerprint": "d1255eb1f135550473b8753501df2d2cafb5e00a282b97377326a18eed54dd95",
+   "provenance": {
+    "kind": "hand-read verdict",
+    "ref": "adjudications.json class_mismatch",
+    "note": "FETCH is urlopen over a caller-supplied URL and is what every DSVW SSRF case goes through",
+    "main_manifest_id": "corpus:stamparm/DSVW:dsvw.py#d1255eb1f135"
+   },
+   "expected": {
+    "verdict": "true_positive with a concrete exploit_payload"
+   },
+   "input_sha256": "ed5574d9d67d7af94bcc0a82b0f3855e5a494fd17e6f2b8325bd11794ebd31d9"
+  },
+  {
+   "id": "adversarial:framework-redirect#58c250252fa3",
+   "label": "not_real",
+   "source": "adversarial-authored",
+   "pr_id": "adversarial:framework-redirect",
+   "repo": "acme/app",
+   "ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "path": "lib/response.js",
+   "line_start": 7,
+   "line_end": 10,
+   "rule_id": "redirect.open",
+   "tier": 1,
+   "cwe": "CWE-601",
+   "severity": "medium",
+   "confidence": 0.72,
+   "in_test_code": false,
+   "fingerprint": "58c250252fa312d4c5a28f16378ec7bd206f92144a343c57af2fca9f03adcb4c",
+   "provenance": {
+    "kind": "authored",
+    "ref": "sources/framework-redirect/lib/response.js",
+    "note": "a framework's own definition of res.redirect; the target is the caller's choice and no request value is read"
+   },
+   "expected": {
+    "verdict": "not true_positive",
+    "why": "no input reaches the sink"
+   },
+   "input_sha256": "a3a201a7a761aebfcc36005c656b337a6505f97d215ba2bae73befc6aed922ec"
+  },
+  {
+   "id": "adversarial:resolved-path-read#944eda067278",
+   "label": "not_real",
+   "source": "adversarial-authored",
+   "pr_id": "adversarial:resolved-path-read",
+   "repo": "acme/app",
+   "ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "path": "routes/files.js",
+   "line_start": 10,
+   "line_end": 13,
+   "rule_id": "opengrep.cwe-22.path-traversal-fs",
+   "tier": 2,
+   "cwe": "CWE-22",
+   "severity": "high",
+   "confidence": 0.85,
+   "in_test_code": false,
+   "fingerprint": "944eda067278a0805e97b1971a2146a2568cada10e5315228a64384d8561fbd5",
+   "provenance": {
+    "kind": "authored",
+    "ref": "sources/resolved-path-read/routes/files.js",
+    "note": "path.basename strips every directory part before the join, so the read stays in the base directory"
+   },
+   "expected": {
+    "verdict": "not true_positive",
+    "why": "no input reaches the sink"
+   },
+   "input_sha256": "f7c77d7ca055ee4d76d7780c103ba0a191a861348fe5c1242b02d4428db3d2f0"
+  }
+ ]
+}

@@ -631,6 +631,59 @@ describe('PR Analysis Orchestrator — pure functions', () => {
     expect(result).toBe(true);
   });
 
+  describe('a fix the tier 3 patch critic rejected', () => {
+    const rejected = () => ({
+      severity: 'high',
+      title: 'Potential SQL injection',
+      category: 'SQL injection',
+      cwe_id: 'CWE-89',
+      evidence: 'string concatenation into a query',
+      confidence: 0.9,
+      file_path: 'a.js',
+      line_start: 1,
+      line_end: 1,
+      code_snippet: 'db.query("SELECT * FROM users WHERE id = " + userId);',
+      remediation: 'Use a parameterized query.',
+      remediation_patch: 'db.query("SELECT * FROM users WHERE id = ?", [userId]);',
+      evidence_details: {
+        auto_fix_eligible: true,
+        fix_scope: 'line',
+        fix_target_line: 1,
+        fix_target_expr: 'db.query("SELECT * FROM users WHERE id = " + userId);',
+        extra: { fix_critic_accepted: false, fix_critic_reason: 'counterexample' },
+      },
+    });
+    const files = [{ path: 'a.js', patch: '@@ -0,0 +1 @@\n+db.query("SELECT * FROM users WHERE id = " + userId);' }];
+
+    test('does not count as a renderable suggestion', () => {
+      const { __private } = require('../src/services/prAnalysisOrchestrator');
+      expect(__private.hasTier3RenderableSuggestions([rejected()], files, null)).toBe(false);
+
+      const accepted = rejected();
+      accepted.evidence_details.extra = { fix_critic_accepted: true };
+      expect(__private.hasTier3RenderableSuggestions([accepted], files, null)).toBe(true);
+    });
+
+    test('renders neither a suggestion nor a code block', () => {
+      const { __private } = require('../src/services/prAnalysisOrchestrator');
+      const body = __private.buildReviewComment(rejected(), { tierLabel: 'Tier 3', filePatch: files[0].patch });
+      expect(body).not.toContain('```suggestion');
+      expect(body).not.toContain('[userId]');
+      expect(body).toContain('**Fix:** ');
+    });
+
+    test('is refused by the validator and dropped when the finding is normalized', () => {
+      const { validateSuggestedFix } = require('../src/services/suggestedFixValidator');
+      const { normalizeFinding } = require('../src/services/findingUtils');
+      const validation = validateSuggestedFix({ finding: rejected(), filePatch: files[0].patch, tierLabel: 'Tier 3' });
+      expect(validation).toEqual({ ok: false, reason: 'patch critic found an input that still reaches the sink' });
+      expect(normalizeFinding({ ...rejected(), rule_id: 'sql.injection' }).remediation_patch).toBe('');
+      const unchecked = rejected();
+      delete unchecked.evidence_details.extra;
+      expect(normalizeFinding({ ...unchecked, rule_id: 'sql.injection' }).remediation_patch).toContain('[userId]');
+    });
+  });
+
   test('shouldPostInlineComment allows strong taint findings with trace evidence', () => {
     const { __private } = require('../src/services/prAnalysisOrchestrator');
 

@@ -114,9 +114,12 @@ def call_llm(
     timeout_seconds: int,
     temperature: float = 0,
     max_output_tokens: int = 4096,
+    model: Optional[str] = None,
 ) -> LLMResponse:
+    """One chat completion. `model` overrides the configured model for this call only,
+    which is how triage sends its isolated high-severity calls to a different tier."""
     provider = _normalized_provider()
-    model = _model_for(provider)
+    model = (model or "").strip() or _model_for(provider)
     api_key = _api_key_for(provider)
     if not api_key:
         raise RuntimeError(f"LLM API key is not configured for provider '{provider}'")
