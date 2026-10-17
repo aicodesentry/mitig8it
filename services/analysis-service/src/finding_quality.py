@@ -50,6 +50,8 @@ def detector_kind(finding: Dict[str, Any]) -> str:
         return "opengrep"
     if rule_id.startswith("dependency."):
         return "dependency"
+    if rule_id.startswith("llm."):
+        return "model"
     return "deterministic"
 
 
@@ -615,6 +617,14 @@ def _choose_primary(current: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[
     current_kind = detector_kind(current)
     candidate_kind = detector_kind(candidate)
 
+    # A model's proposal corroborates a rule's finding and never replaces it. The rule's
+    # evidence is a pattern anyone can re-run on the line; the model's is a judgement, and
+    # the severity it chose is not a reason to put its name on the comment.
+    if current_kind == "model" and candidate_kind != "model":
+        return candidate
+    if candidate_kind == "model" and current_kind != "model":
+        return current
+
     if current_kind != "opengrep" and candidate_kind == "opengrep":
         return candidate
     if current_kind == "opengrep" and candidate_kind != "opengrep":
@@ -637,14 +647,17 @@ def _choose_review_anchor(cluster: List[Dict[str, Any]], primary: Dict[str, Any]
     if primary_kind != "opengrep":
         return primary
 
-    for finding in cluster:
-        if detector_kind(finding) == "opengrep":
-            continue
-        if finding.get("file_path") != primary.get("file_path"):
-            continue
-        if int(finding.get("line_start") or 0) <= 0:
-            continue
-        return finding
+    # A deterministic match anchors before a model's line does, for the same reason it
+    # survives as primary: its line is where a pattern matched, not where a model pointed.
+    for preferred_kind in ("deterministic", "dependency", "model"):
+        for finding in cluster:
+            if detector_kind(finding) != preferred_kind:
+                continue
+            if finding.get("file_path") != primary.get("file_path"):
+                continue
+            if int(finding.get("line_start") or 0) <= 0:
+                continue
+            return finding
 
     return primary
 
