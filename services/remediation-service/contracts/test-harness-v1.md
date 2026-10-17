@@ -28,7 +28,13 @@ and the harness's require hook do: an extension-less relative specifier, a direc
 `index.ts`, and the `.js` specifier a TypeScript project writes for a `.ts` source (`./config.js`
 for `config.ts`, `.cjs` for `.cts`, `.mjs` for `.mts`) all resolve to the TypeScript file. A
 module written with `import`/`export` is loaded by the ES module loader, which does not consult
-the require hook, so its imports resolve through `module.registerHooks` instead.
+the require hook, so its imports resolve through `module.registerHooks` instead. That loader adds
+no suffix of its own either, so a relative specifier it cannot find is then tried as the `.js`,
+`.mjs` or `.cjs` file or directory `index` it names, the way `require` would have found it. The
+same order applies to the entry `h.load` is given: `h.load('services/report')` finds
+`services/report.mjs`. Paths are converted to and from file URLs with `url.pathToFileURL` and
+`url.fileURLToPath`, so a workspace whose path needs percent-encoding (a space, `#`, `%`) resolves
+the same as any other.
 
 ## ES modules and the fakes
 
@@ -38,13 +44,40 @@ default export and under every name the fake carries, its prototype chain includ
 `import express from 'express'` and `import { Pool } from 'pg'` get the recorder a CommonJS
 module would have got. `load(..., { stubs })` and `{ real }` apply the same way.
 
-Two limits are worth knowing. The ES module registry caches a module for the life of the
-process, so a second `load()` that supplies a *different* stub for the same specifier does not
-re-evaluate it; a test that needs two different stubs for one name needs two processes. And
-nothing is auto-stubbed: a package the harness does not fake is a package the sandbox does not
+Each `load()` is a generation, and the synthetic module's URL carries it, so every load reads the
+stubs that load supplied rather than the ones the registry cached first.
+
+## A fresh load of an ES module
+
+`load()` deletes the entry's `require.cache` record, which is enough to evaluate a CommonJS module
+again. It is not enough for an ES module: the ES module registry is keyed by URL for the life of
+the process and nothing can evict an entry, and on Node 22 a query string does not help either,
+because `require()` of an ES module keys its registry entry by the file path and drops the query.
+`vm.SourceTextModule` would evaluate a module on demand, but it exists only behind
+`--experimental-vm-modules`, which the sandbox does not pass, and it would mean linking the whole
+import graph by hand.
+
+So the harness remembers the format Node gave every file it loaded, and from the second load of a
+file that is an ES module on (`module` or `module-typescript`, or an ambiguous `.js`/`.ts` whose
+source has a top-level `import` or `export`), it requires the file under a path of its own,
+`<file>?mitig8it-load=<generation>`. The hooks resolve that path to its own file URL and load the
+real file's source into it, so the entry is evaluated again with this load's `env`, `argv` and
+`stubs`. Relative imports still resolve against the real directory. Only the entry is fresh: a
+module it imports is evaluated once per process, exactly as under CommonJS, where only the entry's
+cache record is deleted. A module-scope proof that loads once per payload, and a module that threw
+on one load and must be evaluated again on the next, both depend on this. Inside such a load
+`import.meta.url` carries the `?mitig8it-load=` suffix (percent-encoded).
+
+Nothing is auto-stubbed: a package the harness does not fake is a package the sandbox does not
 have, so the module fails to load and the proof fails on both trees rather than passing against
 something invented. That is the honest outcome, and on a real application's entry module it is
 the common one, because a proof has to load the module's whole import closure.
+
+One shape is still not reached: a repository whose root `package.json` declares `"type":
+"module"`. The harness and the generated tests are CommonJS `.js` files under `.mitig8it/`, and
+Node reads every `.js` under that root as an ES module, so `require` is undefined in both and the
+proof fails on both trees. None of the 23 September 2026 corpus repositories declares it at the
+root (dicebear declares it in 34 nested packages, which `.mitig8it/` is not under).
 
 ## What a proof's module may reach
 
@@ -90,9 +123,11 @@ test must fail on the original code and pass on the repaired code to prove its f
 ## API
 
 `h.load(target, options)`: requires the target module with the fakes below injected through the
-require cache, and returns its exports. `target` is a repository path (`services/orders.js`,
-resolved from the repository root) or a path starting with `./` or `../` relative to the test
-file. Each call resets the recorders. `options`:
+require cache and the module hooks, and returns its exports (an ES module's namespace object for
+an ES module). `target` is a repository path (`services/orders.js`, resolved from the repository
+root) or a path starting with `./` or `../` relative to the test file. Each call resets the
+recorders and evaluates the target again, an ES module included (see "A fresh load of an ES
+module"). `options`:
 
 - `pg: { rows: [...] }` or `pg: { result: {...} | (query) => ({...}) }`: what every query resolves; default `{ rows: [], rowCount: 0 }`.
 - `child_process: { stdout, stderr, error, code }` or `child_process: { result: (command) => ({...}) }`: what every child reports; default empty stdout, exit 0.
@@ -119,7 +154,7 @@ Fakes and their recorders:
 - `fs`: `readFile`, `readFileSync`, `existsSync`, `createReadStream`, and `fs.promises.readFile` (also `fs/promises`) record each read in `h.fs.reads` as `{ path, resolved }`, the string the module passed and its absolute form (`String(read)` is the raw path), and return the configured content; every other `fs` function is the real one.
 - `crypto`: the real `node:crypto`, with `createHash` and `createHmac` recording `{ algorithm, data }` in `h.crypto.digests` (`data` is every value passed to `update`, as text) and `scrypt`, `scryptSync`, `pbkdf2`, and `pbkdf2Sync` recording `{ kind, password }` in `h.crypto.kdfs`. Every call still computes the real result.
 - `express-session` and `cookie-session`: each records the cookie options it was configured with in `h.cookies.calls` as `{ kind, name, options }` (`kind` is `express-session` with `options` its `cookie` object, or `cookie-session` with `options` the whole object) and returns pass-through middleware. `res.cookie(name, value, options)` on a recorded response records `{ kind: 'res.cookie', name, options }` the same way. Both packages are therefore loadable in the sandbox, where nothing is installed.
-- dynamic code: `eval`, `new Function`, `vm.runInNewContext`, `vm.runInThisContext`, `vm.runInContext`, `vm.compileFunction`, `new vm.Script`, and `setTimeout`/`setInterval` given a string record `{ kind, source }` in `h.code.calls` and run nothing. `eval` and `vm.runIn*Context` answer `undefined`, `new Function` and `vm.compileFunction` hand back a function that does nothing, and a timer given a function is the real timer. `eval`, `Function`, and the timers are resolved through the global scope chain, so the module under test gets the recorder without naming it.
+- dynamic code: `eval`, `new Function`, `vm.runInNewContext`, `vm.runInThisContext`, `vm.runInContext`, `vm.compileFunction`, `new vm.Script`, and `setTimeout`/`setInterval` given a string record `{ kind, source }` in `h.code.calls`. `eval` and `vm.runIn*Context` run nothing and answer `undefined`, `vm.compileFunction` hands back a function that does nothing, and a timer given a function is the real timer. `Function` (called or constructed) is recorded and still compiles, handing back a working function: real packages build wrappers with it at import (`depd`, under `express` and `body-parser`), and a constructor that returned a no-op broke every module above them. `global.Function` is a proxy over the real constructor, so `Function.prototype`, `instanceof Function` and `fn.constructor === Function` all still hold. A `Function` call whose caller is a file under `node_modules` is not recorded, because a dependency compiling its own wrapper is not the code under test and would fail `noCode` on both trees. What a code-injection proof asserts is the recording, which still fails the original; the `dynamic_code_unsupported` gate keeps the service from writing a proof for a `new Function` site at all. `eval`, `Function`, and the timers are resolved through the global scope chain, so the module under test gets the recorder without naming it.
 
 `h.call(fn, ...args)` calls a plain exported function and never throws: it returns `{ ok, value, error }`, so one test can send a payload that is meant to be rejected and a document that must still be read.
 

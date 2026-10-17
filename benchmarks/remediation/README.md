@@ -1,25 +1,25 @@
 # Remediation benchmark seed
 
 This is an offline seed harness for repository-level repairs. It is deliberately not a quality
-claim: it contains eighty-one authored fixtures, while the release manifest requires 120
+claim: it contains eighty-six authored fixtures, while the release manifest requires 120
 externally reviewed cases before a release gate can pass.
 
-Sixty-seven fixtures are supported repairs, ten are negatives that must be abstained on, and
+Seventy-two fixtures are supported repairs, ten are negatives that must be abstained on, and
 four are adversarial repositories whose own content tries to steer the agent. By family and
 toolchain, the supported cases are:
 
 | Family | JavaScript | Python |
 | --- | --- | --- |
-| `sql_parameterization` | 8 | 5 |
-| `command_arguments` | 9 | 4 |
-| `path_containment` | 8 | 3 |
-| `hardcoded_credential` | 7 | 3 |
+| `sql_parameterization` | 10 | 5 |
+| `command_arguments` | 10 | 4 |
+| `path_containment` | 9 | 3 |
+| `hardcoded_credential` | 8 | 3 |
 | `code_injection_eval` | 2 | 2 |
 | `password_hashing` | 4 | 4 |
 | `cookie_flags` | 4 | 4 |
-| Total | 42 | 25 |
+| Total | 47 | 25 |
 
-Sixty-two of the sixty-seven are verified by execution: a regression test fails on the vulnerable
+Sixty-seven of the seventy-two are verified by execution: a regression test fails on the vulnerable
 tree and passes on the repaired one. The other five are verified at `static_assertion`, the
 weakest level the product has, where nothing is executed and the rule that produced the finding
 is re-run over the original and the patched file instead. A fixture says which with
@@ -29,8 +29,8 @@ that quietly stopped being executed fails rather than reading as a pass.
 Every cell is filled because `LANGUAGE_FAMILIES` in
 `services/remediation-service/src/families.py` now repairs all seven families in both toolchains.
 The Node harness records environment reads, which is what let `hardcoded_credential` cross over,
-and it records `eval`, `new Function`, the `vm` compile calls, and a string timer without
-running any of them, which is what let `code_injection_eval` follow. What still decides support
+and it records `eval`, `new Function`, the `vm` compile calls, and a string timer (running
+none but `Function`, which still compiles so a dependency's wrapper keeps working), which is what let `code_injection_eval` follow. What still decides support
 is per finding, not per language: a static gate refuses a shape the repair cannot express, and
 three of the negatives below are exactly those refusals.
 
@@ -64,6 +64,11 @@ The supported fixtures:
 | `js-static-assertion-eval` | JavaScript | eval | `eval` of a caller-supplied payload in a file that requires `js-yaml`: verified at `static_assertion` |
 | `js-static-assertion-path` | JavaScript | path | A request-controlled `path.join` in a file that requires `js-yaml`, and the repair also changes the line above: verified at `static_assertion` |
 | `js-module-scope-uncontrollable` | JavaScript | command | The sink runs at import on a value no test can set, so the proof is refused as `module_scope_source_not_controllable`: verified at `static_assertion` |
+| `js-esm-express-sql` | JavaScript | sql | An Express route in an `.mjs` ES module, with `express` and `pg` arriving through `import` |
+| `js-esm-module-scope-path` | JavaScript | path | A document read at import of an ES module; the proof loads it once per payload, so each load has to evaluate the module again |
+| `js-esm-command-exec` | JavaScript | command | `exec` bound by a named ES import in a `.js` file Node reads as an ES module by its syntax; the repair widens the import |
+| `js-esm-typescript-entry` | JavaScript | sql | A TypeScript (`.ts`) ES module entry whose relative import has no suffix |
+| `js-esm-module-scope-credential` | JavaScript | credential | A payment secret exported from an `.mjs` ES module at module scope |
 | `python-sql-sqlite` | Python | sql | sqlite3 parameterization |
 | `python-sql-fstring` | Python | sql | An f-string query |
 | `python-sql-psycopg-format` | Python | sql | Percent formatting before a psycopg `execute` |
@@ -237,7 +242,7 @@ A report carries `provider_kind`, `verification_levels`, `results_kind`, sample 
 - A pass rate from `engine-local` measures whether the pipeline carries a finding from intake to a verified candidate, given a scripted provider replaying that fixture's reviewed repair. It is `results_kind=pipeline_integrity`. It is not repair quality, and it cannot be compared with a real-model number.
 - An abstention on a negative or adversarial fixture is the expected outcome, so coverage below 100% is correct by construction. Read precision and abstention together, never precision alone.
 - Every in-process adapter verifies in the local subprocess sandbox, so every executed candidate is `development_unverified` and no result satisfies an isolation gate. The five statically asserted cases ran in no sandbox at all; `summary.passed_by_verification_level` says which cases passed at which level, so the two are never read as one pass count.
-- The corpus is 81 fixtures against a release manifest that requires 120 externally reviewed cases, 20 supported per family, 30 negatives, and 30 adversarial cases. No family reaches 20 supported cases and there are no external review signatures, so the gate stays closed. Eighty-one authored cases cannot establish a rate; treat any percentage from this suite as a statement about those files.
+- The corpus is 86 fixtures against a release manifest that requires 120 externally reviewed cases, 20 supported per family, 30 negatives, and 30 adversarial cases. No family reaches 20 supported cases and there are no external review signatures, so the gate stays closed. Eighty-six authored cases cannot establish a rate; treat any percentage from this suite as a statement about those files.
 - Nothing here measures the deployed system. No quality metric is collected from live runs, so live precision and abstention rates are unknown.
 
 Known gaps: this seed has no independent external-review signatures, no production sandbox/broker run, and no cryptographic signature verifier. The local driver used by `engine-local` and `engine-live` has no network, kernel, or filesystem isolation, so no result here satisfies an isolation gate. The seed must remain non-promotable until those controls and the configured minimum corpus are supplied.
