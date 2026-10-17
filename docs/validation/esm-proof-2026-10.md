@@ -113,7 +113,9 @@ All in `services/remediation-service/src/sandbox/harness.js` unless named.
    the `Function` behaviour, and one remaining limit below. `contracts/repair-v1.md` says
    `Function` still compiles.
 
-The harness is 30,253 bytes against a 32 KiB budget (28,283 on `main`).
+The harness was 30,253 bytes against a 32 KiB budget (28,283 on `main`) when this branch was
+written. Rebased onto `feat/families-weak-hash-cookie-flags`, whose `crypto` recorder and session
+fakes take the merged file to 33,903 bytes, the budget is raised to 34 KiB (34,816 bytes).
 
 ## Tests
 
