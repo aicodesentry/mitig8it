@@ -32,18 +32,20 @@ COVERAGE_FILES = (
 # the CWEs each one is derived from there by `rule_family()`. A rule that declares a family
 # its CWE does not produce would be handed to the engine as something else.
 #
-# `workflow_hardening` carries two, because the two shapes it can patch are two different
+# `workflow_hardening` carries four, because the four shapes it can patch are four different
 # defects: CWE-78 for an interpolation inside a `run:` block, CWE-1357 for an action reference
-# that is not a digest. `rule_family()` resolves it from the finding's internal type before it
-# reaches the CWE table, precisely so that a CWE-78 workflow finding is not mistaken for the
-# `command_arguments` family.
+# that is not a digest, CWE-829 for a checkout of the pull request's revision under a
+# privileged trigger, and CWE-732 for a write grant under `pull_request_target`. `rule_family()`
+# resolves it from the finding's internal type and rule id before it reaches the CWE table,
+# precisely so that a CWE-78 workflow finding is not mistaken for the `command_arguments`
+# family.
 FAMILY_CWE = {
     "sql_parameterization": frozenset({"CWE-89"}),
     "command_arguments": frozenset({"CWE-78"}),
     "path_containment": frozenset({"CWE-22"}),
     "hardcoded_credential": frozenset({"CWE-798"}),
     "code_injection_eval": frozenset({"CWE-95"}),
-    "workflow_hardening": frozenset({"CWE-78", "CWE-1357"}),
+    "workflow_hardening": frozenset({"CWE-78", "CWE-1357", "CWE-829", "CWE-732"}),
     # A weak password hash is declared as CWE-916 by the rules written for it, and as CWE-327 or
     # CWE-328 by a weak-digest rule whose finding the analysis service renames
     # `weak_password_hash` because the digested value is a credential. `rule_family()` reads the

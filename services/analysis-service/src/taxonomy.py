@@ -68,6 +68,15 @@ DECLARED_INTERNAL_TYPES = frozenset({
     "workflow_credential_persistence",
     "workflow_secret_exposure",
     "self_hosted_runner_exposure",
+    # Added with the supply-chain rules of October 2026, for the same reason the eight above
+    # are separate: a maintainer does three different things about them. An artifact that is
+    # executed instead of read is a job that belongs in the other workflow; a script piped
+    # from a URL into a shell is a tool that needs a pinned install; a lockfile entry with an
+    # install script, a non-registry source or a near-miss name is a dependency to look at
+    # before merging.
+    "untrusted_artifact_execution",
+    "remote_script_execution",
+    "supply_chain_risk",
 })
 
 
@@ -197,6 +206,10 @@ CWE_INTERNAL_TYPE_MAP: Dict[str, str] = {
     "CWE-732": "excessive_workflow_permissions",
     "CWE-522": "workflow_credential_persistence",
     "CWE-668": "self_hosted_runner_exposure",
+    # CWE-494 is "Download of Code Without Integrity Check", which is `curl | sh` exactly. The
+    # artifact-execution rule declares CWE-829 and its own type, so it needs no entry here; the
+    # lockfile signals declare CWE-1357 and `supply_chain_risk` explicitly for the same reason.
+    "CWE-494": "remote_script_execution",
     # CWE-200 is last of the workflow entries on purpose: it is the most general "information
     # exposure" code in the catalogue, so a finding that carries it together with a more
     # specific CWE should resolve to the specific one, and insertion order decides that.
@@ -282,6 +295,8 @@ CWE_ATTACK_MAP: Dict[str, List[str]] = {
     "CWE-522": ["T1552.001"],
     "CWE-668": ["T1195.002"],
     "CWE-200": ["T1552"],
+    # T1105 is "Ingress Tool Transfer": code fetched from outside and run at once.
+    "CWE-494": ["T1105"],
 }
 
 
@@ -322,6 +337,9 @@ CWE_CAPEC_MAP: Dict[str, List[str]] = {
     "CWE-522": ["CAPEC-37"],
     "CWE-668": ["CAPEC-122"],
     "CWE-200": ["CAPEC-37"],
+    # CAPEC-186 is "Malicious Software Update": the fetched script is whatever the server
+    # serves on the day.
+    "CWE-494": ["CAPEC-186"],
 }
 
 

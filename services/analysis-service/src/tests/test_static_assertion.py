@@ -114,6 +114,40 @@ def test_a_tier2_rule_on_a_path_tier2_does_not_scan_is_refused(client):
     assert body["refusal"] == sa.RULE_NOT_APPLICABLE
 
 
+WORKFLOW_PATH = ".github/workflows/preview.yml"
+PWN_RULE = "opengrep.cwe-829.gha-pwn-request-checkout"
+PWN_ORIGINAL = (
+    "on:\n"
+    "  pull_request_target:\n"
+    "jobs:\n"
+    "  preview:\n"
+    "    runs-on: ubuntu-latest\n"
+    "    steps:\n"
+    "      - uses: actions/checkout@v4\n"
+    "        with:\n"
+    "          ref: ${{ github.event.pull_request.head.sha }}\n"
+)
+PWN_PATCHED = PWN_ORIGINAL.replace("head.sha", "base.sha")
+
+
+def test_a_workflow_rule_on_a_workflow_path_is_answered(client):
+    """Tier 2 reads `.github/workflows/*.yml` by path, not by extension, and so must this.
+
+    Before this was asserted the endpoint refused every workflow rule as not applicable, so the
+    one family that declares the static assertion could never have a repair asserted.
+    """
+    body = post(client, rule_id=PWN_RULE, path=WORKFLOW_PATH, original_content=PWN_ORIGINAL, patched_content=PWN_PATCHED).json()
+    assert body["refusal"] is None
+    assert body["tier"] == sa.TIER2
+    assert lines(body["original"]["rule_matches"]) == [9]
+    assert body["patched"]["rule_matches"] == []
+
+
+def test_a_workflow_rule_on_ordinary_yaml_is_still_refused(client):
+    body = post(client, rule_id=PWN_RULE, path="deploy/preview.yml", original_content=PWN_ORIGINAL, patched_content=PWN_PATCHED).json()
+    assert body["refusal"] == sa.RULE_NOT_APPLICABLE
+
+
 def test_an_oversized_file_is_refused(client):
     response = post(client, original_content="x" * (sa.MAX_ASSERTION_FILE_BYTES + 1))
     assert response.status_code == 413

@@ -937,6 +937,128 @@ five Node configuration objects and three Django settings files. The binding con
 corpus now points at is narrower than "the proof" and larger than any refusal left in the engine:
 **a dependency-free sandbox can only load a dependency-free module.**
 
+## The recall ratchet, 8 October 2026
+
+Everything above is a measurement somebody ran. Nothing failed when a later rule change lost
+one of the labels it reports as found: the precision benchmarks keep every hand-judged false
+positive and one true positive per rule family, so a rule can lose most of its real
+detections and still match its fixture. `scripts/replay/ratchet.py` and
+`benchmarks/vulnerable-corpus/recall-baseline.json` close that. The baseline holds, per label,
+whether it is hit and whether a posting rule hits it; the check fails, naming the labels, when
+either is lost. How it is run and refreshed is in `benchmarks/vulnerable-corpus/README.md`.
+
+### What was reproduced first
+
+The 23 trees were downloaded again and replayed on `main` as of `7756a5cb`.
+
+| | The follow-up above | Reproduced |
+| --- | ---: | ---: |
+| Labels hit on the labelled lines | 100 / 171 | 100 / 171 |
+| `cross_site_scripting` | 26 / 32, 18 posting | 26 / 32, 18 posting |
+| `path_traversal` | 8 / 14, 7 posting | 8 / 14, **8 posting** |
+| Labels hit by a posting rule | not stated | 92 / 171 |
+| Findings | 2568 | 2504 |
+
+The one number that does not reproduce is the posting share of path traversal. All eight
+labels are hit by a posting rule: four by `cwe-22.js-sendfile-request-path`, two by
+`cwe-22.py-pathlib-join-interpolated`, one by `cwe-22.js-archive-entry-write` and one by
+`cwe-22.path-traversal-fs`. Two of the eight are also hit by the quarantined
+`path.traversal.user_path`, and both posting rules already matched those two lines at
+`56fcbf33`, the commit the follow-up was measured at, so "7 of 14" above looks like a
+miscount rather than a change since. The finding total is lower because rules have been
+narrowed since; it was not traced rule by rule.
+
+### The run-to-run variation is tier 1's time budget, not the scanner
+
+**After path containment reach** above reports 2442 findings on one replay and 2393 on the
+next and puts it down to the scanner. It is tier 1. `pattern_findings` stops after 20 s per
+request and 2 s per file and records a `budget` limitation, which the worker used to drop
+from the record. A snapshot batch is up to 120 whole files, so it reaches both limits:
+
+| Run | Machine | Findings | Tier 1 budget limitations |
+| --- | --- | ---: | --- |
+| 1 | idle | 2504 | not recorded yet |
+| 2 | idle | 2503 | 4 files at the per-file cap |
+| 3 | loaded | 2451 | 11 files at the per-file cap, and two batches stopped (at 54 of 120 files and at 74 of 111) |
+| 4, budget lifted | loaded | 2511 | none |
+
+Runs 3 and 4 include the seven findings of the rules below; without them they are 2444 and
+2504. Every finding that differs between runs is a tier 1 finding in a file or batch that
+carries a limitation. No label changed state in any of the four runs, which is luck: the
+rules that are cut are the ones later in `SECURITY_RULES`, on the largest files.
+
+The harness now measures without the budget (`replay.py --no-tier1-budget`, which
+`ratchet.py measure` passes) and keeps each stage's limitations on the record. The ratchet
+refuses a run in which a time or memory ceiling was reached on a labelled file or on a whole
+batch. In production the budget is doing its job, and a review that hits it says so in its
+limitations; what was wrong was a measurement that hit it silently.
+
+### Path traversal: five of the six remaining labels
+
+| | Before | After |
+| --- | ---: | ---: |
+| Labels hit | 100 / 171 (0.58) | **105 / 171 (0.61)** |
+| Labels hit by a posting rule | 92 / 171 | **97 / 171** |
+| `path_traversal` | 8 / 14 | **13 / 14** |
+| Findings | 2504 | 2511 |
+| Precision of what posts, over adjudicated findings | 0.86 | 0.86 |
+
+Three rules were added and one widened. Every finding they produce on the 23 trees was read:
+seven findings, five confirmed by a label and two read by hand, all true.
+
+| Rule | Findings | Where | Verdict |
+| --- | ---: | --- | --- |
+| `cwe-22.py-path-join-request-value` | 2 | pygoat `introduction/views.py:926`; whoogle-search `app/routes.py:427` | both labels |
+| `cwe-22.js-render-request-object-locals` | 3 | nodejs-goof `routes/index.js:120`; juice-shop `routes/dataErasure.ts:107` and `:123` | one label; two hand-read and true, both branches of the labelled handler spread `req.body` into the view locals |
+| `cwe-22.js-path-resolve-request-value` | 1 | juice-shop `routes/dataErasure.ts:104` | label |
+| `cwe-22.js-archive-entry-write` (widened) | 1 new | juice-shop `routes/fileUpload.ts:34` | label |
+
+`cwe-22.py-path-join-request-value` also matches whoogle-search `app/routes.py:445`, the same
+request argument joined for a pickle write. It adds no finding there, because
+`cwe-22.py-open-request-path` already reports that statement and the service merges the two.
+
+What each label needed:
+
+* **pygoat `ssrf_lab` and whoogle-search `config`** join a request value with `os.path.join`
+  on one statement and open the result on the next. Both existing Python rules need the
+  `open(...)` around the join. The new rule reports the join itself, follows a local one
+  assignment back when it is assigned straight from the request, and stays silent in a
+  function that compares a path against its base.
+* **nodejs-goof `save_account_details`** calls `res.render('account.hbs', profile)` with
+  `profile = req.body`. No path is built in the application at all: the view engine reads
+  `layout` out of the locals. The new rule reports the whole request body or query handed to
+  `render` as locals, directly, through a local, or spread into an object.
+* **juice-shop `dataErasure.ts:104`** is `path.resolve(req.body.layout)`, a path with no base.
+  The new rule is the single-argument form only. A join against a base is left to the sink
+  rules, because a containment check can follow it.
+* **juice-shop `fileUpload.ts`** reads `entry.path` into a local and concatenates it onto a
+  directory literal. The archive rule had the `path.join` form with the property inline; it
+  gains the concatenation and the local, and those branches require the object to be named as
+  an entry, member or header, because `.path` is a property of many things.
+
+These four patterns were written from the labels they reach, so the precision above is
+in-sample, and three of the four have fewer than the three adjudicated findings the posting
+policy asks for before it will act on a number. They post on the argument about the pattern,
+as every new coverage rule has, with that stated in each rule's `precision_evidence`. As a
+noise check outside the corpus the four patterns were run over 9,225 JavaScript and TypeScript
+files of an installed `node_modules` and 4,647 Python files of an installed `site-packages`
+and matched nothing. That is library code with few request handlers in it, so it bounds
+noise and says little about precision.
+
+### What is still missed in the class
+
+* **DSVW `dsvw.py:29`**, `open(os.path.abspath(params["path"]), "rb")`. `params` is a
+  dictionary built from the query string eleven lines earlier, by a comprehension over a
+  regex. Nothing on the line says where it came from, and `open(os.path.abspath($D[$K]))`
+  for any dictionary would report every configuration lookup. This needs data flow from
+  `self.path` to the sink. `cwe-22.path-traversal-fs` shows the engine's intraprocedural
+  taint mode is available for that; it was not attempted here.
+* **pygoat `ssti_view_blog`** (expected as template injection first, path traversal second),
+  `render(request, f"Lab_2021/A3_Injection/Blogs/{blog_id}.html")`. `blog_id` is a URL
+  parameter, which a pattern cannot tell from any other function argument, and a template
+  name interpolated from an argument is how ordinary views pick `f"{app}/detail.html"`.
+  Not matched.
+
 ## Suites
 
 | Suite | Command | Result |

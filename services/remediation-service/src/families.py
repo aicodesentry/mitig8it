@@ -19,9 +19,10 @@ PATH_CONTAINMENT = "path_containment"
 HARDCODED_CREDENTIAL = "hardcoded_credential"
 CODE_INJECTION_EVAL = "code_injection_eval"
 # GitHub Actions workflow hardening. It is a family rather than part of another one because
-# what it repairs is not a program: the two shapes it can patch are a mutable action reference
-# and an expression interpolation inside a `run:` script, and neither has a call site, a
-# parameter list or a module to load.
+# what it repairs is not a program: the four shapes it can patch are a mutable action reference,
+# an expression interpolation inside a `run:` script, a privileged checkout of the pull
+# request's revision, and a write grant under `pull_request_target`, and none of them has a call
+# site, a parameter list or a module to load.
 WORKFLOW_HARDENING = "workflow_hardening"
 # A password digested with a fast unsalted hash (MD5, SHA-1, SHA-256), repaired to a salted
 # key-derivation function from the standard library: `crypto.scryptSync` in Node,

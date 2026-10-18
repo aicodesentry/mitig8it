@@ -124,6 +124,113 @@ rules:
         assumption.
       posting: post
 
+  - id: cwe-829.gha-pwn-request-checkout
+    # The "pwn request": a privileged trigger, an `actions/checkout` step, and a `ref:` under
+    # that step naming the pull request's own revision. It is the first rule in this file
+    # restated with the one requirement the first version of the secret-exposure rule was
+    # missing: the `ref:` has to belong to a checkout. `cwe-829.gha-untrusted-checkout-
+    # privileged-trigger` reports any untrusted `ref:` after the trigger, whichever action it is
+    # an input to, and that is the shape google/slo-generator's `tomchv/wait-my-workflow` step
+    # had. This rule asks for the step, so what it reports is exactly the construct GitHub's own
+    # advisory describes, and that is what makes it the one with a mechanical repair: under
+    # `pull_request_target` the base revision is `${{ github.event.pull_request.base.sha }}`,
+    # and under `workflow_run` the `ref:` line goes.
+    #
+    # The two rules share an internal type, so when both match one step the clusterer merges
+    # them into one comment carrying both ids, and the repair side reads the type rather than
+    # the id. The crossing from `uses:` to `ref:` is at most eight lines and may not pass a new
+    # list item or a new job's keys, so a `ref:` under the *next* step's `with:` is not claimed.
+    pattern-regex: '(?ms)^[ \t]{0,4}(?:pull_request_target|workflow_run)[ \t]*:.*?^[ \t]*(?:-[ \t]+)?uses[ \t]*:[ \t]*(?:''|")?actions/checkout[^\n]*\n(?:(?![ \t]*(?:-[ \t]|(?:steps|jobs|runs-on|uses|run)[ \t]*:))[^\n]*\n){0,8}?\K[ \t]*ref[ \t]*:[ \t]*(?:''|")?(?:\$\{\{[ \t]*github\.event\.pull_request\.(?:head\.(?:sha|ref)|merge_commit_sha)|\$\{\{[ \t]*github\.event\.workflow_run\.head_(?:sha|branch)|\$\{\{[ \t]*github\.head_ref|refs/pull/)'
+    message: >-
+      This `actions/checkout` step runs under `pull_request_target` or `workflow_run`, so the
+      job has the base repository's secrets and a writable token, and it checks out the pull
+      request's own revision. A contributor controls that revision, and every later step runs
+      their code with those credentials. Check out the base revision instead
+      (`ref: ${{ github.event.pull_request.base.sha }}`), or drop `ref:` so the default branch
+      is used.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+    metadata:
+      cwe: "CWE-829"
+      owasp: "A08:2021"
+      category: "CI/CD"
+      internal_type: "untrusted_code_checkout"
+      family: "workflow_hardening"
+      # Above the wider rule's 0.9 on purpose: when both match one step the clusterer keeps the
+      # more confident finding as the survivor, and this is the one whose message names the
+      # repair. A tie would leave the choice to the scanner's output order.
+      confidence: "0.95"
+      precision_evidence: >-
+        docs/validation/workflow-supply-chain-2026-10.md: zero findings over 242 workflow
+        files from 27 repositories (the 227 third-party files of workflow-tampering-2026-09.md
+        refetched at the same refs, which reproduce its per-repository counts exactly, and this
+        repository's 15 workflows at the measuring commit). Posts under
+        the second clause of the policy: the pattern names a literal trigger, a literal
+        action and a literal `ref:` value in one step, and the combination is the construct
+        GitHub's own advisory describes. It is a strict narrowing of
+        `cwe-829.gha-untrusted-checkout-privileged-trigger`, which also measured zero.
+      posting: post
+
+  - id: cwe-829.gha-untrusted-artifact-executed
+    # The other half of the `workflow_run` design GitHub recommends. The safe pattern is: an
+    # untrusted `pull_request` workflow builds and uploads an artifact, and a privileged
+    # `workflow_run` workflow downloads it and *reads* it, as data. The unsafe pattern is the
+    # same two workflows with the second one executing what it downloaded: a script with
+    # `bash`, a bundle with `node`, a tree with `npm ci`. The artifact was produced by the
+    # contributor's revision, so running it is running their code in the privileged job.
+    #
+    # The rule binds the executed path to the download. `actions/download-artifact` is given a
+    # `path:`, the regex captures its first segment, and the `run:` script has to execute
+    # something under that segment, either through an interpreter (`bash out/run.sh`,
+    # `node out/index.js`) or by changing into it and installing (`cd out && npm ci`). A
+    # `run:` that executes a path from the trusted checkout after downloading coverage data is
+    # therefore not claimed, and that is the common shape of a legitimate `workflow_run` job.
+    #
+    # What it does not catch, by design: a download with no `path:` (the artifact lands in the
+    # workspace root and nothing distinguishes its files from the checkout's), a path executed
+    # directly (`./out/run.sh`, `chmod +x` then run), a `working-directory:` key pointing at the
+    # download, `make` or `docker build` over it, and `gh run download`. Each of those is a
+    # shape that would also match legitimate jobs, so they are left to the reviewer.
+    pattern-either:
+      # Interpreter plus a path under the download, single-line script.
+      - pattern-regex: '(?ms)^[ \t]{0,4}workflow_run[ \t]*:.*?^[ \t]*(?:-[ \t]+)?uses[ \t]*:[^\n]*download-artifact[^\n]*\n(?:(?![ \t]*(?:-[ \t]|(?:steps|jobs|runs-on|uses|run)[ \t]*:))[^\n]*\n){0,8}?[ \t]*path[ \t]*:[ \t]*(?:''|")?(?:\./)?([A-Za-z0-9_.][^\s''"#/]*)[^\n]*\n.*?^[ \t]*(?:-[ \t]+)?run[ \t]*:[^\n]*?\K(?<![\w./-])(?:sh|bash|zsh|source|node|python3?|ruby)[ \t]+(?:-[\w-]+[ \t]+)*(?:\./)?\1(?:/[^\s|&;]*)?'
+      # Interpreter plus a path under the download, block scalar.
+      - pattern-regex: '(?ms)^[ \t]{0,4}workflow_run[ \t]*:.*?^[ \t]*(?:-[ \t]+)?uses[ \t]*:[^\n]*download-artifact[^\n]*\n(?:(?![ \t]*(?:-[ \t]|(?:steps|jobs|runs-on|uses|run)[ \t]*:))[^\n]*\n){0,8}?[ \t]*path[ \t]*:[ \t]*(?:''|")?(?:\./)?([A-Za-z0-9_.][^\s''"#/]*)[^\n]*\n.*?^[ \t]*(?:-[ \t]+)?run[ \t]*:[ \t]*[|>][-+0-9]*[ \t]*(?:#[^\n]*)?\n(?:(?![ \t]*(?:-[ \t]|(?:name|id|if|env|with|uses|run|shell|working-directory|continue-on-error|timeout-minutes|permissions|steps|jobs|needs|strategy|outputs|defaults)[ \t]*:))[^\n]*\n)*?(?![ \t]*-[ \t])[^\n]*?\K(?<![\w./-])(?:sh|bash|zsh|source|node|python3?|ruby)[ \t]+(?:-[\w-]+[ \t]+)*(?:\./)?\1(?:/[^\s|&;]*)?'
+      # Change into the download and install, single-line script.
+      - pattern-regex: '(?ms)^[ \t]{0,4}workflow_run[ \t]*:.*?^[ \t]*(?:-[ \t]+)?uses[ \t]*:[^\n]*download-artifact[^\n]*\n(?:(?![ \t]*(?:-[ \t]|(?:steps|jobs|runs-on|uses|run)[ \t]*:))[^\n]*\n){0,8}?[ \t]*path[ \t]*:[ \t]*(?:''|")?(?:\./)?([A-Za-z0-9_.][^\s''"#/]*)[^\n]*\n.*?^[ \t]*(?:-[ \t]+)?run[ \t]*:[^\n]*?(?<![\w./-])cd[ \t]+(?:\./)?\1(?![\w.-])[^\n]*?\K(?<![\w./-])(?:npm[ \t]+(?:ci|install|i)(?![\w-])|yarn[ \t]+install|pnpm[ \t]+install|pip3?[ \t]+install)'
+      # Change into the download and install, block scalar: on the `cd` line or a later one.
+      - pattern-regex: '(?ms)^[ \t]{0,4}workflow_run[ \t]*:.*?^[ \t]*(?:-[ \t]+)?uses[ \t]*:[^\n]*download-artifact[^\n]*\n(?:(?![ \t]*(?:-[ \t]|(?:steps|jobs|runs-on|uses|run)[ \t]*:))[^\n]*\n){0,8}?[ \t]*path[ \t]*:[ \t]*(?:''|")?(?:\./)?([A-Za-z0-9_.][^\s''"#/]*)[^\n]*\n.*?^[ \t]*(?:-[ \t]+)?run[ \t]*:[ \t]*[|>][-+0-9]*[ \t]*(?:#[^\n]*)?\n(?:(?![ \t]*(?:-[ \t]|(?:name|id|if|env|with|uses|run|shell|working-directory|continue-on-error|timeout-minutes|permissions|steps|jobs|needs|strategy|outputs|defaults)[ \t]*:))[^\n]*\n)*?[ \t]*cd[ \t]+(?:\./)?\1(?![\w.-])(?:[^\n]*\n(?:(?![ \t]*(?:-[ \t]|(?:name|id|if|env|with|uses|run|shell|working-directory|continue-on-error|timeout-minutes|permissions|steps|jobs|needs|strategy|outputs|defaults)[ \t]*:))[^\n]*\n)*?(?![ \t]*-[ \t])[ \t]*|[^\n]*?(?<![\w./-]))\K(?:npm[ \t]+(?:ci|install|i)(?![\w-])|yarn[ \t]+install|pnpm[ \t]+install|pip3?[ \t]+install)'
+    message: >-
+      This `workflow_run` job downloads an artifact and then executes a file from it. The
+      artifact was built by the triggering workflow, which ran the pull request's revision, so
+      its contents are the contributor's and this job runs them with the base repository's
+      secrets and token. Read the artifact as data only, and keep anything that executes it in
+      the `pull_request` workflow that produced it. No automatic fix is offered for this
+      finding: which of the two workflows a step belongs in is a design decision.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+    metadata:
+      cwe: "CWE-829"
+      owasp: "A08:2021"
+      category: "CI/CD"
+      internal_type: "untrusted_artifact_execution"
+      confidence: "0.8"
+      precision_evidence: >-
+        docs/validation/workflow-supply-chain-2026-10.md: zero findings over 242 workflow
+        files from 27 repositories. Posts under the second clause of the policy: a literal
+        trigger, a literal download step whose `path:` is bound by backreference to the
+        executed path, and a literal interpreter or package install. The binding is what keeps
+        the common legitimate shape silent: a `workflow_run` job that downloads coverage data
+        and then runs a script from its own trusted checkout is not matched. Not caught, and
+        said here so nobody reads the zero as coverage: a download without `path:`, a direct
+        `./path` execution, a `working-directory:` pointing at the download, `make` or
+        `docker build` over it, and `gh run download`.
+      posting: post
+
   # ── Shell injection through an expression interpolation ────────────────────
 
   - id: cwe-78.gha-run-untrusted-interpolation
@@ -168,6 +275,57 @@ rules:
         itself, and produces zero findings over the same 240 workflow files from 26
         repositories. It posts under the second clause of the policy, and the ten false lines
         are checked in as no-finding cases in benchmarks/tier2-precision/cases.json.
+      posting: post
+
+  # ── A remote script executed as it downloads ───────────────────────────────
+
+  - id: cwe-494.gha-remote-script-piped-to-shell
+    # `curl https://example.com/install.sh | sh`. Whatever the server sends is executed, in the
+    # job, with the job's token and secrets, and nothing in the workflow pins what that is: not
+    # a digest, not a checksum, not a version. The server, the DNS answer and anyone on the
+    # path to it decide what runs. The `-fsSL`, `sudo`, `bash -s --` and PowerShell
+    # (`iwr ... | iex`, `irm ... | iex`) variants are the same shape.
+    #
+    # There is deliberately no checksum exclusion, and not because one was too expensive to
+    # write. A pipe hands the bytes to the shell as they arrive, so there is nothing on disk
+    # for a checksum to be taken of: a download that is verified before it runs is written to
+    # a file, checked, and then executed, and that shape has no pipe and is not matched. The
+    # one shape that imitates verification, `curl ... | tee file | sh`, is still matched,
+    # because the shell still runs the unverified stream.
+    #
+    # The alternation after the pipe is the list of things that *execute* their input. A pipe
+    # into `tar`, `gpg --dearmor`, `sudo tee`, `jq` or `sha256sum -c` is not matched.
+    pattern-either:
+      - pattern-regex: '(?m)^[ \t]*(?:-[ \t]+)?run[ \t]*:[^\n]*?\K(?<![\w-])(?:curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)(?![\w-])[^\n|]*\|[ \t]*(?:sudo[ \t]+(?:-[A-Za-z]+[ \t]+)*)?(?:/usr/bin/|/bin/|/usr/bin/env[ \t]+)?(?:sh|bash|zsh|dash|ksh|fish|iex|Invoke-Expression|pwsh|powershell|python3?|node|perl|ruby)(?![\w.-])'
+      - pattern-regex: '(?m)^[ \t]*(?:-[ \t]+)?run[ \t]*:[ \t]*[|>][-+0-9]*[ \t]*(?:#[^\n]*)?\n(?:(?![ \t]*(?:-[ \t]|(?:name|id|if|env|with|uses|run|shell|working-directory|continue-on-error|timeout-minutes|permissions|steps|jobs|needs|strategy|outputs|defaults)[ \t]*:))[^\n]*\n)*?(?![ \t]*-[ \t])[^\n]*?\K(?<![\w-])(?:curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)(?![\w-])[^\n|]*\|[ \t]*(?:sudo[ \t]+(?:-[A-Za-z]+[ \t]+)*)?(?:/usr/bin/|/bin/|/usr/bin/env[ \t]+)?(?:sh|bash|zsh|dash|ksh|fish|iex|Invoke-Expression|pwsh|powershell|python3?|node|perl|ruby)(?![\w.-])'
+    message: >-
+      This step downloads a script and pipes it straight into an interpreter. Whatever the
+      server sends on the day is what runs, with this job's token and secrets, and nothing here
+      pins it: no digest, no checksum, no version. Download to a file, verify it against a
+      checksum you keep in the repository, and then run it; or install the tool from a pinned
+      release, or from a package manager that verifies what it fetches. No automatic fix is
+      offered for this finding: the correct replacement depends on how the tool is published.
+    severity: WARNING
+    languages: [generic]
+    paths:
+      include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+    metadata:
+      cwe: "CWE-494"
+      owasp: "A08:2021"
+      category: "CI/CD"
+      internal_type: "remote_script_execution"
+      confidence: "0.85"
+      precision_evidence: >-
+        docs/validation/workflow-supply-chain-2026-10.md: 4 findings over 242 workflow files
+        from 27 repositories, all 4 read, all 4 true (whoogle-search's grype installer from a
+        branch, fastify's yarn installer, juice-shop's Heroku CLI installer, next.js's
+        wasm-pack installer). Four is not a rate. None of the four is on a trigger a
+        contributor can fire, so what the rule reports is a supply-chain exposure to the
+        script's host, not a pull request attack. The pattern is a literal downloader, a
+        literal pipe and a literal interpreter on one script line, and it makes no assumption
+        about what the script does: the claim is only that the job executes bytes nothing
+        pinned. Verdicts in benchmarks/vulnerable-corpus/adjudications.json under
+        `workflow_supply_chain_2026_10_17`.
       posting: post
 
   # ── An action reference that is not a commit digest ────────────────────────
@@ -273,6 +431,53 @@ rules:
         fastify/fastify). Re-enabling this needs something the pattern does not have: what the
         job actually uses the token for. A version that compares the granted scopes against the
         API calls the steps make would be a different rule, not a narrowing of this one.
+
+  - id: cwe-732.gha-write-grant-on-pull-request-target
+    # The quarantined rule above, narrowed on both axes: only `pull_request_target`, because
+    # that is the one trigger a stranger fires by opening a pull request, and only the three
+    # grants that let a job change the repository or sign as it. `contents: write` can push to
+    # any branch, `id-token: write` can mint an OIDC token a cloud provider trusts, and
+    # `write-all` is both and everything else. `actions: write`, `packages: write` and
+    # `pull-requests: write` are left out: the sibling rule's measurement found `actions:
+    # write` on re-run jobs and `pull-requests: write` is what a comment bot needs.
+    #
+    # Two alternatives because `permissions:` may be written above or below `on:`. The first
+    # resets the match to the grant after the trigger; the second anchors on the grant and
+    # looks ahead for the trigger, so the finding lands on the grant line either way.
+    #
+    # Measured on the same corpus as the sibling, and the measurement decides the posting state
+    # below: see docs/validation/workflow-supply-chain-2026-10.md.
+    pattern-either:
+      - pattern-regex: '(?ms)^[ \t]{0,4}pull_request_target[ \t]*:.*?\K^[ \t]*(?:permissions[ \t]*:[ \t]*(?:''|")?write-all|(?:contents|id-token)[ \t]*:[ \t]*(?:''|")?write)(?![\w-])'
+      - pattern-regex: '(?ms)^[ \t]*(?:permissions[ \t]*:[ \t]*(?:''|")?write-all|(?:contents|id-token)[ \t]*:[ \t]*(?:''|")?write)(?![\w-])(?=.*?^[ \t]{0,4}pull_request_target[ \t]*:)'
+    message: >-
+      This workflow runs on `pull_request_target`, which any contributor can trigger by opening
+      a pull request, and it grants a scope that can change the repository or sign as it:
+      `contents: write` pushes to any branch, `id-token: write` mints a cloud credential, and
+      `write-all` is every scope at once. Any other defect in this workflow is worth exactly
+      this grant. If the job only needs to comment or label, grant `pull-requests: write` or
+      `issues: write` and set the rest to `read`.
+    severity: WARNING
+    languages: [generic]
+    paths:
+      include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+    metadata:
+      cwe: "CWE-732"
+      owasp: "A01:2021"
+      category: "CI/CD"
+      internal_type: "excessive_workflow_permissions"
+      family: "workflow_hardening"
+      confidence: "0.7"
+      posting: quarantine
+      posting_evidence: >-
+        docs/validation/workflow-supply-chain-2026-10.md: 2 findings over 242 workflow files,
+        both read, both false, for the reason the sibling rule was quarantined: each job uses
+        the scope it asks for. fastify's backport job needs `contents: write` to push the
+        backport branch and only runs for a merged pull request; next.js's code review job
+        needs `id-token: write` to mint a scoped comment token and checks out the base commit.
+        Narrowing to three grants and one trigger removed nine of the sibling's eleven false
+        positives and left the structural objection intact. Re-enable it only with a signal
+        the pattern does not have: whether the job also runs contributor code.
 
   # ── Credentials and secrets left where untrusted code can read them ────────
 

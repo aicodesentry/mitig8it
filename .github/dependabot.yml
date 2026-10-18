@@ -1,6 +1,18 @@
 # Keeps dependencies current and surfaces security updates as PRs.
-# Patch and minor version updates are grouped per manifest directory. Major
-# updates are intentionally ungrouped so breaking changes stay isolated.
+#
+# One group per manifest directory, plus a separate group for the gRPC and protobuf
+# runtime wherever one exists. Everything here is on the auto-merge path, so splitting
+# production from development and patch from minor produced four pull requests where one
+# would do and gave nobody a decision they were actually making. The gRPC group stays
+# separate for a reason that is not cosmetic: those packages have to move together with
+# the generated stubs, and bundling them with thirty unrelated bumps means an unrelated
+# failure blocks a runtime upgrade.
+#
+# open-pull-requests-limit is set to each entry's group count, so the backlog is bounded
+# by the structure rather than by a number somebody picked. Security updates are not
+# subject to this limit.
+#
+# Major updates stay ungrouped so breaking changes arrive one at a time.
 # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
 version: 2
 updates:
@@ -11,7 +23,7 @@ updates:
       day: monday
       time: "09:00"
       timezone: America/New_York
-    open-pull-requests-limit: 4
+    open-pull-requests-limit: 1
     cooldown:
       semver-major-days: 14
       semver-minor-days: 7
@@ -25,29 +37,11 @@ updates:
           - version-update:semver-patch
           - version-update:semver-minor
     groups:
-      frontend-production-patches:
+      frontend-all:
         patterns:
           - "*"
-        dependency-type: production
         update-types:
           - patch
-      frontend-development-patches:
-        patterns:
-          - "*"
-        dependency-type: development
-        update-types:
-          - patch
-      frontend-production-minors:
-        patterns:
-          - "*"
-        dependency-type: production
-        update-types:
-          - minor
-      frontend-development-minors:
-        patterns:
-          - "*"
-        dependency-type: development
-        update-types:
           - minor
 
   - package-ecosystem: npm
@@ -57,7 +51,7 @@ updates:
       day: tuesday
       time: "09:00"
       timezone: America/New_York
-    open-pull-requests-limit: 4
+    open-pull-requests-limit: 2
     cooldown:
       semver-major-days: 14
       semver-minor-days: 7
@@ -78,35 +72,14 @@ updates:
         update-types:
           - minor
           - patch
-      api-production-patches:
+      api-everything-else:
         patterns:
           - "*"
         exclude-patterns:
           - "@grpc/*"
           - "google-protobuf"
-        dependency-type: production
         update-types:
           - patch
-      api-development-patches:
-        patterns:
-          - "*"
-        dependency-type: development
-        update-types:
-          - patch
-      api-production-minors:
-        patterns:
-          - "*"
-        exclude-patterns:
-          - "@grpc/*"
-          - "google-protobuf"
-        dependency-type: production
-        update-types:
-          - minor
-      api-development-minors:
-        patterns:
-          - "*"
-        dependency-type: development
-        update-types:
           - minor
 
   - package-ecosystem: npm
@@ -116,7 +89,7 @@ updates:
       day: wednesday
       time: "09:00"
       timezone: America/New_York
-    open-pull-requests-limit: 4
+    open-pull-requests-limit: 2
     cooldown:
       semver-major-days: 14
       semver-minor-days: 7
@@ -137,35 +110,14 @@ updates:
         update-types:
           - minor
           - patch
-      github-production-patches:
+      github-everything-else:
         patterns:
           - "*"
         exclude-patterns:
           - "@grpc/*"
           - "google-protobuf"
-        dependency-type: production
         update-types:
           - patch
-      github-development-patches:
-        patterns:
-          - "*"
-        dependency-type: development
-        update-types:
-          - patch
-      github-production-minors:
-        patterns:
-          - "*"
-        exclude-patterns:
-          - "@grpc/*"
-          - "google-protobuf"
-        dependency-type: production
-        update-types:
-          - minor
-      github-development-minors:
-        patterns:
-          - "*"
-        dependency-type: development
-        update-types:
           - minor
 
   - package-ecosystem: npm
@@ -175,7 +127,7 @@ updates:
       day: thursday
       time: "09:00"
       timezone: America/New_York
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 2
     cooldown:
       semver-major-days: 14
       semver-minor-days: 7
@@ -196,7 +148,7 @@ updates:
         update-types:
           - minor
           - patch
-      proto-js-patches:
+      proto-js-everything-else:
         patterns:
           - "*"
         exclude-patterns:
@@ -205,14 +157,6 @@ updates:
         dependency-type: development
         update-types:
           - patch
-      proto-js-minors:
-        patterns:
-          - "*"
-        exclude-patterns:
-          - "@grpc/*"
-          - "grpc-tools"
-        dependency-type: development
-        update-types:
           - minor
 
   - package-ecosystem: pip
@@ -222,7 +166,7 @@ updates:
       day: thursday
       time: "10:00"
       timezone: America/New_York
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 2
     cooldown:
       semver-major-days: 14
       semver-minor-days: 7
@@ -244,7 +188,7 @@ updates:
         update-types:
           - minor
           - patch
-      analysis-pip-patches:
+      analysis-pip-everything-else:
         patterns:
           - "*"
         exclude-patterns:
@@ -253,14 +197,6 @@ updates:
           - "protobuf"
         update-types:
           - patch
-      analysis-pip-minors:
-        patterns:
-          - "*"
-        exclude-patterns:
-          - "grpcio"
-          - "grpcio-health-checking"
-          - "protobuf"
-        update-types:
           - minor
 
   - package-ecosystem: pip
@@ -270,7 +206,7 @@ updates:
       day: thursday
       time: "11:00"
       timezone: America/New_York
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 2
     cooldown:
       semver-major-days: 14
       semver-minor-days: 7
@@ -292,7 +228,7 @@ updates:
         update-types:
           - minor
           - patch
-      proto-py-patches:
+      proto-py-everything-else:
         patterns:
           - "*"
         exclude-patterns:
@@ -301,14 +237,6 @@ updates:
           - "protobuf"
         update-types:
           - patch
-      proto-py-minors:
-        patterns:
-          - "*"
-        exclude-patterns:
-          - "grpcio"
-          - "grpcio-tools"
-          - "protobuf"
-        update-types:
           - minor
 
   - package-ecosystem: github-actions
@@ -318,7 +246,7 @@ updates:
       day: friday
       time: "09:00"
       timezone: America/New_York
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 1
     commit-message:
       prefix: "deps(actions)"
     allow:
@@ -327,13 +255,9 @@ updates:
           - version-update:semver-patch
           - version-update:semver-minor
     groups:
-      github-actions-patches:
+      github-actions-all:
         patterns:
           - "*"
         update-types:
           - patch
-      github-actions-minors:
-        patterns:
-          - "*"
-        update-types:
           - minor

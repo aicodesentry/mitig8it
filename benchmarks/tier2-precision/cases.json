@@ -1076,11 +1076,12 @@
       "expect": "finding",
       "rule": "cwe-829.gha-untrusted-checkout-privileged-trigger",
       "path": ".github/workflows/subsumption-persist-credentials-under-target.yml",
-      "note": "One `actions/checkout` step both rules match. The token is only exposed because the step took a contributor's revision, and removing the step removes both, so `finding_quality.SUBSUMED_INTERNAL_TYPES` folds the credential finding into the checkout finding. One comment arrives, carrying both rule ids.",
+      "note": "One `actions/checkout` step both rules match. The token is only exposed because the step took a contributor's revision, and removing the step removes both, so `finding_quality.SUBSUMED_INTERNAL_TYPES` folds the credential finding into the checkout finding. One comment arrives. Since October 2026 the step also matches `cwe-829.gha-pwn-request-checkout`, the narrowing of the checkout rule to an `actions/checkout` step; the two share an internal type, so they cluster, and the narrower rule survives because it declares the higher confidence and its message names the repair. The comment carries all three rule ids.",
       "posted": [
         {
-          "rule": "cwe-829.gha-untrusted-checkout-privileged-trigger",
+          "rule": "cwe-829.gha-pwn-request-checkout",
           "merged_rule_ids": [
+            "opengrep.cwe-829.gha-pwn-request-checkout",
             "opengrep.cwe-829.gha-untrusted-checkout-privileged-trigger",
             "opengrep.cwe-522.gha-persist-credentials-on-untrusted-checkout"
           ]
@@ -1182,6 +1183,233 @@
       "rule": "cwe-89.py-execute-fstring-direct",
       "path": "positive/py_execute_fstring_unguarded_order_by.py",
       "code": "# The same statement with no membership test guarding the interpolated name. The\n# exclusion that withdraws the allowlisted case must not withdraw this one.\ndef search_orders(cursor, status, sort_column):\n    cursor.execute(\n        f\"SELECT * FROM orders WHERE status = ? ORDER BY {sort_column}\",\n        (status,),\n    )\n    return cursor.fetchall()\n"
+    },
+    {
+      "id": "cwe-22.py-path-join-request-value",
+      "expect": "finding",
+      "rule": "cwe-22.py-path-join-request-value",
+      "path": "positive/cwe-22_py-path-join-request-value.py",
+      "code": "import os\nfrom flask import request\n\nBASE = '/srv/config'\n\ndef load_config():\n    return open(os.path.join(BASE, request.args.get('name')), 'rb').read()\n"
+    },
+    {
+      "id": "corpus.cwe-22.py-path-join-request-value",
+      "expect": "finding",
+      "rule": "cwe-22.py-path-join-request-value",
+      "path": "corpus/cwe-22_py-path-join-request-value.py",
+      "code": "import os\nfrom django.shortcuts import render\n\ndef ssrf_lab(request):\n    file=request.POST[\"blog\"]\n    try :\n        dirname = os.path.dirname(__file__)\n        filename = os.path.join(dirname, file)\n        file = open(filename,\"r\")\n        data = file.read()\n        return render(request,\"Lab/ssrf/ssrf_lab.html\",{\"blog\":data})\n    except:\n        return render(request, \"Lab/ssrf/ssrf_lab.html\", {\"blog\": \"No blog found\"})\n",
+      "note": "adeyosemanputra/pygoat introduction/views.py:926, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json). The request value reaches the join through a local, which is the branch the direct pattern does not cover."
+    },
+    {
+      "id": "py-path-join-request-value-contained",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.py-path-join-request-value"
+      ],
+      "path": "negative/py_path_join_request_value_contained.py",
+      "code": "import os\nfrom flask import abort, request\n\nBASE = '/srv/config'\n\ndef load_config():\n    name = request.args.get('name')\n    full = os.path.realpath(os.path.join(BASE, name))\n    if not full.startswith(BASE + os.sep):\n        abort(400)\n    return open(full, 'rb').read()\n",
+      "note": "Not a replay line: the shape the rule's message asks for. A function that compares a path against its base is excluded, so the repair this rule recommends does not go on being reported."
+    },
+    {
+      "id": "py-path-join-request-value-sanitised-or-unrelated",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.py-path-join-request-value"
+      ],
+      "path": "negative/py_path_join_request_value_unrelated.py",
+      "code": "import os\nfrom flask import request\nfrom werkzeug.utils import secure_filename\n\nBASE = '/srv/uploads'\n\ndef save_upload():\n    name = secure_filename(request.form['name'])\n    return os.path.join(BASE, name)\n\ndef config_path(config):\n    name = config.get('name')\n    return os.path.join(BASE, name)\n",
+      "note": "Not a replay line. A local assigned from a wrapper around the request value, and a local assigned from something that is not the request, are both outside the one assignment the rule follows."
+    },
+    {
+      "id": "cwe-22.js-path-resolve-request-value",
+      "expect": "finding",
+      "rule": "cwe-22.js-path-resolve-request-value",
+      "path": "positive/cwe-22_js-path-resolve-request-value.js",
+      "code": "const fs = require('node:fs');\nconst path = require('node:path');\nfunction preview(req, res) {\n  const target = path.resolve(req.query.file);\n  res.send(fs.readFileSync(target, 'utf8'));\n}\n"
+    },
+    {
+      "id": "corpus.cwe-22.js-path-resolve-request-value",
+      "expect": "finding",
+      "rule": "cwe-22.js-path-resolve-request-value",
+      "path": "corpus/cwe-22_js-path-resolve-request-value.ts",
+      "code": "import path from 'node:path'\nimport { type Request, type Response, type NextFunction } from 'express'\n\nexport function erase (req: Request, res: Response, next: NextFunction) {\n  if (req.body.layout) {\n    const filePath: string = path.resolve(req.body.layout).toLowerCase()\n    const isForbiddenFile: boolean = (filePath.includes('ftp') || filePath.includes('ctf.key') || filePath.includes('encryptionkeys'))\n    if (!isForbiddenFile) {\n      next()\n    }\n  }\n}\n",
+      "note": "juice-shop/juice-shop routes/dataErasure.ts:104, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json), with the handler around it reduced to the statements the label covers."
+    },
+    {
+      "id": "js-path-resolve-with-a-base-or-a-literal",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-path-resolve-request-value"
+      ],
+      "path": "negative/js_path_resolve_with_base.js",
+      "code": "const path = require('node:path');\nfunction asset(req, res) {\n  const index = path.resolve('static', 'index.html');\n  const candidate = path.resolve(ROOT, req.params.name);\n  if (!candidate.startsWith(ROOT + path.sep)) return res.sendStatus(400);\n  res.sendFile(candidate === ROOT ? index : candidate);\n}\n",
+      "note": "Not a replay line. The rule is the single-argument form only: a resolve against a base can be followed by a containment check, as it is here, and is left to the sink rules."
+    },
+    {
+      "id": "cwe-22.js-render-request-object-locals",
+      "expect": "finding",
+      "rule": "cwe-22.js-render-request-object-locals",
+      "path": "positive/cwe-22_js-render-request-object-locals.js",
+      "code": "function showAccount(req, res) {\n  res.render('account', req.body);\n}\n"
+    },
+    {
+      "id": "corpus.cwe-22.js-render-request-object-locals",
+      "expect": "finding",
+      "rule": "cwe-22.js-render-request-object-locals",
+      "path": "corpus/cwe-22_js-render-request-object-locals.js",
+      "code": "var validator = require('validator');\n\nexports.save_account_details = function(req, res, next) {\n  // get the profile details from the JSON\n\tconst profile = req.body\n  // validate the input\n  if (validator.isEmail(profile.email, { allow_display_name: true })\n    && validator.isAscii(profile.firstname)\n  ) {\n    // render the view\n    return res.render('account.hbs', profile)\n  } else {\n    console.log('error in form details')\n    return res.render('account.hbs')\n  }\n}\n",
+      "note": "snyk-labs/nodejs-goof routes/index.js:120, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json), with three of the five validator calls removed."
+    },
+    {
+      "id": "js-render-named-fields-or-loaded-record",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-render-request-object-locals"
+      ],
+      "path": "negative/js_render_named_fields.js",
+      "code": "async function showAccount(req, res) {\n  const profile = await loadProfile(req.user.id);\n  res.render('account', profile);\n}\nfunction showResult(req, res) {\n  res.render('result', { name: req.body.name, email: req.body.email });\n}\n",
+      "note": "Not a replay line. Named fields cannot carry a view option the code did not write, and a record loaded for the user is not the request object."
+    },
+    {
+      "id": "corpus.cwe-22.js-archive-entry-write.concat",
+      "expect": "finding",
+      "rule": "cwe-22.js-archive-entry-write",
+      "path": "corpus/cwe-22_js-archive-entry-write-concat.ts",
+      "code": "import fs from 'node:fs'\nimport path from 'node:path'\nimport { pipeline } from 'node:stream/promises'\nimport unzipper from 'unzipper'\n\nasync function extractZipBuffer (buffer: Buffer) {\n  const directory = await unzipper.Open.buffer(buffer)\n  for (const entry of directory.files) {\n    const fileName = entry.path\n    const absolutePath = path.resolve('uploads/complaints/' + fileName)\n    if (absolutePath.includes(path.resolve('.'))) {\n      await pipeline(entry.stream(), fs.createWriteStream('uploads/complaints/' + fileName))\n    }\n  }\n}\n",
+      "note": "juice-shop/juice-shop routes/fileUpload.ts:34, a labelled true positive of the vulnerable corpus (benchmarks/vulnerable-corpus/labels.json), with the challenge bookkeeping line removed."
+    },
+    {
+      "id": "archive-rule-ignores-a-path-property-that-is-not-an-entry",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-22.js-archive-entry-write"
+      ],
+      "path": "negative/js_write_stream_options_path.js",
+      "code": "const fs = require('node:fs');\nfunction openLog(options) {\n  const name = options.path;\n  return fs.createWriteStream('logs/' + name);\n}\n",
+      "note": "Not a replay line. `.path` is a property of many objects; the concatenation branches require the object to be named as an entry, member or header, so a configured log name is not reported as an archive entry."
+    },
+    {
+      "id": "cwe-829.gha-pwn-request-checkout",
+      "expect": "finding",
+      "rule": "cwe-829.gha-pwn-request-checkout",
+      "path": ".github/workflows/positive-pwn-request.yml",
+      "code": "name: preview\non:\n  pull_request_target:\n    types: [opened, synchronize]\njobs:\n  preview:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n          ref: ${{ github.event.pull_request.head.sha }}\n      - run: echo done\n"
+    },
+    {
+      "id": "cwe-829.gha-pwn-request-checkout-head-ref",
+      "expect": "finding",
+      "rule": "cwe-829.gha-pwn-request-checkout",
+      "path": ".github/workflows/positive-pwn-request-head-ref.yml",
+      "code": "on:\n  pull_request_target:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - name: co\n        uses: \"actions/checkout@v4\"\n        with:\n          ref: ${{ github.head_ref }}\n"
+    },
+    {
+      "id": "pwn-request-ref-under-another-action",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-829.gha-pwn-request-checkout"
+      ],
+      "path": ".github/workflows/negative-pwn-request-other-action.yml",
+      "code": "on:\n  pull_request_target:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Wait\n        uses: tomchv/wait-my-workflow@v1.1.0\n        with:\n          ref: ${{ github.event.pull_request.head.sha || github.sha }}\n",
+      "note": "The google/slo-generator shape from workflow-tampering-2026-09.md: the untrusted `ref:` is an input to a different action, not to `actions/checkout`. The older checkout rule still reports it; this rule asks for the step and must not."
+    },
+    {
+      "id": "pwn-request-repaired-to-base-sha",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-829.gha-pwn-request-checkout",
+        "cwe-829.gha-untrusted-checkout-privileged-trigger"
+      ],
+      "path": ".github/workflows/negative-pwn-request-base-sha.yml",
+      "code": "name: preview\non:\n  pull_request_target:\n    types: [opened, synchronize]\njobs:\n  preview:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n          ref: ${{ github.event.pull_request.base.sha }}\n      - run: echo done\n",
+      "note": "The `workflow_hardening` repair of the pwn request fixture: `ref:` names the base revision. Both checkout rules must go silent on it, or the static assertion could never prove the repair."
+    },
+    {
+      "id": "pwn-request-repaired-by-dropping-ref",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-829.gha-pwn-request-checkout",
+        "cwe-829.gha-untrusted-checkout-privileged-trigger"
+      ],
+      "path": ".github/workflows/negative-pwn-request-no-ref.yml",
+      "code": "name: preview\non:\n  pull_request_target:\n    types: [opened, synchronize]\njobs:\n  preview:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n      - run: echo done\n",
+      "note": "The `workflow_run` form of the repair: the `ref:` line is removed and the checkout falls back to the default branch."
+    },
+    {
+      "id": "pwn-request-on-push",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-829.gha-pwn-request-checkout"
+      ],
+      "path": ".github/workflows/negative-pwn-request-push.yml",
+      "code": "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n",
+      "note": "Same checkout under `push`: no privileged trigger, nothing to report."
+    },
+    {
+      "id": "cwe-829.gha-untrusted-artifact-executed",
+      "expect": "finding",
+      "rule": "cwe-829.gha-untrusted-artifact-executed",
+      "path": ".github/workflows/positive-artifact-executed.yml",
+      "code": "name: report\non:\n  workflow_run:\n    workflows: [ci]\n    types: [completed]\njobs:\n  report:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/download-artifact@v4\n        with:\n          name: pr\n          path: pr-out\n          run-id: ${{ github.event.workflow_run.id }}\n          github-token: ${{ secrets.GITHUB_TOKEN }}\n      - name: post\n        run: bash pr-out/post.sh\n"
+    },
+    {
+      "id": "cwe-829.gha-untrusted-artifact-executed-block-install",
+      "expect": "finding",
+      "rule": "cwe-829.gha-untrusted-artifact-executed",
+      "path": ".github/workflows/positive-artifact-executed-block.yml",
+      "code": "on:\n  workflow_run:\n    workflows: [ci]\n    types: [completed]\njobs:\n  report:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/download-artifact@v4\n        with:\n          name: bundle\n          path: ./dist\n      - name: install and run\n        run: |\n          cd dist && npm ci\n      - name: go\n        run: |\n          echo hi\n          node dist/index.js\n"
+    },
+    {
+      "id": "artifact-read-as-data",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-829.gha-untrusted-artifact-executed"
+      ],
+      "path": ".github/workflows/negative-artifact-read-as-data.yml",
+      "code": "on:\n  workflow_run:\n    workflows: [ci]\n    types: [completed]\njobs:\n  report:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/download-artifact@v4\n        with:\n          name: coverage\n          path: coverage\n      - name: summarize\n        run: |\n          python scripts/summarize.py coverage/lcov.info\n          cat coverage/summary.txt\n",
+      "note": "The legitimate `workflow_run` shape: the artifact is passed as an argument to a script from the trusted checkout. Only an execution of a path under the download's `path:` is claimed."
+    },
+    {
+      "id": "cwe-494.gha-remote-script-piped-to-shell",
+      "expect": "finding",
+      "rule": "cwe-494.gha-remote-script-piped-to-shell",
+      "path": ".github/workflows/positive-remote-script.yml",
+      "code": "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: curl -fsSL https://example.com/install.sh | sudo bash\n      - run: |\n          set -e\n          wget -qO- https://example.com/i.sh | sh -s -- -y\n      - shell: pwsh\n        run: iwr https://example.com/i.ps1 -UseBasicParsing | iex\n"
+    },
+    {
+      "id": "remote-download-not-executed",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-494.gha-remote-script-piped-to-shell"
+      ],
+      "path": ".github/workflows/negative-remote-download.yml",
+      "code": "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: curl -fsSL https://example.com/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/x.gpg\n      - run: |\n          curl -fsSLo install.sh https://example.com/install.sh\n          echo \"abc123  install.sh\" | sha256sum -c -\n          sh install.sh\n      - run: curl -s https://api.example.com/x | jq .name\n      - run: curl -L https://example.com/x.tgz | tar xz\n",
+      "note": "Pipes into gpg, jq and tar, and a script downloaded to a file and checked against a checksum before it runs. None of them executes the stream."
+    },
+    {
+      "id": "cwe-732.gha-write-grant-on-pull-request-target",
+      "expect": "finding",
+      "rule": "cwe-732.gha-write-grant-on-pull-request-target",
+      "path": ".github/workflows/positive-write-grant-target.yml",
+      "code": "name: label\non:\n  pull_request_target:\n    types: [opened]\npermissions:\n  contents: write\n  pull-requests: write\njobs:\n  label:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+    },
+    {
+      "id": "write-grant-repaired",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-732.gha-write-grant-on-pull-request-target"
+      ],
+      "path": ".github/workflows/negative-write-grant-dropped.yml",
+      "code": "name: label\non:\n  pull_request_target:\n    types: [opened]\npermissions:\n  pull-requests: write\njobs:\n  label:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+      "note": "The `workflow_hardening` repair of the write grant fixture: the `contents: write` line is removed and `pull-requests: write` stays."
+    },
+    {
+      "id": "write-grant-on-push",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-732.gha-write-grant-on-pull-request-target"
+      ],
+      "path": ".github/workflows/negative-write-grant-push.yml",
+      "code": "on: push\npermissions:\n  contents: write\n  id-token: write\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+      "note": "Write grants on `push`, which no contributor can fire."
     }
   ]
 }

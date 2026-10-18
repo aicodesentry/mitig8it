@@ -428,6 +428,31 @@ rules:
         - pattern: $Z.extractAllTo(...)
         - pattern: $Z.extractAllToAsync(...)
         - pattern: $Z.extractEntryTo(...)
+        # The destination built by concatenation instead of `path.join`, and the entry name
+        # read into a local first. juice-shop's `extractZipBuffer` is both at once:
+        # `const fileName = entry.path` and then `createWriteStream('uploads/complaints/' +
+        # fileName)`, which none of the patterns above reach.
+        #
+        # `.path` is not only an archive property, so these branches also require the object
+        # to be named for what it is. Without that, `const p = options.path` followed by a
+        # write under a log directory would be reported as an archive entry. The constraint
+        # is nested in this branch for the reason given on the sendFile rule above.
+        - patterns:
+          - pattern-either:
+            - pattern: fs.createWriteStream($DEST + $ENTRY.path, ...)
+            - pattern: fs.writeFileSync($DEST + $ENTRY.path, ...)
+            - patterns:
+              - pattern-inside: |
+                  $NAME = $ENTRY.path
+                  ...
+              - pattern-either:
+                - pattern: fs.createWriteStream($DEST + $NAME, ...)
+                - pattern: fs.writeFileSync($DEST + $NAME, ...)
+                - pattern: fs.createWriteStream(path.join($DEST, $NAME), ...)
+                - pattern: fs.writeFileSync(path.join($DEST, $NAME), ...)
+          - metavariable-regex:
+              metavariable: $ENTRY
+              regex: "(?i)^\\w*(entry|member|header)\\w*$"
     message: "Archive entry name used as a write path. A `../` entry escapes the destination directory"
     severity: WARNING
     languages: [javascript, typescript]
@@ -438,6 +463,72 @@ rules:
       internal_type: "path_traversal"
       family: "path_containment"
       confidence: "0.78"
+      posting: post
+
+  - id: cwe-22.js-path-resolve-request-value
+    patterns:
+      # A single-argument resolve or normalize of a request value has no base at all: the
+      # request chooses the whole path, absolute paths included, so no later comparison
+      # against a base can be what the code meant. The joins against a base are left to the
+      # sink rules above, where a containment check can still follow.
+      - pattern-either:
+        - pattern: path.resolve(req.$SRC.$P)
+        - pattern: path.resolve(req.$SRC[$K])
+        - pattern: path.normalize(req.$SRC.$P)
+        - pattern: path.normalize(req.$SRC[$K])
+      - metavariable-regex:
+          metavariable: $SRC
+          regex: "^(body|query|params)$"
+    message: "Path taken whole from request input, with no base directory. Resolve it against a fixed base and reject anything outside it"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.80"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-10: 1 finding over 23 repositories, adjudicated by label
+        and true (juice-shop routes/dataErasure.ts, the local file read challenge), precision 1.00.
+        Written from that label, so this is in-sample; under the three adjudicated findings the
+        posting policy asks for.
+      posting: post
+
+  - id: cwe-22.js-render-request-object-locals
+    patterns:
+      # The whole request body or query string handed to the view engine as its locals.
+      # Express merges locals with the render options, so the request can set `layout`
+      # (hbs and express-handlebars read any file as the layout), `settings` and the
+      # engine's own options. Passing named fields is not matched: `{ name: req.body.name }`
+      # cannot carry an option the code did not write.
+      - pattern-either:
+        - pattern: $RES.render($VIEW, req.$SRC, ...)
+        - pattern: $RES.render($VIEW, {..., ...req.$SRC, ...}, ...)
+        - patterns:
+          - pattern-inside: |
+              $LOCALS = req.$SRC
+              ...
+          - pattern: $RES.render($VIEW, $LOCALS, ...)
+      - metavariable-regex:
+          metavariable: $SRC
+          regex: "^(body|query)$"
+    message: "Request object passed whole as view locals. The request can then set `layout` and other view options, which reads files outside the views directory. Pass the named fields the view needs"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      confidence: "0.80"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-10: 3 findings over 23 repositories, 1 adjudicated by
+        label (nodejs-goof routes/index.js, the handlebars layout file read) and 2 hand-read and
+        true (juice-shop routes/dataErasure.ts lines 107 and 123, both branches of the local file
+        read challenge spread `req.body` into the locals), precision 1.00. Written from the goof
+        label, so in-sample.
       posting: post
 
   # ── SSRF ───────────────────────────────────────────────────────────────
