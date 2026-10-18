@@ -277,3 +277,77 @@ def test_a_finding_off_the_diff_is_named_in_the_review_body(tmp_path):
     assert "`cwe-95.eval-injection`" in body
     assert f"https://github.com/acme/widgets/blob/{HEAD}/app/routes/error.js#L10" in body
     assert "app/routes/error.js:10" in body
+
+
+# --- the envelope is a function of the run's subject, not of the run ------------------------
+
+def test_two_runs_over_the_same_head_build_the_same_envelope_digest():
+    """A re-run must not rewrite a fix comment whose suggestion text has not moved.
+
+    `action_id` was `uuid4` per run and `manifest_digest` binds it, so the same set of fixes got a
+    different digest every time. The trial saw the consequence on pygoat: a commit that touched
+    only the README rewrote two fix comments
+    (`docs/validation/action-trial-2026-09.md`, "The findings are not stable between runs on
+    identical code").
+    """
+    first = a_request(SECTIONS)
+    second = a_request(SECTIONS)
+
+    assert first["action_id"] == second["action_id"]
+    assert first["manifest_digest"] == second["manifest_digest"]
+    assert first["idempotency_key"] == second["idempotency_key"]
+
+
+def test_a_different_head_builds_a_different_envelope_digest():
+    """Stability is not a constant: the envelope still has to identify what it published."""
+    same_head = a_request(SECTIONS)
+    other_head = run.build_publish_request(
+        token="ghs-token",
+        repository="acme/widgets",
+        pr_number=7,
+        head_sha="c" * 40,
+        base_sha=BASE,
+        installation_id=42,
+        actor_login="octocat",
+        counts=COUNTS,
+        findings=2,
+        fix_sections=SECTIONS,
+        inline_comments=[],
+        model_configured=False,
+        conclusion="failure",
+    )
+
+    assert other_head["action_id"] != same_head["action_id"]
+    assert other_head["manifest_digest"] != same_head["manifest_digest"]
+
+
+def test_changing_a_fix_changes_the_envelope_digest_on_the_same_head():
+    """The digest binds the ordered set of fixes, which is the property it exists for."""
+    baseline = a_request(SECTIONS)
+    edited = [dict(SECTIONS[0], unified_diff=SECTIONS[0]["unified_diff"] + "+ one more line\n"), SECTIONS[1]]
+
+    assert a_request(edited)["manifest_digest"] != baseline["manifest_digest"]
+    # Same fixes, reversed, is a different publish and says so.
+    assert a_request(list(reversed(SECTIONS)))["manifest_digest"] != baseline["manifest_digest"]
+
+
+def test_a_supplied_action_id_is_still_honoured():
+    """The caller may name the run; the derivation is only the default."""
+    assert a_request(SECTIONS)["action_id"].startswith("action-")
+    supplied = run.build_publish_request(
+        token="ghs-token",
+        repository="acme/widgets",
+        pr_number=7,
+        head_sha=HEAD,
+        base_sha=BASE,
+        installation_id=42,
+        actor_login="octocat",
+        counts=COUNTS,
+        findings=2,
+        fix_sections=SECTIONS,
+        inline_comments=[],
+        model_configured=False,
+        conclusion="failure",
+        action_id="job-from-the-app",
+    )
+    assert supplied["action_id"] == "job-from-the-app"
