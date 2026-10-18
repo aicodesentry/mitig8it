@@ -37,6 +37,7 @@ from secret_detection import (
     secret_findings,
 )
 import static_assertion
+from dependency_diff import POSTING as DEPENDENCY_DIFF_POSTING, dependency_diff_findings
 from llm_client import redact
 from llm_triage import triage_findings
 from remediation_patches import build_remediation_patch
@@ -157,6 +158,11 @@ QUARANTINED_RULE_IDS = frozenset(
     | {
         rule_id
         for rule_id, posting in SECRET_DETECTOR_POSTING.items()
+        if posting == SECRET_POSTING_QUARANTINE
+    }
+    | {
+        rule_id
+        for rule_id, posting in DEPENDENCY_DIFF_POSTING.items()
         if posting == SECRET_POSTING_QUARANTINE
     }
 )
@@ -448,6 +454,9 @@ def pattern_findings(
         # README as much as in a module.
         file_secret_findings = secret_findings(path, patch, content)
         findings.extend(file_secret_findings)
+        # Newly added lockfile entries. Quarantined, so these are counted and withheld by
+        # `partition_by_posting_policy` like any other quarantined rule's output.
+        findings.extend(dependency_diff_findings(path, patch, content))
 
         rules_run = 0
         for rule in SECURITY_RULES:

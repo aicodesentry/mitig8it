@@ -262,6 +262,46 @@ def test_the_gate_uses_the_tested_script_rather_than_its_own_regex(workflow):
     assert "scripts/release-changelog.py check" in runs
 
 
+def test_the_gate_asks_about_both_workflows_and_not_three_fragments(workflow):
+    """The names are data for a shell loop, so the test runs the loop instead of reading it.
+
+    This gate shipped asking about "CI", "Action" and "image". `required='CI Action image'`
+    expanded unquoted splits on whitespace, and "Action image" is one workflow whose name
+    contains a space, so the loop asked about two workflows that do not exist, got "none"
+    for both, and refused every release including a dry run. Nothing caught it, because the
+    tests around it assert on step names and the bug was in the word splitting.
+    """
+    steps = [s for s in steps_of(workflow, "gate") if "passed on this commit" in str(s.get("name", ""))]
+    assert len(steps) == 1, "expected exactly one step checking the other workflows"
+    body = str(steps[0]["run"])
+
+    # Replace the loop body with an echo, so what runs is the real assignment and the real
+    # expansion and nothing else.
+    lines = body.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith("required="))
+    end = next(i for i, line in enumerate(lines) if line.strip().startswith("for workflow in"))
+    script = "\n".join(lines[start:end + 1]) + '\n  printf "%s\\n" "${workflow}"\ndone\n'
+
+    completed = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=True,
+    )
+    assert completed.stdout.split("\n")[:-1] == ["CI", "Action image"], (
+        f"the gate iterates {completed.stdout.splitlines()!r}, which is not the two workflow "
+        "names. A workflow name containing a space has to survive the expansion."
+    )
+
+
+def test_the_two_names_the_gate_waits_for_are_real_workflows():
+    """A gate that waits on a workflow nobody named waits forever."""
+    names = set()
+    for path in sorted((REPO_ROOT / ".github/workflows").glob("*.yml")):
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict) and loaded.get("name"):
+            names.add(str(loaded["name"]))
+    for required in ("CI", "Action image"):
+        assert required in names, f"the gate waits for a workflow named {required!r}, which does not exist"
+
+
 def test_nothing_is_published_before_the_suites_have_run(workflow):
     """"Refuse to release if the tests have not passed" has to be an ordering, not a hope."""
     steps = steps_of(workflow, "release")

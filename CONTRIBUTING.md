@@ -64,6 +64,11 @@ The bigger measurements are not in `make bench`, because they download and analy
 repositories and replay 165 pull requests against the GitHub API. Their commands are in
 `benchmarks/vulnerable-corpus/README.md` and `scripts/replay/README.md`.
 
+One of them is a gate: `make recall-ratchet` scans the 23 corpus trees and fails if a labelled
+vulnerability that was detected is no longer detected. CI runs it on pull requests that touch the
+rules. If a rule change of yours gains or deliberately loses a label, run `make recall-baseline`
+and commit `benchmarks/vulnerable-corpus/recall-baseline.json` with it.
+
 ## Adding a rule
 
 A rule is not merged because its pattern looks right. It is merged with a measurement, and the

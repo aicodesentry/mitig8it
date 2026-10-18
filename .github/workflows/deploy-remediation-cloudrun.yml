@@ -102,6 +102,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -109,7 +110,7 @@ jobs:
       # A push to main is never a request to change the sandbox, so it takes the default.
       SANDBOX_DRIVER: ${{ inputs.sandbox_driver || 'local' }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       # Everything downstream reads $SERVICE and $SECRET_SUFFIX, so the difference
       # between production and staging lives in exactly one step.
@@ -210,7 +211,13 @@ jobs:
       # The driver compares the digest each task reads back from the Cloud Run Admin API against
       # SANDBOX_IMAGE_DIGEST and refuses the run on any disagreement, so the job and the service
       # have to be pointed at the same digest in that order: update the job first, then deploy
-      # the service with the digest that update produced.
+      # the service with the digest that update produced. The staged deploy below widens
+      # the gap between those two: the job carries the new digest while the revision that
+      # is still serving carries the old one, so for as long as the candidate is being
+      # checked, a sandbox run started by the serving revision is refused. That only
+      # happens under SANDBOX_DRIVER=cloud_run_job, which a push to main never selects,
+      # and the same disagreement is what docs/runbooks/rollback.md section 3 says to
+      # repair by hand after a rollback.
       - name: Point the sandbox job at the new digest
         if: env.SANDBOX_DRIVER == 'cloud_run_job'
         shell: bash
@@ -251,11 +258,64 @@ jobs:
           fi
           echo "SERVICE_ENV_VARS=${VARS}" >> "$GITHUB_ENV"
 
+      # Where traffic points right now, so the promote below has somewhere to put it
+      # back. The entry that actually carries traffic, not the newest revision: after a
+      # promote that failed halfway those are different revisions.
+      - name: Record the serving revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Existence is read from a list and not from a failing describe, because describe
+          # fails the same way for a service that is absent and for a credential that
+          # cannot read it, and reading the second as a first deploy would quietly send
+          # this revision straight to traffic with no gate at all.
+          gcloud run services list \
+            --region '${{ vars.GCP_REGION }}' \
+            --project '${{ vars.GCP_PROJECT_ID }}' \
+            --format='value(metadata.name)' > "$RUNNER_TEMP/services.txt"
+          if ! grep -Fxq "$SERVICE" "$RUNNER_TEMP/services.txt"; then
+            # deploy-staging.yml creates services from scratch, and --no-traffic on a
+            # service with no other revision would leave it serving nothing at all, so a
+            # first deploy takes traffic the way every deploy used to and has no promote
+            # step to reach.
+            {
+              echo "FIRST_DEPLOY=true"
+              echo "PREVIOUS_REVISION="
+            } >> "$GITHUB_ENV"
+            echo "$SERVICE does not exist yet. It is created serving, and smoked afterwards."
+            exit 0
+          fi
+          gcloud run services describe "$SERVICE" \
+            --region '${{ vars.GCP_REGION }}' \
+            --project '${{ vars.GCP_PROJECT_ID }}' \
+            --format=json > "$RUNNER_TEMP/service-before.json"
+          PREVIOUS_REVISION=$(jq -r '
+            [.status.traffic[]? | select(.revisionName != null and (.percent // 0) > 0)]
+            | sort_by(.percent) | last | .revisionName // ""' "$RUNNER_TEMP/service-before.json")
+          {
+            echo "FIRST_DEPLOY=false"
+            echo "PREVIOUS_REVISION=$PREVIOUS_REVISION"
+          } >> "$GITHUB_ENV"
+          echo "$SERVICE is serving ${PREVIOUS_REVISION:-no revision this job can name}."
+
       # One instance, one concurrent request: the local execution store is a per-instance
       # SQLite file. With SANDBOX_DRIVER=local the sandbox also runs checks on this container's
       # CPU; with cloud_run_job the checks run elsewhere and this container only waits on them.
       - name: Deploy repair service
+        shell: bash
         run: |
+          set -euo pipefail
+          # The revision is created without traffic and reachable only through the
+          # `candidate` tag, so the checks below run against the new code before anybody
+          # is served by it. This is not about a revision that cannot start: gcloud
+          # already waits for Ready and fails the deploy without moving traffic. It is
+          # about the application-level checks, which until now ran after the fact. The
+          # tag is the literal string `candidate` in every service, so it never
+          # accumulates: each deploy replaces it and the promote removes it.
+          STAGE=()
+          if [ "$FIRST_DEPLOY" != "true" ]; then
+            STAGE+=(--no-traffic --tag candidate)
+          fi
           gcloud run deploy "$SERVICE" \
             --image "$IMAGE" \
             --region '${{ vars.GCP_REGION }}' \
@@ -275,18 +335,105 @@ jobs:
               REPAIR_LLM_API_KEY=codesentry-repair-llm-api-key${SECRET_SUFFIX}:latest,\
               REPAIR_LLM_MODEL=codesentry-repair-llm-model${SECRET_SUFFIX}:latest" \
             --port 8002 \
-            --no-allow-unauthenticated
+            --no-allow-unauthenticated \
+            "${STAGE[@]}"
 
-      - name: Smoke (authenticated /health)
+      # Everything below this point reads the candidate, never the service URL, because
+      # the service still answers from the old revision until the promote. On a first
+      # deploy there is no tag and the service URL is the new revision, which is the
+      # same thing.
+      - name: Resolve the candidate
         shell: bash
         run: |
           set -euo pipefail
-          URL=$(gcloud run services describe "$SERVICE" \
+          DESCRIBED=$(gcloud run services describe "$SERVICE" \
             --region '${{ vars.GCP_REGION }}' \
             --project '${{ vars.GCP_PROJECT_ID }}' \
-            --format='value(status.url)')
-          TOKEN=$(gcloud auth print-identity-token --audiences="$URL")
-          curl -sfS --connect-timeout 15 --max-time 45 -H "Authorization: Bearer ${TOKEN}" "${URL}/health"
+            --format=json)
+          if [ "$FIRST_DEPLOY" = "true" ]; then
+            CANDIDATE_REVISION=$(jq -r '.status.latestCreatedRevisionName // ""' <<<"$DESCRIBED")
+            SMOKE_URL=$(jq -r '.status.url // ""' <<<"$DESCRIBED")
+          else
+            # Read the revision out of the tag itself rather than trusting
+            # latestCreatedRevisionName, so the checks and the name they report are the
+            # same revision the tag resolves to.
+            CANDIDATE=$(jq -c '
+              [.status.traffic[]? | select(.tag == "candidate")] | first // {}
+            ' <<<"$DESCRIBED")
+            CANDIDATE_REVISION=$(jq -r '.revisionName // ""' <<<"$CANDIDATE")
+            SMOKE_URL=$(jq -r '.url // ""' <<<"$CANDIDATE")
+          fi
+          if [ -z "$SMOKE_URL" ] || [ -z "$CANDIDATE_REVISION" ]; then
+            echo "Could not resolve the candidate for $SERVICE: url='${SMOKE_URL}' revision='${CANDIDATE_REVISION}'." >&2
+            echo "Traffic has not been moved. See docs/runbooks/rollback.md." >&2
+            exit 1
+          fi
+          {
+            echo "CANDIDATE_REVISION=$CANDIDATE_REVISION"
+            echo "SMOKE_URL=$SMOKE_URL"
+          } >> "$GITHUB_ENV"
+          echo "Candidate $CANDIDATE_REVISION at $SMOKE_URL"
+
+      - name: Smoke the candidate (authenticated /health)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This service is --no-allow-unauthenticated, so the smoke needs an identity
+          # token, and the audience has to be the host being called. The candidate tag
+          # has its own hostname, so minting the token for the service URL as this step
+          # used to would now produce a token Cloud Run rejects with a 401 that looks
+          # exactly like a broken revision. Audience is $SMOKE_URL for that reason.
+          TOKEN=$(gcloud auth print-identity-token --audiences="$SMOKE_URL")
+          curl -sfS --connect-timeout 15 --max-time 45 -H "Authorization: Bearer ${TOKEN}" "${SMOKE_URL}/health"
+
+      # Reached only when a check above failed. Traffic never moved, so there is nothing
+      # to undo and this step changes nothing; it says where the bad revision is.
+      - name: Report a candidate that failed its checks
+        if: failure() && env.FIRST_DEPLOY == 'false' && env.CANDIDATE_REVISION != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "A check against the candidate revision failed. Traffic was NOT moved."
+            echo "Still serving: ${PREVIOUS_REVISION:-unknown}"
+            echo "Candidate, serving nobody: ${CANDIDATE_REVISION} at ${SMOKE_URL:-unresolved}"
+            echo "The candidate tag is left in place on purpose: it is how you reach that"
+            echo "revision to debug it, and the next deploy replaces it. It needs an"
+            echo "identity token minted for that same candidate URL."
+            echo "See docs/runbooks/rollback.md."
+          } | tee -a "$GITHUB_STEP_SUMMARY" >&2
+          exit 1
+
+      # Only now, with every check green against the candidate. --to-latest hands it all
+      # the traffic and also unpins a service that a rollback left pinned to a named
+      # revision, which is the state section 3 of docs/runbooks/rollback.md warns leaves
+      # deploys looking green while serving old code.
+      - name: Promote the candidate
+        if: env.FIRST_DEPLOY != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gcloud run services update-traffic "$SERVICE" \
+            --region '${{ vars.GCP_REGION }}' \
+            --project '${{ vars.GCP_PROJECT_ID }}' \
+            --to-latest --remove-tags candidate; then
+            exit 0
+          fi
+          # A promote that failed partway can leave traffic split across two revisions,
+          # which is worse than either end of it, so put it back where it was.
+          echo "Promoting ${CANDIDATE_REVISION} failed." >&2
+          if [ -n "${PREVIOUS_REVISION}" ]; then
+            echo "Returning all traffic to ${PREVIOUS_REVISION}." >&2
+            gcloud run services update-traffic "$SERVICE" \
+              --region '${{ vars.GCP_REGION }}' \
+              --project '${{ vars.GCP_PROJECT_ID }}' \
+              --to-revisions "${PREVIOUS_REVISION}=100" \
+              || echo "That failed too. Traffic may be split right now: docs/runbooks/rollback.md section 3." >&2
+          else
+            echo "No previous revision was recorded, so traffic is left as it is: docs/runbooks/rollback.md section 3." >&2
+          fi
+          echo "If this deploy selected SANDBOX_DRIVER=cloud_run_job, the sandbox job is now pointed at a digest the serving revision does not expect: docs/runbooks/rollback.md section 3." >&2
+          exit 1
 
       - name: State which sandbox this revision uses
         shell: bash

@@ -49,7 +49,7 @@ from opengrep_runner import (
     scanner_available,
 )
 from security_rules import SECURITY_RULES
-from test_code_scope import SUPPORTED_EXTENSIONS, is_analyzable_path
+from test_code_scope import is_analyzable_path, is_tier2_scannable_path
 
 # The sentence the evidence has to carry, in these words, wherever a static assertion is
 # recorded or rendered. Clause 5 of the contract is a claim about what did not happen, and a
@@ -137,7 +137,7 @@ def tier2_all_matches(path: str, content: str, *, rule_id: Optional[str] = None)
     already established from `rule_tier` whether the rule that produced the finding is a tier 2
     rule at all.
     """
-    if not is_analyzable_path(path) or Path(path).suffix.lower() not in SUPPORTED_EXTENSIONS:
+    if not tier2_scannable(path):
         return []
     config: Optional[str] = None
     with tempfile.TemporaryDirectory(prefix="mitig8it_assert_") as workdir:
@@ -215,4 +215,11 @@ def match_sets(rule_id: str, path: str, original: str, patched: str) -> Dict[str
 
 
 def tier2_scannable(path: str) -> bool:
-    return is_analyzable_path(path) and Path(path).suffix.lower() in SUPPORTED_EXTENSIONS
+    """The same answer `run_opengrep` gates the scanner on, so an assertion runs where detection did.
+
+    It used to be an extension check, which left out the one tier 2 scope that is a path rather
+    than an extension: `.github/workflows/*.yml`. Every workflow rule was therefore refused as
+    `rule_not_applicable`, and the `workflow_hardening` family, the only family that declares
+    this level, could not have a single repair asserted.
+    """
+    return is_analyzable_path(path) and is_tier2_scannable_path(path)

@@ -27,6 +27,23 @@ from main import (
 from security_rules import POSTING_QUARANTINE, SECURITY_RULES
 
 
+def detector_quarantine() -> set:
+    """The quarantined ids the two non-rule detectors declare beside their own signals.
+
+    `secret_detection.POSTING` and `dependency_diff.POSTING` are declarations in the same sense a
+    rule's `posting:` key is, so the one set is the union of four sources, not two.
+    """
+    from dependency_diff import POSTING as DEPENDENCY_DIFF_POSTING
+    from secret_detection import POSTING as SECRET_POSTING
+
+    return {
+        rule_id
+        for table in (SECRET_POSTING, DEPENDENCY_DIFF_POSTING)
+        for rule_id, posting in table.items()
+        if posting == POSTING_QUARANTINE
+    }
+
+
 def _finding(rule_id: str, line: int = 1) -> dict:
     return {
         "rule_id": rule_id,
@@ -67,7 +84,7 @@ class TestQuarantineSet:
         from opengrep_runner import quarantined_rule_ids
 
         tier1 = {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
-        assert QUARANTINED_RULE_IDS == frozenset(tier1 | set(quarantined_rule_ids()))
+        assert QUARANTINED_RULE_IDS == frozenset(tier1 | set(quarantined_rule_ids()) | detector_quarantine())
 
     def test_at_least_one_rule_is_quarantined_so_the_path_is_exercised(self):
         assert QUARANTINED_RULE_IDS
@@ -195,7 +212,7 @@ class TestLoadedPolicy:
         from security_rules import POSTING_QUARANTINE, SECURITY_RULES
 
         tier1 = {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
-        assert main.QUARANTINED_RULE_IDS == frozenset(quarantined_rule_ids()) | tier1
+        assert main.QUARANTINED_RULE_IDS == frozenset(quarantined_rule_ids()) | tier1 | detector_quarantine()
 
     def test_at_least_one_rule_is_quarantined_so_the_path_is_exercised(self):
         assert main.QUARANTINED_RULE_IDS
