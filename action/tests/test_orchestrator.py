@@ -719,3 +719,51 @@ def test_too_many_files_is_reviewed_to_the_cap_and_says_so():
 def test_a_pull_request_within_the_cap_reports_no_limitation():
     files = [{"filename": "src/a.py", "status": "modified", "patch": "+x"}]
     assert pr_scope.changed_file_limitation(files) is None
+
+
+class _FakeAnalysisMain:
+    """Stands in for the analysis service: returns a fixed response, never starts a scanner."""
+
+    def __init__(self, response):
+        self.response = response
+
+    def AnalyzePRRequest(self, **kwargs):  # noqa: N802 - mirrors the pydantic model's name
+        return kwargs
+
+    def analyze_pull_request_payload(self, request):
+        return self.response
+
+
+MATCH_CAP = {
+    "kind": "match_cap",
+    "path": "bulk/hashes.py",
+    "type": "crypto.weak.hash reported 25 of 40 matches",
+    "message": "crypto.weak.hash reported 25 of 40 matches in bulk/hashes.py",
+}
+
+
+def test_analysis_limitations_reach_the_action_beside_the_findings(monkeypatch):
+    """The action used to keep the findings and drop `analysis_limitations` on the floor."""
+    fake = _FakeAnalysisMain({"findings": [{"rule_id": "crypto.weak.hash"}], "analysis_limitations": [MATCH_CAP]})
+    monkeypatch.setattr(analysis, "_analysis_main", lambda: fake)
+
+    result = analysis.analyze_with_limitations(REPO, 7, HEAD_SHA, [])
+
+    assert result["findings"] == [{"rule_id": "crypto.weak.hash"}]
+    assert result["limitations"] == [MATCH_CAP]
+    assert analysis.analyze(REPO, 7, HEAD_SHA, []) == [{"rule_id": "crypto.weak.hash"}]
+
+
+def test_a_match_ceiling_is_logged_in_the_analysis_service_s_words():
+    lines = run.limitation_log_lines(
+        [
+            MATCH_CAP,
+            dict(MATCH_CAP),
+            {"kind": "budget", "path": "big.py", "message": "tier 1 rule budget exhausted"},
+            {"kind": "partial_parse", "path": "x.py", "message": ""},
+        ]
+    )
+    assert lines == [
+        "Coverage limitation: crypto.weak.hash reported 25 of 40 matches in bulk/hashes.py.",
+        "Coverage limitation: big.py: tier 1 rule budget exhausted.",
+    ]

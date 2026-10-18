@@ -15,8 +15,10 @@ import request_context
 from finding_quality import (
     cluster_findings,
     extract_match_context,
+    find_pattern_match_entries,
     has_path_containment_guard,
     make_fingerprint,
+    parse_patch_entries,
     pattern_matches_reviewable_content,
     # Defined beside the matchers it configures, and re-exported here because both tiers and
     # the static assertion endpoint below read a rule through it.
@@ -110,6 +112,14 @@ QUARANTINED_FINDING_COUNT = Counter(
 DEFAULT_TIER1_BUDGET_SECONDS = 20.0
 DEFAULT_TIER1_FILE_BUDGET_SECONDS = 2.0
 LIMITATION_BUDGET = "budget"
+
+# How many lines one rule may report in one file. A file with fifty weak hashes is fifty
+# findings, each on its own line, and the comment layer rolls them up into one row per rule
+# per file; the ceiling is there so a pathological file cannot flood the response, not so a
+# reviewer sees fewer lines. Past it the rule records a `match_cap` limitation saying how
+# many of how many it reported.
+TIER1_MAX_MATCHES_PER_RULE_PER_FILE = 25
+LIMITATION_MATCH_CAP = "match_cap"
 
 # The substring-search credential rule the secrets detector supersedes. It still runs on the
 # files the detector found nothing in; see `pattern_findings`.
@@ -257,9 +267,22 @@ def _deterministic_fix_metadata(rule, finding: Dict[str, Any], context: Dict[str
     }
 
 
-def generate_finding(rule, file_path: str, patch: str, content: str = "") -> Dict[str, Any]:
+def generate_finding(
+    rule,
+    file_path: str,
+    patch: str,
+    content: str = "",
+    *,
+    match_entry: Dict[str, Any] | None = None,
+    entries: List[Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
+    """One finding for `rule` at `match_entry`, or at the rule's first match when none is given."""
     context = extract_match_context(
-        patch, rule.pattern, **rule_scan_options(rule, file_path, content)
+        patch,
+        rule.pattern,
+        match_entry=match_entry,
+        entries=entries,
+        **rule_scan_options(rule, file_path, content),
     )
     taxonomy = build_taxonomy_metadata(
         rule_id=rule.rule_id,
@@ -378,6 +401,13 @@ def pattern_findings(
     and a per-file cap (`TIER1_FILE_BUDGET_SECONDS`, 2 s). Exceeding either stops that
     much of the work and appends a `budget` limitation; the findings already made are
     kept, because a partial tier 1 that says so is worth more than a blown deadline.
+
+    A rule reports every line it matches in a file, one finding per line, up to
+    `TIER1_MAX_MATCHES_PER_RULE_PER_FILE`. Past that it appends a `match_cap` limitation
+    naming how many of how many it reported. The ceiling is a bound on the response, not
+    a statement about the file: until October 2026 a rule reported its first match only,
+    which cost nine of the vulnerable corpus's 171 labels (the CVE was at the eighth
+    weak hash in `enrocrypt/hashing.py` and the rule had stopped at the first).
     """
     findings: List[Dict[str, Any]] = []
     repo_has_llm_flow = any(likely_llm_repo(f.path, f.patch) for f in scannable_files)
@@ -414,6 +444,9 @@ def pattern_findings(
 
         non_code_text = is_non_code_text_path(path)
         file_started = time.monotonic()
+        # Parsed once per file: the parse (and the comment stripping it carries) depends on
+        # the file, not on the rule, and every rule below reads the same entries.
+        entries = parse_patch_entries(patch, path, content)
 
         # Secrets first, because the legacy credential regex defers to them. The detector
         # reads the added lines only and owns its own path scoping, so it is not filtered by
@@ -456,19 +489,53 @@ def pattern_findings(
             if rule.category == "unsafe LLM/prompt injection patterns" and not repo_has_llm_flow:
                 continue
             options = rule_scan_options(rule, path, content)
-            if not pattern_matches_reviewable_content(patch, rule.pattern, **options):
-                continue
-            if rule.category == "path traversal" and has_path_containment_guard(
-                patch, rule.pattern, **options
+            matches = find_pattern_match_entries(patch, rule.pattern, entries=entries, **options)
+            if rule.category == "path traversal":
+                # A read that resolves the candidate path and rejects anything outside the
+                # base directory is what the taint rule accepts as a sanitizer. Each read is
+                # judged on its own guard, not on the first read's.
+                matches = [
+                    match
+                    for match in matches
+                    if not has_path_containment_guard(
+                        patch, rule.pattern, match_entry=match, entries=entries, **options
+                    )
+                ]
+            for match in matches[:TIER1_MAX_MATCHES_PER_RULE_PER_FILE]:
+                findings.append(
+                    generate_finding(rule, path, patch, content, match_entry=match, entries=entries)
+                )
+            # A quarantined rule's findings never reach a reviewer, so a ceiling on them is
+            # not a gap in what the reviewer was told and saying so would only be noise.
+            if (
+                len(matches) > TIER1_MAX_MATCHES_PER_RULE_PER_FILE
+                and rule.rule_id not in QUARANTINED_RULE_IDS
             ):
-                # The read resolves the candidate path and rejects anything outside the
-                # base directory, which is what the taint rule accepts as a sanitizer.
-                continue
-            findings.append(generate_finding(rule, path, patch, content))
+                _record_limitation(
+                    limitations,
+                    match_cap_limitation(rule.rule_id, path, len(matches)),
+                )
 
         findings.extend(dependency_findings(path, patch))
 
     return findings
+
+
+def match_cap_limitation(rule_id: str, path: str, matched: int) -> Dict[str, Any]:
+    """The limitation recorded when a rule matched more lines in one file than it reported.
+
+    Same `{kind, path, message}` shape as the budget and scanner limitations, so it travels in
+    `analysis_limitations` and reaches the check summary through the same channel as
+    `Reviewed 200 of N changed files`. `type` is the short form the summary line prints next
+    to the file name.
+    """
+    reported = TIER1_MAX_MATCHES_PER_RULE_PER_FILE
+    return {
+        "kind": LIMITATION_MATCH_CAP,
+        "path": path,
+        "type": f"{rule_id} reported {reported} of {matched} matches",
+        "message": f"{rule_id} reported {reported} of {matched} matches in {path}",
+    }
 
 
 def _record_limitation(limitations: List[Dict[str, Any]] | None, limitation: Dict[str, Any]) -> None:
@@ -581,8 +648,8 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         "findings": normalized,
         "quarantined_findings": quarantined_counts_by_rule(quarantined),
         # Both tiers report coverage gaps in the same {kind, path, message} shape: tier 1
-        # when it hits its per-file rule budget, tier 2 when the scanner could not fully
-        # read a file or hit a resource ceiling.
+        # when it hits its per-file rule budget or a rule's per-file match ceiling, tier 2
+        # when the scanner could not fully read a file or hit a resource ceiling.
         "analysis_limitations": limitations,
     }
 

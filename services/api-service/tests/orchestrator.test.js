@@ -119,6 +119,46 @@ describe('PR Analysis Orchestrator — pure functions', () => {
     );
   });
 
+  test('one rule on many lines of one file is one row naming the line count', () => {
+    const { __private } = require('../src/services/prAnalysisOrchestrator');
+    const csrf = (line) => ({
+      severity: 'medium', rule_id: 'opengrep.cwe-352.py-csrf-exempt', file_path: 'introduction/views.py', line_start: line,
+    });
+    const repository = { owner: 'acme', repo: 'widgets', commitSha: 'a'.repeat(40) };
+    const findings = [
+      csrf(12), csrf(40),
+      { severity: 'high', rule_id: 'crypto.weak.hash', file_path: 'introduction/views.py', line_start: 20 },
+      csrf(70),
+      { ...csrf(5), file_path: 'other/views.py' },
+    ];
+    const text = __private.buildUnanchoredSection(findings, repository).join('\n');
+    const rows = text.split('\n').filter((line) => /^\| (critical|high|medium|low) /.test(line));
+
+    expect(text).toContain('#### Findings on lines this pull request did not change (5)');
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toContain('`opengrep.cwe-352.py-csrf-exempt`');
+    expect(rows[0]).toContain('introduction/views.py, 3 lines: ');
+    for (const line of [12, 40, 70]) {
+      expect(rows[0]).toContain(`[${line}](https://github.com/acme/widgets/blob/${'a'.repeat(40)}/introduction/views.py#L${line})`);
+    }
+    expect(rows[1]).toContain('introduction/views.py:20');
+    expect(rows[2]).toContain('other/views.py:5');
+    expect(text).not.toContain('not listed here');
+  });
+
+  test('the row cap counts rows, and the findings beyond it are counted', () => {
+    const { __private } = require('../src/services/prAnalysisOrchestrator');
+    const findings = [];
+    for (let file = 0; file < 52; file += 1) {
+      for (let line = 1; line <= 2; line += 1) {
+        findings.push({ severity: 'low', rule_id: 'r', file_path: `f${file}.py`, line_start: line });
+      }
+    }
+    const text = __private.buildUnanchoredSection(findings, null).join('\n');
+    expect(text.split('\n').filter((line) => line.startsWith('| low'))).toHaveLength(50);
+    expect(text).toContain('4 further findings not listed here.');
+  });
+
   test('the section is absent when every finding reached the diff', () => {
     const { __private } = require('../src/services/prAnalysisOrchestrator');
     const body = __private.buildReviewBody(
