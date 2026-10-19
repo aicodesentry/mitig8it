@@ -30,7 +30,7 @@ back something the module calls later, so no data parser stands in for it).
 - `src/agent`: a real configurable OpenAI-compatible provider adapter and a schema-constrained loop capped by tool and candidate-attempt budgets.
 - `src/grouping.py`: connected components of findings over shared file paths, so one bounded agent loop runs per group.
 - `src/families.py`: the five repair families, the two languages, the extension map, and the harness assertion each family is proven by.
-- `src/gates.py`: the static per-finding gates that abstain before any agent runs (`pg_dependency_not_proven`, `shell_pipeline_unsupported`, `ambiguous_query_api`, `dynamic_code_unsupported`).
+- `src/gates.py`: the static per-finding gates that abstain before any agent runs (`pg_dependency_not_proven`, `shell_pipeline_unsupported`, `ambiguous_query_api`, `dynamic_code_unsupported`, `model_authored_command`).
 - `src/sites.py`: derives the enclosing site over the exact snapshot. It prefers the request handler that encloses the finding and falls back to the function, class or object method, or `exports.name` binding that does, on either language, with its untrusted inputs. It raises `SiteError` rather than guessing.
 - `src/proofs.py`: generates one deterministic harness regression test per supported finding from that site, before any model call.
 - `src/templates.py`: generates a deterministic hunk per family from the recognized textual shape at the finding, and combines the group's template hunks into one bundle. It declines a shape it does not recognize.

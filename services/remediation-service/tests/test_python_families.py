@@ -450,3 +450,18 @@ def test_python_groups_get_the_python_prompt_and_tools(request_payload):
     assert tests["items"]["properties"]["path"]["description"].endswith(".test.py'.")
     javascript = next(tool for tool in tool_definitions() if tool["function"]["name"] == "propose_patch")
     assert "require('../harness')" in javascript["function"]["parameters"]["properties"]["regression_tests"]["description"]
+
+
+def test_a_shell_command_a_language_model_wrote_is_refused_rather_than_split(request_payload):
+    """`subprocess.run([answer])` would pass the argv proof and still run whatever the model chose."""
+    source = (
+        "import subprocess\nfrom openai import OpenAI\n\nclient = OpenAI()\n\n\n"
+        "def fix_build(log):\n    command = client.responses.create(model=\"gpt-5\", input=log).output_text\n"
+        "    subprocess.run(command, shell=True)\n"
+    )
+    snapshot = _snapshot(request_payload, [("fix.py", source)])
+    finding = _finding(file_path="fix.py", line_start=9, line_end=9, rule_id="opengrep.cwe-78.py-llm-output-shell")
+    code, message = static_gate(snapshot, finding, COMMAND_ARGUMENTS, PYTHON)
+    assert code == "model_authored_command" and "allowlist" in message
+    ordinary = _finding(file_path="fix.py", line_start=9, line_end=9, rule_id="opengrep.cwe-78.py-subprocess-shell-interpolated")
+    assert static_gate(snapshot, ordinary, COMMAND_ARGUMENTS, PYTHON) is None
