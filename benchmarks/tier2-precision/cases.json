@@ -563,6 +563,22 @@
       "code": "from flask import redirect, request\n\n\ndef go():\n    return redirect(request.args.get(\"next\"))\n"
     },
     {
+      "id": "cwe-601.py-redirect-request-value.django",
+      "expect": "finding",
+      "rule": "cwe-601.py-redirect-request-value",
+      "path": "positive/cwe-601_py-redirect-request-value_django.py",
+      "code": "from django.shortcuts import redirect\n\n\ndef after_export(request):\n    return redirect(request.GET.get(\"next\", \"/inventory/\"))\n"
+    },
+    {
+      "id": "cwe-601.py-redirect-request-value.django-checked",
+      "expect": "no-finding",
+      "path": "negative/cwe-601_py-redirect-request-value_django_checked.py",
+      "code": "from django.shortcuts import redirect\nfrom django.utils.http import url_has_allowed_host_and_scheme\n\n\ndef after_export(request):\n    target = request.GET.get(\"next\", \"/inventory/\")\n    if not url_has_allowed_host_and_scheme(target, allowed_hosts={request.get_host()}):\n        target = \"/inventory/\"\n    return redirect(target)\n",
+      "rules": [
+        "cwe-601.py-redirect-request-value"
+      ]
+    },
+    {
       "id": "cwe-295.py-requests-verify-false",
       "expect": "finding",
       "rule": "cwe-295.py-requests-verify-false",
