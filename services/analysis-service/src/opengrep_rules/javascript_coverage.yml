@@ -1033,6 +1033,9 @@ rules:
       - metavariable-regex:
           metavariable: $VALUE
           regex: '^(?!(?:test )+junk$)(?!(?:abandon )+(?:about|art)$)[a-z]{3,8}(?: [a-z]{3,8}){11,23}$'
+      # Constant propagation lets `module.exports = { mnemonic }` match the object pattern too;
+      # focusing on the value folds that back onto the literal's own line (test-only#139).
+      - focus-metavariable: $VALUE
     message: "Wallet recovery phrase held as a literal. Anyone with the source controls the wallet"
     severity: ERROR
     languages: [javascript, typescript]
