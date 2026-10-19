@@ -1410,6 +1410,40 @@
       "path": ".github/workflows/negative-write-grant-push.yml",
       "code": "on: push\npermissions:\n  contents: write\n  id-token: write\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
       "note": "Write grants on `push`, which no contributor can fire."
+    },
+    {
+      "id": "cwe-798.js-literal-signing-key",
+      "expect": "finding",
+      "rule": "cwe-798.js-literal-signing-key",
+      "path": "positive/cwe-798_js-literal-signing-key.ts",
+      "code": "import crypto from \"crypto\";\n\n// juice-shop, lib/insecurity.ts:42, a corpus label the name-based rules missed.\nexport const hmac = (data: string) => crypto.createHmac('sha256', 'pa4qacea4VK9t9nGv7yZtwmj').update(data).digest('hex');\n"
+    },
+    {
+      "id": "cwe-798.py-literal-signing-key",
+      "expect": "finding",
+      "rule": "cwe-798.py-literal-signing-key",
+      "path": "positive/cwe-798_py-literal-signing-key.py",
+      "code": "import jwt\n\n\n# pygoat, introduction/mitre.py:169, a corpus label the name-based rules missed.\ndef issue(payload):\n    return jwt.encode(payload, 'csrf_vulneribility', algorithm='HS256')\n"
+    },
+    {
+      "id": "signing-key-from-the-environment-is-not-a-literal",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-798.js-literal-signing-key"
+      ],
+      "path": "negative/signing_key_from_env.ts",
+      "code": "import jwt from \"jsonwebtoken\";\n\nexport const issue = (user: object) => jwt.sign(user, process.env.JWT_SECRET as string, { expiresIn: \"1h\" });\n",
+      "note": "The key is read at run time."
+    },
+    {
+      "id": "signing-key-placeholder-is-not-a-secret",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-798.py-literal-signing-key"
+      ],
+      "path": "negative/signing_key_placeholder.py",
+      "code": "import jwt\n\n\ndef issue(payload, key):\n    jwt.encode(payload, \"changeme\", algorithm=\"HS256\")\n    return jwt.decode(payload, key, algorithms=[\"HS256\"])\n",
+      "note": "A placeholder the value regex refuses, and a key passed as a parameter."
     }
   ]
 }
