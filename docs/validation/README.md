@@ -17,6 +17,7 @@ produced it. Nothing in this directory is an estimate.
 | [guarded-values-2026-09.md](guarded-values-2026-09.md) | Three rules that reported correct code on that same pull request: what each one was actually matching, what withdrew it, and what the change cost on every gate. |
 | [authz-handlers-2026-10.md](authz-handlers-2026-10.md) | Whether a model reading a whole route handler can see a missing ownership or role check, on 30 hand-labelled handlers from four corpus repositories. The fixture and runner are in place; no model has been run, so no number is reported yet. |
 | [families-password-hashing-cookie-flags-2026-10.md](families-password-hashing-cookie-flags-2026-10.md) | The `password_hashing` and `cookie_flags` repair families: what each repairs and refuses by name, the sixteen fixtures whose generated proofs fail on the original and pass on the repair, and what was not measured, starting with reach on real code. |
+| [llm-output-sinks-2026-10.md](llm-output-sinks-2026-10.md) | Seven taint rules for a language model's answer reaching eval, a shell, SQL or HTML, measured on 12 open-source LLM applications (zero findings over 38,098 files), and the remediation gate that refuses to split a command the model wrote. |
 
 Two more documents belong to the same record without being measurements:
 [../legal/third-party-rules.md](../legal/third-party-rules.md) is why every rule in the tree is

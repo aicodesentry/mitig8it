@@ -42,6 +42,12 @@ AMBIGUOUS_QUERY_API_MESSAGE = (
     "sqlite3, psycopg, or SQLAlchemy execute() call takes it at the finding, so a parameterized "
     "rewrite cannot be chosen safely."
 )
+MODEL_AUTHORED_COMMAND_MESSAGE = (
+    "The command is the text a language model returned, so the model decides which program runs. "
+    "An argument list would only move that decision from the shell to the program name: the fix "
+    "is to map the model's answer onto an allowlist of commands, which needs a design decision "
+    "this change does not make."
+)
 STATIC_ASSERTION_UNAVAILABLE_MESSAGE = (
     "This repair can only be shown to work by static assertion -- the rule fires on the file "
     "before the change and not after it, and nothing else in the file changed -- because no test "
@@ -254,6 +260,15 @@ def python_shell_pipeline(snapshot: Snapshot, finding: FindingSnapshot) -> bool:
     return False
 
 
+def model_authored_command(finding: FindingSnapshot) -> bool:
+    """A command whose source is a language model's answer: the `*-llm-output-shell` rules.
+
+    The rule is the only thing that knows the tainted value is the whole answer rather than one
+    argument inside a literal command, so the decision is read from it, as the workflow family is.
+    """
+    return "llm-output-shell" in str(finding.rule_id or "")
+
+
 def static_assertion_level_available() -> bool:
     """Whether the verification level the workflow family needs has landed.
 
@@ -271,6 +286,8 @@ def static_gate(snapshot: Snapshot, finding: FindingSnapshot, family: str, langu
         # proof it could ever have. Publishing it anyway would put an unverified patch in front of
         # a maintainer under the same review as verified ones, so it is refused by name instead.
         return "static_assertion_verification_unavailable", STATIC_ASSERTION_UNAVAILABLE_MESSAGE
+    if family == COMMAND_ARGUMENTS and model_authored_command(finding):
+        return "model_authored_command", MODEL_AUTHORED_COMMAND_MESSAGE
     if language == WORKFLOW:
         # Nothing below applies: a workflow has no package manifest, no shell call and no
         # compiled string. The only gate it has is the one above.
