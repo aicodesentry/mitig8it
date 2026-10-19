@@ -705,6 +705,94 @@ def js_environment_name(identifier: str) -> str:
     return re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9]+", "_", spaced)).strip("_").upper()
 
 
+# --- signing keys passed as a literal ---------------------------------------------------------
+#
+# `jwt.encode(payload, "k")`, `hmac.new(b"k", ...)`, `crypto.createHmac("sha256", "k")`: the key
+# is not bound to a name, so there is no identifier to derive an environment name from. The
+# call names what the key is for instead, and that is the name the repair reads.
+
+@dataclass(frozen=True)
+class SigningKeyCall:
+    line: int
+    start: int  # column of the key literal's first character, including a bytes prefix
+    end: int  # column one past its closing quote
+    literal: str  # the text between the quotes
+    variable: str  # the environment variable the repair reads
+    encoded: bool  # a Python bytes literal, so the repair has to encode the str it reads
+
+
+# (callee, index of the key argument, environment name). The callees are the ones the
+# `cwe-798.*-literal-signing-key` rules match, and nothing else.
+_PY_SIGNING_CALLS = (
+    (re.compile(r"(?<![\w.])jwt\.(?:encode|decode)\s*\("), 1, "JWT_SECRET"),
+    (re.compile(r"(?<![\w.])hmac\.new\s*\("), 0, "HMAC_SECRET"),
+)
+_JS_SIGNING_CALLS = (
+    (re.compile(r"(?<![\w$.])(?:crypto\.)?createHmac\s*\("), 1, "HMAC_SECRET"),
+    (re.compile(r"(?<![\w$.])crypto\.create(?:Cipher|Decipher)iv\s*\("), 1, "ENCRYPTION_KEY"),
+    (re.compile(r"(?<![\w$.])(?:jwt|jsonwebtoken)\.(?:sign|verify)\s*\("), 1, "JWT_SECRET"),
+)
+_PY_KEY_LITERAL_RE = re.compile(r"(?P<prefix>[bB]?)(?P<quote>['\"])(?P<literal>[^'\"\\\n]+)(?P=quote)(?=\s*(?:[,)]|$))")
+_JS_KEY_LITERAL_RE = re.compile(r"(?P<prefix>)(?P<quote>['\"])(?P<literal>[^'\"\\\n]+)(?P=quote)(?=\s*(?:[,)]|$))")
+
+
+def _skip_call_argument(text: str, i: int) -> int | None:
+    """The index of the `,` that ends the argument starting at `i`, or None when it does not end
+    on this line or ends the call instead."""
+    depth = 0
+    quote = None
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                return None
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return i
+        i += 1
+    return None
+
+
+def signing_key_call(source: str, line_start: int | None, line_end: int | None, language: str) -> SigningKeyCall | None:
+    """The literal key of a signing or cipher call in the finding's span, or None.
+
+    Only a key written as a plain quoted literal on the same line as its call is recognized: a
+    template string, an escape, a concatenation or a key on a continuation line is a shape the
+    rewrite cannot place exactly, and the model reads it instead.
+    """
+    calls, literal_re = (_PY_SIGNING_CALLS, _PY_KEY_LITERAL_RE) if language == "python" else (_JS_SIGNING_CALLS, _JS_KEY_LITERAL_RE)
+    lines = source.splitlines()
+    start = max(1, int(line_start or 1))
+    end = max(start, int(line_end or start))
+    for number in range(start, min(end, len(lines)) + 1):
+        text = lines[number - 1]
+        for callee, index, variable in calls:
+            for found in callee.finditer(text):
+                i = found.end()
+                for _ in range(index):
+                    comma = _skip_call_argument(text, i)
+                    if comma is None:
+                        break
+                    i = comma + 1
+                else:
+                    while i < len(text) and text[i] in " \t":
+                        i += 1
+                    key = literal_re.match(text, i)
+                    if key:
+                        return SigningKeyCall(number, key.start(), key.end(), key.group("literal"), variable, bool(key.group("prefix")))
+    return None
+
+
 def js_module_exports_name(source: str, name: str) -> bool:
     """Whether the module makes `name` readable to a caller under that name."""
     stripped = js_strip_strings(source)
