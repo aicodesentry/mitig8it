@@ -221,6 +221,14 @@ def test_sql_api_is_known_through_a_local_module_that_imports_the_driver(request
     assert python_sql_api_known(snapshot, _finding(file_path="app.py", line_start=4, line_end=4))
 
 
+def test_sql_api_is_known_for_a_django_connection_cursor(request_payload):
+    source = "from django.db import connection\n\ndef f(request):\n    name = request.GET.get('name')\n    with connection.cursor() as cursor:\n        cursor.execute(f\"SELECT 1 WHERE n = '{name}'\")\n"
+    snapshot = _snapshot(request_payload, [("views.py", source)])
+    finding = _finding(file_path="views.py", line_start=6, line_end=6)
+    assert python_sql_api_known(snapshot, finding)
+    assert static_gate(snapshot, finding, SQL_PARAMETERIZATION, PYTHON) is None
+
+
 def test_an_unknown_query_helper_is_ambiguous(request_payload):
     snapshot = _snapshot(request_payload, [("text.py", TEXT_PY)])
     finding = _finding(file_path="text.py", line_start=6, line_end=6)

@@ -39,7 +39,7 @@ SHELL_PIPELINE_MESSAGE = (
 )
 AMBIGUOUS_QUERY_API_MESSAGE = (
     "The query is handed to a helper whose placeholder syntax the snapshot does not show: no "
-    "sqlite3, psycopg, or SQLAlchemy execute() call takes it at the finding, so a parameterized "
+    "sqlite3, psycopg, SQLAlchemy, or Django connection execute() call takes it at the finding, so a parameterized "
     "rewrite cannot be chosen safely."
 )
 STATIC_ASSERTION_UNAVAILABLE_MESSAGE = (
@@ -82,7 +82,8 @@ COOKIE_SAMESITE_NONE_MESSAGE = (
 )
 
 # Python database APIs whose placeholder syntax the Python harness knows and the prompt names.
-PYTHON_SQL_DRIVERS = ("sqlite3", "psycopg2", "psycopg", "sqlalchemy", "pymysql", "MySQLdb", "mysql.connector", "aiosqlite", "asyncpg")
+# `django.db` is Django's raw-SQL API: `connection.cursor().execute(sql, params)` takes `%s`.
+PYTHON_SQL_DRIVERS = ("sqlite3", "psycopg2", "psycopg", "sqlalchemy", "pymysql", "MySQLdb", "mysql.connector", "aiosqlite", "asyncpg", "django.db")
 _PYTHON_IMPORT_RE = re.compile(r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*))", re.MULTILINE)
 _PYTHON_EXECUTE_RE = re.compile(r"\.(?:execute|executemany|executescript|exec_driver_sql)\s*\(|\btext\s*\(")
 # A process call that hands a command line to a shell: `exec` and `execSync` always do, and

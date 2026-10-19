@@ -31,7 +31,7 @@ HARNESS_PATHS = frozenset({HARNESS_PATH, PYTHON_HARNESS_PATH})
 # and the proof would assert on nothing. `python_harness_modules()` keeps this in step with the
 # harness source.
 PYTHON_HARNESS_MODULES = frozenset(
-    {"flask", "hashlib", "psycopg", "psycopg2", "pymysql", "sqlalchemy", "sqlite3", "subprocess"}
+    {"django", "flask", "hashlib", "psycopg", "psycopg2", "pymysql", "sqlalchemy", "sqlite3", "subprocess"}
 )
 # Each harness travels inside every verification payload, so it stays small by construction.
 # The Node budget was 16 KiB until the environment recorder and its two assertions were added
@@ -41,9 +41,11 @@ PYTHON_HARNESS_MODULES = frozenset(
 # require hook. 32 KiB is the next size that leaves room to extend an assertion without another
 # budget change in the same commit. The `crypto` recorder, the session-middleware fakes and their
 # two assertions (`password_hashing`, `cookie_flags`) took it to about 31 KiB, so the next
-# recorder needs a budget change; the Python harness is in the same position at about 39 of 40.
+# recorder needs a budget change. The Python harness was at about 39 of 40 KiB until the Django
+# fakes (`django.db.connection`, the pass-through view decorators, `django_request`) took it to
+# about 43; 48 KiB leaves room for one more recorder without another change in the same commit.
 MAX_HARNESS_BYTES = 32 * 1024
-MAX_PYTHON_HARNESS_BYTES = 40 * 1024
+MAX_PYTHON_HARNESS_BYTES = 48 * 1024
 HARNESS_OCCUPIED_LIMITATION = (
     f"the repository already carries {HARNESS_PATH}, so the service test harness was not materialized"
 )
