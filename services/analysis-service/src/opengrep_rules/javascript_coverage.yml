@@ -868,6 +868,9 @@ rules:
       - metavariable-regex:
           metavariable: $VALUE
           regex: ^(?!(?:changeme|change_me|your[-_].*|xxx+|placeholder|redacted|example)$)[A-Za-z0-9+/=_.\-]{12,}$
+      # One finding per key on its own line, not one for the whole object: two secrets in one
+      # object are two findings, and the comment lands on the line that holds the value.
+      - focus-metavariable: $VALUE
     message: "Credential held as a literal config value. Read it from process.env instead"
     severity: ERROR
     languages: [javascript, typescript]
