@@ -170,6 +170,15 @@ def test_a_finding_of_the_wrong_class_on_the_labelled_line_is_not_a_hit(corpus):
     assert corpus.ratchet("check") == RATCHET.EXIT_REGRESSED
 
 
+def test_two_adjacent_labels_are_each_hit_by_the_finding_on_their_own_line(tmp_path, capsys):
+    """The line slack lets a finding overlap the label beside it too; the nearer one takes it."""
+    built = Corpus(tmp_path, [_label("first", "cfg.js", 8), _label("second", "cfg.js", 9)])
+    built.run(_result([_finding("cfg.js", 8), _finding("cfg.js", 9)]))
+    assert built.ratchet("update") == RATCHET.EXIT_OK
+    document = json.loads(built.baseline.read_text(encoding="utf-8"))
+    assert document["labels"]["first"]["hit"] and document["labels"]["second"]["hit"]
+
+
 def test_new_hits_are_improvements_and_do_not_fail(corpus, capsys):
     corpus.run(_result(BASELINE_RUN + [_finding("b.py", 20), _finding("c.py", 30)]))
     assert corpus.ratchet("check") == RATCHET.EXIT_OK
