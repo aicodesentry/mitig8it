@@ -266,8 +266,14 @@ def model_authored_command(finding: FindingSnapshot) -> bool:
 
     The rule is the only thing that knows the tainted value is the whole answer rather than one
     argument inside a literal command, so the decision is read from it, as the workflow family is.
+    The generic command rules match the same line, and the clusterer may keep one of them as the
+    finding's `rule_id`; the model rule then survives only in `evidence_details.extra.merged_rule_ids`.
     """
-    return "llm-output-shell" in str(finding.rule_id or "")
+    details = getattr(finding, "evidence_details", None) or {}
+    details = details if isinstance(details, dict) else {}
+    extra = details.get("extra") if isinstance(details.get("extra"), dict) else {}
+    merged = extra.get("merged_rule_ids") if isinstance(extra.get("merged_rule_ids"), list) else []
+    return any("llm-output-shell" in str(rule_id or "") for rule_id in [finding.rule_id, *merged])
 
 
 def static_assertion_level_available() -> bool:

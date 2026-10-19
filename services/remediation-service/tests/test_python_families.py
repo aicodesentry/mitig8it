@@ -465,3 +465,11 @@ def test_a_shell_command_a_language_model_wrote_is_refused_rather_than_split(req
     assert code == "model_authored_command" and "allowlist" in message
     ordinary = _finding(file_path="fix.py", line_start=9, line_end=9, rule_id="opengrep.cwe-78.py-subprocess-shell-interpolated")
     assert static_gate(snapshot, ordinary, COMMAND_ARGUMENTS, PYTHON) is None
+    # Seen live on nebullii/test-only#139: the generic command rule won the cluster and the model
+    # rule was carried only as a merged id. The refusal must not depend on which one survived.
+    folded = _finding(
+        file_path="fix.py", line_start=9, line_end=9, rule_id="opengrep.cwe-78.command-injection-input",
+        evidence_details={"extra": {"merged_rule_ids": ["cmd.injection.shell_true", "opengrep.cwe-78.py-llm-output-shell"]}},
+    )
+    code, _ = static_gate(snapshot, folded, COMMAND_ARGUMENTS, PYTHON)
+    assert code == "model_authored_command"
