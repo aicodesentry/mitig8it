@@ -843,7 +843,7 @@ rules:
         - pattern: var $NAME = "$VALUE"
       - metavariable-regex:
           metavariable: $NAME
-          regex: (?i)^(?!.*(name|path|url|uri|host|header|prefix|suffix|label|field|column|type|kind|env|param|regex|pattern|message|error|placeholder|example|mock|dummy|fake|test)).*(password|passwd|secret|api_?key|apikey|access_?token|auth_?token|refresh_?token|private_?key|client_?secret|encryption_?key|signing_?key).*$
+          regex: (?i)^(?!.*(name|path|url|uri|host|header|prefix|suffix|label|field|column|type|kind|env|param|regex|pattern|message|error|placeholder|example|mock|dummy|fake|test)).*(password|passwd|secret|api_?key|apikey|access_?token|auth_?token|refresh_?token|private_?key|client_?secret|encryption_?key|signing_?key|crypto_?key).*$
       - metavariable-regex:
           metavariable: $VALUE
           regex: ^(?!(?:changeme|change_me|your[-_].*|xxx+|placeholder|redacted|example|undefined|null|true|false|\$\{.*)$)[A-Za-z0-9+/=_.\-]{12,}$
@@ -864,7 +864,7 @@ rules:
       - pattern: "{ ..., $NAME: \"$VALUE\", ... }"
       - metavariable-regex:
           metavariable: $NAME
-          regex: (?i)^(?!.*(name|path|url|uri|host|header|prefix|suffix|label|field|column|type|kind|env|param|regex|pattern|message|error|placeholder|example)).*(password|passwd|secret|api_?key|apikey|access_?token|auth_?token|private_?key|client_?secret)$
+          regex: (?i)^(?!.*(name|path|url|uri|host|header|prefix|suffix|label|field|column|type|kind|env|param|regex|pattern|message|error|placeholder|example)).*(password|passwd|secret|api_?key|apikey|access_?token|auth_?token|private_?key|client_?secret|crypto_?key|encryption_?key|signing_?key)$
       - metavariable-regex:
           metavariable: $VALUE
           regex: ^(?!(?:changeme|change_me|your[-_].*|xxx+|placeholder|redacted|example)$)[A-Za-z0-9+/=_.\-]{12,}$
@@ -882,6 +882,34 @@ rules:
         benchmarks/vulnerable-corpus 2026-09: 7 findings over 3 repositories, 3 adjudicated by
         label, all true (NodeGoat's cookieSecret and cryptoKey, dvna's session secret), precision
         1.00.
+      posting: post
+
+  # A wallet recovery phrase is the private key in words: 12 to 24 lowercase BIP-39 words.
+  # Hardhat's `test ... junk` and the BIP-39 `abandon ... about` vectors are public, so not secrets.
+  # The name and the word-count shape together keep this to the one thing it is.
+  - id: cwe-798.js-literal-wallet-mnemonic
+    patterns:
+      - pattern-either:
+        - pattern: const $NAME = "$VALUE"
+        - pattern: let $NAME = "$VALUE"
+        - pattern: var $NAME = "$VALUE"
+        - pattern: "{ ..., $NAME: \"$VALUE\", ... }"
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)^(?:.*_)?(?:mnemonic|seed_?phrase|recovery_?phrase|secret_?phrase)$
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: '^(?!(?:test )+junk$)(?!(?:abandon )+(?:about|art)$)[a-z]{3,8}(?: [a-z]{3,8}){11,23}$'
+    message: "Wallet recovery phrase held as a literal. Anyone with the source controls the wallet"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021"
+      category: "hardcoded secrets"
+      internal_type: "hardcoded_secret"
+      family: "hardcoded_credential"
+      confidence: "0.90"
       posting: post
 
   - id: cwe-798.js-basic-auth-literal
