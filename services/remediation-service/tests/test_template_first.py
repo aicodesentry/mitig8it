@@ -606,3 +606,45 @@ class TestCredentialInsideAnObjectLiteral:
         patch = generate_template(Snapshot(request), request.findings[0], "hardcoded_credential", JAVASCRIPT)
         assert isinstance(patch, TemplateFallback)
         assert patch.reason == "string_literal_assignment_not_found"
+
+
+# --- Django raw SQL -------------------------------------------------------------------------
+
+DJANGO_EXPORT_PY = '''from django.db import connection
+from django.http import JsonResponse
+from django.contrib.auth.decorators import login_required
+
+
+@login_required
+def stock_report(request):
+    """Return the stock level for one product, looked up by the name the client sends."""
+    name = request.GET.get("name", "")
+    with connection.cursor() as cursor:
+        cursor.execute(f"SELECT id, name, stock FROM inventory_product WHERE name = '{name}'")
+        rows = cursor.fetchall()
+    return JsonResponse({"rows": rows})
+'''
+DJANGO_FINDINGS = [
+    {"snapshot_id": "sql-11", "rule_id": "sql.injection.raw_query", "cwe_id": "CWE-89", "file_path": "inventory/export.py", "line_start": 11, "line_end": 11},
+]
+
+
+@requires_python
+@pytest.mark.asyncio
+async def test_a_django_view_running_raw_sql_through_connection_cursor_is_templated_and_proven():
+    """Indoor-Plants PR 55: the gate called `django.db` an unknown query API and nothing shipped."""
+    request = _request([("inventory/export.py", DJANGO_EXPORT_PY)], DJANGO_FINDINGS)
+    snapshot = Snapshot(request)
+    [finding] = request.findings
+    assert static_gate(snapshot, finding, SQL_PARAMETERIZATION, PYTHON) is None
+    _, proofs, templates = _generate(request)
+    proof = proofs["sql-11"]
+    assert isinstance(proof, GeneratedProof), proof
+    assert "h.call(m.stock_report, h.django_request(method=\"GET\", get={\"name\": payload}))" in proof.content
+    assert isinstance(templates["sql-11"], TemplatePatch), templates
+    bundle, verification = await _verify_templates(request)
+    fixed = bundle.patches[0].replacement_content
+    assert "SELECT id, name, stock FROM inventory_product WHERE name = %s" in fixed
+    assert "'{name}'" not in fixed
+    assert verification.status == "passed" and verification.proven_finding_ids == ["sql-11"]
+    assert _outcomes(verification)["sql-11"] == ("failed", "passed")

@@ -1036,7 +1036,7 @@ def _py_view_invoke(function: PyFunction, untrusted_expression: str | None, payl
     groups: dict[str, dict[str, str]] = {}
     for item in function.inputs:
         value = payload_expression if item.expression == untrusted_expression else _py(BENIGN_VALUE)
-        groups.setdefault({"args": "query", "form": "form", "json": "json", "values": "query"}[item.source], {})[item.name] = value
+        groups.setdefault({"args": "query", "form": "form", "json": "json", "values": "query", "GET": "query", "POST": "form"}[item.source], {})[item.name] = value
     parts = ["app", _py(function.methods[0] if function.methods else "GET"), _py(function.route)]
     if params:
         parts.append("params={" + ", ".join(f"{_py(k)}: {v}" for k, v in params.items()) + "}")
@@ -1067,6 +1067,42 @@ def _py_app_line(source: str) -> str:
     return f"    app = getattr(m, {_py(name or 'app')}, None)"
 
 
+def _py_django_view(function: PyFunction) -> bool:
+    """A Django function view: no Flask route, `request` first, and request.GET/POST read in the body."""
+    return not function.route and function.parameters[:1] == ("request",) and any(item.source in ("GET", "POST") for item in function.inputs)
+
+
+def _py_django_untrusted(function: PyFunction, sink_line: int) -> str | None:
+    """The request.GET/POST read nearest above the sink, else the first one the view makes."""
+    reads = [item for item in function.inputs if item.source in ("GET", "POST")]
+    for number in range(sink_line, function.start_line - 1, -1):
+        for item in reads:
+            if item.line == number:
+                return item.expression
+    return reads[0].expression if reads else None
+
+
+def _py_django_call(function: PyFunction, untrusted_expression: str, payload_expression: str) -> str:
+    """`h.call(m.view, h.django_request(...), ...)`: the payload on the untrusted read, benign values elsewhere.
+
+    Parameters after `request` are URL captures, which Django passes as keyword strings, so a
+    benign string stands in for each.
+    """
+    groups: dict[str, dict[str, str]] = {}
+    for item in function.inputs:
+        if item.source not in ("GET", "POST"):
+            continue
+        value = payload_expression if item.expression == untrusted_expression else _py(BENIGN_VALUE)
+        groups.setdefault(item.source.lower(), {})[item.name] = value
+    method = "POST" if "post" in groups and "get" not in groups else "GET"
+    parts = [f"method={_py(method)}"]
+    for keyword in ("get", "post"):
+        if keyword in groups:
+            parts.append(f"{keyword}={{" + ", ".join(f"{_py(k)}: {v}" for k, v in groups[keyword].items()) + "}")
+    captures = [f"{name}={_py(BENIGN_VALUE)}" for name in function.parameters[1:]]
+    return f"h.call(m.{function.name}, h.django_request({', '.join(parts)})" + "".join(f", {c}" for c in captures) + ")"
+
+
 def _py_sql_proof(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunction) -> GeneratedProof:
     path = finding.affected_path
     source = snapshot.full_content(path)
@@ -1080,6 +1116,12 @@ def _py_sql_proof(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunc
             raise SiteError("no_request_input_in_view")
         body += [_py_app_line(source), f"    payload = {_py(SQL_PAYLOAD)}", f"    {_py_view_invoke(function, untrusted, 'payload')}"]
         what = f"{function.methods[0] if function.methods else 'GET'} {function.route} with {untrusted}"
+    elif _py_django_view(function):
+        untrusted = _py_django_untrusted(function, line)
+        if untrusted is None:
+            raise SiteError("no_request_input_in_view")
+        body += [f"    payload = {_py(SQL_PAYLOAD)}", f"    {_py_django_call(function, untrusted, 'payload')}"]
+        what = f"{function.name}(request) with {untrusted}"
     else:
         untrusted = _py_untrusted_parameter(function, lines, line)
         if untrusted is None:
