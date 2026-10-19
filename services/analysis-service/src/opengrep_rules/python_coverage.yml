@@ -856,6 +856,33 @@ rules:
         (`sql_lab_table(id="admin", password="65079b00…")`), precision 1.00.
       posting: post
 
+  # A key handed straight to the API that uses it: `jwt.encode(payload, 'csrf_vulneribility')`
+  # has no variable name for the name-based rules to read. The call is what makes the literal a
+  # secret.
+
+  - id: cwe-798.py-literal-signing-key
+    patterns:
+      - pattern-either:
+        - pattern: jwt.encode($P, "$KEY", ...)
+        - pattern: jwt.decode($T, "$KEY", ...)
+        - pattern: hmac.new("$KEY", ...)
+        - pattern: hmac.new(b"$KEY", ...)
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: ^(?!(?:changeme|change_me|your[-_].*|xxx+|placeholder|redacted|example|secret|test|dev)$)[^\s]{8,}$
+    message: "Signing key passed as a literal. Anyone with the source can forge a token or signature. Read it from os.environ instead"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021"
+      category: "hardcoded secrets"
+      internal_type: "hardcoded_secret"
+      family: "hardcoded_credential"
+      confidence: "0.88"
+      posting: post
+
+
   # ── JWT misuse ─────────────────────────────────────────────────────────
 
   - id: cwe-347.py-jwt-verification-disabled
