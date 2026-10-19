@@ -830,6 +830,29 @@ rules:
       confidence: "0.90"
       posting: post
 
+  # A wallet recovery phrase is the private key in words: 12 to 24 lowercase BIP-39 words.
+  # Hardhat's `test ... junk` and the BIP-39 `abandon ... about` vectors are public, so not secrets.
+  - id: cwe-798.py-literal-wallet-mnemonic
+    patterns:
+      - pattern: $NAME = "$VALUE"
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)^(?:.*_)?(?:mnemonic|seed_?phrase|recovery_?phrase|secret_?phrase)$
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: '^(?!(?:test )+junk$)(?!(?:abandon )+(?:about|art)$)[a-z]{3,8}(?: [a-z]{3,8}){11,23}$'
+    message: "Wallet recovery phrase held as a literal. Anyone with the source controls the wallet"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021"
+      category: "hardcoded secrets"
+      internal_type: "hardcoded_secret"
+      family: "hardcoded_credential"
+      confidence: "0.90"
+      posting: post
+
   - id: cwe-798.py-credential-keyword-argument
     patterns:
       - pattern-either:

@@ -1059,6 +1059,33 @@ noise and says little about precision.
   name interpolated from an argument is how ordinary views pick `f"{app}/detail.html"`.
   Not matched.
 
+## Follow-up 2026-10-19: wallet phrases, crypto keys and adjacent labels
+
+Two hardcoded secret labels were missed for reasons narrow enough to fix without new noise.
+
+* **juice-shop `routes/checkKeys.ts:10`**, a 12-word wallet recovery phrase in a
+  `const mnemonic`. `cwe-798.js-literal-wallet-mnemonic` (and its Python twin) report a
+  12 to 24 word lowercase phrase held under a mnemonic or seed-phrase name. Hardhat's
+  `test ... junk` phrase and the BIP-39 `abandon ... about` vector are public and excluded.
+  On seven web3 repositories (OpenZeppelin, Uniswap v3-periphery, Hardhat, ethers.js,
+  MetaMask, viem, Aave v3) the rule reports one line in application code: Aave's ganache
+  network phrase in `hardhat.config.ts`, a committed dev wallet. The rest are test files.
+* **NodeGoat `config/env/all.js:9`**, `cryptoKey`. Two changes were needed. The credential
+  name lists gained `crypto_key`. And `cwe-798.js-credential-config-key` matched the whole
+  object literal, so `cookieSecret` and `cryptoKey` were one finding on line 5; it now
+  focuses on the value, one finding per key on its own line, which is also the line the
+  hardcoded credential template rewrites. With that the scorer still gave the line 9
+  finding to the line 8 label, because the line slack makes both overlap and the first
+  label won. `score.join` now tries the label the finding sits on before its neighbours.
+
+The ratchet goes from 105 to 107 of 171 labels, 99 by a posting rule, with no label lost.
+`cwe-798.js-credential-config-key` reports 22 lines over the 7 web3 repositories, the 12
+LLM applications and 6 Django projects, all of them in test files.
+
+Still missed in the class: nodejs-goof's `var token = '...'` (a bare `token` name is too
+broad), pygoat's `SECRET_COOKIE_KEY = "PYGOAT"` (six characters cannot be told from a
+placeholder), credentials in YAML and seed files, and the Hashids salt.
+
 ## Suites
 
 | Suite | Command | Result |

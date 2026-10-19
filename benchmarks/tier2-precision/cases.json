@@ -1549,6 +1549,45 @@
       "path": "negative/signing_key_placeholder.py",
       "code": "import jwt\n\n\ndef issue(payload, key):\n    jwt.encode(payload, \"changeme\", algorithm=\"HS256\")\n    return jwt.decode(payload, key, algorithms=[\"HS256\"])\n",
       "note": "A placeholder the value regex refuses, and a key passed as a parameter."
+    },
+    {
+      "id": "cwe-798.js-credential-config-key.crypto-key",
+      "expect": "finding",
+      "rule": "cwe-798.js-credential-config-key",
+      "path": "positive/cwe-798_js-credential-config-key_crypto.js",
+      "code": "module.exports = {\n  port: 4000,\n  cryptoKey: \"a_secure_key_for_crypto_here\",\n};\n"
+    },
+    {
+      "id": "cwe-798.js-literal-wallet-mnemonic",
+      "expect": "finding",
+      "rule": "cwe-798.js-literal-wallet-mnemonic",
+      "path": "positive/cwe-798_js-literal-wallet-mnemonic.js",
+      "code": "const mnemonic = 'purpose betray marriage blame crunch monitor spin slide donate sport lift clutch';\nmodule.exports = { mnemonic };\n"
+    },
+    {
+      "id": "cwe-798.py-literal-wallet-mnemonic",
+      "expect": "finding",
+      "rule": "cwe-798.py-literal-wallet-mnemonic",
+      "path": "positive/cwe-798_py-literal-wallet-mnemonic.py",
+      "code": "MNEMONIC = \"purpose betray marriage blame crunch monitor spin slide donate sport lift clutch\"\n"
+    },
+    {
+      "id": "cwe-798.js-literal-wallet-mnemonic.prose",
+      "expect": "no-finding",
+      "path": "negative/cwe-798_js-literal-wallet-mnemonic_prose.js",
+      "code": "const mnemonic = 'Enter the twelve words you wrote down when you created the wallet';\nconst seedPhrase = process.env.SEED_PHRASE;\nmodule.exports = { mnemonic, seedPhrase };\n",
+      "rules": [
+        "cwe-798.js-literal-wallet-mnemonic"
+      ]
+    },
+    {
+      "id": "cwe-798.js-literal-wallet-mnemonic.public-test-vector",
+      "expect": "no-finding",
+      "path": "negative/cwe-798_js-literal-wallet-mnemonic_public.js",
+      "code": "export const DEV_MNEMONIC =\n  \"test test test test test test test test test test test junk\";\nconst vector = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';\n",
+      "rules": [
+        "cwe-798.js-literal-wallet-mnemonic"
+      ]
     }
   ]
 }

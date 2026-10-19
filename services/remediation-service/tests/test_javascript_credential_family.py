@@ -172,6 +172,21 @@ class TestTemplate:
         patch = generate_template(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
         assert patch.changes[0]["replacement_lines"] == ["  clientSecret: process.env.CLIENT_SECRET,"]
 
+    def test_a_key_inside_a_multi_line_object_is_rewritten_on_its_own_line(self, request_payload):
+        """The config-key rule reports the value's line, so the second of two secrets in one
+        exported object gets its own repair rather than none."""
+        source = (
+            "module.exports = {\n"
+            '    cookieSecret: "session_cookie_secret_key_here",\n'
+            '    cryptoKey: "a_secure_key_for_crypto_here",\n'
+            "};\n"
+        )
+        snapshot, finding = _snapshot(request_payload, "config/env/all.js", source)
+        finding = finding.model_copy(update={"rule_id": "cwe-798.js-credential-config-key", "line_start": 3, "line_end": 3})
+        patch = generate_template(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
+        assert not isinstance(patch, TemplateFallback), getattr(patch, "reason", None)
+        assert patch.changes[0]["replacement_lines"] == ["    cryptoKey: process.env.CRYPTO_KEY,"]
+
     def test_no_import_is_added_because_process_is_a_global(self, request_payload):
         snapshot, finding = _snapshot(request_payload, "src/config.js", 'const apiKey = "sk-live-abc123def456";\n')
         patch = generate_template(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
