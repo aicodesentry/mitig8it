@@ -174,7 +174,13 @@ def join(
         claimed = finding_class(finding)
         matched_class: dict[str, Any] | None = None
         matched_location: dict[str, Any] | None = None
-        for label in by_location.get(key, []):
+        # Nearest label first: with the slack, a finding on one line also overlaps a label on
+        # the line beside it, and two adjacent secrets in one object must each get their own.
+        nearest = sorted(
+            by_location.get(key, []),
+            key=lambda label: not overlaps(span, (int(label["line_range"][0]), int(label["line_range"][1])), slack=0),
+        )
+        for label in nearest:
             if not overlaps(span, (int(label["line_range"][0]), int(label["line_range"][1]))):
                 continue
             if claimed in label["rule_classes_expected"]:
