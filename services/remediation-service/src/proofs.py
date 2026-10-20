@@ -24,6 +24,7 @@ from .families import (
     COOKIE_FLAGS,
     HARDCODED_CREDENTIAL,
     JAVASCRIPT,
+    OPEN_REDIRECT,
     PASSWORD_HASHING,
     PATH_CONTAINMENT,
     PYTHON,
@@ -59,6 +60,7 @@ from .sites import (
     python_flask_app_name,
     python_site_for_line,
     python_module_assignment,
+    redirect_site,
     python_module_value,
     scope_lines_near,
 )
@@ -1576,6 +1578,64 @@ def _py_cookie_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedP
     )
 
 
+# --- open redirect --------------------------------------------------------------------------
+#
+# The view is driven the way a reader's browser drives it: Django's is called with a request the
+# harness builds, Flask's is invoked through its route, each with the redirect parameter set. Two
+# hostile targets, an absolute URL and a scheme-relative one, must each produce a redirect that
+# stays on the request's host, and a same-site path must still be the redirect it asked for, which
+# is what stops a repair that sends every reader to "/".
+
+HOSTILE_REDIRECTS = ("https://evil.example/", "//evil.example/")
+SAME_SITE_REDIRECT = "/account/settings/"
+
+
+def _py_redirect_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedProof:
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    site = redirect_site(snapshot, finding)
+    function = site.function
+    if site.framework == "django":
+        container = "POST" if site.source == "POST" else "GET"
+
+        def respond(value: str) -> str:
+            arguments = [
+                f"h.django_request({container}={{{_py(site.key)}: {_py(value)}}})" if index == 0 else _py(BENIGN_VALUE)
+                for index, _ in enumerate(function.parameters)
+            ]
+            return f"h.call(m.{function.name}, {', '.join(arguments)}).value"
+
+        setup: list[str] = []
+        what = f"{function.name}(request)"
+    else:
+        keyword = "form" if site.source == "form" else "query"
+        method = "POST" if keyword == "form" and "POST" in function.methods else (function.methods[0] if function.methods else "GET")
+        params = {name: BENIGN_VALUE for name in re.findall(r"<(?:\w+:)?(\w+)>", function.route or "")}
+
+        def respond(value: str) -> str:
+            parts = ["app", _py(method), _py(function.route)]
+            if params:
+                parts.append(f"params={_py(params)}")
+            parts.append(f"{keyword}={{{_py(site.key)}: {_py(value)}}}")
+            return "h.invoke(" + ", ".join(parts) + ")"
+
+        setup = [_py_app_line(source)]
+        what = f"{method} {function.route}"
+    body = _py_header(path) + setup
+    for hostile in HOSTILE_REDIRECTS:
+        body.append(f"    h.assert_redirect_local({respond(hostile)}, message={_py(f'a {site.key}= of {hostile} must not redirect off the site')})")
+    body += [
+        f"    kept = {respond(SAME_SITE_REDIRECT)}",
+        f"    h.assert_equal((getattr(kept, 'headers', None) or {{}}).get('location'), {_py(SAME_SITE_REDIRECT)}, "
+        f"{_py('a same-site path must still be the redirect target')})",
+    ] + _py_footer()
+    return GeneratedProof(
+        finding.stable_id, OPEN_REDIRECT, PYTHON, test_path(finding.stable_id, PYTHON), "\n".join(body),
+        f"{what} with {site.key}= set to another site redirects on the request's own host, and a same-site path is kept",
+        function,
+    )
+
+
 # --- entry point ----------------------------------------------------------------------------
 
 def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, language: str) -> GeneratedProof | ProofFallback:
@@ -1612,6 +1672,8 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
                 return _py_password_proof(snapshot, finding)
             if family == COOKIE_FLAGS:
                 return _py_cookie_proof(snapshot, finding)
+            if family == OPEN_REDIRECT:
+                return _py_redirect_proof(snapshot, finding)
             function = python_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if isinstance(function, ModuleScope):
                 return _py_module_scope_proof(snapshot, finding, function, family)

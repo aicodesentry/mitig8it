@@ -20,6 +20,7 @@ from .families import (
     COOKIE_FLAGS,
     HARDCODED_CREDENTIAL,
     JAVASCRIPT,
+    OPEN_REDIRECT,
     PASSWORD_HASHING,
     PATH_CONTAINMENT,
     PYTHON,
@@ -57,6 +58,7 @@ from .sites import (
     python_site_for_line,
     python_import_anchor,
     python_module_assignment,
+    redirect_site,
     WorkflowStep,
     workflow_step_for_line,
 )
@@ -1601,6 +1603,55 @@ def _cookie(snapshot: Snapshot, finding: FindingSnapshot, language: str) -> Temp
     )
 
 
+# --- open redirect --------------------------------------------------------------------------
+
+def _py_redirect(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """The request read is bound to a variable, checked, and replaced by the fallback when it
+    would leave the site.
+
+    Django has the check built in: `url_has_allowed_host_and_scheme` against the request's own
+    host, requiring HTTPS when the request came over HTTPS, which is what Django's own login
+    view does with `?next=`. Flask has none, so the repair accepts only a path on this site:
+    it starts with "/", and with backslashes read as the browser reads them it has no host,
+    which refuses `//evil.example` and `/\\evil.example` as well as an absolute URL.
+    """
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    lines = source.splitlines()
+    site = redirect_site(snapshot, finding)
+    v, i = site.variable, site.indent
+    if site.framework == "django":
+        receiver = site.receiver
+        check = [
+            f"{i}if not url_has_allowed_host_and_scheme({v}, allowed_hosts={{{receiver}.get_host()}}, require_https={receiver}.is_secure()):",
+            f"{i}    {v} = {site.fallback}",
+        ]
+        what = "checked with url_has_allowed_host_and_scheme against the request's host"
+    else:
+        check = [
+            f'{i}if not {v} or not {v}.startswith("/") or urlsplit({v}.replace("\\\\", "/")).netloc:',
+            f"{i}    {v} = {site.fallback}",
+        ]
+        what = "accepted only as a path on this site"
+    read_line = lines[site.read_line - 1]
+    rewritten = read_line[: site.read_start] + v + read_line[site.read_end :]
+    original = lines[site.statement_line - 1 : site.read_line]
+    replacement = [f"{i}{v} = {site.read}", *check, *original[:-1], rewritten]
+    changes = [_hunk(path, finding.stable_id, site.statement_line, original, replacement)]
+    if site.imports_needed:
+        line, after = python_import_anchor(source, site.statement_line)
+        if site.statement_line <= line <= site.read_line:
+            raise TemplateError("import_anchor_overlaps_repair")
+        anchor = lines[line - 1] if lines else ""
+        added = list(site.imports_needed)
+        changes.append(_hunk(path, finding.stable_id, line, [anchor], [anchor, *added] if after else [*added, anchor]))
+    return TemplatePatch(
+        finding.stable_id, OPEN_REDIRECT, sorted(changes, key=lambda change: change["start_line"]),
+        f"the redirect target from {site.receiver}.{site.source} is {what}, and a target that would leave the site "
+        f"falls back to {site.fallback}",
+    )
+
+
 # --- entry points ---------------------------------------------------------------------------
 
 def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str, language: str) -> TemplatePatch | TemplateFallback:
@@ -1637,6 +1688,8 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
                 return _py_password(snapshot, finding)
             if family == COOKIE_FLAGS:
                 return _cookie(snapshot, finding, PYTHON)
+            if family == OPEN_REDIRECT:
+                return _py_redirect(snapshot, finding)
             function = python_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _py_sql(snapshot, finding, function)

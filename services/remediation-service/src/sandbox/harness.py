@@ -31,7 +31,10 @@ HARNESS_PATHS = frozenset({HARNESS_PATH, PYTHON_HARNESS_PATH})
 # and the proof would assert on nothing. `python_harness_modules()` keeps this in step with the
 # harness source.
 PYTHON_HARNESS_MODULES = frozenset(
-    {"django", "flask", "hashlib", "psycopg", "psycopg2", "pymysql", "sqlalchemy", "sqlite3", "subprocess"}
+    {
+        "django", "flask", "hashlib", "psycopg", "psycopg2",
+        "pymysql", "sqlalchemy", "sqlite3", "subprocess",
+    }
 )
 # Each harness travels inside every verification payload, so it stays small by construction.
 # The Node budget was 16 KiB until the environment recorder and its two assertions were added
@@ -42,8 +45,8 @@ PYTHON_HARNESS_MODULES = frozenset(
 # budget change in the same commit. The `crypto` recorder, the session-middleware fakes and their
 # two assertions (`password_hashing`, `cookie_flags`) took it to about 31 KiB, so the next
 # recorder needs a budget change. The Python harness was at about 39 of 40 KiB until the Django
-# fakes (`django.db.connection`, the pass-through view decorators, `django_request`) took it to
-# about 43; 48 KiB leaves room for one more recorder without another change in the same commit.
+# fakes (`django.db.connection`, the view decorators, the redirects and the ported host check)
+# took it past 43; 48 KiB leaves room for one more recorder.
 MAX_HARNESS_BYTES = 32 * 1024
 MAX_PYTHON_HARNESS_BYTES = 48 * 1024
 HARNESS_OCCUPIED_LIMITATION = (

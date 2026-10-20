@@ -904,6 +904,11 @@ rules:
         - pattern: redirect(request.values.get(...))
         - pattern: HttpResponseRedirect(request.GET.get(...))
         - pattern: HttpResponseRedirect(request.GET[$K])
+        - pattern: HttpResponseRedirect(request.POST.get(...))
+        - pattern: redirect(request.GET.get(...))
+        - pattern: redirect(request.GET[$K])
+        - pattern: redirect(request.POST.get(...))
+        - pattern: redirect(request.POST[$K])
     message: "Redirect target taken straight from the request. Allow only relative paths or a known host list"
     severity: ERROR
     languages: [python]
@@ -912,6 +917,7 @@ rules:
       owasp: "A01:2021"
       category: "open redirect"
       internal_type: "open_redirect"
+      family: "open_redirect"
       confidence: "0.88"
       posting: post
 

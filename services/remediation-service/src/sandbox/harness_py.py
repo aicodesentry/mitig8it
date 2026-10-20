@@ -18,6 +18,7 @@ import re
 import sys
 import traceback
 import types
+import unicodedata
 import urllib.parse
 
 version = 1
@@ -671,6 +672,50 @@ def invoke(app, method, rule, params=None, query=None, json=None, form=None, dat
     raise HarnessAssertion("harness.invoke: no %s view recorded for %s" % (method, rule))
 
 
+# --- django fake: redirects, the host check, and a request a plain view is called with ----------
+class HttpResponseRedirect(Response):
+    status_code = 302
+
+    def __init__(self, redirect_to, *args, **kwargs):
+        Response.__init__(self, "", type(self).status_code, {"location": str(redirect_to)})
+        self.url = str(redirect_to)
+
+    def __getitem__(self, name):
+        return self.headers[name.lower()]
+
+
+class HttpResponsePermanentRedirect(HttpResponseRedirect):
+    status_code = 301
+
+
+def _django_redirect(to, *args, permanent=False, **kwargs):
+    return (HttpResponsePermanentRedirect if permanent else HttpResponseRedirect)(to)
+
+
+def _allowed(url, hosts, require_https):
+    if url.startswith("///"):
+        return False
+    try:
+        info = urllib.parse.urlparse(url)
+    except ValueError:
+        return False
+    if (not info.netloc and info.scheme) or unicodedata.category(url[0])[0] == "C":
+        return False
+    scheme = info.scheme or ("http" if info.netloc else "")
+    return (not info.netloc or info.netloc in hosts) and (not scheme or scheme in (["https"] if require_https else ["http", "https"]))
+
+
+def url_has_allowed_host_and_scheme(url, allowed_hosts, require_https=False):
+    """Django's own check (django.utils.http), ported line for line."""
+    url = url.strip() if url is not None else url
+    if not url:
+        return False
+    hosts = set() if allowed_hosts is None else ({allowed_hosts} if isinstance(allowed_hosts, str) else set(allowed_hosts))
+    return _allowed(url, hosts, require_https) and _allowed(url.replace("\\", "/"), hosts, require_https)
+
+
+
+
 # --- auto-stubs for third-party imports the sandbox does not carry ------------------------------
 # A stub is a class rather than an object, because a module under test does not only call what it
 # imports: it inherits from it. `class NewUserForm(UserCreationForm)` is the first statement of
@@ -715,7 +760,7 @@ class _StubModule(types.ModuleType):
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
-        return _stub(self.__name__ + "." + name)
+        return sys.modules.get(self.__name__ + "." + name) or _stub(self.__name__ + "." + name)
 
 
 class _StubLoader(importlib.abc.Loader):
@@ -764,20 +809,20 @@ def _django_json_response(data, *args, **kwargs):
     return Response(_json.dumps(data, default=str), kwargs.get("status", 200), {"content-type": "application/json"})
 
 
-def _django_redirect(to, *args, **kwargs):
-    return Response("", 302, {"location": str(to)})
-
-
-def django_request(method="GET", get=None, post=None, cookies=None, headers=None, user=None, body=b"", path="/"):
+def django_request(method=None, get=None, post=None, cookies=None, headers=None, user=None, body=b"", path="/",
+                   GET=None, POST=None, host="testserver", secure=False):
     """A stand-in for Django's HttpRequest: what a view reads off its first argument."""
+    get, post = get if get is not None else GET, post if post is not None else POST
     request = types.SimpleNamespace()
-    request.method, request.path, request.body = method.upper(), path, body
+    request.method, request.path, request.body = (method or ("POST" if post else "GET")).upper(), path, body
     request.GET, request.POST = _MultiDict(get or {}), _MultiDict(post or {})
-    request.COOKIES, request.headers = _MultiDict(cookies or {}), _MultiDict(headers or {})
-    request.META = _MultiDict({"REMOTE_ADDR": "127.0.0.1"})
+    request.COOKIES, request.headers = _MultiDict(cookies or {}), _MultiDict({"Host": host, **(headers or {})})
+    request.META = _MultiDict({"REMOTE_ADDR": "127.0.0.1", "HTTP_HOST": host})
     request.FILES, request.session = _MultiDict(), _MultiDict()
     request.user = user or types.SimpleNamespace(is_authenticated=True, is_anonymous=False, is_staff=False, is_superuser=False, id=1, pk=1, username="mitig8it")
     request.get_full_path = lambda: path
+    request.get_host = lambda: host
+    request.is_secure = lambda: secure
     return request
 
 
@@ -795,8 +840,11 @@ def _django_module():
     module("django.db", connection=connection, connections={"default": connection})
     module("django.http", HttpResponse=_django_response(200), HttpResponseBadRequest=_django_response(400),
            HttpResponseForbidden=_django_response(403), HttpResponseNotFound=_django_response(404),
-           HttpResponseRedirect=_django_redirect, JsonResponse=_django_json_response, Http404=Http404)
+           HttpResponseRedirect=HttpResponseRedirect,
+           HttpResponsePermanentRedirect=HttpResponsePermanentRedirect, JsonResponse=_django_json_response, Http404=Http404)
     module("django.shortcuts", redirect=_django_redirect, render=lambda request, name, context=None, **k: Response("template:%s" % name, 200))
+    module("django.utils")
+    module("django.utils.http", url_has_allowed_host_and_scheme=url_has_allowed_host_and_scheme)
     module("django.contrib")
     module("django.contrib.auth")
     module("django.contrib.auth.decorators", login_required=_passthrough_decorator,
@@ -823,7 +871,7 @@ def _install(real, stubs):
         "django": _django_module,
     }
     for name, factory in fakes.items():
-        if name in real:
+        if name in real or name.split(".")[0] in real:
             continue
         module = factory()
         sys.modules[name] = module
@@ -1039,6 +1087,15 @@ def assert_password_hash(password, message=None):
         fail(message or "the password was digested with a fast hash", fast)
     if not any(k["password"] == want for k in crypto.kdfs):
         fail(message or "expected the password to reach hashlib.scrypt or hashlib.pbkdf2_hmac", [k["kind"] for k in crypto.kdfs])
+
+
+def assert_redirect_local(response, host="testserver", message=None):
+    """The response is a redirect whose target stays on `host`: a path, or this host's own URL."""
+    location = (getattr(response, "headers", None) or {}).get("location")
+    if location is None or not 300 <= int(getattr(response, "status_code", 0)) < 400:
+        fail(message or "expected a redirect", getattr(response, "status_code", response))
+    if not url_has_allowed_host_and_scheme(str(location), {host}):
+        fail(message or "the redirect leaves the site for %r" % location, location)
 
 
 def assert_cookie_flags(name=None, message=None):
