@@ -281,3 +281,126 @@ class TestFixtures:
         assert fixture["family"] == HARDCODED_CREDENTIAL
         assert fixture["trusted_fixture_test"]["runtime"] == "node"
         assert fixture["finding"]["cwe_id"] == "CWE-798"
+
+
+# --- a signing key passed as a literal ------------------------------------------------------
+#
+# `cwe-798.js-literal-signing-key` reports the key argument of createHmac, createCipheriv,
+# createDecipheriv, jwt.sign and jwt.verify. There is no binding to name the variable after, so
+# the call names it.
+
+SIGNING_TS = (
+    'import crypto from "crypto";\n'
+    "\n"
+    "export const hmac = (data: string) => crypto.createHmac('sha256', 'pa4qacea4VK9t9nGv7yZtwmj').update(data).digest('hex');\n"
+)
+
+
+def _signing_payload(request_payload: dict, path: str, source: str, line: int) -> dict:
+    entries = [GitTreeEntry(path=path, mode="100644", type="blob", sha=git_blob(source))]
+    payload = dict(request_payload)
+    payload["tree_entries"] = [entry.model_dump() for entry in entries]
+    payload["head_tree_oid"] = compute_tree_oid(entries)
+    payload["files"] = [{"path": path, "content": source, "sha": git_blob(source)}]
+    payload["findings"] = [
+        {
+            "snapshot_id": "signing-1",
+            "rule_id": "opengrep.cwe-798.js-literal-signing-key",
+            "cwe_id": "CWE-798",
+            "file_path": path,
+            "line_start": line,
+            "line_end": line,
+        }
+    ]
+    payload["policy"] = {**request_payload["policy"], "sandbox_image_digest": None, "allow_development_verification": True, "verification_checks": []}
+    return payload
+
+
+def _signing_snapshot(request_payload: dict, path: str, source: str, line: int):
+    request = RepairRequest.model_validate(_signing_payload(request_payload, path, source, line))
+    return Snapshot(request), request.findings[0]
+
+
+class TestSigningKeyTemplate:
+    def test_a_typescript_hmac_key_reads_the_environment_with_a_non_null_assertion(self, request_payload):
+        """`process.env.X` is `string | undefined` and `createHmac` takes no undefined key under
+        strict, so the TypeScript read is asserted. The assertion is erased at run time, and an
+        unset variable makes `createHmac` throw rather than key the digest with nothing."""
+        snapshot, finding = _signing_snapshot(request_payload, "web/signing.ts", SIGNING_TS, 3)
+        patch = generate_template(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
+        assert not isinstance(patch, TemplateFallback), getattr(patch, "reason", None)
+        [change] = patch.changes
+        assert change["replacement_lines"] == [
+            "export const hmac = (data: string) => crypto.createHmac('sha256', process.env.HMAC_SECRET!).update(data).digest('hex');"
+        ]
+
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            ("const t = jwt.sign({ id: f(a, b) }, \"k1234567890\", { expiresIn: '1h' });", "const t = jwt.sign({ id: f(a, b) }, process.env.JWT_SECRET, { expiresIn: '1h' });"),
+            ("const c = jsonwebtoken.verify(token, 'k1234567890');", "const c = jsonwebtoken.verify(token, process.env.JWT_SECRET);"),
+            ("const d = createHmac('sha1', 'k1234567890').update(x).digest('hex');", "const d = createHmac('sha1', process.env.HMAC_SECRET).update(x).digest('hex');"),
+            ("const e = crypto.createCipheriv('aes-256-cbc', 'k1234567890k1234567890k1234567890', iv);", "const e = crypto.createCipheriv('aes-256-cbc', process.env.ENCRYPTION_KEY, iv);"),
+            ("const g = crypto.createDecipheriv('aes-256-cbc', 'k1234567890k1234567890k1234567890', iv);", "const g = crypto.createDecipheriv('aes-256-cbc', process.env.ENCRYPTION_KEY, iv);"),
+        ],
+    )
+    def test_every_sink_the_rule_matches_is_rewritten_in_javascript(self, request_payload, line, expected):
+        snapshot, finding = _signing_snapshot(request_payload, "src/auth.js", line + "\n", 1)
+        patch = generate_template(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
+        assert not isinstance(patch, TemplateFallback), getattr(patch, "reason", None)
+        assert patch.changes[0]["replacement_lines"] == [expected]
+
+    def test_a_key_that_is_not_a_plain_literal_falls_back(self, request_payload):
+        snapshot, finding = _signing_snapshot(request_payload, "src/auth.js", "const t = jwt.sign(p, `k-${suffix}-abcdefgh`);\n", 1)
+        patch = generate_template(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
+        assert isinstance(patch, TemplateFallback)
+        assert patch.reason == "string_literal_assignment_not_found"
+
+
+class TestSigningKeyProof:
+    def test_the_proof_calls_the_exported_arrow_and_asserts_the_read(self, request_payload):
+        snapshot, finding = _signing_snapshot(request_payload, "web/signing.ts", SIGNING_TS, 3)
+        proof = generate_proof(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
+        assert not isinstance(proof, ProofFallback), getattr(proof, "reason", None)
+        assert '{ env: { "HMAC_SECRET": "value-from-env" } }' in proof.content
+        assert "  h.call(m.hmac, {});" in proof.content
+        assert 'h.assert.envRead("HMAC_SECRET")' in proof.content
+        assert 'h.assert.notInSource(m, "pa4qacea4VK9t9nGv7yZtwmj")' in proof.content
+
+    def test_a_block_function_is_driven_the_way_the_assignment_proof_drives_it(self, request_payload):
+        source = "const crypto = require('crypto');\nfunction sign(data) {\n  return crypto.createHmac('sha256', 'k1234567890').update(data).digest('hex');\n}\nmodule.exports = { sign };\n"
+        snapshot, finding = _signing_snapshot(request_payload, "src/sign.js", source, 3)
+        proof = generate_proof(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
+        assert not isinstance(proof, ProofFallback), getattr(proof, "reason", None)
+        assert "  h.call(m.sign, {});" in proof.content
+
+    def test_an_unexported_arrow_is_not_driven(self, request_payload):
+        source = 'import crypto from "crypto";\nconst hmac = (data: string) => crypto.createHmac("sha256", "pa4qacea4VK9t9nGv7yZtwmj").update(data).digest("hex");\n'
+        snapshot, finding = _signing_snapshot(request_payload, "web/signing.ts", source, 2)
+        proof = generate_proof(snapshot, finding, HARDCODED_CREDENTIAL, JAVASCRIPT)
+        assert "h.call(" not in proof.content
+
+
+@requires_node
+@pytest.mark.asyncio
+async def test_engine_repairs_a_typescript_signing_key_with_a_proof_that_fails_on_the_original(request_payload):
+    from src.agent import RepairAgent
+    from src.engine import RepairEngine
+    from src.sandbox import InProcessSandboxBroker, LocalSubprocessDriver
+    from src.verification import Verifier
+
+    payload = _signing_payload(request_payload, "web/signing.ts", SIGNING_TS, 3)
+
+    def agent(_request):
+        return RepairAgent(None, Verifier(InProcessSandboxBroker(LocalSubprocessDriver())))
+
+    response = await RepairEngine(agent).repair(RepairRequest.model_validate(payload))
+    assert response.state == "ready", response.reason
+    [candidate] = response.candidates
+    content = candidate.patch[0].replacement_content
+    assert "crypto.createHmac('sha256', process.env.HMAC_SECRET!)" in content
+    assert "pa4qacea4VK9t9nGv7yZtwmj" not in content
+    checks = {item["check_id"]: item for item in response.evidence["verification_run"]["checks"]}
+    regression = checks["generated_regression_test"]
+    assert regression["baseline"]["status"] == "failed" and regression["candidate"]["status"] == "passed"
+    assert candidate.preview["evidence"]["candidate_source"] == "template"

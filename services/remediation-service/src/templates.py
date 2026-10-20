@@ -41,6 +41,7 @@ from .sites import (
     PasswordHashSite,
     PyFunction,
     SiteError,
+    SigningKeyCall,
     js_bound_names,
     js_environment_name,
     js_eval_site,
@@ -54,6 +55,7 @@ from .sites import (
     js_require_line,
     js_site_for_line,
     scope_lines_near,
+    signing_key_call,
     python_site_for_line,
     python_import_anchor,
     python_module_assignment,
@@ -912,6 +914,9 @@ def _js_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatc
     source = snapshot.full_content(path)
     found = js_literal_assignment_in_span(source, finding.line_start, finding.line_end)
     if found is None:
+        signing = signing_key_call(source, finding.line_start, finding.line_end, JAVASCRIPT)
+        if signing is not None:
+            return _js_signing_key(finding, source, signing)
         raise TemplateError("string_literal_assignment_not_found")
     line, (name, literal, quote, _kind) = found
     variable = js_environment_name(name)
@@ -931,6 +936,28 @@ def _js_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatc
         HARDCODED_CREDENTIAL,
         [_hunk(path, finding.stable_id, line, [text], [replacement])],
         f"{name} read from process.env.{variable} instead of a literal",
+    )
+
+
+def _js_signing_key(finding: FindingSnapshot, source: str, call: SigningKeyCall) -> TemplatePatch:
+    """`crypto.createHmac('sha256', 'k…')` becomes `crypto.createHmac('sha256', process.env.HMAC_SECRET)`.
+
+    In TypeScript the read carries a non-null assertion: `process.env.X` is `string | undefined`,
+    which no key parameter of these calls accepts under `strict`. The assertion is type-only, so
+    an unset variable still reaches the call as `undefined`, and every one of these calls throws
+    on that (`createHmac`, `createCipheriv`, `jwt.sign` and `jwt.verify` all refuse a missing
+    key) rather than signing with an empty one.
+    """
+    path = finding.affected_path
+    text = source.splitlines()[call.line - 1]
+    typescript = path.endswith((".ts", ".mts", ".cts", ".tsx"))
+    read = f"process.env.{call.variable}" + ("!" if typescript else "")
+    replacement = text[: call.start] + read + text[call.end :]
+    return TemplatePatch(
+        finding.stable_id,
+        HARDCODED_CREDENTIAL,
+        [_hunk(path, finding.stable_id, call.line, [text], [replacement])],
+        f"the key read from process.env.{call.variable} instead of a literal",
     )
 
 
@@ -970,6 +997,9 @@ def _py_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatc
     line = _finding_line(finding)
     assignment = python_module_assignment(source, line)
     if assignment is None:
+        signing = signing_key_call(source, finding.line_start, finding.line_end, PYTHON)
+        if signing is not None:
+            return _py_signing_key(finding, source, signing)
         raise TemplateError("module_level_string_assignment_not_found")
     name, literal, quote = assignment
     text = source.splitlines()[line - 1]
@@ -981,6 +1011,24 @@ def _py_credential(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatc
     if import_hunk:
         changes.insert(0, import_hunk)
     return TemplatePatch(finding.stable_id, HARDCODED_CREDENTIAL, changes, f"{name} read from the environment instead of a literal")
+
+
+def _py_signing_key(finding: FindingSnapshot, source: str, call: SigningKeyCall) -> TemplatePatch:
+    """`jwt.encode(payload, 'k…')` becomes `jwt.encode(payload, os.environ["JWT_SECRET"])`.
+
+    `os.environ[...]` raises `KeyError` when the deployment does not set the variable, so a
+    missing key stops the call instead of signing with an empty one. A bytes literal
+    (`hmac.new(b"k…", ...)`) keeps its type with `.encode()`.
+    """
+    path = finding.affected_path
+    text = source.splitlines()[call.line - 1]
+    read = f'os.environ["{call.variable}"]' + (".encode()" if call.encoded else "")
+    replacement = text[: call.start] + read + text[call.end :]
+    changes = [_hunk(path, finding.stable_id, call.line, [text], [replacement])]
+    import_hunk = _py_import_hunk(source, path, finding.stable_id, "os", call.line)
+    if import_hunk:
+        changes.insert(0, import_hunk)
+    return TemplatePatch(finding.stable_id, HARDCODED_CREDENTIAL, changes, f"the key read from the environment ({call.variable}) instead of a literal")
 
 
 def _py_eval(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunction) -> TemplatePatch:

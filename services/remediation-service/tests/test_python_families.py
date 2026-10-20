@@ -452,6 +452,108 @@ def test_python_groups_get_the_python_prompt_and_tools(request_payload):
     assert "require('../harness')" in javascript["function"]["parameters"]["properties"]["regression_tests"]["description"]
 
 
+# --- a signing key passed as a literal ------------------------------------------------------
+#
+# `cwe-798.py-literal-signing-key` reports the key argument of `jwt.encode`/`jwt.decode` and
+# `hmac.new`. There is no `NAME = "literal"` assignment to rewrite, so the call names the
+# variable instead.
+
+TOKENS_PY = (
+    "import jwt\n"
+    "\n"
+    "\n"
+    "def issue(payload):\n"
+    "    return jwt.encode(payload, 'csrf_vulneribility', algorithm='HS256')\n"
+)
+SIGNING_FINDING = {
+    "snapshot_id": "signing-5", "rule_id": "opengrep.cwe-798.py-literal-signing-key", "cwe_id": "CWE-798",
+    "file_path": "assistant/tokens.py", "line_start": 5, "line_end": 5,
+}
+
+
+def _signing_snapshot(request_payload, source: str, line: int, path: str = "assistant/tokens.py"):
+    finding = {**SIGNING_FINDING, "file_path": path, "line_start": line, "line_end": line}
+    request = RepairRequest.model_validate(_payload(request_payload, [(path, source)], [finding]))
+    return Snapshot(request), request.findings[0]
+
+
+class TestPythonSigningKey:
+    def test_the_finding_classifies_into_the_credential_family(self):
+        assert rule_family(_finding(rule_id="opengrep.cwe-798.py-literal-signing-key", cwe_id="CWE-798")) == HARDCODED_CREDENTIAL
+
+    def test_jwt_encode_reads_jwt_secret_and_imports_os(self, request_payload):
+        from src.templates import TemplateFallback, generate_template
+
+        snapshot, finding = _signing_snapshot(request_payload, TOKENS_PY, 5)
+        patch = generate_template(snapshot, finding, HARDCODED_CREDENTIAL, PYTHON)
+        assert not isinstance(patch, TemplateFallback), getattr(patch, "reason", None)
+        imports, call = patch.changes
+        assert imports["replacement_lines"] == ["import jwt", "import os"]
+        assert call["replacement_lines"] == ["    return jwt.encode(payload, os.environ[\"JWT_SECRET\"], algorithm='HS256')"]
+
+    def test_an_existing_os_import_is_not_repeated(self, request_payload):
+        from src.templates import generate_template
+
+        source = "import os\nimport jwt\n\ndef check(token):\n    return jwt.decode(token, \"k3y-abcdefgh\", algorithms=['HS256'])\n"
+        snapshot, finding = _signing_snapshot(request_payload, source, 5)
+        patch = generate_template(snapshot, finding, HARDCODED_CREDENTIAL, PYTHON)
+        [call] = patch.changes
+        assert call["replacement_lines"] == ["    return jwt.decode(token, os.environ[\"JWT_SECRET\"], algorithms=['HS256'])"]
+
+    def test_a_bytes_key_stays_bytes(self, request_payload):
+        from src.templates import generate_template
+
+        source = "import hashlib\nimport hmac\nimport os\n\ndef sign(msg):\n    return hmac.new(b\"abcdefghij\", msg, hashlib.sha256).hexdigest()\n"
+        snapshot, finding = _signing_snapshot(request_payload, source, 6)
+        [call] = generate_template(snapshot, finding, HARDCODED_CREDENTIAL, PYTHON).changes
+        assert call["replacement_lines"] == ['    return hmac.new(os.environ["HMAC_SECRET"].encode(), msg, hashlib.sha256).hexdigest()']
+
+    def test_a_key_that_is_not_a_literal_falls_back(self, request_payload):
+        from src.templates import TemplateFallback, generate_template
+
+        source = "import jwt\n\ndef issue(payload, key):\n    return jwt.encode(payload, key + 'abcdefgh')\n"
+        snapshot, finding = _signing_snapshot(request_payload, source, 4)
+        patch = generate_template(snapshot, finding, HARDCODED_CREDENTIAL, PYTHON)
+        assert isinstance(patch, TemplateFallback)
+        assert patch.reason == "module_level_string_assignment_not_found"
+
+    def test_the_proof_calls_the_function_and_asserts_the_read_and_the_absent_literal(self, request_payload):
+        from src.proofs import ProofFallback, generate_proof
+
+        snapshot, finding = _signing_snapshot(request_payload, TOKENS_PY, 5)
+        proof = generate_proof(snapshot, finding, HARDCODED_CREDENTIAL, PYTHON)
+        assert not isinstance(proof, ProofFallback), getattr(proof, "reason", None)
+        assert 'env={"JWT_SECRET": "value-from-env"}' in proof.content
+        assert "    h.call(m.issue, {})" in proof.content
+        assert 'h.assert_env_read("JWT_SECRET")' in proof.content
+        assert 'h.assert_not_in_source(m, "csrf_vulneribility")' in proof.content
+
+    def test_a_method_is_not_driven(self, request_payload):
+        from src.proofs import generate_proof
+
+        source = "import jwt\n\nclass Tokens:\n    def issue(self, payload):\n        return jwt.encode(payload, 'csrf_vulneribility')\n"
+        snapshot, finding = _signing_snapshot(request_payload, source, 5)
+        proof = generate_proof(snapshot, finding, HARDCODED_CREDENTIAL, PYTHON)
+        assert "h.call(" not in proof.content
+
+
+@requires_python
+@pytest.mark.asyncio
+async def test_engine_repairs_a_signing_key_literal_with_a_proof_that_fails_on_the_original(request_payload):
+    payload = _payload(request_payload, [("assistant/tokens.py", TOKENS_PY)], [SIGNING_FINDING])
+    response = await RepairEngine(lambda request: _local_agent(_Scripted([]))).repair(RepairRequest.model_validate(payload))
+    assert response.state == "ready", response.reason
+    [candidate] = response.candidates
+    content = candidate.patch[0].replacement_content
+    assert 'jwt.encode(payload, os.environ["JWT_SECRET"], algorithm=\'HS256\')' in content
+    assert "import os\n" in content and "csrf_vulneribility" not in content
+    checks = {item["check_id"]: item for item in response.evidence["verification_run"]["checks"]}
+    regression = checks["generated_regression_test"]
+    assert regression["baseline"]["status"] == "failed" and regression["candidate"]["status"] == "passed"
+    assert "assistant/tokens.py now reads JWT_SECRET from the environment; the deployment must provide it" in candidate.preview["evidence"]["limitations"]
+    assert candidate.preview["evidence"]["candidate_source"] == "template"
+
+
 def test_a_shell_command_a_language_model_wrote_is_refused_rather_than_split(request_payload):
     """`subprocess.run([answer])` would pass the argv proof and still run whatever the model chose."""
     source = (

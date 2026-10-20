@@ -41,6 +41,7 @@ from .sites import (
     ModuleScope,
     PyFunction,
     SiteError,
+    SigningKeyCall,
     cookie_site,
     js_environment_name,
     js_eval_site,
@@ -61,6 +62,7 @@ from .sites import (
     python_module_assignment,
     python_module_value,
     scope_lines_near,
+    signing_key_call,
 )
 
 SQL_PAYLOAD = "1' OR '1'='1"
@@ -745,6 +747,9 @@ def _js_credential_proof(snapshot: Snapshot, finding: FindingSnapshot) -> Genera
     source = snapshot.full_content(path)
     found = js_literal_assignment_in_span(source, finding.line_start, finding.line_end)
     if found is None:
+        signing = signing_key_call(source, finding.line_start, finding.line_end, JAVASCRIPT)
+        if signing is not None:
+            return _js_signing_key_proof(finding, source, signing)
         raise SiteError("string_literal_assignment_not_found")
     line, (name, literal, _quote, kind) = found
     variable = js_environment_name(name)
@@ -765,6 +770,52 @@ def _js_credential_proof(snapshot: Snapshot, finding: FindingSnapshot) -> Genera
     return GeneratedProof(
         finding.stable_id, HARDCODED_CREDENTIAL, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
         f"{name} must come from process.env.{variable} and the literal must be gone from the module",
+        None,
+    )
+
+
+_JS_EXPRESSION_ARROW_RE = re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?\((?P<params>[^()]*)\)\s*(?::\s*[^=]+?)?\s*=>")
+
+
+def _js_signing_key_drive(source: str, line: int) -> list[str]:
+    """The call that reaches a signing call inside a function, or nothing when the import does.
+
+    A block-bodied function is found the way the assignment proof finds one. A one-line arrow
+    (`export const sign = (data: string) => crypto.createHmac(...)`) has no braces for the
+    function scan to close, so it is read off its own line here, and only when it is exported.
+    """
+    drive = _js_credential_drive(source, line)
+    if drive:
+        return drive
+    found = _JS_EXPRESSION_ARROW_RE.match(source.splitlines()[line - 1])
+    if not found or not js_module_exports_name(source, found.group("name")):
+        return []
+    count = len([part for part in found.group("params").split(",") if part.strip()])
+    return [f"  h.call(m.{found.group('name')}{''.join(', {}' for _ in range(count))});"]
+
+
+def _js_signing_key_proof(finding: FindingSnapshot, source: str, call: SigningKeyCall) -> GeneratedProof:
+    """The test a signing key passed as a literal has to satisfy.
+
+    The same two independent failures as the assignment proof: the original never reads
+    `process.env`, and it still carries the literal. The key is read when the call runs, so the
+    proof calls the function that makes it; that call may throw afterwards on the empty
+    arguments, which `h.call` records instead of raising.
+    """
+    path = finding.affected_path
+    body = [
+        "const h = require('../harness');",
+        "h.run(async () => {",
+        f"  const m = h.load({_js(path)}, {{ env: {{ {json.dumps(call.variable)}: {_js(ENV_VALUE)} }} }});",
+        *_js_signing_key_drive(source, call.line),
+        f"  h.assert.envRead({_js(call.variable)});",
+        f"  h.assert.notInSource(m, {_js(call.literal)});",
+        "});",
+        "",
+    ]
+    return GeneratedProof(
+        finding.stable_id, HARDCODED_CREDENTIAL, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
+        f"the key must come from process.env.{call.variable} and the literal must be gone from the module",
         None,
     )
 
@@ -1266,6 +1317,9 @@ def _py_credential_proof(snapshot: Snapshot, finding: FindingSnapshot) -> Genera
     source = snapshot.full_content(path)
     assignment = python_module_assignment(source, _finding_line(finding))
     if assignment is None:
+        signing = signing_key_call(source, finding.line_start, finding.line_end, PYTHON)
+        if signing is not None:
+            return _py_signing_key_proof(finding, source, signing)
         raise SiteError("module_level_string_assignment_not_found")
     name, literal, _ = assignment
     if not literal:
@@ -1278,6 +1332,37 @@ def _py_credential_proof(snapshot: Snapshot, finding: FindingSnapshot) -> Genera
     return GeneratedProof(
         finding.stable_id, HARDCODED_CREDENTIAL, PYTHON, test_path(finding.stable_id, PYTHON), "\n".join(body),
         f"{name} must come from the environment and the literal must be gone from the module", None,
+    )
+
+
+def _py_signing_key_drive(source: str, line: int) -> list[str]:
+    """The call that reaches a signing call inside a top-level function, or nothing.
+
+    At module scope the import runs the call. Inside a method or a nested function there is no
+    name on the module to call, so nothing is driven and the proof fails honestly on the repair
+    as well, rather than claiming a read the test never reached.
+    """
+    try:
+        site = python_site_for_line(source, line)
+    except SiteError:
+        return []
+    if not isinstance(site, PyFunction) or site.node is None or getattr(site.node, "col_offset", 1) != 0:
+        return []
+    return [f"    h.call(m.{site.name}{''.join(', {}' for _ in site.parameters)})"]
+
+
+def _py_signing_key_proof(finding: FindingSnapshot, source: str, call: SigningKeyCall) -> GeneratedProof:
+    """The test a signing key passed as a literal has to satisfy: the module reads the variable
+    once the call runs, and the literal is gone from its source."""
+    path = finding.affected_path
+    body = _py_header(path, {call.variable: ENV_VALUE}) + [
+        *_py_signing_key_drive(source, call.line),
+        f"    h.assert_env_read({_py(call.variable)})",
+        f"    h.assert_not_in_source(m, {_py(call.literal)})",
+    ] + _py_footer()
+    return GeneratedProof(
+        finding.stable_id, HARDCODED_CREDENTIAL, PYTHON, test_path(finding.stable_id, PYTHON), "\n".join(body),
+        f"the key must come from the environment ({call.variable}) and the literal must be gone from the module", None,
     )
 
 

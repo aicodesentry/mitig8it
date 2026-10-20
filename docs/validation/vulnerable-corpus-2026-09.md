@@ -1070,3 +1070,32 @@ noise and says little about precision.
 | sandbox harness spec | `node --test-reporter=tap services/remediation-service/tests/harness_spec.js` | 18 passed |
 | remediation benchmark harness | `python -m pytest benchmarks/remediation/tests -q` | 23 passed |
 | replay self-test | `scripts/replay/selftest.py` | ok: findings=2 candidates=2 verified=2 agent_needed=0 |
+
+## Follow-up, 19 October 2026: keys passed straight to a signing API
+
+Seven of the eleven missed `hardcoded_secret` labels have no variable name for the name-based
+rules to read, or a name they do not recognise. Three of them are a literal handed directly to
+the API that uses it. Two rules now read that shape from the call instead of the name:
+
+- `cwe-798.js-literal-signing-key`: `crypto.createHmac`, `createCipheriv`, `createDecipheriv`,
+  `jwt.sign` and `jwt.verify` with a string literal key.
+- `cwe-798.py-literal-signing-key`: `jwt.encode`, `jwt.decode` and `hmac.new` with a string
+  literal key.
+
+**On the corpus.** The rules produced four findings, and all four are true. Two are labels that
+were missed before: juice-shop `lib/insecurity.ts:42` and pygoat `introduction/mitre.py:169`. The
+other two are pygoat's `jwt.decode` calls at lines 182 and 194, which use the same secret.
+`hardcoded_secret` recall goes from 7 to 9 of 18, and the ratchet reports 107 of 171 labels hit,
+99 by a posting rule, with no regression. The baseline is refreshed.
+
+**On real code.** The same 12 open-source LLM applications used in `llm-output-sinks-2026-10.md`
+(38,098 files) produced 42 findings, and every one is in a test file (`*.spec.*`, `*.test.*`,
+`*_test.py`). Opengrep's constant propagation means a variable that holds a literal also
+matches, which is why test helpers such as `const jwtSecret = 'test'` are reported. Test-file
+findings are downgraded to the non-blocking `info` severity by `test_code_scope`, as for every
+other rule. Application code produced none.
+
+**Still missed.**
+- **Unrecognised names:** NodeGoat `cryptoKey`, goof `var token = 'SECRET_TOKEN_...'`, juice-shop `mnemonic`, and pygoat `SECRET_COOKIE_KEY = "PYGOAT"`. The last is below the minimum value length.
+- **Configuration and seed data:** dvpwa `config/dev.yaml`, goof `typeorm-db.js`, NodeGoat `db-reset.js`, and the DSVW XML password.
+- **A Hashids salt:** juice-shop `routes/restoreProgress.ts`.
