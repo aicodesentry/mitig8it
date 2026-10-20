@@ -95,6 +95,10 @@ def test_the_skip_section_passes_github_service_validation_without_a_candidate()
     assert "candidate_id: skipped && !raw.candidate_id ? ''" in source
     assert "`No automatic fix: ${section.skipped_reason}`" in source
     section = remediation.skip_section(EVAL_FINDING, "fp-eval", "why")
+    if not INLINE_FIXES.exists():
+        # The action image carries github-service but not api-service, where the App's
+        # empty section lives; the shape comparison runs in the repository checkout.
+        return
     app_keys = set(re.findall(r"(\w+):", re.search(r"function emptySection\(finding\) \{\s*return \{(.*?)\};", INLINE_FIXES.read_text(encoding="utf-8"), re.S).group(1)))
     # The App's empty section, less the fields only the App fills: a finding body (the action
     # posts its own comments first), and the covered/superseded links between candidates.
