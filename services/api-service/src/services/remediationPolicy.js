@@ -21,10 +21,11 @@ const DEFAULT_POLICY = Object.freeze({
   // `password_hashing` repairs a fast digest of a password to a salted scrypt key and rewrites the
   // module's own comparisons into a verifier; `cookie_flags` sets HttpOnly, Secure and
   // SameSite=Lax on the options a cookie is already set with. Both are proven by execution in
-  // both toolchains.
+  // both toolchains. `open_redirect` checks a Flask or Django redirect target read off the
+  // request before redirecting to it, Python only, proven by execution.
   allowed_rule_families: Object.freeze([
     'sql_parameterization', 'command_arguments', 'path_containment', 'hardcoded_credential', 'code_injection_eval',
-    'workflow_hardening', 'password_hashing', 'cookie_flags',
+    'workflow_hardening', 'password_hashing', 'cookie_flags', 'open_redirect',
   ]),
   repair_memory_expiry_days: 90,
   // The sandbox deadline for one verification, enforced by the broker across every

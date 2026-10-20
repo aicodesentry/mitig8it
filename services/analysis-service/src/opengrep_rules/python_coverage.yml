@@ -824,6 +824,7 @@ rules:
       owasp: "A01:2021"
       category: "open redirect"
       internal_type: "open_redirect"
+      family: "open_redirect"
       confidence: "0.88"
       posting: post
 

@@ -54,6 +54,7 @@ FAMILY_CWE = {
     # A cookie without Secure is CWE-614 and one without HttpOnly is CWE-1004; the rules declare
     # whichever one their pattern is mostly about, and both reach the same repair.
     "cookie_flags": frozenset({"CWE-614", "CWE-1004"}),
+    "open_redirect": frozenset({"CWE-601"}),
 }
 
 

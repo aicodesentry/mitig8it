@@ -3,8 +3,8 @@
 Standard library only, never part of a repair. Materialized at .mitig8it/harness.py; a test at
 .mitig8it/regression/<finding>.test.py runs as `python3 .mitig8it/harness.py <test>` and does
 `import harness as h`. It loads a repository module with flask, sqlite3, psycopg, sqlalchemy,
-subprocess, os.system, os.environ, and open() faked and recorded, invokes plain functions or
-Flask views, and asserts on what the module did.
+subprocess, os.system, os.environ, open(), and Django's redirects faked and recorded, invokes
+plain functions or Flask views, and asserts on what the module did.
 """
 import builtins
 import hashlib as _hashlib
@@ -18,6 +18,7 @@ import re
 import sys
 import traceback
 import types
+import unicodedata
 import urllib.parse
 
 version = 1
@@ -671,6 +672,73 @@ def invoke(app, method, rule, params=None, query=None, json=None, form=None, dat
     raise HarnessAssertion("harness.invoke: no %s view recorded for %s" % (method, rule))
 
 
+# --- django fake: redirects, the host check, and a request a plain view is called with ----------
+class HttpResponseRedirect(Response):
+    status_code = 302
+
+    def __init__(self, redirect_to, *args, **kwargs):
+        Response.__init__(self, "", type(self).status_code, {"location": str(redirect_to)})
+        self.url = str(redirect_to)
+
+    def __getitem__(self, name):
+        return self.headers[name.lower()]
+
+
+class HttpResponsePermanentRedirect(HttpResponseRedirect):
+    status_code = 301
+
+
+def _django_redirect(to, *args, permanent=False, **kwargs):
+    return (HttpResponsePermanentRedirect if permanent else HttpResponseRedirect)(to)
+
+
+def _allowed(url, hosts, require_https):
+    if url.startswith("///"):
+        return False
+    try:
+        info = urllib.parse.urlparse(url)
+    except ValueError:
+        return False
+    if (not info.netloc and info.scheme) or unicodedata.category(url[0])[0] == "C":
+        return False
+    scheme = info.scheme or ("http" if info.netloc else "")
+    return (not info.netloc or info.netloc in hosts) and (not scheme or scheme in (["https"] if require_https else ["http", "https"]))
+
+
+def url_has_allowed_host_and_scheme(url, allowed_hosts, require_https=False):
+    """Django's own check (django.utils.http), ported line for line."""
+    url = url.strip() if url is not None else url
+    if not url:
+        return False
+    hosts = set() if allowed_hosts is None else ({allowed_hosts} if isinstance(allowed_hosts, str) else set(allowed_hosts))
+    return _allowed(url, hosts, require_https) and _allowed(url.replace("\\", "/"), hosts, require_https)
+
+
+class django_request:
+    """A Django HttpRequest for calling a view directly: GET, POST, get_host(), is_secure()."""
+
+    def __init__(self, GET=None, POST=None, host="testserver", secure=False, method=None):
+        self.GET, self.POST, self.COOKIES, self.FILES, self.session = _MultiDict(GET or {}), _MultiDict(POST or {}), {}, {}, _MultiDict()
+        self.method, self.path, self.META = method or ("POST" if POST else "GET"), "/", {"HTTP_HOST": host}
+        self.headers, self._host, self._secure = _MultiDict({"Host": host}), host, secure
+
+    def get_host(self):
+        return self._host
+
+    def is_secure(self):
+        return self._secure
+
+
+def _django_modules():
+    made = {name: _StubModule(name) for name in ("django.http", "django.shortcuts", "django.utils.http")}
+    for module in made.values():
+        module.__path__ = []
+    made["django.http"].HttpResponseRedirect, made["django.http"].HttpResponsePermanentRedirect = HttpResponseRedirect, HttpResponsePermanentRedirect
+    made["django.shortcuts"].redirect = _django_redirect
+    made["django.utils.http"].url_has_allowed_host_and_scheme = url_has_allowed_host_and_scheme
+    return made
+
+
 # --- auto-stubs for third-party imports the sandbox does not carry ------------------------------
 # A stub is a class rather than an object, because a module under test does not only call what it
 # imports: it inherits from it. `class NewUserForm(UserCreationForm)` is the first statement of
@@ -715,7 +783,7 @@ class _StubModule(types.ModuleType):
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
-        return _stub(self.__name__ + "." + name)
+        return sys.modules.get(self.__name__ + "." + name) or _stub(self.__name__ + "." + name)
 
 
 class _StubLoader(importlib.abc.Loader):
@@ -746,9 +814,14 @@ def _install(real, stubs):
         "sqlalchemy": _sqlalchemy_module,
         "subprocess": _subprocess_module,
         "hashlib": _hashlib_module,
+        # Only the three modules a redirect repair touches. `django` itself stays a stub, so
+        # every other import from it (django.db, django.contrib) is stubbed as before.
+        "django.http": lambda: _django_modules()["django.http"],
+        "django.shortcuts": lambda: _django_modules()["django.shortcuts"],
+        "django.utils.http": lambda: _django_modules()["django.utils.http"],
     }
     for name, factory in fakes.items():
-        if name in real:
+        if name in real or name.split(".")[0] in real:
             continue
         module = factory()
         sys.modules[name] = module
@@ -964,6 +1037,15 @@ def assert_password_hash(password, message=None):
         fail(message or "the password was digested with a fast hash", fast)
     if not any(k["password"] == want for k in crypto.kdfs):
         fail(message or "expected the password to reach hashlib.scrypt or hashlib.pbkdf2_hmac", [k["kind"] for k in crypto.kdfs])
+
+
+def assert_redirect_local(response, host="testserver", message=None):
+    """The response is a redirect whose target stays on `host`: a path, or this host's own URL."""
+    location = (getattr(response, "headers", None) or {}).get("location")
+    if location is None or not 300 <= int(getattr(response, "status_code", 0)) < 400:
+        fail(message or "expected a redirect", getattr(response, "status_code", response))
+    if not url_has_allowed_host_and_scheme(str(location), {host}):
+        fail(message or "the redirect leaves the site for %r" % location, location)
 
 
 def assert_cookie_flags(name=None, message=None):

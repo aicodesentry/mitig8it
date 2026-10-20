@@ -306,7 +306,8 @@
               "code_injection_eval",
               "workflow_hardening",
               "password_hashing",
-              "cookie_flags"
+              "cookie_flags",
+              "open_redirect"
             ],
             "type": "string"
           },

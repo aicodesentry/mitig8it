@@ -261,6 +261,10 @@ def python_local_modules(snapshot: Snapshot) -> set[str]:
     return names
 
 
+# Top-level names shared by distributions that install separately (PEP 420 namespace packages).
+PYTHON_NAMESPACE_ROOTS = frozenset({"azure", "backports", "google", "jaraco", "sphinxcontrib", "zope"})
+
+
 def _reject_missing_python_dependencies(
     path: str,
     original: str,
@@ -270,7 +274,13 @@ def _reject_missing_python_dependencies(
     allow_declared: bool = True,
     allow_harness_modules: bool = False,
 ) -> None:
-    introduced = {python_top_level(item) for item in python_module_specifiers(replacement) - python_module_specifiers(original)}
+    already = python_module_specifiers(original)
+    # A package the file already imports from is a dependency the repository already has, so a
+    # repair that imports another of its modules (`django.utils.http` beside `django.shortcuts`)
+    # introduces nothing. Namespace packages are the exception: `google.cloud.storage` and
+    # `google.auth` are separate distributions under one top-level name.
+    present = {python_top_level(item) for item in already} - PYTHON_NAMESPACE_ROOTS
+    introduced = {python_top_level(item) for item in python_module_specifiers(replacement) - already} - present
     if not introduced:
         return
     local = python_local_modules(snapshot)
