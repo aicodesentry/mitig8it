@@ -78,6 +78,7 @@ Per-finding skips are reported in the job's `skipped` list and surface as the `N
 | `unsupported_language` | The file extension is neither JavaScript nor Python. Decided at selection, so such a finding never enters a job and never costs the job's other findings their repair. |
 | `pg_dependency_not_proven` | A JavaScript SQL repair whose snapshot has no `package.json` declaring `pg`. |
 | `shell_pipeline_unsupported` | The process call carries a pipe or `shell: true`. |
+| `model_authored_command` | The whole command is a language model's answer, so it needs an allowlist, not an argument list. |
 | `ambiguous_query_api` | A Python query that reaches no known driver `execute()`, so the placeholder style cannot be determined. |
 | `not_repaired` | No regression test reproduced the finding, so no candidate claims it. |
 | `regression_test_not_reproducing` | A test also passed on the baseline, so it proves nothing. |

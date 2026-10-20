@@ -309,6 +309,136 @@ rules:
       confidence: "0.80"
       posting: post
 
+  # ── Language model output reaching a sink ──────────────────────────────
+  # OWASP LLM05, improper output handling. The source is the return value of a model client
+  # call in the same function, so a prompt the attacker can influence decides what reaches the
+  # sink. Measured on 12 open-source LLM applications (38,098 files): zero findings, see
+  # docs/validation/llm-output-sinks-2026-10.md.
+
+  - id: cwe-95.js-llm-output-code-execution
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $M.generateContent(...)
+        - pattern: generateText(...)
+    pattern-sinks:
+      - pattern-either:
+        - pattern: eval(...)
+        - pattern: new Function(...)
+    message: "Language model output is executed as JavaScript. A prompt the attacker influences decides what runs. Parse a structured answer and dispatch on it instead"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-95"
+      owasp: "LLM05:2025"
+      category: "code injection"
+      internal_type: "dynamic_code_execution"
+      family: "code_injection_eval"
+      confidence: "0.90"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "eval or Function constructor"
+      posting: post
+
+  - id: cwe-78.js-llm-output-shell
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $M.generateContent(...)
+        - pattern: generateText(...)
+    pattern-sinks:
+      # The receiver is named, as in cwe-78.js-exec-interpolated: `$X.exec` is also
+      # RegExp.prototype.exec, and model output is exactly what gets matched against a regex.
+      - patterns:
+        - pattern-either:
+          - pattern: exec($CMD, ...)
+          - pattern: execSync($CMD, ...)
+          - patterns:
+            - pattern-either:
+              - pattern: $CP.exec($CMD, ...)
+              - pattern: $CP.execSync($CMD, ...)
+            - metavariable-regex:
+                metavariable: $CP
+                regex: ^(?:child_process|childProcess|node_child_process|cp)$
+        - focus-metavariable: $CMD
+    message: "Language model output is run by a shell. Map the answer onto an allowlist of commands and use execFile with an argument array"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "LLM05:2025"
+      category: "command injection"
+      internal_type: "command_injection"
+      confidence: "0.90"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "shell command"
+      posting: post
+
+  - id: cwe-79.js-llm-output-html
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $M.generateContent(...)
+        - pattern: generateText(...)
+    pattern-sinks:
+      - pattern-either:
+        - pattern: $EL.innerHTML = $X
+        - pattern: $EL.outerHTML = $X
+        - pattern: document.write(...)
+        - pattern: "<$T dangerouslySetInnerHTML={{__html: $X}} />"
+    message: "Language model output is inserted as HTML. Text the model was steered into writing becomes script in the user's page. Render it as text, or sanitize it with DOMPurify first"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "LLM05:2025"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.88"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "HTML sink"
+      posting: post
+
+  - id: cwe-89.js-llm-output-sql
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $M.generateContent(...)
+        - pattern: generateText(...)
+    pattern-sinks:
+      - patterns:
+        - pattern: $DB.query($Q, ...)
+        - focus-metavariable: $Q
+    message: "Language model output is spliced into SQL text. Pass the value as a bound parameter, and never let the model write the query itself"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "LLM05:2025"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.88"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "SQL query text"
+      posting: post
+
+
   # ── Insecure deserialization ───────────────────────────────────────────
 
   - id: cwe-502.js-node-serialize-unserialize

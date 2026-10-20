@@ -255,6 +255,99 @@ rules:
       confidence: "0.88"
       posting: post
 
+  # ── Language model output reaching a sink ──────────────────────────────
+  # OWASP LLM05, improper output handling. The source is the return value of a model client
+  # call in the same function, so a prompt the attacker can influence decides what reaches the
+  # sink. Measured on 12 open-source LLM applications (38,098 files): zero findings, see
+  # docs/validation/llm-output-sinks-2026-10.md.
+
+  - id: cwe-95.py-llm-output-code-execution
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $C.generate_content(...)
+        - pattern: litellm.completion(...)
+    pattern-sinks:
+      - pattern-either:
+        - pattern: eval(...)
+        - pattern: exec(...)
+    message: "Language model output is executed as Python. A prompt the attacker influences decides what runs. Parse a structured answer and dispatch on it instead"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-95"
+      owasp: "LLM05:2025"
+      category: "code injection"
+      internal_type: "dynamic_code_execution"
+      family: "code_injection_eval"
+      confidence: "0.90"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "eval or exec"
+      posting: post
+
+  - id: cwe-78.py-llm-output-shell
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $C.generate_content(...)
+        - pattern: litellm.completion(...)
+    pattern-sinks:
+      - pattern-either:
+        - pattern: os.system(...)
+        - pattern: os.popen(...)
+        - patterns:
+          - pattern: subprocess.$F($CMD, ..., shell=True, ...)
+          - focus-metavariable: $CMD
+    message: "Language model output is run by a shell. Map the answer onto an allowlist of commands and pass arguments as a list"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "LLM05:2025"
+      category: "command injection"
+      internal_type: "command_injection"
+      confidence: "0.90"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "shell command"
+      posting: post
+
+  - id: cwe-89.py-llm-output-sql
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $C.generate_content(...)
+        - pattern: litellm.completion(...)
+    pattern-sinks:
+      - patterns:
+        - pattern: $CUR.execute($Q, ...)
+        - focus-metavariable: $Q
+    message: "Language model output is spliced into SQL text. Pass the value as a bound parameter, and never let the model write the query itself"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "LLM05:2025"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.88"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "SQL query text"
+      posting: post
+
+
   # ── Server-side template injection ─────────────────────────────────────
 
   - id: cwe-1336.py-jinja-template-interpolated

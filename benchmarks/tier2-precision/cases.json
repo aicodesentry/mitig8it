@@ -1444,6 +1444,95 @@
       "path": "negative/signing_key_placeholder.py",
       "code": "import jwt\n\n\ndef issue(payload, key):\n    jwt.encode(payload, \"changeme\", algorithm=\"HS256\")\n    return jwt.decode(payload, key, algorithms=[\"HS256\"])\n",
       "note": "A placeholder the value regex refuses, and a key passed as a parameter."
+    },
+    {
+      "id": "cwe-95.py-llm-output-code-execution",
+      "expect": "finding",
+      "rule": "cwe-95.py-llm-output-code-execution",
+      "path": "positive/cwe-95_py-llm-output-code-execution.py",
+      "code": "from openai import OpenAI\n\nclient = OpenAI()\n\n\ndef run_plan(task):\n    response = client.chat.completions.create(model=\"gpt-5\", messages=[{\"role\": \"user\", \"content\": task}])\n    code = response.choices[0].message.content\n    exec(code)\n"
+    },
+    {
+      "id": "cwe-78.py-llm-output-shell",
+      "expect": "finding",
+      "rule": "cwe-78.py-llm-output-shell",
+      "path": "positive/cwe-78_py-llm-output-shell.py",
+      "code": "import subprocess\nfrom openai import OpenAI\n\nclient = OpenAI()\n\n\ndef fix_build(log):\n    command = client.responses.create(model=\"gpt-5\", input=log).output_text\n    subprocess.run(command, shell=True)\n"
+    },
+    {
+      "id": "cwe-89.py-llm-output-sql",
+      "expect": "finding",
+      "rule": "cwe-89.py-llm-output-sql",
+      "path": "positive/cwe-89_py-llm-output-sql.py",
+      "code": "import anthropic\n\nclaude = anthropic.Anthropic()\n\n\ndef lookup(cursor, question):\n    message = claude.messages.create(model=\"claude-sonnet-5-5\", max_tokens=50, messages=[{\"role\": \"user\", \"content\": question}])\n    name = message.content[0].text\n    cursor.execute(f\"SELECT * FROM products WHERE name = '{name}'\")\n    return cursor.fetchall()\n"
+    },
+    {
+      "id": "cwe-95.js-llm-output-code-execution",
+      "expect": "finding",
+      "rule": "cwe-95.js-llm-output-code-execution",
+      "path": "positive/cwe-95_js-llm-output-code-execution.ts",
+      "code": "import OpenAI from \"openai\";\nconst openai = new OpenAI();\n\nexport async function plan(task: string) {\n  const r = await openai.chat.completions.create({ model: \"gpt-5\", messages: [{ role: \"user\", content: task }] });\n  const code = r.choices[0].message.content ?? \"\";\n  return eval(code);\n}\n"
+    },
+    {
+      "id": "cwe-78.js-llm-output-shell",
+      "expect": "finding",
+      "rule": "cwe-78.js-llm-output-shell",
+      "path": "positive/cwe-78_js-llm-output-shell.ts",
+      "code": "import { generateText } from \"ai\";\nimport { execSync } from \"child_process\";\n\nexport async function fixBuild(log: string) {\n  const { text } = await generateText({ model: \"openai/gpt-5\", prompt: log });\n  execSync(text);\n}\n"
+    },
+    {
+      "id": "cwe-79.js-llm-output-html",
+      "expect": "finding",
+      "rule": "cwe-79.js-llm-output-html",
+      "path": "positive/cwe-79_js-llm-output-html.jsx",
+      "code": "import { generateText } from \"ai\";\n\nexport async function Answer({ prompt }) {\n  const { text } = await generateText({ model: \"openai/gpt-5\", prompt });\n  return <div dangerouslySetInnerHTML={{ __html: text }} />;\n}\n"
+    },
+    {
+      "id": "cwe-89.js-llm-output-sql",
+      "expect": "finding",
+      "rule": "cwe-89.js-llm-output-sql",
+      "path": "positive/cwe-89_js-llm-output-sql.ts",
+      "code": "import Anthropic from \"@anthropic-ai/sdk\";\nconst anthropic = new Anthropic();\n\nexport async function lookup(db: any, question: string) {\n  const r = await anthropic.messages.create({ model: \"claude-sonnet-5-5\", max_tokens: 50, messages: [{ role: \"user\", content: question }] });\n  const name = r.content[0].type === \"text\" ? r.content[0].text : \"\";\n  return db.query(`SELECT * FROM products WHERE name = '${name}'`);\n}\n"
+    },
+    {
+      "id": "llm-output-bound-as-sql-parameter-is-safe",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-89.py-llm-output-sql"
+      ],
+      "path": "negative/llm_output_bound_parameter.py",
+      "code": "import anthropic\n\nclaude = anthropic.Anthropic()\n\n\ndef lookup(cursor, question):\n    message = claude.messages.create(model=\"claude-sonnet-5-5\", max_tokens=50, messages=[])\n    cursor.execute(\"SELECT * FROM products WHERE name = %s\", (message.content[0].text,))\n    return cursor.fetchall()\n",
+      "note": "The value travels as a bound parameter, so the query text is a constant."
+    },
+    {
+      "id": "llm-output-matched-by-a-regex-is-not-a-shell",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-78.js-llm-output-shell"
+      ],
+      "path": "negative/llm_output_regexp_exec.ts",
+      "code": "import { generateText } from \"ai\";\n\nexport async function firstNumber(prompt: string) {\n  const { text } = await generateText({ model: \"openai/gpt-5\", prompt });\n  return /\\d+/.exec(text)?.[0];\n}\n",
+      "note": "RegExp.prototype.exec shares the name with child_process.exec; the rule names the receiver."
+    },
+    {
+      "id": "llm-output-rendered-as-text-is-safe",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-79.js-llm-output-html"
+      ],
+      "path": "negative/llm_output_text_content.ts",
+      "code": "import { generateText } from \"ai\";\n\nexport async function render(el: HTMLElement, prompt: string) {\n  const { text } = await generateText({ model: \"openai/gpt-5\", prompt });\n  el.textContent = text;\n}\n",
+      "note": "textContent does not parse HTML."
+    },
+    {
+      "id": "a-constant-exec-beside-a-model-call-is-not-model-output",
+      "expect": "no-finding",
+      "rules": [
+        "cwe-95.py-llm-output-code-execution"
+      ],
+      "path": "negative/llm_output_constant_exec.py",
+      "code": "from openai import OpenAI\n\nclient = OpenAI()\n\n\ndef summarize(task):\n    response = client.chat.completions.create(model=\"gpt-5\", messages=[])\n    exec(\"import json\")\n    return response.choices[0].message.content\n",
+      "note": "Taint, not proximity: the executed string never came from the model."
     }
   ]
 }
