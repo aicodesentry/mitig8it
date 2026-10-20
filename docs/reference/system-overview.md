@@ -79,7 +79,8 @@ Per-finding skips are reported in the job's `skipped` list and surface as the `N
 | `pg_dependency_not_proven` | A JavaScript SQL repair whose snapshot has no `package.json` declaring `pg`. |
 | `shell_pipeline_unsupported` | The process call carries a pipe or `shell: true`. |
 | `ambiguous_query_api` | A Python query that reaches no known driver `execute()`, so the placeholder style cannot be determined. |
-| `not_repaired` | No regression test reproduced the finding, so no candidate claims it. |
+| `model_authored_code` | An `eval` or `exec` of a language model's answer (an `*-llm-output-code-execution` rule, or one merged into the finding). No rewrite keeps the behavior and removes the risk. |
+| `not_repaired` | Nothing more specific was recorded: no candidate for the finding could be proven. A group that proved nothing names each finding with the template's, the proof generator's, or the model's own reason where there is one (`command_name_not_literal`, `dependency_not_available_in_sandbox`, ...), and the engine adds a record from the response's reason for any finding a path left unnamed. |
 | `regression_test_not_reproducing` | A test also passed on the baseline, so it proves nothing. |
 | `dependent_hunk_unproven` | Every proven finding depended on a hunk owned by an unproven finding. |
 | `overlapping_candidates` | A later group's patch changes a line range an accepted candidate already changes. |

@@ -74,6 +74,10 @@ PASSWORD_GATE_REFUSALS = {
     "password_hash_called_from_other_module": PASSWORD_OTHER_MODULE_MESSAGE,
 }
 
+MODEL_AUTHORED_CODE_MESSAGE = (
+    "The code is text a language model returned, so no rewrite keeps the behavior and removes "
+    "the risk: run it only in a sandbox, or parse a structured answer instead."
+)
 COOKIE_SAMESITE_NONE_MESSAGE = (
     "The cookie is set with SameSite=None, which is how a cookie is made to travel on cross-site "
     "requests on purpose, for an embed or a cross-site sign-in. Setting it to Lax would break that "
@@ -265,6 +269,26 @@ def static_assertion_level_available() -> bool:
     return STATIC_ASSERTION_VERIFICATION_LEVEL in VERIFICATION_LEVELS
 
 
+def _rule_ids(finding: FindingSnapshot) -> list[str]:
+    """The finding's rule and every rule the clusterer merged into it."""
+    details = getattr(finding, "evidence_details", None) or {}
+    details = details if isinstance(details, dict) else {}
+    extra = details.get("extra") if isinstance(details.get("extra"), dict) else {}
+    merged = extra.get("merged_rule_ids") if isinstance(extra.get("merged_rule_ids"), list) else []
+    return [str(rule_id or "") for rule_id in [finding.rule_id, *merged]]
+
+
+def model_authored_code(finding: FindingSnapshot) -> bool:
+    """An `eval` or `exec` of a language model's answer: the `*-llm-output-code-execution` rules.
+
+    `ast.literal_eval` or `JSON.parse` keeps a data value working, but a model asked for code
+    returns code, and either rewrite would break the feature while claiming to fix it. Only the
+    rule knows the evaluated value is the model's answer, so the decision is read from it, and
+    from the merged rule ids when a generic eval rule survived clustering as the `rule_id`.
+    """
+    return any("llm-output-code-execution" in rule_id for rule_id in _rule_ids(finding))
+
+
 def static_gate(snapshot: Snapshot, finding: FindingSnapshot, family: str, language: str) -> tuple[str, str] | None:
     """The `(code, message)` this finding is skipped with, or None when the agent may attempt it."""
     if family_verification(family) == STATIC_ASSERTION and not static_assertion_level_available():
@@ -288,6 +312,8 @@ def static_gate(snapshot: Snapshot, finding: FindingSnapshot, family: str, langu
         except SiteError as exc:
             if exc.code == "cookie_samesite_none_is_deliberate":
                 return exc.code, COOKIE_SAMESITE_NONE_MESSAGE
+    if family == CODE_INJECTION_EVAL and model_authored_code(finding):
+        return "model_authored_code", MODEL_AUTHORED_CODE_MESSAGE
     if language == JAVASCRIPT:
         if family == SQL_PARAMETERIZATION and not pg_dependency_proven(snapshot):
             return "pg_dependency_not_proven", PG_NOT_PROVEN_MESSAGE

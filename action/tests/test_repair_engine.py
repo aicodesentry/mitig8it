@@ -167,8 +167,16 @@ def test_fix_sections_carry_the_level_through_to_the_publisher(sandbox):
     """The Verified line the reader sees is driven by this field, so it must not be blank."""
     response = remediation.repair(build([SQL_FINDING]), model_configured=False)
     sections = remediation.fix_sections(response, {"fp-sql": SQL_FINDING})
-    assert len(sections) == len(response.candidates or [])
+    fixes = [section for section in sections if not section.get("skipped_reason")]
+    assert len(fixes) == len(response.candidates or [])
+    # Without a candidate the finding still gets a section, the one that states why.
+    assert len(sections) == 1
     for section in sections:
+        if section.get("skipped_reason"):
+            assert section["candidate_id"] == "" and section["hunk"] is None
+            assert section["path"] == "src/reports.py"
+            assert section["finding_fingerprint"] == "fp-sql"
+            continue
         assert section["verification_level"] == "development_unverified"
         assert section["path"] == "src/reports.py"
         assert section["finding_fingerprint"] == "fp-sql"

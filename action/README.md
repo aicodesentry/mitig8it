@@ -142,7 +142,9 @@ verified.
 Five repair families are supported, all of them on both JavaScript and Python:
 `sql_parameterization`, `command_arguments`, `path_containment`, `hardcoded_credential` and
 `code_injection_eval` (`LANGUAGE_FAMILIES` in `services/remediation-service/src/families.py` is
-the list this sentence describes). A finding outside those is reported without a fix.
+the list this sentence describes). Every finding that gets no fix, inside those families or
+outside them, gets one `No automatic fix: <reason>` line under its comment, the same line and the
+same reasons the App publishes.
 
 Verifying a JavaScript repair needs the Node the image pins, which is the one
 `services/remediation-service/Dockerfile` pins; the two are compared by a test, because when they
