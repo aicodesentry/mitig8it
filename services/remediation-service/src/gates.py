@@ -17,6 +17,7 @@ from .families import (
     COMMAND_ARGUMENTS,
     COOKIE_FLAGS,
     JAVASCRIPT,
+    OPEN_REDIRECT,
     PASSWORD_HASHING,
     PYTHON,
     SQL_PARAMETERIZATION,
@@ -26,7 +27,7 @@ from .families import (
 )
 from .models import FindingSnapshot
 from .retrieval import Snapshot
-from .sites import SiteError, cookie_site, password_hash_site
+from .sites import SiteError, cookie_site, password_hash_site, redirect_site
 from .verification.verifier import STATIC_ASSERTION_VERIFICATION_LEVEL, VERIFICATION_LEVELS
 
 UNSUPPORTED_LANGUAGE_MESSAGE = (
@@ -86,6 +87,64 @@ COOKIE_SAMESITE_NONE_MESSAGE = (
     "flow rather than repair it, so whether the cookie should be cross-site at all is a design "
     "decision this change does not make."
 )
+
+# Every refusal of the open redirect site, by code. The repair is only ever the one the site
+# describes, so a shape it does not recognize is reported here rather than handed on: what the
+# redirect should accept is then a question about the application, not about this line.
+REDIRECT_GATE_REFUSALS = {
+    "redirect_call_not_recognized": (
+        "The redirect at the finding is not a redirect() or HttpResponseRedirect() call taking a "
+        "request.args, form, values, GET or POST read directly, so there is no target to check."
+    ),
+    "redirect_calls_share_a_line": (
+        "More than one redirect reads the request on the lines of the finding, and each would need "
+        "its own check; the change is not made for one of them alone."
+    ),
+    "redirect_function_not_recognized": (
+        "The redirect is called through a name the module does not import from flask or "
+        "django.shortcuts/django.http, so what it does with its target is not known here."
+    ),
+    "redirect_request_source_not_recognized": (
+        "The redirect target is read off an object that is not the framework's request (Flask's "
+        "request.args/form/values with Flask's redirect, Django's request.GET/POST with Django's), so "
+        "which check applies cannot be chosen safely."
+    ),
+    "redirect_not_in_function": (
+        "The redirect is not inside a view function, so there is no request to check its target against."
+    ),
+    "redirect_view_not_callable": (
+        "The redirect is in a nested function, or in a Django view whose first parameter is not the "
+        "request it reads (a class-based view method), so no regression test can call it with a hostile target."
+    ),
+    "redirect_view_not_routed": (
+        "The redirect is in a Flask function no route decorator registers, so no regression test can "
+        "reach it with a hostile target."
+    ),
+    "redirect_statement_not_recognized": (
+        "The redirect is not a statement of its own (it shares a line with an if, a with, or another "
+        "statement), so the check cannot be placed before it without restructuring the code."
+    ),
+    "redirect_target_spans_lines": (
+        "The request read that supplies the redirect target spans several lines, which the rewrite does "
+        "not move."
+    ),
+    "redirect_default_not_recognized": (
+        "The default the request read falls back to is itself computed from the request or spans lines, "
+        "so it cannot serve as the safe fallback."
+    ),
+    "redirect_parameter_not_literal": (
+        "The query parameter the redirect target is read from is not a literal name, so no regression "
+        "test can supply a hostile value for it."
+    ),
+    "redirect_variable_name_taken": (
+        "The names the repair would bind the target to are all in use in this module."
+    ),
+    "redirect_helper_name_taken": (
+        "The module already binds the name of the check the repair calls (url_has_allowed_host_and_scheme "
+        "or urlsplit) to something else."
+    ),
+}
+REDIRECT_UNKNOWN_REFUSAL = "The redirect at the finding is not a shape the repair recognizes."
 
 # Python database APIs whose placeholder syntax the Python harness knows and the prompt names.
 # `django.db` is Django's raw-SQL API: `connection.cursor().execute(sql, params)` takes `%s`.
@@ -311,6 +370,11 @@ def static_gate(snapshot: Snapshot, finding: FindingSnapshot, family: str, langu
         except SiteError as exc:
             if exc.code == "cookie_samesite_none_is_deliberate":
                 return exc.code, COOKIE_SAMESITE_NONE_MESSAGE
+    if family == OPEN_REDIRECT:
+        try:
+            redirect_site(snapshot, finding)
+        except SiteError as exc:
+            return exc.code, REDIRECT_GATE_REFUSALS.get(exc.code, REDIRECT_UNKNOWN_REFUSAL)
     if language == JAVASCRIPT:
         if family == SQL_PARAMETERIZATION and not pg_dependency_proven(snapshot):
             return "pg_dependency_not_proven", PG_NOT_PROVEN_MESSAGE

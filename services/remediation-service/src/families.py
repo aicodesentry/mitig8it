@@ -38,6 +38,13 @@ PASSWORD_HASHING = "password_hashing"
 # into the application arrives signed out, while Lax still withholds it from the cross-site
 # POSTs and subresource requests that CSRF relies on, and it is what browsers already default to.
 COOKIE_FLAGS = "cookie_flags"
+# A redirect whose target is read straight off the request (`?next=`), which lets a link on the
+# application's own domain send the reader anywhere. The repair keeps the read and checks it
+# before the redirect: Django's own `url_has_allowed_host_and_scheme` against the request's host,
+# or, for Flask, `urllib.parse.urlsplit` accepting only a path on this site. A target that fails
+# falls back to the default the read already names, else "/". Python only: the rule that produces
+# it reads Flask and Django.
+OPEN_REDIRECT = "open_redirect"
 
 ALL_FAMILIES = (
     SQL_PARAMETERIZATION,
@@ -48,6 +55,7 @@ ALL_FAMILIES = (
     WORKFLOW_HARDENING,
     PASSWORD_HASHING,
     COOKIE_FLAGS,
+    OPEN_REDIRECT,
 )
 
 # The families the sandbox toolchains can repair *and prove by running a regression test*. This
@@ -61,6 +69,7 @@ SANDBOX_PROVEN_FAMILIES = (
     CODE_INJECTION_EVAL,
     PASSWORD_HASHING,
     COOKIE_FLAGS,
+    OPEN_REDIRECT,
 )
 
 JAVASCRIPT = "javascript"
@@ -102,6 +111,7 @@ FAMILY_VERIFICATION: dict[str, str] = {
     WORKFLOW_HARDENING: STATIC_ASSERTION,
     PASSWORD_HASHING: SANDBOX_REGRESSION_TEST,
     COOKIE_FLAGS: SANDBOX_REGRESSION_TEST,
+    OPEN_REDIRECT: SANDBOX_REGRESSION_TEST,
 }
 
 # The families each toolchain can repair and prove. A family is listed for a language only once
@@ -110,9 +120,11 @@ FAMILY_VERIFICATION: dict[str, str] = {
 # joined it when the harness could record `eval`, `new Function`, the `vm` compile calls, and a
 # string timer without running any of them (`h.assert.noCode`). Both toolchains now repair every
 # family; what still decides support per finding is the static gate, which refuses a site that
-# compiles a program rather than reading a value.
+# compiles a program rather than reading a value. `open_redirect` is the exception: the rule that
+# produces it reads Flask and Django, so only the Python toolchain repairs it.
+PYTHON_ONLY_FAMILIES = frozenset({OPEN_REDIRECT})
 LANGUAGE_FAMILIES: dict[str, frozenset[str]] = {
-    JAVASCRIPT: frozenset(SANDBOX_PROVEN_FAMILIES),
+    JAVASCRIPT: frozenset(SANDBOX_PROVEN_FAMILIES) - PYTHON_ONLY_FAMILIES,
     PYTHON: frozenset(SANDBOX_PROVEN_FAMILIES),
     WORKFLOW: frozenset({WORKFLOW_HARDENING}),
 }
@@ -202,6 +214,12 @@ PYTHON_FAMILY_ASSERTIONS: dict[str, str] = {
         "for a setting: m = h.load(path); h.assert_equal(m.NAME, True) (or m.app.config['NAME']); for "
         "set_cookie: h.invoke the view, then h.assert_cookie_flags(name): secure=True, httponly=True "
         "and samesite 'Lax' or 'Strict' on every recorded cookie of that name"
+    ),
+    OPEN_REDIRECT: (
+        "with VIEW the view at the finding: for Django, r = h.call(m.VIEW, h.django_request(GET={'next': "
+        "'https://evil.example/'})).value, for Flask r = h.invoke(app, ...query={'next': ...}); "
+        "h.assert_redirect_local(r); then a same-site path such as '/inventory/' must be kept: "
+        "h.assert_equal(r.url, '/inventory/'). The redirect must never leave the request's host"
     ),
 }
 
@@ -306,6 +324,8 @@ def rule_family(finding: Any) -> str | None:
         "cwe-614" in text or "cwe-1004" in text or "insecure_cookie_flags" in text or "session.insecure_cookie" in text
     ):
         return COOKIE_FLAGS
+    if "cwe-601" in text or "open_redirect" in text or "open redirect" in text:
+        return OPEN_REDIRECT
     if "cwe-89" in text or "sql injection" in text or "sql.injection" in text:
         return SQL_PARAMETERIZATION
     if "cwe-78" in text or "command injection" in text or "command.injection" in text:

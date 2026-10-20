@@ -2201,3 +2201,180 @@ def cookie_site(snapshot: Snapshot, finding: FindingSnapshot, language: str) -> 
     if language == "python":
         return python_cookie_site(source, finding.line_start, finding.line_end)
     return js_cookie_site(source, finding.line_start, finding.line_end)
+
+
+# --- open redirect --------------------------------------------------------------------------
+#
+# The site is one `redirect(...)` or `HttpResponseRedirect(...)` call whose first argument is a
+# request read, which are the shapes the rule reports: `request.args`, `request.form` and
+# `request.values` in Flask, `request.GET` and `request.POST` in Django, each through `.get(...)`
+# or a subscript. The repair moves the read into a variable on the line before the statement,
+# checks it, and redirects to the variable, so it needs a statement of its own inside a function
+# body, a redirect function the module imports from the framework, and a fallback the read
+# already names or "/". Everything else is refused by name: a redirect the rewrite would have to
+# guess at is one a maintainer should look at.
+
+REDIRECT_FUNCTIONS = frozenset({"redirect", "HttpResponseRedirect", "HttpResponsePermanentRedirect"})
+_FLASK_REDIRECT_SOURCES = frozenset({"args", "form", "values"})
+_DJANGO_REDIRECT_SOURCES = frozenset({"GET", "POST"})
+DJANGO_HOST_CHECK = "url_has_allowed_host_and_scheme"
+_REDIRECT_VARIABLES = ("next_url", "redirect_url", "redirect_target")
+
+
+@dataclass(frozen=True)
+class RedirectSite:
+    framework: str  # django | flask
+    function: PyFunction
+    statement_line: int  # the first line of the statement that carries the redirect
+    indent: str  # that statement's indentation
+    read: str  # the request read, as written
+    read_start: int  # its offsets on `read_line`
+    read_end: int
+    read_line: int
+    receiver: str  # the request object the read is taken off (`request`)
+    source: str  # args | form | values | GET | POST
+    key: str | None  # the query parameter's literal name, when it has one
+    fallback: str  # the expression a refused target falls back to
+    variable: str  # the name the read is bound to
+    imports_needed: tuple[str, ...]  # import lines the repair adds
+
+
+def _imported_names(tree: ast.Module) -> dict[str, str]:
+    """Every name a top-level import binds, mapped to `module.attribute` (or the module)."""
+    names: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for alias in node.names:
+                names[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names[alias.asname or alias.name.split(".")[0]] = alias.name if alias.asname else alias.name.split(".")[0]
+    return names
+
+
+def _redirect_read(node: ast.AST) -> tuple[str, str, ast.AST | None, str | None] | None:
+    """`(receiver, source, default, key)` when `node` is a request read the rule reports."""
+    default: ast.AST | None = None
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get":
+        if not node.args or len(node.args) > 2 or node.keywords:
+            return None
+        holder, key_node = node.func.value, node.args[0]
+        default = node.args[1] if len(node.args) == 2 else None
+    elif isinstance(node, ast.Subscript):
+        holder, key_node = node.value, node.slice
+    else:
+        return None
+    if not (isinstance(holder, ast.Attribute) and isinstance(holder.value, ast.Name)):
+        return None
+    if holder.attr not in _FLASK_REDIRECT_SOURCES | _DJANGO_REDIRECT_SOURCES:
+        return None
+    key = key_node.value if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str) else None
+    return holder.value.id, holder.attr, default, key
+
+
+def _characters(text: str, byte_offset: int) -> str:
+    """The prefix of `text` an `ast` column offset (counted in UTF-8 bytes) ends."""
+    return text.encode("utf-8")[:byte_offset].decode("utf-8", errors="replace")
+
+
+def python_redirect_site(source: str, line_start: int | None, line_end: int | None) -> RedirectSite:
+    tree = python_tree(source)
+    lines = source.splitlines()
+    first = max(1, int(line_start or 1))
+    last = max(first, int(line_end or first))
+    calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not first <= node.lineno <= last:
+            continue
+        name = node.func.id if isinstance(node.func, ast.Name) else None
+        if name in REDIRECT_FUNCTIONS and node.args and _redirect_read(node.args[0]) is not None:
+            calls.append(node)
+    if not calls:
+        raise SiteError("redirect_call_not_recognized")
+    if len(calls) > 1:
+        raise SiteError("redirect_calls_share_a_line")
+    call = calls[0]
+    receiver, origin, default, key = _redirect_read(call.args[0])  # type: ignore[misc]
+    imported = _imported_names(tree)
+    bound_to = imported.get(call.func.id, "")  # type: ignore[attr-defined]
+    if bound_to in ("django.shortcuts.redirect", "django.http.HttpResponseRedirect", "django.http.HttpResponsePermanentRedirect"):
+        framework = "django"
+    elif bound_to == "flask.redirect":
+        framework = "flask"
+    else:
+        # A helper of the application's own, or a name the module never imports: what it does
+        # with its argument is not something the rewrite can know.
+        raise SiteError("redirect_function_not_recognized")
+    if (framework == "django") != (origin in _DJANGO_REDIRECT_SOURCES):
+        raise SiteError("redirect_request_source_not_recognized")
+    if framework == "flask" and imported.get(receiver) != "flask.request":
+        raise SiteError("redirect_request_source_not_recognized")
+    try:
+        function = python_function_for_line(source, call.lineno)
+    except SiteError as exc:
+        raise SiteError("redirect_not_in_function") from exc
+    if key is None:
+        # `request.GET.get(name)`: which query parameter a test has to set is not written down.
+        raise SiteError("redirect_parameter_not_literal")
+    if not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno == function.node.lineno for node in tree.body):
+        raise SiteError("redirect_view_not_callable")
+    if framework == "django" and (not function.parameters or function.parameters[0] != receiver):
+        # A method of a class-based view, or a request that is not the view's own: there is no
+        # call a test could make with a request it builds.
+        raise SiteError("redirect_view_not_callable")
+    if framework == "flask" and not function.route:
+        raise SiteError("redirect_view_not_routed")
+    statement = None
+    for node in ast.walk(function.node):
+        if isinstance(node, ast.stmt) and node is not function.node and node.lineno <= call.lineno <= (node.end_lineno or node.lineno):
+            if not isinstance(node, (ast.If, ast.For, ast.While, ast.With, ast.Try, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.AsyncFor, ast.AsyncWith)):
+                statement = node
+                break
+    if statement is None or not isinstance(statement, (ast.Return, ast.Expr, ast.Assign)):
+        raise SiteError("redirect_statement_not_recognized")
+    text = lines[statement.lineno - 1]
+    indent = _characters(text, statement.col_offset)
+    if indent.strip():
+        raise SiteError("redirect_statement_not_recognized")
+    read = call.args[0]
+    if read.lineno != read.end_lineno:
+        raise SiteError("redirect_target_spans_lines")
+    read_text = lines[read.lineno - 1]
+    read_start = len(_characters(read_text, read.col_offset))
+    read_end = len(_characters(read_text, read.end_col_offset or read.col_offset))
+    if default is not None:
+        if default.lineno != default.end_lineno or any(isinstance(n, ast.Name) and n.id == receiver for n in ast.walk(default)):
+            raise SiteError("redirect_default_not_recognized")
+        fallback = ast.get_source_segment(source, default) or '"/"'
+    else:
+        fallback = '"/"'
+    used = set(imported) | set(function.parameters)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            used.add(node.id)
+        elif isinstance(node, ast.arg):
+            used.add(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            used.add(node.name)
+    variable = next((name for name in _REDIRECT_VARIABLES if name not in used), None)
+    if variable is None:
+        raise SiteError("redirect_variable_name_taken")
+    helper, wanted = ("url_has_allowed_host_and_scheme", "django.utils.http.url_has_allowed_host_and_scheme") if framework == "django" else ("urlsplit", "urllib.parse.urlsplit")
+    imports_needed: tuple[str, ...] = ()
+    if helper in imported:
+        if imported[helper] != wanted:
+            raise SiteError("redirect_helper_name_taken")
+    elif helper in used:
+        raise SiteError("redirect_helper_name_taken")
+    else:
+        module, _, attribute = wanted.rpartition(".")
+        imports_needed = (f"from {module} import {attribute}",)
+    return RedirectSite(
+        framework, function, statement.lineno, indent,
+        read_text[read_start:read_end], read_start, read_end, read.lineno,
+        receiver, origin, key, fallback, variable, imports_needed,
+    )
+
+
+def redirect_site(snapshot: Snapshot, finding: FindingSnapshot) -> RedirectSite:
+    return python_redirect_site(snapshot.full_content(finding.affected_path), finding.line_start, finding.line_end)
