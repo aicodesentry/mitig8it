@@ -221,6 +221,14 @@ def test_sql_api_is_known_through_a_local_module_that_imports_the_driver(request
     assert python_sql_api_known(snapshot, _finding(file_path="app.py", line_start=4, line_end=4))
 
 
+def test_sql_api_is_known_for_a_django_connection_cursor(request_payload):
+    source = "from django.db import connection\n\ndef f(request):\n    name = request.GET.get('name')\n    with connection.cursor() as cursor:\n        cursor.execute(f\"SELECT 1 WHERE n = '{name}'\")\n"
+    snapshot = _snapshot(request_payload, [("views.py", source)])
+    finding = _finding(file_path="views.py", line_start=6, line_end=6)
+    assert python_sql_api_known(snapshot, finding)
+    assert static_gate(snapshot, finding, SQL_PARAMETERIZATION, PYTHON) is None
+
+
 def test_an_unknown_query_helper_is_ambiguous(request_payload):
     snapshot = _snapshot(request_payload, [("text.py", TEXT_PY)])
     finding = _finding(file_path="text.py", line_start=6, line_end=6)
@@ -442,3 +450,26 @@ def test_python_groups_get_the_python_prompt_and_tools(request_payload):
     assert tests["items"]["properties"]["path"]["description"].endswith(".test.py'.")
     javascript = next(tool for tool in tool_definitions() if tool["function"]["name"] == "propose_patch")
     assert "require('../harness')" in javascript["function"]["parameters"]["properties"]["regression_tests"]["description"]
+
+
+def test_a_shell_command_a_language_model_wrote_is_refused_rather_than_split(request_payload):
+    """`subprocess.run([answer])` would pass the argv proof and still run whatever the model chose."""
+    source = (
+        "import subprocess\nfrom openai import OpenAI\n\nclient = OpenAI()\n\n\n"
+        "def fix_build(log):\n    command = client.responses.create(model=\"gpt-5\", input=log).output_text\n"
+        "    subprocess.run(command, shell=True)\n"
+    )
+    snapshot = _snapshot(request_payload, [("fix.py", source)])
+    finding = _finding(file_path="fix.py", line_start=9, line_end=9, rule_id="opengrep.cwe-78.py-llm-output-shell")
+    code, message = static_gate(snapshot, finding, COMMAND_ARGUMENTS, PYTHON)
+    assert code == "model_authored_command" and "allowlist" in message
+    ordinary = _finding(file_path="fix.py", line_start=9, line_end=9, rule_id="opengrep.cwe-78.py-subprocess-shell-interpolated")
+    assert static_gate(snapshot, ordinary, COMMAND_ARGUMENTS, PYTHON) is None
+    # Seen live on nebullii/test-only#139: the generic command rule won the cluster and the model
+    # rule was carried only as a merged id. The refusal must not depend on which one survived.
+    folded = _finding(
+        file_path="fix.py", line_start=9, line_end=9, rule_id="opengrep.cwe-78.command-injection-input",
+        evidence_details={"extra": {"merged_rule_ids": ["cmd.injection.shell_true", "opengrep.cwe-78.py-llm-output-shell"]}},
+    )
+    code, _ = static_gate(snapshot, folded, COMMAND_ARGUMENTS, PYTHON)
+    assert code == "model_authored_command"

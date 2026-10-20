@@ -37,7 +37,7 @@ _JS_HANDLER_RE = re.compile(
 _JS_INPUT_RE = re.compile(r"(?P<req>[\w$]+)\.(?P<source>params|query|body)(?:\.(?P<name>[\w$]+)|\[\s*['\"](?P<bracket>[^'\"]+)['\"]\s*\])")
 _JS_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
 _PY_REQUEST_RE = re.compile(
-    r"request\.(?P<source>args|form|values|json)(?:\.get\(\s*['\"](?P<getname>[^'\"]+)['\"]|\[\s*['\"](?P<name>[^'\"]+)['\"]\s*\])"
+    r"request\.(?P<source>args|form|values|json|GET|POST)(?:\.get\(\s*['\"](?P<getname>[^'\"]+)['\"]|\[\s*['\"](?P<name>[^'\"]+)['\"]\s*\])"
 )
 
 

@@ -40,8 +40,14 @@ SHELL_PIPELINE_MESSAGE = (
 )
 AMBIGUOUS_QUERY_API_MESSAGE = (
     "The query is handed to a helper whose placeholder syntax the snapshot does not show: no "
-    "sqlite3, psycopg, or SQLAlchemy execute() call takes it at the finding, so a parameterized "
+    "sqlite3, psycopg, SQLAlchemy, or Django connection execute() call takes it at the finding, so a parameterized "
     "rewrite cannot be chosen safely."
+)
+MODEL_AUTHORED_COMMAND_MESSAGE = (
+    "The command is the text a language model returned, so the model decides which program runs. "
+    "An argument list would only move that decision from the shell to the program name: the fix "
+    "is to map the model's answer onto an allowlist of commands, which needs a design decision "
+    "this change does not make."
 )
 STATIC_ASSERTION_UNAVAILABLE_MESSAGE = (
     "This repair can only be shown to work by static assertion -- the rule fires on the file "
@@ -141,7 +147,8 @@ REDIRECT_GATE_REFUSALS = {
 REDIRECT_UNKNOWN_REFUSAL = "The redirect at the finding is not a shape the repair recognizes."
 
 # Python database APIs whose placeholder syntax the Python harness knows and the prompt names.
-PYTHON_SQL_DRIVERS = ("sqlite3", "psycopg2", "psycopg", "sqlalchemy", "pymysql", "MySQLdb", "mysql.connector", "aiosqlite", "asyncpg")
+# `django.db` is Django's raw-SQL API: `connection.cursor().execute(sql, params)` takes `%s`.
+PYTHON_SQL_DRIVERS = ("sqlite3", "psycopg2", "psycopg", "sqlalchemy", "pymysql", "MySQLdb", "mysql.connector", "aiosqlite", "asyncpg", "django.db")
 _PYTHON_IMPORT_RE = re.compile(r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*))", re.MULTILINE)
 _PYTHON_EXECUTE_RE = re.compile(r"\.(?:execute|executemany|executescript|exec_driver_sql)\s*\(|\btext\s*\(")
 # A process call that hands a command line to a shell: `exec` and `execSync` always do, and
@@ -313,6 +320,21 @@ def python_shell_pipeline(snapshot: Snapshot, finding: FindingSnapshot) -> bool:
     return False
 
 
+def model_authored_command(finding: FindingSnapshot) -> bool:
+    """A command whose source is a language model's answer: the `*-llm-output-shell` rules.
+
+    The rule is the only thing that knows the tainted value is the whole answer rather than one
+    argument inside a literal command, so the decision is read from it, as the workflow family is.
+    The generic command rules match the same line, and the clusterer may keep one of them as the
+    finding's `rule_id`; the model rule then survives only in `evidence_details.extra.merged_rule_ids`.
+    """
+    details = getattr(finding, "evidence_details", None) or {}
+    details = details if isinstance(details, dict) else {}
+    extra = details.get("extra") if isinstance(details.get("extra"), dict) else {}
+    merged = extra.get("merged_rule_ids") if isinstance(extra.get("merged_rule_ids"), list) else []
+    return any("llm-output-shell" in str(rule_id or "") for rule_id in [finding.rule_id, *merged])
+
+
 def static_assertion_level_available() -> bool:
     """Whether the verification level the workflow family needs has landed.
 
@@ -330,6 +352,8 @@ def static_gate(snapshot: Snapshot, finding: FindingSnapshot, family: str, langu
         # proof it could ever have. Publishing it anyway would put an unverified patch in front of
         # a maintainer under the same review as verified ones, so it is refused by name instead.
         return "static_assertion_verification_unavailable", STATIC_ASSERTION_UNAVAILABLE_MESSAGE
+    if family == COMMAND_ARGUMENTS and model_authored_command(finding):
+        return "model_authored_command", MODEL_AUTHORED_COMMAND_MESSAGE
     if language == WORKFLOW:
         # Nothing below applies: a workflow has no package manifest, no shell call and no
         # compiled string. The only gate it has is the one above.

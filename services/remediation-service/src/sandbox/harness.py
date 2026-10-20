@@ -32,7 +32,7 @@ HARNESS_PATHS = frozenset({HARNESS_PATH, PYTHON_HARNESS_PATH})
 # harness source.
 PYTHON_HARNESS_MODULES = frozenset(
     {
-        "django.http", "django.shortcuts", "django.utils.http", "flask", "hashlib", "psycopg", "psycopg2",
+        "django", "flask", "hashlib", "psycopg", "psycopg2",
         "pymysql", "sqlalchemy", "sqlite3", "subprocess",
     }
 )
@@ -44,9 +44,9 @@ PYTHON_HARNESS_MODULES = frozenset(
 # require hook. 32 KiB is the next size that leaves room to extend an assertion without another
 # budget change in the same commit. The `crypto` recorder, the session-middleware fakes and their
 # two assertions (`password_hashing`, `cookie_flags`) took it to about 31 KiB, so the next
-# recorder needs a budget change; the Python harness was in the same position at about 39 of 40,
-# and the Django redirect fakes, the ported host check and `assert_redirect_local`
-# (`open_redirect`) took it to about 43 KiB, so its budget is 48 KiB.
+# recorder needs a budget change. The Python harness was at about 39 of 40 KiB until the Django
+# fakes (`django.db.connection`, the view decorators, the redirects and the ported host check)
+# took it past 43; 48 KiB leaves room for one more recorder.
 MAX_HARNESS_BYTES = 32 * 1024
 MAX_PYTHON_HARNESS_BYTES = 48 * 1024
 HARNESS_OCCUPIED_LIMITATION = (

@@ -840,6 +840,7 @@ _PLACEHOLDERS: dict[str, Callable[[int], str]] = {
     "mysql.connector": lambda n: "%s",
     "asyncpg": lambda n: f"${n}",
     "sqlalchemy": lambda n: f":p{n}",
+    "django.db": lambda n: "%s",
 }
 
 

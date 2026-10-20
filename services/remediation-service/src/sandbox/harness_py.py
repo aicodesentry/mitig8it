@@ -2,9 +2,9 @@
 
 Standard library only, never part of a repair. Materialized at .mitig8it/harness.py; a test at
 .mitig8it/regression/<finding>.test.py runs as `python3 .mitig8it/harness.py <test>` and does
-`import harness as h`. It loads a repository module with flask, sqlite3, psycopg, sqlalchemy,
-subprocess, os.system, os.environ, open(), and Django's redirects faked and recorded, invokes
-plain functions or Flask views, and asserts on what the module did.
+`import harness as h`. It loads a repository module with flask, django, sqlite3, psycopg, sqlalchemy,
+subprocess, os.system, os.environ, and open() faked and recorded, invokes plain functions or
+Flask views, and asserts on what the module did.
 """
 import builtins
 import hashlib as _hashlib
@@ -714,29 +714,6 @@ def url_has_allowed_host_and_scheme(url, allowed_hosts, require_https=False):
     return _allowed(url, hosts, require_https) and _allowed(url.replace("\\", "/"), hosts, require_https)
 
 
-class django_request:
-    """A Django HttpRequest for calling a view directly: GET, POST, get_host(), is_secure()."""
-
-    def __init__(self, GET=None, POST=None, host="testserver", secure=False, method=None):
-        self.GET, self.POST, self.COOKIES, self.FILES, self.session = _MultiDict(GET or {}), _MultiDict(POST or {}), {}, {}, _MultiDict()
-        self.method, self.path, self.META = method or ("POST" if POST else "GET"), "/", {"HTTP_HOST": host}
-        self.headers, self._host, self._secure = _MultiDict({"Host": host}), host, secure
-
-    def get_host(self):
-        return self._host
-
-    def is_secure(self):
-        return self._secure
-
-
-def _django_modules():
-    made = {name: _StubModule(name) for name in ("django.http", "django.shortcuts", "django.utils.http")}
-    for module in made.values():
-        module.__path__ = []
-    made["django.http"].HttpResponseRedirect, made["django.http"].HttpResponsePermanentRedirect = HttpResponseRedirect, HttpResponsePermanentRedirect
-    made["django.shortcuts"].redirect = _django_redirect
-    made["django.utils.http"].url_has_allowed_host_and_scheme = url_has_allowed_host_and_scheme
-    return made
 
 
 # --- auto-stubs for third-party imports the sandbox does not carry ------------------------------
@@ -803,6 +780,83 @@ class _AutoStubFinder(importlib.abc.MetaPathFinder):
         return importlib.util.spec_from_loader(fullname, _StubLoader(), is_package=True)
 
 
+# --- Django: raw SQL through django.db.connection, views called with a fake request -----------
+# Only the surface a view needs to run is real: `connection.cursor()` records queries exactly as
+# the DB-API fakes do (`%s` placeholders), the auth and HTTP-method decorators pass the view
+# through unchanged, and the response classes carry a status and a body. Everything else under
+# `django` is answered by the auto-stub, as any other third-party import is.
+def _passthrough_decorator(*args, **kwargs):
+    if len(args) == 1 and callable(args[0]) and not kwargs:
+        return args[0]
+    return lambda view: view
+
+
+def _decorator_factory(*args, **kwargs):
+    return lambda view: view
+
+
+class Http404(Exception):
+    pass
+
+
+def _django_response(status):
+    def build(content=b"", *args, **kwargs):
+        return Response(content if isinstance(content, (str, bytes)) else str(content), kwargs.get("status", status), {"content-type": kwargs.get("content_type") or "text/html"})
+    return build
+
+
+def _django_json_response(data, *args, **kwargs):
+    return Response(_json.dumps(data, default=str), kwargs.get("status", 200), {"content-type": "application/json"})
+
+
+def django_request(method=None, get=None, post=None, cookies=None, headers=None, user=None, body=b"", path="/",
+                   GET=None, POST=None, host="testserver", secure=False):
+    """A stand-in for Django's HttpRequest: what a view reads off its first argument."""
+    get, post = get if get is not None else GET, post if post is not None else POST
+    request = types.SimpleNamespace()
+    request.method, request.path, request.body = (method or ("POST" if post else "GET")).upper(), path, body
+    request.GET, request.POST = _MultiDict(get or {}), _MultiDict(post or {})
+    request.COOKIES, request.headers = _MultiDict(cookies or {}), _MultiDict({"Host": host, **(headers or {})})
+    request.META = _MultiDict({"REMOTE_ADDR": "127.0.0.1", "HTTP_HOST": host})
+    request.FILES, request.session = _MultiDict(), _MultiDict()
+    request.user = user or types.SimpleNamespace(is_authenticated=True, is_anonymous=False, is_staff=False, is_superuser=False, id=1, pk=1, username="mitig8it")
+    request.get_full_path = lambda: path
+    request.get_host = lambda: host
+    request.is_secure = lambda: secure
+    return request
+
+
+def _django_module():
+    def module(name, **attributes):
+        built = _StubModule(name)
+        built.__path__ = []
+        for key, value in attributes.items():
+            setattr(built, key, value)
+        sys.modules[name] = built
+        return built
+
+    connection = Connection("django.db")
+    top = module("django", VERSION=(4, 2, 0, "final", 0))
+    module("django.db", connection=connection, connections={"default": connection})
+    module("django.http", HttpResponse=_django_response(200), HttpResponseBadRequest=_django_response(400),
+           HttpResponseForbidden=_django_response(403), HttpResponseNotFound=_django_response(404),
+           HttpResponseRedirect=HttpResponseRedirect,
+           HttpResponsePermanentRedirect=HttpResponsePermanentRedirect, JsonResponse=_django_json_response, Http404=Http404)
+    module("django.shortcuts", redirect=_django_redirect, render=lambda request, name, context=None, **k: Response("template:%s" % name, 200))
+    module("django.utils")
+    module("django.utils.http", url_has_allowed_host_and_scheme=url_has_allowed_host_and_scheme)
+    module("django.contrib")
+    module("django.contrib.auth")
+    module("django.contrib.auth.decorators", login_required=_passthrough_decorator,
+           permission_required=_decorator_factory, user_passes_test=_decorator_factory)
+    module("django.views")
+    module("django.views.decorators")
+    module("django.views.decorators.http", require_GET=_passthrough_decorator, require_POST=_passthrough_decorator,
+           require_safe=_passthrough_decorator, require_http_methods=_decorator_factory)
+    module("django.views.decorators.csrf", csrf_exempt=_passthrough_decorator, csrf_protect=_passthrough_decorator)
+    return top
+
+
 # --- loading ----------------------------------------------------------------------------------
 def _install(real, stubs):
     fakes = {
@@ -814,11 +868,7 @@ def _install(real, stubs):
         "sqlalchemy": _sqlalchemy_module,
         "subprocess": _subprocess_module,
         "hashlib": _hashlib_module,
-        # Only the three modules a redirect repair touches. `django` itself stays a stub, so
-        # every other import from it (django.db, django.contrib) is stubbed as before.
-        "django.http": lambda: _django_modules()["django.http"],
-        "django.shortcuts": lambda: _django_modules()["django.shortcuts"],
-        "django.utils.http": lambda: _django_modules()["django.utils.http"],
+        "django": _django_module,
     }
     for name, factory in fakes.items():
         if name in real or name.split(".")[0] in real:

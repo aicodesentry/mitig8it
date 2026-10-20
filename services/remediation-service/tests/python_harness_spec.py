@@ -319,7 +319,9 @@ class HarnessSpec(unittest.TestCase):
         # pygoat's shape: a sibling module subclasses something it imported from a package the
         # sandbox does not carry, so the stub for it has to be usable as a base class.
         self.assertTrue(isinstance(m.NewUserForm, type))
-        self.assertIn("django", h.stubbed)
+        # `django` itself is faked now (its raw-SQL connection and view decorators); a submodule
+        # the fake does not supply still falls through to a stub.
+        self.assertIn("django.contrib.auth.forms", h.stubbed)
         self.assertIn("stub", repr(m.NewUserForm()))
         # The package is synthetic: its __init__ would have raised had the harness run it.
         self.assertEqual(sys.modules["introduction"].__path__, [os.path.join(ROOT, "introduction")])

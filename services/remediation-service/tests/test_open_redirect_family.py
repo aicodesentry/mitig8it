@@ -151,7 +151,7 @@ class TestRegistry:
         assert rule_family(FindingSnapshot(id="f", file_path="views.py", line_start=1, line_end=1, **fields)) == OPEN_REDIRECT
 
     def test_the_harness_module_table_agrees_with_the_harness(self):
-        assert {"django.http", "django.shortcuts", "django.utils.http"} <= PYTHON_HARNESS_MODULES
+        assert "django" in PYTHON_HARNESS_MODULES
         assert PYTHON_HARNESS_MODULES == python_harness_modules()
 
 
