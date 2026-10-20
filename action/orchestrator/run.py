@@ -448,6 +448,15 @@ def fail_conclusion(fail_on: str, counts: Dict[str, int]) -> str:
 # neither does a 40-character Git object ID, which is what the action used to send: a run with
 # fixes died at `publishing failed: publish error: fixes: manifest_digest must be a SHA-256
 # digest`, after the review and the check had already been posted.
+def candidate_sections(sections: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The sections that carry a fix, without the "No automatic fix" ones.
+
+    A skipped section has no candidate and no diff. The App's manifest binds candidates only and
+    its fix count counts fixes, so both are computed over this subset.
+    """
+    return [section for section in sections if not section.get("skipped_reason")]
+
+
 def section_artifact_digest(section: Dict[str, Any]) -> str:
     """One published section's content, as a digest. The manifest binds these, not the prose."""
     body = json.dumps(
@@ -482,7 +491,7 @@ def manifest_digest(action_id: str, head_sha: str, base_sha: str, sections: Sequ
         "base": base_sha,
         "candidates": [
             {"id": str(section.get("candidate_id") or ""), "artifact_digest": section_artifact_digest(section)}
-            for section in sections
+            for section in candidate_sections(sections)
         ],
     }
     body = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
@@ -529,7 +538,7 @@ def build_publish_request(
         "manifest_digest": manifest_digest(action_id, head_sha, base_sha, fix_sections),
         "counts": counts,
         "findings": findings,
-        "fixes": len(fix_sections),
+        "fixes": len(candidate_sections(fix_sections)),
         "modelConfigured": model_configured,
         # One string, composed once here, rendered by the publisher in two places. The publisher
         # derives nothing of its own from it, the same rule `counts` follows, so a check summary
@@ -696,7 +705,7 @@ def _run() -> int:
 
     fix_sections: List[Dict[str, Any]] = []
     if post_fixes and findings:
-        fix_sections = generate_fixes(
+        fix_sections = bounded_sections(generate_fixes(
             reader=reader,
             repository=repository,
             pr_number=pr_number,
@@ -705,8 +714,12 @@ def _run() -> int:
             findings=findings,
             contents=contents,
             model_configured=model_configured,
+        ))
+        fix_count = len(candidate_sections(fix_sections))
+        log(
+            f"{plural(fix_count, 'fix suggestion')} produced, "
+            f"{plural(len(fix_sections) - fix_count, 'finding')} with a stated reason for no fix."
         )
-        log(f"{plural(len(fix_sections), 'fix suggestion')} produced.")
 
     patches_by_path = {f["path"]: f.get("patch") or "" for f in scoped}
     plan = plan_comments(findings, patches_by_path)
@@ -766,7 +779,7 @@ def _run() -> int:
             "findings": len(findings),
             "critical": counts["critical"],
             "high": counts["high"],
-            "fixes": len(fix_sections),
+            "fixes": len(candidate_sections(fix_sections)),
             "conclusion": conclusion,
             "excluded": excluded_files,
         }
@@ -775,7 +788,7 @@ def _run() -> int:
     write_summary(
         f"### {CHECK_RUN_NAME}\n\n"
         f"{plural(len(findings), 'finding')}, {counts['critical']} critical, "
-        f"{counts['high']} high, {plural(len(fix_sections), 'fix suggestion')}.\n\n"
+        f"{counts['high']} high, {plural(len(candidate_sections(fix_sections)), 'fix suggestion')}.\n\n"
         + (f"{exclusion_line}.\n\n" if exclusion_line else "")
         + (
             "Fixes were generated with model assistance.\n"
@@ -800,6 +813,18 @@ def _run() -> int:
     return 0
 
 
+# `publishFindingFixSections` refuses a publication of more sections than this, and a refusal
+# there fails the run after the review is already posted.
+FIX_SECTION_LIMIT = 200
+
+
+def bounded_sections(sections: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """At most FIX_SECTION_LIMIT sections, fixes first, then the reasons in the order given."""
+    fixes = candidate_sections(sections)
+    reasons = [section for section in sections if section.get("skipped_reason")]
+    return (fixes + reasons)[:FIX_SECTION_LIMIT]
+
+
 def generate_fixes(
     *,
     reader: github_api.GitHubReader,
@@ -813,33 +838,52 @@ def generate_fixes(
 ) -> List[Dict[str, Any]]:
     """Attempt a repair for every finding the engine has a family and a language for.
 
+    Returns the fix sections and, for every other runtime finding, a section that says in one
+    sentence why it has no fix, which github-service renders as "No automatic fix: <reason>"
+    under the finding's comment, exactly as it does for the App.
+
     Imported lazily so that a run which produced no findings never pays for loading the repair
     engine, and so a repository with no repairable finding still publishes its review when the
     engine cannot start.
     """
     from . import remediation  # noqa: PLC0415
 
+    runtime = [finding for finding in findings if not analysis.is_informational(finding)]
     try:
-        repairable = [
-            finding
-            for finding in remediation.supported_findings(findings)
-            if not analysis.is_informational(finding)
-            and str(finding.get("file_path") or "") in contents
+        supported = {id(finding) for finding in remediation.supported_findings(runtime)}
+        unsupported = [
+            remediation.skip_section(finding, comment_fingerprint(finding), remediation.unsupported_reason(finding))
+            for finding in runtime
+            if id(finding) not in supported and str(finding.get("file_path") or "")
         ]
     except RuntimeError as error:
         annotate("warning", f"repairs unavailable: {error}")
         return []
+    repairable = [
+        finding
+        for finding in runtime
+        if id(finding) in supported and str(finding.get("file_path") or "") in contents
+    ]
+
+    def skipped(selected: Sequence[Dict[str, Any]], message: str) -> List[Dict[str, Any]]:
+        return [remediation.skip_section(f, comment_fingerprint(f), message) for f in selected]
+
+    # The engine's own sentence for a finding whose file it would not be sent.
+    unsupported += skipped(
+        [f for f in runtime if id(f) in supported and str(f.get("file_path") or "") not in contents],
+        "The exact affected source file is absent from the snapshot.",
+    )
     if not repairable:
-        return []
+        return unsupported
 
     tree = reader.git_tree(head_sha)
     if tree.get("truncated"):
-        annotate(
-            "warning",
-            "the repository tree at this commit is too large to verify a repair against, so no "
-            "fixes were generated.",
+        message = (
+            "The repository tree at this commit is too large to verify a repair against, so no "
+            "fixes were generated."
         )
-        return []
+        annotate("warning", message[0].lower() + message[1:])
+        return skipped(repairable, message) + unsupported
 
     ranked = remediation.rank_findings(repairable)
     try:
@@ -857,13 +901,19 @@ def generate_fixes(
         response = remediation.repair(request, model_configured)
     except Exception as error:  # noqa: BLE001 - a failed repair must never fail the review
         annotate("warning", f"repair generation failed: {error}")
-        return []
+        return skipped(repairable, "Fix generation failed on this run, so no fix was attempted.") + unsupported
 
+    # The ids are the ones `build_request` gave the engine, so a skip record finds its finding.
+    attempted = ranked[: remediation.MAX_REPAIR_FINDINGS]
     findings_by_id = {
         str(finding.get("fingerprint") or f"finding-{index}"): finding
-        for index, finding in enumerate(ranked)
+        for index, finding in enumerate(attempted)
     }
-    return remediation.fix_sections(response, findings_by_id)
+    over_cap = skipped(
+        ranked[remediation.MAX_REPAIR_FINDINGS :],
+        f"Only the {remediation.MAX_REPAIR_FINDINGS} most severe findings are repaired in one run.",
+    )
+    return remediation.fix_sections(response, findings_by_id) + over_cap + unsupported
 
 
 if __name__ == "__main__":
