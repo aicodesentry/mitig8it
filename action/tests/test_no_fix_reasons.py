@@ -36,12 +36,12 @@ SECRET_FINDING = {
     "line_start": 3,
     "severity": "critical",
 }
-REDIRECT_FINDING = {
-    "fingerprint": "fp-redirect",
-    "rule_id": "redirect.open",
-    "title": "Open redirect",
+UNREPAIRABLE_FINDING = {
+    "fingerprint": "fp-debug",
+    "rule_id": "flask.debug-mode-enabled",
+    "title": "Debug mode enabled in production",
     "file_path": "inventory/views.py",
-    "line_start": 15,
+    "line_start": 3,
     "severity": "medium",
 }
 
@@ -154,10 +154,10 @@ def test_a_finding_outside_every_family_gets_the_engine_s_sentence(engine):
 
     sections = run.generate_fixes(
         reader=NoReader(), repository="acme/widgets", pr_number=7, head_sha="a" * 40, base_sha="b" * 40,
-        findings=[REDIRECT_FINDING], contents={"inventory/views.py": "x = 1\n"}, model_configured=False,
+        findings=[UNREPAIRABLE_FINDING], contents={"app/settings.py": "x = 1\n"}, model_configured=False,
     )
-    assert sections == [remediation.skip_section(REDIRECT_FINDING, "fp-redirect", engine["NO_REPAIR_FAMILY_MESSAGE"])]
-    assert remediation.unsupported_reason(REDIRECT_FINDING) == engine["NO_REPAIR_FAMILY_MESSAGE"]
+    assert sections == [remediation.skip_section(UNREPAIRABLE_FINDING, "fp-debug", engine["NO_REPAIR_FAMILY_MESSAGE"])]
+    assert remediation.unsupported_reason(UNREPAIRABLE_FINDING) == engine["NO_REPAIR_FAMILY_MESSAGE"]
     assert remediation.unsupported_reason(EVAL_FINDING) == ""
 
 
@@ -172,7 +172,7 @@ def test_a_failed_repair_still_says_why(engine, monkeypatch):
     monkeypatch.setattr(remediation, "build_request", explode)
     sections = run.generate_fixes(
         reader=Reader(), repository="acme/widgets", pr_number=7, head_sha="a" * 40, base_sha="b" * 40,
-        findings=[EVAL_FINDING, REDIRECT_FINDING], contents={"assistant/agent.py": "exec(code)\n", "inventory/views.py": "x\n"},
+        findings=[EVAL_FINDING, UNREPAIRABLE_FINDING], contents={"assistant/agent.py": "exec(code)\n", "app/settings.py": "x\n"},
         model_configured=False,
     )
-    assert [(s["finding_fingerprint"], bool(s["skipped_reason"])) for s in sections] == [("fp-eval", True), ("fp-redirect", True)]
+    assert [(s["finding_fingerprint"], bool(s["skipped_reason"])) for s in sections] == [("fp-eval", True), ("fp-debug", True)]
