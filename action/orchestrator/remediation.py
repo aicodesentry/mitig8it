@@ -65,7 +65,8 @@ def _modules():
     from src.agent import RepairAgent  # noqa: PLC0415
     from src.agent.provider import ProviderAction  # noqa: PLC0415
     from src.digests import git_blob_sha1  # noqa: PLC0415
-    from src.engine import RepairEngine  # noqa: PLC0415
+    from src.engine import NO_REPAIR_FAMILY_MESSAGE, RepairEngine  # noqa: PLC0415
+    from src.gates import UNSUPPORTED_LANGUAGE_MESSAGE  # noqa: PLC0415
     from src.models import GitTreeEntry, RepairRequest  # noqa: PLC0415
     from src.sandbox import InProcessSandboxBroker, LocalSubprocessDriver  # noqa: PLC0415
     from src.verification import Verifier  # noqa: PLC0415
@@ -77,6 +78,8 @@ def _modules():
         "RepairAgent": RepairAgent,
         "ProviderAction": ProviderAction,
         "RepairEngine": RepairEngine,
+        "NO_REPAIR_FAMILY_MESSAGE": NO_REPAIR_FAMILY_MESSAGE,
+        "UNSUPPORTED_LANGUAGE_MESSAGE": UNSUPPORTED_LANGUAGE_MESSAGE,
         "RepairRequest": RepairRequest,
         "GitTreeEntry": GitTreeEntry,
         "InProcessSandboxBroker": InProcessSandboxBroker,
@@ -131,6 +134,53 @@ def supported_findings(findings: Sequence[Dict[str, Any]]) -> List[Dict[str, Any
         if families.family_supported(family, language):
             supported.append(finding)
     return supported
+
+
+def unsupported_reason(finding: Dict[str, Any]) -> str:
+    """Why `supported_findings` left this finding out, in the engine's own words.
+
+    The App sends such a finding to the engine and publishes the skip record it gets back, so
+    the sentences and their order are the engine's retrieval checks: no family, no language,
+    then a family not yet repaired in that language. Returns "" for a supported finding.
+    """
+    modules = _modules()
+    families = modules["families"]
+    path = str(finding.get("file_path") or finding.get("path") or "")
+    family = families.rule_family(_finding_view(finding))
+    language = families.language_of_path(path) if path else None
+    if not family:
+        return modules["NO_REPAIR_FAMILY_MESSAGE"]
+    if not language:
+        return modules["UNSUPPORTED_LANGUAGE_MESSAGE"]
+    if not families.family_supported(family, language):
+        return f"The {family} family is not repaired for {language} sources yet."
+    return ""
+
+
+def skip_section(finding: Dict[str, Any], finding_id: str, message: str) -> Dict[str, Any]:
+    """A section that puts "No automatic fix: <message>" under the finding's comment.
+
+    The shape is the App's `emptySection` with `skipped_reason` set, which
+    `publishFindingFixSections` renders through `buildSkippedSection`. No finding body travels
+    with it: like the App, a finding that only has a reason gets no comment created for it.
+    """
+    return {
+        "finding_fingerprint": str(finding_id),
+        "candidate_id": "",
+        "path": str(finding.get("file_path") or ""),
+        "finding_line": int(finding.get("line_start") or 0),
+        "hunk": None,
+        "extra_hunks": [],
+        "unified_diff": "",
+        "not_suggestable_reason": "",
+        "verification_level": "",
+        "stated_intent": "",
+        "proof": "",
+        "limitations": [],
+        "evidence": [],
+        "skipped_reason": str(message),
+        "finding_ids": [str(finding_id)],
+    }
 
 
 class _FindingView:
@@ -211,8 +261,7 @@ def build_request(
 
     snapshots = []
     for index, finding in enumerate(findings[:MAX_REPAIR_FINDINGS]):
-        snapshots.append(
-            {
+        snapshot = {
                 "snapshot_id": str(finding.get("fingerprint") or f"finding-{index}"),
                 "rule_id": str(finding.get("rule_id") or ""),
                 "cwe_id": str(finding.get("cwe_id") or ""),
@@ -226,7 +275,13 @@ def build_request(
                     int(finding.get("line_end") or finding.get("line_start") or 1),
                 ),
             }
-        )
+        # The rules the clusterer merged into this finding. A gate that reads which rule matched
+        # (a model's answer run as code or as a command) needs them, because the generic rule
+        # on the same line may be the one that survived as `rule_id`.
+        merged = merged_rule_ids(finding)
+        if merged:
+            snapshot["evidence_details"] = {"extra": {"merged_rule_ids": merged}}
+        snapshots.append(snapshot)
 
     payload = {
         "schema_version": "v1",
@@ -255,6 +310,18 @@ def build_request(
     if model_configured:
         payload["versions"]["repair_model"] = os.environ.get("REPAIR_LLM_MODEL", "")
     return modules["RepairRequest"].model_validate(payload)
+
+
+def merged_rule_ids(finding: Dict[str, Any]) -> List[str]:
+    details = finding.get("evidence_details") if isinstance(finding.get("evidence_details"), dict) else {}
+    extra = details.get("extra") if isinstance(details.get("extra"), dict) else {}
+    found: List[str] = []
+    for source in (finding.get("merged_rule_ids"), extra.get("merged_rule_ids")):
+        for rule_id in source if isinstance(source, list) else []:
+            text = str(rule_id or "")[:200]
+            if text and text not in found:
+                found.append(text)
+    return found[:50]
 
 
 def _agent_factory(model_configured: bool):
@@ -335,6 +402,38 @@ def fix_sections(response, findings_by_id: Dict[str, Dict[str, Any]]) -> List[Di
                     "finding_ids": [str(finding_id)],
                 }
             )
+    return sections + skipped_sections(response, findings_by_id, sections)
+
+
+def skipped_sections(
+    response,
+    findings_by_id: Dict[str, Dict[str, Any]],
+    candidate_sections: Sequence[Dict[str, Any]] = (),
+) -> List[Dict[str, Any]]:
+    """One "No automatic fix" section per finding the engine did not repair.
+
+    The engine names each such finding in `response.skipped` with a reason. A finding a
+    candidate already covers is left alone, and a finding the response names nowhere still gets
+    the response's own reason, so no finding the action asked about is left without a sentence.
+    """
+    covered = {str(section.get("finding_fingerprint") or "") for section in candidate_sections}
+    sections: List[Dict[str, Any]] = []
+    for item in getattr(response, "skipped", []) or []:
+        finding_id = str((item or {}).get("finding_id") or "")
+        finding = findings_by_id.get(finding_id)
+        if not finding or finding_id in covered:
+            continue
+        message = str(item.get("message") or "").strip() or str(item.get("code") or "").strip()
+        if not message:
+            continue
+        sections.append(skip_section(finding, finding_id, message))
+        covered.add(finding_id)
+    reason = getattr(response, "reason", None) or {}
+    fallback = str(reason.get("message") or "").strip() or "No verified fix was produced for this finding."
+    for finding_id, finding in findings_by_id.items():
+        if finding_id not in covered:
+            sections.append(skip_section(finding, finding_id, fallback))
+            covered.add(finding_id)
     return sections
 
 

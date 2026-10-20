@@ -27,6 +27,7 @@ from .patches import (
 from .proofs import GeneratedProof, generate_proof
 from .retrieval import Snapshot, SnapshotError
 from .sandbox import BrokerConfigurationError, create_sandbox_broker
+from .skip_reasons import complete_skipped, unproven_record
 from .splitting import DEPENDENT_HUNK_UNPROVEN, split_hunks
 from .templates import MODEL, TEMPLATE, TemplateFallback, combine_templates, generate_template
 from . import telemetry
@@ -61,6 +62,7 @@ STATIC_ASSERTION_NOT_COMBINABLE = (
     "This job also produced a candidate verified by execution, and a batch carries one kind of "
     "evidence: the statically asserted candidate is not shipped beside it."
 )
+NO_REPAIR_FAMILY_MESSAGE = "This finding is outside the enabled repair families."
 PROTECTED_PATH_MESSAGE = (
     "Policy will not change this file, so no repair of it could be applied. It is a test "
     "directory, a lock file, or a CI or infrastructure path."
@@ -924,11 +926,18 @@ class RepairEngine:
                 continue
             if finding_id in dependent_by_id:
                 unproven.append(dependent_by_id[finding_id])
-            elif finding_id in failures:
-                failure = failures[finding_id]
-                unproven.append({"finding_id": finding_id, "code": str(failure.get("code") or "not_repaired"), "message": str(failure.get("message") or "No candidate proved this finding.")})
-            else:
-                unproven.append({"finding_id": finding_id, "code": "not_repaired", "message": "No regression test reproduced this finding, so no candidate claims it."})
+                continue
+            # The most specific reason the group recorded for this finding, never an empty one:
+            # a failure first, then the model's stated abstention, then the template's or the
+            # proof's own refusal.
+            unproven.append(unproven_record(
+                finding_id,
+                failure=failures.get(finding_id),
+                template_entry=template_report.get(finding_id),
+                proof_entry=proof_report.get(finding_id),
+                group_code=model_pass.reason_code if model_pass is not None else None,
+                group_message=model_pass.explanation if model_pass is not None else None,
+            ))
 
         trace = [entry for item in passes for entry in item.trace]
         usage = _aggregate_usage([GroupOutcome(index, finding_ids, item.state, None, None, [], None, None, item.trace, item.usage, True) for item in passes])
@@ -969,6 +978,21 @@ class RepairEngine:
         return GroupOutcome(index, finding_ids, state, code, message, [], None, last.verification, trace, usage, agent_ran, evidence, unproven, coverage), [], unproven
 
     async def repair(self, request: RepairRequest, checkpoints: AgentCheckpointStore | None = None) -> RepairResponse:
+        """Repair what can be proven, and name every other finding in `skipped` with a reason.
+
+        The contract is that each finding the request carries ends in a candidate's
+        `finding_ids` or in `skipped`. `_repair` records the specific reasons; this wrapper
+        adds a record, from the response's own reason, for any finding a path left unnamed.
+        """
+        response = await self._repair(request, checkpoints)
+        claimed = {str(finding_id) for candidate in response.candidates for finding_id in candidate.finding_ids}
+        ids = [(finding.stable_id, str(finding.snapshot_id or finding.id or finding.rule_id or "")) for finding in request.findings]
+        completed = complete_skipped(ids, claimed, list(response.skipped), response.reason)
+        if completed == list(response.skipped):
+            return response
+        return response.model_copy(update={"skipped": completed})
+
+    async def _repair(self, request: RepairRequest, checkpoints: AgentCheckpointStore | None = None) -> RepairResponse:
         request_digest = digest_json(request.model_dump(mode="json"))
         with telemetry.stage_span("snapshot_bind", **telemetry.request_attributes(request)):
             try:
@@ -1001,7 +1025,7 @@ class RepairEngine:
                 family = _rule_family(finding)
                 language = language_of_path(finding.affected_path)
                 if family is None:
-                    skipped.append({"finding_id": finding_id, "code": "unsupported_rule_family", "message": "This finding is outside the enabled repair families."})
+                    skipped.append({"finding_id": finding_id, "code": "unsupported_rule_family", "message": NO_REPAIR_FAMILY_MESSAGE})
                 elif family not in allowed:
                     skipped.append({"finding_id": finding_id, "code": "rule_family_disabled", "message": "The repair family is disabled by policy."})
                 elif not finding.affected_path or finding.affected_path not in snapshot.paths:
@@ -1051,6 +1075,7 @@ class RepairEngine:
                 outcomes.append(
                     GroupOutcome(index, finding_ids, "unsupported", "budget_exhausted", BUDGET_EXHAUSTED_MESSAGE, [], None, None, [], {}, False)
                 )
+                skipped.extend({"finding_id": finding_id, "code": "budget_exhausted", "message": BUDGET_EXHAUSTED_MESSAGE} for finding_id in finding_ids)
                 continue
             group_request = (
                 request
@@ -1075,13 +1100,13 @@ class RepairEngine:
             remaining_tool_calls, remaining_tokens, remaining_usd = budget.tool_calls, budget.tokens, budget.usd
             outcomes.append(outcome)
             accepted.extend(entries)
-            if outcome.evidence.get("candidate_sources") or outcome.reason_code == DEPENDENT_HUNK_UNPROVEN:
-                # A finding the group could not prove beside one it did is reported, never
-                # carried silently; a group that proved nothing carries its reason instead.
-                skipped.extend(
-                    {"finding_id": str(item["finding_id"]), "code": str(item["code"]), "message": str(item["message"])}
-                    for item in unproven
-                )
+            # Every finding the group did not claim is reported with its own reason, whether or
+            # not the group proved anything else. The group's reason in `evidence.groups` is for
+            # diagnosis; a reader of the pull request is shown only the per-finding record.
+            skipped.extend(
+                {"finding_id": str(item["finding_id"]), "code": str(item["code"]), "message": str(item["message"])}
+                for item in unproven
+            )
 
         # A batch carries one kind of evidence. A statically asserted candidate says nothing ran;
         # an executed one says a test failed before the change and passed after it. Shipping both
@@ -1116,6 +1141,7 @@ class RepairEngine:
                     request_digest,
                     snapshot.manifest_digest,
                     {"groups": group_report},
+                    skipped=skipped,
                 )
             return RepairResponse(
                 skipped=skipped,
@@ -1156,6 +1182,7 @@ class RepairEngine:
                 request_digest,
                 snapshot.manifest_digest,
                 {"groups": group_report},
+                skipped=skipped,
             )
         limitations = list(combined.verification.limitations) + [
             item for item in combined.bundle.limitations if item not in combined.verification.limitations
