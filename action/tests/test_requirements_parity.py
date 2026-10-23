@@ -1,10 +1,10 @@
 """The action's dependency list must cover what the services it runs actually need.
 
-The action installs one environment for two services that pin some packages differently. This
-test reads both service requirement files and checks that every package either appears in the
-action's list at a version at least as new, or is on the short list of dependencies the action
-deliberately leaves out. A new dependency in either service fails here rather than at runtime
-inside a customer's job.
+The action installs one application environment for two services that pin some packages
+differently, plus the analysis service's canonical isolated scanner environment. This test reads
+the service requirement files and checks that every package either appears in the matching Action
+environment at a version at least as new, or is on the short list of dependencies the Action
+deliberately leaves out. A new dependency fails here rather than at runtime in a customer's job.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ pytestmark = pytest.mark.repo_definition
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTION_REQUIREMENTS = REPO_ROOT / "action/requirements.txt"
 ANALYSIS_REQUIREMENTS = REPO_ROOT / "services/analysis-service/src/requirements.txt"
+SCANNER_REQUIREMENTS = REPO_ROOT / "services/analysis-service/src/requirements-scanner.txt"
 REMEDIATION_REQUIREMENTS = REPO_ROOT / "services/remediation-service/requirements.txt"
 
 # Deliberately not installed. Each backs a production backend the action does not have, and none
@@ -30,11 +31,6 @@ EXCLUDED = {
     "google-cloud-storage",
     "kubernetes",
     "psycopg",
-    # Unpinnable alongside semgrep, and a no-op without an OTLP endpoint. See the note in
-    # action/requirements.txt.
-    "opentelemetry-api",
-    "opentelemetry-sdk",
-    "opentelemetry-exporter-otlp-proto-http",
 }
 
 PIN = re.compile(r"^([A-Za-z0-9._-]+)(?:\[[^\]]+\])?==(.+)$")
@@ -59,10 +55,14 @@ def version_tuple(version: str) -> tuple[int, ...]:
 
 def test_every_analysis_dependency_is_installed():
     action = parse(ACTION_REQUIREMENTS)
+    scanner = parse(SCANNER_REQUIREMENTS)
     for name, version in parse(ANALYSIS_REQUIREMENTS).items():
-        assert name in action, f"the action does not install {name}, which analysis-service pins"
-        assert version_tuple(action[name]) >= version_tuple(version), (
-            f"the action pins {name}=={action[name]}, below analysis-service's {version}"
+        installed = scanner if name in scanner else action
+        assert name in installed, (
+            f"the action does not install {name}, which analysis-service pins"
+        )
+        assert version_tuple(installed[name]) >= version_tuple(version), (
+            f"the action pins {name}=={installed[name]}, below analysis-service's {version}"
         )
 
 
@@ -90,4 +90,10 @@ def test_the_exclusion_list_is_justified_in_the_file():
 
 def test_semgrep_is_installed_because_the_scan_fails_closed_without_it():
     """Tier 2 raises rather than returning nothing when semgrep is missing, so it must ship."""
-    assert "semgrep" in parse(ACTION_REQUIREMENTS)
+    scanner = parse(SCANNER_REQUIREMENTS)
+    assert set(scanner) == {"semgrep", "pyjwt", "urllib3"}, (
+        "the scanner requirements must stay limited to Semgrep and explicit security overrides"
+    )
+    assert "semgrep" not in parse(ACTION_REQUIREMENTS), (
+        "semgrep must stay isolated from the application dependency graph"
+    )

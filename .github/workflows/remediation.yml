@@ -60,17 +60,17 @@ jobs:
       # The static assertion level is decided by re-running the rule that produced the finding,
       # and `tests/test_static_assertion_engine.py` drives the real oracle rather than a stub, so
       # this job needs the analysis service's scanner. It cannot go in the test environment:
-      # semgrep requires opentelemetry-api~=1.37.0 and this service pins ==1.44.0, the conflict
-      # `action/requirements.txt` is written around. The oracle shells out to the binary, so a
-      # separate virtualenv with only `semgrep` linked onto PATH gives the tests the real scanner
-      # without moving a pin. The version is read out of the analysis service's own requirements
+      # semgrep requires opentelemetry-api~=1.37.0 and this service pins ==1.45.1, the conflict
+      # the separate scanner environments are written around. The oracle shells out to the binary,
+      # so a separate virtualenv with only `semgrep` linked onto PATH gives the tests the real
+      # scanner without moving a pin. The version is read out of the analysis service's own requirements
       # rather than restated, so this can never verify against a scanner that service does not run.
       - name: Install the scanner the rule oracle runs, beside the test environment
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^semgrep==\(.*\)$/\1/p' services/analysis-service/src/requirements.txt | head -n 1)"
+          version="$(sed -n 's/^semgrep==\(.*\)$/\1/p' services/analysis-service/src/requirements-scanner.txt | head -n 1)"
           if [ -z "${version}" ]; then
-            echo "services/analysis-service/src/requirements.txt no longer pins semgrep" >&2
+            echo "services/analysis-service/src/requirements-scanner.txt no longer pins semgrep" >&2
             exit 1
           fi
           python -m venv /tmp/rule-scanner

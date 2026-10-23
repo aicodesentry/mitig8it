@@ -1,0 +1,9 @@
+# Semgrep is isolated from the network-facing application interpreter in production containers.
+# Its current MCP and OpenTelemetry pins carry advisories in HTTP server and inbound trace-header
+# paths that the local-only CLI never invokes. The scheduled audit records narrowly scoped VEX
+# exceptions for those paths.
+semgrep==1.182.1
+# Semgrep permits these patched versions; pin them so a future resolver cannot select an older
+# vulnerable release from its broad ranges.
+PyJWT==2.15.1
+urllib3==2.8.0

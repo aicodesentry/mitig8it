@@ -149,6 +149,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             services/analysis-service/src/requirements.txt
+            services/analysis-service/src/requirements-scanner.txt
             services/analysis-service/src/requirements-test.txt
             benchmarks/requirements-quality.txt
       - run: pip install -r requirements-test.txt

@@ -21,8 +21,29 @@ def test_action_fails_closed_for_missing_or_malformed_packaged_evidence(monkeypa
 
 
 def test_local_action_cannot_reuse_an_independent_production_receipt(monkeypatch, tmp_path):
-    root = Path(__file__).resolve().parents[2]
-    release = json.loads((root / "tests/fixtures/verified-quality-release.json").read_text())
+    # Keep this fixture inside the test: repository-level fixtures are intentionally not copied
+    # into the customer-facing Action image.
+    release = {
+        "schema_version": "v1",
+        "remediation_release_verified": True,
+        "source_revision": "a" * 40,
+        "receipt_digest": "sha256:" + "b" * 64,
+        "provider": {
+            "kind": "live-provider",
+            "provider_id": "test-provider",
+            "model_id": "test-reviewed-model",
+            "configuration_digest": "sha256:" + "c" * 64,
+        },
+        "sandbox": {
+            "verification_level": "independent_sandbox",
+            "image_digest": "registry.example/runner@sha256:" + "d" * 64,
+        },
+        "service": {
+            "image_digest": "registry.example/remediation@sha256:" + "e" * 64,
+        },
+        "expires_at": "2999-01-01T00:00:00Z",
+        "authenticated_reviewers": ["test-reviewer"],
+    }
     target = tmp_path / "src"
     target.mkdir()
     (target / "quality-release.json").write_text(json.dumps(release))
