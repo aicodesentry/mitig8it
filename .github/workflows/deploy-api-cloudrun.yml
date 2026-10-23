@@ -273,6 +273,11 @@ jobs:
             ANALYSIS_GRPC_AUDIENCE=${ANALYSIS_URL},\
             GITHUB_CALLBACK_URL=${FRONTEND_URL}/auth/github/callback,\
             GITHUB_APP_SLUG=mitig8it"
+          if [ "$ENVIRONMENT" = 'production' ]; then
+            APPROVED_SERVICE=$(python -c 'import json; print(json.load(open("services/api-service/src/quality-release.json"))["service"]["image_digest"])')
+            APPROVED_SANDBOX=$(python -c 'import json; print(json.load(open("services/api-service/src/quality-release.json"))["sandbox"]["image_digest"])')
+            ENV_VARS="${ENV_VARS},REMEDIATION_SERVICE_IMAGE_DIGEST=${APPROVED_SERVICE},REMEDIATION_SANDBOX_IMAGE_DIGEST=${APPROVED_SANDBOX}"
+          fi
           SECRETS="\
             JWT_SECRET=codesentry-jwt-secret${SECRET_SUFFIX}:latest,\
             ENCRYPTION_KEY=codesentry-encryption-key${SECRET_SUFFIX}:latest,\

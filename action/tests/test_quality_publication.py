@@ -20,6 +20,16 @@ def test_action_fails_closed_for_missing_or_malformed_packaged_evidence(monkeypa
     assert not run.fix_publication_ready()
 
 
+def test_local_action_cannot_reuse_an_independent_production_receipt(monkeypatch, tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    release = json.loads((root / "tests/fixtures/verified-quality-release.json").read_text())
+    target = tmp_path / "src"
+    target.mkdir()
+    (target / "quality-release.json").write_text(json.dumps(release))
+    monkeypatch.setenv("MITIG8IT_GITHUB_SERVICE_ROOT", str(tmp_path))
+    assert not run.fix_publication_ready()
+
+
 def test_review_explains_withheld_fixes_without_claiming_generation():
     if not shutil.which("node"):
         pytest.skip("node is required for publisher rendering")

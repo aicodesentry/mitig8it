@@ -255,12 +255,21 @@ async function selectedFindings(job) {
 }
 
 function buildPayload(job, snapshot, findings) {
+  const releaseIdentity = policy.releaseEvidenceIdentity();
+  const versions = { policy_version: job.policy_version };
+  // The remote provider refuses a request whose expected model differs from its
+  // configured model. Carry the reviewed model on every release-eligible request
+  // instead of trusting a mutable secret to keep the same meaning over time.
+  if (releaseIdentity) {
+    versions.repair_model = releaseIdentity.model_id;
+    versions.repair_service_image = releaseIdentity.service_image_digest;
+  }
   return { schema_version: 'v1', job_id: job.id, tenant_id: String(job.installation_id), installation_id: String(job.installation_id), repository_id: job.repository_id,
     repository_full_name: job.repository_full_name, pull_request_id: job.pull_request_id, pull_request_number: job.pr_number,
     head_sha: job.head_sha, base_sha: job.base_sha, analysis_run_id: job.analysis_run_id, stage: job.stage,
     fencing_token: job.fencing_token, attempt: Number(job.attempt_count || 0) + 1, findings, files: snapshot.files,
     tree_entries: snapshot.treeEntries, head_tree_oid: snapshot.headTreeOid,
-    profile: { snapshot_coverage: { provided_paths: snapshot.files.map((file) => file.path) } }, policy: repairPolicy(job.policy_manifest), versions: { policy_version: job.policy_version },
+    profile: { snapshot_coverage: { provided_paths: snapshot.files.map((file) => file.path) } }, policy: repairPolicy(job.policy_manifest), versions,
     limits: { max_files: job.policy_manifest.max_files, max_changed_lines: job.policy_manifest.max_changed_lines, max_attempts: job.policy_manifest.max_attempts, max_tool_calls: job.policy_manifest.max_tool_calls, max_context_tokens: job.policy_manifest.max_context_tokens, max_spend_usd: job.policy_manifest.max_spend_usd } };
 }
 

@@ -969,6 +969,9 @@ function validateFixSection(raw, index) {
     evidence: Array.isArray(raw.evidence) ? raw.evidence.filter((item) => typeof item === 'string').slice(0, 20) : [],
     limitations: Array.isArray(raw.limitations) ? raw.limitations.filter((item) => typeof item === 'string').slice(0, 40) : [],
     verification_level: typeof raw.verification_level === 'string' ? raw.verification_level : '',
+    repair_model: typeof raw.repair_model === 'string' ? raw.repair_model : '',
+    repair_service_image: typeof raw.repair_service_image === 'string' ? raw.repair_service_image : '',
+    sandbox_image_digest: typeof raw.sandbox_image_digest === 'string' ? raw.sandbox_image_digest : '',
     skipped_reason: skipped,
     // The finding comment to create when none carries the marker. It is trimmed of any
     // fix blocks so a stale copy can never smuggle a section past the candidate markers.
@@ -1204,12 +1207,14 @@ function createdFindingBody(section, placement) {
 // from the section's finding body: on its line when the diff shows that line, else as
 // a pull request comment that says why. Comments by another author are never edited.
 async function publishFindingFixSections(payload) {
-  qualityPublication.assertRemediationPublicationReady();
   const envelope = validateActionEnvelope(payload);
   if (!Array.isArray(payload.sections) || !payload.sections.length || payload.sections.length > FIX_SECTION_LIMIT) {
     throw badRequest(`sections must contain 1 to ${FIX_SECTION_LIMIT} entries`);
   }
   const sections = payload.sections.map(validateFixSection);
+  // This is the final write boundary. Every actual candidate must carry the
+  // exact short-lived model and sandbox identity authenticated by this build.
+  qualityPublication.assertRemediationPublicationReady(sections);
   const previewUrl = typeof payload.preview_url === 'string' && /^https?:\/\//.test(payload.preview_url) && !/[\s()]/.test(payload.preview_url)
     ? payload.preview_url.slice(0, 500) : '';
   const commentService = require('./githubCommentService');

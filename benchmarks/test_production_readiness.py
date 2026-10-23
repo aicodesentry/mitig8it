@@ -50,6 +50,14 @@ def test_readiness_cli_enforces_production_unless_reporting_or_staging_is_explic
     assert json.loads(result.stdout)["production_ready"] is False
 
 
+@pytest.mark.parametrize("mode", ["--compatibility", "--report-only"])
+@pytest.mark.parametrize("assertion", ["--refresh-release-artifacts", "--assert-sandbox-image=registry/runner@sha256:" + "a" * 64])
+def test_generation_and_deployment_identity_assertions_cannot_use_nonstrict_modes(mode, assertion):
+    result = subprocess.run([sys.executable, "-m", "benchmarks.production_readiness", mode, assertion],
+                            cwd=ROOT, text=True, capture_output=True, check=False)
+    assert result.returncode == 2
+
+
 def test_manual_release_artifact_edits_cannot_open_either_gate(monkeypatch, tmp_path):
     path = tmp_path / "quality-release.json"
     path.write_text(json.dumps({**readiness.RELEASE_ARTIFACT, "remediation_release_verified": True}))
@@ -97,10 +105,75 @@ def test_composite_has_no_production_compatibility_fallback():
     path = ROOT / ".github/actions/quality-readiness/action.yml"
     action = yaml.safe_load(path.read_text())
     commands = "\n".join(step.get("run", "") for step in action["runs"]["steps"])
-    assert 'production) python -m benchmarks.production_readiness --component "$QUALITY_COMPONENT" ;;' in commands
+    assert 'python -m benchmarks.production_readiness --component "$QUALITY_COMPONENT" --release-evidence "$evidence_path" --refresh-release-artifacts' in commands
+    assert 'python -m benchmarks.production_readiness --component "$QUALITY_COMPONENT" --release-evidence "$evidence_path"\n' in commands
     assert 'staging) python -m benchmarks.production_readiness --component "$QUALITY_COMPONENT" --compatibility ;;' in commands
     assert "--report-only" not in commands
     assert "|| true" not in commands
+    assert "--proto '=https' --proto-redir '=https'" in commands
+    assert "--max-redirs 3" in commands and "--max-time 30" in commands
+    assert "--max-filesize 20971520" in commands
+    assert "url.username or url.password or url.query or url.fragment" in commands
+    assert "benchmarks/requirements-quality.txt" in commands
+
+
+def test_production_sandbox_promotes_the_authenticated_digest_before_any_push_or_job_mutation():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/deploy-remediation-cloudrun.yml").read_text())
+    steps = workflow["jobs"]["deploy"]["steps"]
+    admission = next(i for i, step in enumerate(steps) if step.get("name") == "Resolve the authenticated production sandbox digest before any push")
+    writes = [i for i, step in enumerate(steps) if re.search(r"docker push|gcloud run jobs update|gcloud run deploy", step.get("run", ""))]
+    assert admission < min(writes)
+    assert "--assert-sandbox-image" in steps[admission]["run"]
+    assert steps[admission]["if"] == "env.ENVIRONMENT == 'production'"
+    assert "cloud_run_job) PROVIDED_LEVEL='isolated_job'" in steps[admission]["run"]
+    assert "local) PROVIDED_LEVEL='development_unverified'" in steps[admission]["run"]
+    assert 'if [ "$LEVEL" != "$PROVIDED_LEVEL" ]; then' in steps[admission]["run"]
+    assert "not just its image digest" in steps[admission]["run"]
+    assert steps[admission]["run"].index("exit 1") < steps[admission]["run"].index("gcloud artifacts docker images describe")
+    assert 'echo "JOB_IMAGE=$APPROVED"' in steps[admission]["run"]
+    build = next(step for step in steps if step.get("name") == "Build and push the sandbox job image")
+    assert "env.ENVIRONMENT != 'production'" in build["if"]
+    update = next(step for step in steps if step.get("name") == "Point the sandbox job at the new digest")["run"]
+    assert update.index("--assert-sandbox-image") < update.index("gcloud run jobs update")
+    metadata = next(step["run"] for step in steps if step.get("name") == "Set release metadata")
+    assert '["service"]["image_digest"]' in metadata
+    assert 'echo "IMAGE=$SERVICE_IMAGE"' in metadata
+    for name in ("Build repair image", "Push repair image"):
+        assert next(step["if"] for step in steps if step.get("name") == name) == "env.ENVIRONMENT != 'production'"
+    assert "--assert-service-image" in steps[admission]["run"]
+
+
+def test_ordered_release_preflight_precedes_api_and_cannot_mutate_cloud():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/deploy-production.yml").read_text())
+    preflight = workflow["jobs"]["preflight"]
+    assert preflight["needs"] == "verify-ci"
+    assert workflow["jobs"]["api-service"]["needs"] == "preflight"
+    assert preflight["permissions"] == {"contents": "read"}
+    admission = next(step for step in preflight["steps"] if step.get("uses") == "./.github/actions/quality-readiness")
+    assert admission["with"]["deployment-driver"] == workflow["jobs"]["remediation-service"]["with"]["sandbox_driver"]
+    assert not any("google-github-actions/" in step.get("uses", "") for step in preflight["steps"])
+    assert not any(re.search(r"gcloud|docker push|db:migrate", step.get("run", "")) for step in preflight["steps"])
+
+
+def test_required_ci_installs_pinned_quality_dependencies_and_runs_evidence_and_intake_tests():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["analysis-tests"]
+    assert "if" not in job
+    assert "analysis-tests" in workflow["jobs"]["ci-required"]["needs"]
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "pip install -r ../../../benchmarks/requirements-quality.txt" in commands
+    for suite in ("test_release_evidence.py", "test_corpus_intake.py", "test_production_intake.py"):
+        assert "benchmarks/remediation/tests/" + suite in commands
+
+
+def test_requested_remediation_release_check_consumes_authenticated_bundle():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/remediation.yml").read_text())
+    steps = workflow["jobs"]["remediation-benchmark-gate"]["steps"] if "remediation-benchmark-gate" in workflow["jobs"] else next(
+        job["steps"] for job in workflow["jobs"].values() if any(step.get("name") == "Evaluate release evidence without deploying" for step in job.get("steps", [])))
+    command = next(step["run"] for step in steps if step.get("name") == "Evaluate release evidence without deploying")
+    assert '--release-evidence "$REMEDIATION_RELEASE_EVIDENCE_PATH"' in command
+    assert 'test "$evaluation_exit_code" -eq 2' in command
+    assert any(step.get("uses") == "./.github/actions/quality-readiness" and "inputs.release_gate" in step.get("if", "") for step in steps)
 
 
 @pytest.mark.parametrize("filename", ["deploy-production.yml", "deploy-staging.yml"])
@@ -126,6 +199,7 @@ def test_ordered_deployment_callers_allow_the_permissions_requested_by_reusable_
 
 @pytest.mark.parametrize("filename,job", [
     ("deploy-production.yml", "verify-ci"),
+    ("deploy-production.yml", "preflight"),
     ("deploy-staging.yml", "authorize"),
 ])
 def test_deployment_preflight_jobs_do_not_receive_oidc_or_write_permissions(filename, job):

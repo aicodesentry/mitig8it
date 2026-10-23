@@ -290,6 +290,9 @@ class GitHubGrpcClient {
       message.setLimitationsList(section.limitations || []);
       message.setSkippedReason(section.skipped_reason || '');
       message.setVerificationLevel(section.verification_level || '');
+      message.setRepairModel(section.repair_model || '');
+      message.setSandboxImageDigest(section.sandbox_image_digest || '');
+      message.setRepairServiceImage(section.repair_service_image || '');
       message.setFindingBody(section.finding_body || '');
       message.setFindingIdsList(section.finding_ids || []);
       message.setCoveredBy(section.covered_by || '');

@@ -127,16 +127,26 @@ jobs:
           node-version: ${{ steps.sandbox-node.outputs.version }}
       # The fixture gate imports the remediation service in-process, so it needs
       # the service runtime dependencies (pydantic, fastapi, httpx, ...).
-      - run: pip install -r services/remediation-service/requirements.txt
+      - run: pip install -r services/remediation-service/requirements.txt -r benchmarks/requirements-quality.txt pytest
       - run: python -m unittest benchmarks.remediation.tests.test_evaluate
+      - run: >-
+          python -m pytest benchmarks/remediation/tests/test_release_evidence.py
+          benchmarks/remediation/tests/test_corpus_intake.py -q
       - run: python benchmarks/remediation/evaluate.py --suite seed --output /tmp/remediation-seed.json
+      - name: Authenticate the requested production release evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.release_gate
+        uses: ./.github/actions/quality-readiness
+        with:
+          environment: production
+          component: remediation
       - name: Evaluate release evidence without deploying
         env:
           RELEASE_GATE_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.release_gate || 'false' }}
         run: |
           if [ "$RELEASE_GATE_REQUESTED" = "true" ]; then
             # This only validates evidence; it neither enables flags nor deploys.
-            python benchmarks/remediation/evaluate.py --suite release --output /tmp/remediation-release.json
+            python benchmarks/remediation/evaluate.py --suite release \
+              --release-evidence "$REMEDIATION_RELEASE_EVIDENCE_PATH" --output /tmp/remediation-release.json
           else
             set +e
             python benchmarks/remediation/evaluate.py --suite release --output /tmp/remediation-release.json

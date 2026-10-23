@@ -10,11 +10,16 @@ const MAX_DIFF_CHARS = 6000;
 
 function verifiedRepairProblem(candidate) {
   const evidence = candidate.preview?.evidence || {};
+  const releaseIdentity = policy.releaseEvidenceIdentity();
+  if (!releaseIdentity) return 'The production repair release evidence is missing, invalid, or expired.';
   if (evidence.status !== 'passed' || !/^(?:sha256:)?[a-f0-9]{64}$/i.test(evidence.evidence_digest || '')) {
     return 'The complete repair has no passing independent verification evidence.';
   }
-  if (!['independent_sandbox', 'isolated_job'].includes(candidate.verification_level)
-      || evidence.verification_level !== candidate.verification_level) {
+  if (candidate.verification_level !== releaseIdentity.verification_level
+      || evidence.verification_level !== releaseIdentity.verification_level
+      || evidence.repair_model !== releaseIdentity.model_id
+      || evidence.repair_service_image !== releaseIdentity.service_image_digest
+      || evidence.sandbox_image_digest !== releaseIdentity.sandbox_image_digest) {
     return 'The repair was not verified by an independently executed sandbox check.';
   }
   if ((evidence.limitations || []).some((item) => /syntax.*(?:failed|unavailable|not run|skipped)|undefined_name|missing_dependency|dependency_not_available/i.test(String(item)))) {
@@ -388,6 +393,9 @@ function buildSections({ job, candidates = [], findings = [] }) {
         evidence: evidenceLines(candidate),
         limitations,
         verification_level: String(candidate.verification_level || evidence.verification_level || ''),
+        repair_model: String(evidence.repair_model || ''),
+        repair_service_image: String(evidence.repair_service_image || ''),
+        sandbox_image_digest: String(evidence.sandbox_image_digest || ''),
       };
       sections.push(section);
       proven.push({ finding, section });
@@ -417,6 +425,10 @@ function buildSections({ job, candidates = [], findings = [] }) {
       candidate_id: match.section.candidate_id,
       covered_by: findingLabel(match.finding),
       finding_ids: [String(match.finding.id), String(finding.id)],
+      verification_level: match.section.verification_level,
+      repair_model: match.section.repair_model,
+      repair_service_image: match.section.repair_service_image,
+      sandbox_image_digest: match.section.sandbox_image_digest,
     });
   }
   const skipped = Array.isArray(job?.failure_reason?.skipped) ? job.failure_reason.skipped : [];

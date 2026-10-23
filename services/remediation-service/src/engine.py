@@ -16,6 +16,7 @@ from .gates import UNSUPPORTED_LANGUAGE_MESSAGE, static_gate
 from .git_tree import GitTreeError, compute_tree_oid, validate_snapshot_tree
 from .grouping import group_findings_by_language
 from .models import Candidate, FindingSnapshot, RepairPolicy, RepairRequest, RepairResponse, VerificationSummary
+from .release_identity import service_image_matches
 from .patches import (
     PatchBundle,
     PatchPolicyError,
@@ -411,6 +412,11 @@ def _build_candidate(
                 "summary": evidence_summary(bundle, verification, limitations),
                 # Which path wrote the hunks: a deterministic template or the model.
                 "candidate_source": source,
+                # Runtime publishers compare these request-bound identities with
+                # the authenticated release lease before exposing a suggestion.
+                "repair_model": request.versions.get("repair_model"),
+                "repair_service_image": request.versions.get("repair_service_image"),
+                "sandbox_image_digest": request.policy.sandbox_image_digest,
             },
         },
     )
@@ -970,6 +976,9 @@ class RepairEngine:
 
     async def repair(self, request: RepairRequest, checkpoints: AgentCheckpointStore | None = None) -> RepairResponse:
         request_digest = digest_json(request.model_dump(mode="json"))
+        if not service_image_matches(request):
+            return _reason_response(request, "unsupported", "service_image_identity_mismatch",
+                "Requested remediation service image does not match the mounted release identity.", request_digest)
         with telemetry.stage_span("snapshot_bind", **telemetry.request_attributes(request)):
             try:
                 snapshot = Snapshot(request)

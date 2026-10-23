@@ -4,9 +4,28 @@
 *                                   @nebullii
 
 # Anything that can reach production credentials or change what CI enforces.
-/.github/workflows/                 @nebullii
-/.github/CODEOWNERS                 @nebullii
-/infrastructure/                    @nebullii
+/.github/workflows/                 @nebullii @aicodesentry
+/.github/CODEOWNERS                 @nebullii @aicodesentry
+/infrastructure/                    @nebullii @aicodesentry
 
 # The rules and the evidence behind them.
 /docs/legal/                        @nebullii
+
+# Production quality admission and its trust roots require review by the
+# repository's other owner. GitHub disallows author approval and the branch rule
+# also requires approval of the last push, so the author cannot satisfy it alone.
+/.github/actions/quality-readiness/                         @nebullii @aicodesentry
+/benchmarks/production_readiness.py                        @nebullii @aicodesentry
+/benchmarks/quality_gate.py                                @nebullii @aicodesentry
+/benchmarks/rule_quality_gate.py                           @nebullii @aicodesentry
+/benchmarks/analysis_attestation.py                       @nebullii @aicodesentry
+/benchmarks/analysis_evidence.py                           @nebullii @aicodesentry
+/benchmarks/rule-quality/                                  @nebullii @aicodesentry
+/benchmarks/remediation/evaluate.py                        @nebullii @aicodesentry
+/benchmarks/remediation/corpus_intake.py                   @nebullii @aicodesentry
+/benchmarks/remediation/release/                           @nebullii @aicodesentry
+/benchmarks/remediation/release/intake-origins.json        @nebullii @aicodesentry
+/benchmarks/remediation/release_evidence.py                @nebullii @aicodesentry
+/services/analysis-service/src/publication-policy.json     @nebullii @aicodesentry
+/services/api-service/src/quality-release.json             @nebullii @aicodesentry
+/services/github-service/src/quality-release.json          @nebullii @aicodesentry

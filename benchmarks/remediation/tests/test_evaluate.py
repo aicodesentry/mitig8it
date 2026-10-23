@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from benchmarks.remediation.evaluate import (
@@ -279,6 +280,28 @@ class EngineHttpAdapterTests(unittest.TestCase):
         self.assertTrue(client.submitted["head_tree_oid"])
         self.assertTrue(client.submitted["tree_entries"])
         self.assertTrue(client.submitted["policy"]["allow_development_verification"])
+
+    def test_release_requests_pin_the_model_enforced_by_the_remote_provider(self):
+        directory, fixture = self.fixtures["sql-parameterized-001"]
+        client = FakeRemediationClient(self._terminal(directory, fixture))
+        with mock.patch.dict(os.environ, {"REPAIR_LLM_MODEL": "approved-immutable-model"}):
+            result = engine_adapter(client, directory, fixture, self.modules, sleep=lambda _: None,
+                                    expected_model="approved-immutable-model", sandbox_image_digest="registry/runner@sha256:" + "a" * 64,
+                                    service_image_digest="registry/remediation@sha256:" + "b" * 64)
+        self.assertEqual(client.submitted["versions"]["repair_model"], "approved-immutable-model")
+        self.assertEqual(result["request_versions"]["repair_model"], "approved-immutable-model")
+        self.assertEqual(result["requested_sandbox_image_digest"], "registry/runner@sha256:" + "a" * 64)
+        self.assertEqual(client.submitted["versions"]["repair_service_image"], "registry/remediation@sha256:" + "b" * 64)
+        self.assertFalse(client.submitted["policy"]["allow_static_assertion_verification"])
+
+    def test_wrong_configured_model_never_reaches_the_remote_service(self):
+        directory, fixture = self.fixtures["sql-parameterized-001"]
+        client = FakeRemediationClient(self._terminal(directory, fixture))
+        with mock.patch.dict(os.environ, {"REPAIR_LLM_MODEL": "unapproved-model"}):
+            result = engine_adapter(client, directory, fixture, self.modules, expected_model="approved-model")
+        self.assertEqual(result["state"], "inconclusive")
+        self.assertTrue(result["reason"].startswith("fixture_request_invalid"))
+        self.assertIsNone(client.submitted)
 
     def test_the_adapter_is_graded_like_the_local_adapters(self):
         directory, fixture = self.fixtures["sql-parameterized-001"]
