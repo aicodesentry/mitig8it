@@ -13,10 +13,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import subprocess
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -31,8 +33,24 @@ def fix_publication_ready() -> bool:
                 or Path(__file__).resolve().parents[2] / "services/github-service")
     try:
         release = json.loads((root / "src/quality-release.json").read_text(encoding="utf-8"))
-        return release.get("schema_version") == "v1" and release.get("remediation_release_verified") is True
-    except (OSError, ValueError, AttributeError):
+        expires = release.get("expires_at")
+        expiry = datetime.strptime(expires, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        provider, sandbox, service = release.get("provider") or {}, release.get("sandbox") or {}, release.get("service") or {}
+        image = re.compile(r"[A-Za-z0-9][A-Za-z0-9./_:-]*@sha256:[0-9a-f]{64}\Z")
+        # This Action currently verifies repairs in a local subprocess and labels
+        # them development_unverified. A production receipt requires the separate
+        # independent sandbox, so the Action must keep fixes withheld even when
+        # that receipt enables the deployed App. Detection review remains enabled.
+        return (release.get("schema_version") == "v1" and release.get("remediation_release_verified") is True
+                and re.fullmatch(r"[0-9a-f]{40}", str(release.get("source_revision") or "")) is not None
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", str(release.get("receipt_digest") or "")) is not None
+                and expiry > datetime.now(timezone.utc)
+                and provider.get("kind") == "live-provider" and bool(provider.get("model_id"))
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", str(provider.get("configuration_digest") or "")) is not None
+                and sandbox.get("verification_level") == "development_unverified"
+                and image.fullmatch(str(sandbox.get("image_digest") or "")) is not None
+                and image.fullmatch(str(service.get("image_digest") or "")) is not None)
+    except (OSError, ValueError, TypeError, AttributeError):
         return False
 
 # A workflow that grants write access to file contents has handed the action the power to change

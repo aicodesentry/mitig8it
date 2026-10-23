@@ -10,7 +10,8 @@ jest.mock('axios', () => {
 jest.mock('../services/githubAppAuth', () => ({ getInstallationToken: jest.fn(), getAppBotLogin: jest.fn() }));
 // These tests exercise publishing mechanics after release admission; the actual
 // fail-closed production policy is covered independently in qualityPublication.test.js.
-jest.mock('../quality-release.json', () => ({ schema_version: 'v1', remediation_release_verified: true }));
+jest.mock('../quality-release.json', () => require('../../../../tests/fixtures/verified-quality-release.json'));
+jest.mock('../../../api-service/src/quality-release.json', () => require('../../../../tests/fixtures/verified-quality-release.json'));
 
 const axios = require('axios');
 const githubAppAuth = require('../services/githubAppAuth');
@@ -366,13 +367,16 @@ function fixSection(overrides = {}) {
     proof: 'regression test tests/orders.regression.test.js asserts that the SQL injection at services/orders.js:12 is no longer reproducible; it failed on the original code and passed on the fix.',
     evidence: ['Regression test tests/orders.regression.test.js: failed on the original code, passed on the fix.', 'Syntax check: passed on the fixed file.'],
     limitations: ['verification ran in the development local sandbox without network, kernel, or filesystem isolation'],
-    verification_level: 'isolated_job', skipped_reason: '', finding_body: '', finding_ids: ['f-sql-1'], covered_by: '',
+    verification_level: 'independent_sandbox', repair_model: 'test-reviewed-model',
+    repair_service_image: 'registry.example/remediation@sha256:' + 'e'.repeat(64),
+    sandbox_image_digest: 'registry.example/runner@sha256:' + 'd'.repeat(64),
+    skipped_reason: '', finding_body: '', finding_ids: ['f-sql-1'], covered_by: '',
     extra_hunks: [],
     ...overrides,
   };
 }
 
-const VERIFIED_LINE = 'Verified: regression test failed on the original code and passed with this change (isolated sandbox (Cloud Run job, network denied)).';
+const VERIFIED_LINE = 'Verified: regression test failed on the original code and passed with this change (isolated sandbox).';
 
 const FINDING_BODY = '🔴 **HIGH** — SQL injection\n\n> Template literal in db.query\n\n**Confidence:** 85%\n\n**Fix:** Use a parameterized query.';
 const PLACED = { created: false, placement: 'inline' };
@@ -440,7 +444,6 @@ test('a verified fix is appended to the existing finding comment as a suggestion
 // flattering one, because an unknown sandbox is not evidence of a strong one.
 test.each([
   ['independent_sandbox', 'isolated sandbox'],
-  ['isolated_job', 'isolated sandbox (Cloud Run job, network denied)'],
 ])('the verified line names the sandbox for verification level "%s"', async (level, where) => {
   const comments = findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\n**SQL injection**\nUse parameters.`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
   const result = await publishFindingFixSections(fixPayload([fixSection({ verification_level: level })]));
@@ -451,35 +454,19 @@ test.each([
 // The one level where no test ran gets a different sentence, because the sentence above claims a
 // test result. `contracts/repair-v1.md` states the five clauses it summarizes.
 test.each(['static_assertion', 'development_unverified', '', 'some_level_from_the_future'])('unexecuted or unknown verification %s cannot publish replacement code', async (level) => {
-  const comments = findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\n**SQL injection**\nUse parameters.`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
-  const result = await publishFindingFixSections(fixPayload([fixSection({
+  findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\n**SQL injection**\nUse parameters.`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
+  await expect(publishFindingFixSections(fixPayload([fixSection({
     verification_level: level,
     proof: '',
     evidence: [],
     limitations: ['nothing was executed: the repair was checked by re-running the rule that flagged the finding over the original and the patched file, not by running a test'],
-  })]));
-  expect(result.state).toBe('published');
-  const body = comments[0].body;
-  expect(body).toContain('Automatic replacement withheld:');
-  expect(body).not.toContain('```');
-  // It must never claim a test ran, in the verified line or in either fallback below it.
-  expect(body).not.toContain('regression test failed on the original code');
-  expect(body).not.toContain('development sandbox');
-  expect(body).not.toContain('verification passed in the sandbox');
-  // And the details say what was and was not established, without inventing a sandbox.
-  expect(body).not.toContain('Verified:');
+  })]))).rejects.toMatchObject({ code: 'REMEDIATION_RELEASE_EVIDENCE_MISSING', statusCode: 422 });
+  expect(axios).not.toHaveBeenCalled();
 });
 
-test('the Cloud Run job sandbox is never described to a reviewer as a development sandbox', async () => {
-  const comments = findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\n**SQL injection**\nUse parameters.`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
-  await publishFindingFixSections(fixPayload([fixSection({
-    verification_level: 'isolated_job',
-    limitations: ['verification ran in an isolated Cloud Run job container without a read-only root filesystem or a gVisor runtime class'],
-  })]));
-  const body = comments[0].body;
-  expect(body).toContain('(isolated sandbox (Cloud Run job, network denied))');
-  expect(body).not.toContain('development sandbox');
-  expect(body).toContain('**Limitations:** verification ran in an isolated Cloud Run job container without a read-only root filesystem or a gVisor runtime class');
+test('the Cloud Run job sandbox cannot publish under an independent-sandbox release', async () => {
+  await expect(publishFindingFixSections(fixPayload([fixSection({ verification_level: 'isolated_job' })])))
+    .rejects.toMatchObject({ code: 'REMEDIATION_RELEASE_EVIDENCE_MISSING', statusCode: 422 });
 });
 
 test('a multi-line hunk inside a ranged finding comment becomes a suggestion for the whole comment range', async () => {
@@ -560,11 +547,14 @@ test('an import outside the diff withholds the complete repair instead of offeri
 function completeRepair(original, replacement, evidence = {}) {
   const sha = (text) => require('crypto').createHash('sha256').update(text).digest('hex');
   return {
-    id: CANDIDATE, finding_snapshot_ids: ['finding-1'], verification_level: 'isolated_job',
+    id: CANDIDATE, finding_snapshot_ids: ['finding-1'], verification_level: 'independent_sandbox',
     file_manifest: { verified_tree_oid: tree, files: [{ path: 'services/orders.js',
       base_sha256: sha(original), new_sha256: sha(replacement), contents_base64: Buffer.from(replacement).toString('base64') }] },
     preview: { changes: [{ path: 'services/orders.js', original, replacement, unified_diff: '' }],
-      evidence: { status: 'passed', evidence_digest: digest, verified_tree_oid: tree, verification_level: 'isolated_job', ...evidence } },
+      evidence: { status: 'passed', evidence_digest: digest, verified_tree_oid: tree,
+        verification_level: 'independent_sandbox', repair_model: 'test-reviewed-model',
+        repair_service_image: 'registry.example/remediation@sha256:' + 'e'.repeat(64),
+        sandbox_image_digest: 'registry.example/runner@sha256:' + 'd'.repeat(64), ...evidence } },
   };
 }
 

@@ -1,5 +1,36 @@
 const qualityRelease = require('../quality-release.json');
 
+const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/;
+const IMAGE_DIGEST = /^[A-Za-z0-9][A-Za-z0-9./_:-]*@sha256:[a-f0-9]{64}$/;
+const SOURCE_REVISION = /^[a-f0-9]{40}$/;
+const UTC_SECOND = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+// The checked-in artifact is a short-lived lease over one exact reviewed model,
+// service image and sandbox identity. Publication checks call this at runtime so
+// a revision cannot continue publishing after its receipt expires.
+function releaseEvidenceIdentity(nowMs = Date.now()) {
+  const provider = qualityRelease?.provider;
+  const sandbox = qualityRelease?.sandbox;
+  const service = qualityRelease?.service;
+  const expiresAt = qualityRelease?.expires_at;
+  const expiresMs = typeof expiresAt === 'string' && UTC_SECOND.test(expiresAt) ? Date.parse(expiresAt) : NaN;
+  const reviewers = qualityRelease?.authenticated_reviewers;
+  if (qualityRelease?.schema_version !== 'v1' || qualityRelease?.remediation_release_verified !== true
+      || !SOURCE_REVISION.test(qualityRelease?.source_revision || '')
+      || !SHA256_DIGEST.test(qualityRelease?.receipt_digest || '')
+      || provider?.kind !== 'live-provider' || typeof provider.model_id !== 'string' || !provider.model_id
+      || !SHA256_DIGEST.test(provider.configuration_digest || '')
+      || sandbox?.verification_level !== 'independent_sandbox' || !IMAGE_DIGEST.test(sandbox.image_digest || '')
+      || !IMAGE_DIGEST.test(service?.image_digest || '')
+      || !Number.isFinite(expiresMs) || expiresMs <= nowMs
+      || !Array.isArray(reviewers) || !reviewers.length
+      || reviewers.some((item) => typeof item !== 'string' || !item || item.trim() !== item)
+      || new Set(reviewers).size !== reviewers.length) return null;
+  return Object.freeze({ model_id: provider.model_id, sandbox_image_digest: sandbox.image_digest,
+    verification_level: sandbox.verification_level, service_image_digest: service.image_digest,
+    expires_at: expiresAt });
+}
+
 const DEFAULT_POLICY = Object.freeze({
   version: 'remediation-v1-disabled', max_files: 5, max_changed_lines: 200,
   max_attempts: 3, max_tool_calls: 20, max_context_tokens: 32000,
@@ -73,13 +104,20 @@ function getPolicy() {
     : [...DEFAULT_POLICY.allowed_rule_families];
   const protectedBranchPatterns = jsonEnv('REMEDIATION_PROTECTED_BRANCH_PATTERNS_JSON');
   const sandboxImage = process.env.REMEDIATION_SANDBOX_IMAGE_DIGEST;
+  const releaseIdentity = releaseEvidenceIdentity();
   return {
     ...DEFAULT_POLICY,
     version: process.env.REMEDIATION_POLICY_VERSION || DEFAULT_POLICY.version,
     enabled: flagEnv('REMEDIATION_ENABLED'),
     generate_enabled: flagEnv('REMEDIATION_GENERATE_ENABLED'),
     publish_enabled: flagEnv('REMEDIATION_PUBLISH_ENABLED'),
-    release_evidence_ready: qualityRelease.schema_version === 'v1' && qualityRelease.remediation_release_verified === true,
+    release_evidence_ready: Boolean(releaseIdentity && sandboxImage === releaseIdentity.sandbox_image_digest
+      && process.env.REMEDIATION_SERVICE_IMAGE_DIGEST === releaseIdentity.service_image_digest),
+    approved_repair_model: releaseIdentity?.model_id || null,
+    approved_verification_level: releaseIdentity?.verification_level || null,
+    approved_sandbox_image_digest: releaseIdentity?.sandbox_image_digest || null,
+    approved_service_image_digest: releaseIdentity?.service_image_digest || null,
+    release_evidence_expires_at: releaseIdentity?.expires_at || null,
     policy_version: process.env.REMEDIATION_POLICY_VERSION || DEFAULT_POLICY.version,
     sandbox_image_digest: sandboxImage,
     verification_checks: verificationChecks,
@@ -256,4 +294,5 @@ module.exports = {
   allowDevelopmentVerification, allowIsolatedJobVerification, allowStaticAssertionVerification,
   verificationLevelPermitted,
   requireGeneratedRegressionTest,
+  releaseEvidenceIdentity,
 };

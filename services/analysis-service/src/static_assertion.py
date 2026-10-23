@@ -7,9 +7,9 @@ which file text. This module answers exactly those, and nothing else: it takes a
 path, the original content and the patched content, and returns four match sets.
 
 It lives here rather than in the remediation service because the remediation service cannot run
-the scanner. Its image pins `opentelemetry-api==1.44.0` and semgrep requires `~=1.37.0`, which is
-why `action/requirements.txt` says the two cannot be satisfied together. The rules and the runner
-are this service's, so the assertion is asked of this service.
+the scanner. Its image pins `opentelemetry-api==1.45.1` and semgrep requires `~=1.37.0`, so the
+Action gives the scanner a dedicated environment rather than downgrading the remediation runtime.
+The rules and the runner are this service's, so the assertion is asked of this service.
 
 Two properties this module owes its caller, because the assertion's claim rests on them.
 

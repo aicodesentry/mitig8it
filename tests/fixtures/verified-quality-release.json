@@ -1,0 +1,21 @@
+{
+  "schema_version": "v1",
+  "remediation_release_verified": true,
+  "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "receipt_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "provider": {
+    "kind": "live-provider",
+    "provider_id": "test-provider",
+    "model_id": "test-reviewed-model",
+    "configuration_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "sandbox": {
+    "verification_level": "independent_sandbox",
+    "image_digest": "registry.example/runner@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "service": {
+    "image_digest": "registry.example/remediation@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "expires_at": "2999-01-01T00:00:00Z",
+  "authenticated_reviewers": ["test-reviewer"]
+}

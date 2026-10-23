@@ -149,8 +149,11 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             services/analysis-service/src/requirements.txt
+            services/analysis-service/src/requirements-scanner.txt
             services/analysis-service/src/requirements-test.txt
+            benchmarks/requirements-quality.txt
       - run: pip install -r requirements-test.txt
+      - run: pip install -r ../../../benchmarks/requirements-quality.txt
       - run: pip install bandit
       # B608 skipped: Bandit flags LLM prompt strings as "SQL injection".
       - name: bandit
@@ -158,13 +161,25 @@ jobs:
           bandit -r . -ll -q
           -x ./tests -x ./grpc_generated -x ./grpc_server/generated
           -s B608
+      - name: Bandit over production quality admission code
+        working-directory: ${{ github.workspace }}
+        run: >-
+          bandit -q -ll benchmarks/analysis_attestation.py
+          benchmarks/analysis_evidence.py
+          benchmarks/production_readiness.py
+          benchmarks/remediation/corpus_intake.py
+          benchmarks/remediation/release_evidence.py
       - run: pytest tests -q
 
       - name: Rule publication precision gate
         working-directory: ${{ github.workspace }}
         run: |
           python -m pytest benchmarks/test_detection_evaluation.py benchmarks/test_eval.py \
-            benchmarks/test_quality_gate.py benchmarks/test_production_readiness.py -q
+            benchmarks/test_analysis_attestation.py benchmarks/test_analysis_evidence.py benchmarks/test_quality_gate.py \
+            benchmarks/test_production_readiness.py \
+            benchmarks/remediation/tests/test_release_evidence.py \
+            benchmarks/remediation/tests/test_corpus_intake.py \
+            benchmarks/remediation/tests/test_production_intake.py -q
           python -m benchmarks.rule_quality_gate
           python -m benchmarks.production_readiness --report-only
 

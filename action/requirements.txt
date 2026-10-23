@@ -1,4 +1,6 @@
-# The union of what the analysis and remediation services need to run in one process.
+# The union of what the analysis and remediation services need to run in one process, except for
+# the Semgrep CLI. The scanner lives in its own virtualenv from the analysis service's canonical
+# requirements-scanner.txt.
 #
 # The two services pin some packages at different patch versions, which pip cannot satisfy from
 # two files at once. Where they differ the higher pin wins, which is the analysis service's in
@@ -13,24 +15,23 @@
 # usefully, means the action cannot reach a database, a cluster or a Cloud Run job even by
 # accident: a review that runs in someone else's CI verifies in that runner or not at all.
 #
-# opentelemetry-api, opentelemetry-sdk and opentelemetry-exporter-otlp-proto-http are absent
-# because they cannot be pinned here at all: semgrep
-# 1.173.0 requires opentelemetry-api~=1.37.0 and the remediation service pins ==1.44.0, so the
-# two cannot both be satisfied. Nothing is lost. The remediation service's telemetry module
-# guards its imports and turns every span into a no-op when no OTLP endpoint is configured, and
-# the action configures none: a review that runs in someone else's CI has nowhere to send traces
-# and no business sending them. semgrep brings whichever version it needs.
+# Semgrep pins an older OpenTelemetry line than the remediation service. Installing its CLI in a
+# separate environment keeps its dependency graph from downgrading the application runtime. Only
+# the scanner executable is put on PATH; its Python and libraries never replace this environment.
 
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
-pydantic==2.13.5
+pydantic==2.14.1
 grpcio==1.81.1
 grpcio-health-checking==1.81.1
 protobuf==6.33.5
 prometheus-client==0.26.0
 httpx==0.28.1
-semgrep==1.173.0
 openai==2.54.0
 click==8.4.2
+opentelemetry-api==1.45.1
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp-proto-http==1.45.1
+urllib3==2.8.0
 # The tier 2 runner parses its rule files at import to read the posting policy off them.
 PyYAML==6.0.3

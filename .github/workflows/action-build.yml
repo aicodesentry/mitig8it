@@ -75,7 +75,8 @@ jobs:
           path: ${{ runner.temp }}/mitig8it-buildx-cache
           key: >-
             mitig8it-action-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('action/Dockerfile',
-            'action/requirements.txt', 'services/github-service/package-lock.json') }}
+            'action/requirements.txt', 'services/analysis-service/src/requirements-scanner.txt',
+            'services/github-service/package-lock.json') }}
           restore-keys: |
             mitig8it-action-${{ runner.os }}-${{ runner.arch }}-
 

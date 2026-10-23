@@ -20,8 +20,8 @@ RECALL_RESULTS := $(CURDIR)/scripts/replay/.cache/recall-results
 DEV_EVAL_ARGS ?=
 
 # The two Python environments are separate because they cannot be one. The analysis service pins
-# semgrep 1.173.0, which requires opentelemetry-api~=1.37.0, and the remediation service pins
-# opentelemetry-api==1.44.0. CI installs them separately for the same reason.
+# semgrep 1.182.1, which requires opentelemetry-api~=1.37.0, and the remediation service pins
+# opentelemetry-api==1.45.1. CI and the Action image isolate them for the same reason.
 
 .PHONY: help deps test bench clean \
         test-analysis test-remediation test-api test-github test-frontend test-action test-harness \

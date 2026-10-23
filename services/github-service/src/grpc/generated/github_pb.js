@@ -6819,7 +6819,10 @@ proto.mitig8it.github.v1.FindingFixSection.toObject = function(includeInstance, 
     coveredBy: jspb.Message.getFieldWithDefault(msg, 15, ""),
     proof: jspb.Message.getFieldWithDefault(msg, 16, ""),
     extraHunksList: jspb.Message.toObjectList(msg.getExtraHunksList(),
-    proto.mitig8it.github.v1.FindingFixHunk.toObject, includeInstance)
+    proto.mitig8it.github.v1.FindingFixHunk.toObject, includeInstance),
+    repairModel: jspb.Message.getFieldWithDefault(msg, 18, ""),
+    sandboxImageDigest: jspb.Message.getFieldWithDefault(msg, 19, ""),
+    repairServiceImage: jspb.Message.getFieldWithDefault(msg, 20, "")
   };
 
   if (includeInstance) {
@@ -6925,6 +6928,18 @@ proto.mitig8it.github.v1.FindingFixSection.deserializeBinaryFromReader = functio
       var value = new proto.mitig8it.github.v1.FindingFixHunk;
       reader.readMessage(value,proto.mitig8it.github.v1.FindingFixHunk.deserializeBinaryFromReader);
       msg.addExtraHunks(value);
+      break;
+    case 18:
+      var value = /** @type {string} */ (reader.readString());
+      msg.setRepairModel(value);
+      break;
+    case 19:
+      var value = /** @type {string} */ (reader.readString());
+      msg.setSandboxImageDigest(value);
+      break;
+    case 20:
+      var value = /** @type {string} */ (reader.readString());
+      msg.setRepairServiceImage(value);
       break;
     default:
       reader.skipField();
@@ -7074,6 +7089,27 @@ proto.mitig8it.github.v1.FindingFixSection.serializeBinaryToWriter = function(me
       17,
       f,
       proto.mitig8it.github.v1.FindingFixHunk.serializeBinaryToWriter
+    );
+  }
+  f = message.getRepairModel();
+  if (f.length > 0) {
+    writer.writeString(
+      18,
+      f
+    );
+  }
+  f = message.getSandboxImageDigest();
+  if (f.length > 0) {
+    writer.writeString(
+      19,
+      f
+    );
+  }
+  f = message.getRepairServiceImage();
+  if (f.length > 0) {
+    writer.writeString(
+      20,
+      f
     );
   }
 };
@@ -7478,6 +7514,60 @@ proto.mitig8it.github.v1.FindingFixSection.prototype.addExtraHunks = function(op
  */
 proto.mitig8it.github.v1.FindingFixSection.prototype.clearExtraHunksList = function() {
   return this.setExtraHunksList([]);
+};
+
+
+/**
+ * optional string repair_model = 18;
+ * @return {string}
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.getRepairModel = function() {
+  return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 18, ""));
+};
+
+
+/**
+ * @param {string} value
+ * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.setRepairModel = function(value) {
+  return jspb.Message.setProto3StringField(this, 18, value);
+};
+
+
+/**
+ * optional string sandbox_image_digest = 19;
+ * @return {string}
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.getSandboxImageDigest = function() {
+  return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 19, ""));
+};
+
+
+/**
+ * @param {string} value
+ * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.setSandboxImageDigest = function(value) {
+  return jspb.Message.setProto3StringField(this, 19, value);
+};
+
+
+/**
+ * optional string repair_service_image = 20;
+ * @return {string}
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.getRepairServiceImage = function() {
+  return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 20, ""));
+};
+
+
+/**
+ * @param {string} value
+ * @return {!proto.mitig8it.github.v1.FindingFixSection} returns this
+ */
+proto.mitig8it.github.v1.FindingFixSection.prototype.setRepairServiceImage = function(value) {
+  return jspb.Message.setProto3StringField(this, 20, value);
 };
 
 

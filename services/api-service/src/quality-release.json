@@ -1,5 +1,5 @@
 {
   "schema_version": "v1",
   "remediation_release_verified": false,
-  "reason": "external_review_signature_cryptographic_verifier_not_configured"
+  "reason": "trusted_external_review_evidence_missing"
 }

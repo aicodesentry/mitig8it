@@ -18,6 +18,7 @@ from .executions import (
     create_execution_backend,
 )
 from .models import RepairRequest
+from .release_identity import service_image_matches
 from .worker import inprocess_enabled, run_worker_loop
 from .sandbox import validate_sandbox_configuration
 from . import telemetry
@@ -93,6 +94,8 @@ async def health() -> dict[str, str]:
 async def repair(payload: RepairRequest, request: Request) -> dict[str, str]:
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
         raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+    if not service_image_matches(payload):
+        raise HTTPException(status_code=503, detail="Requested remediation service image does not match the mounted release identity")
     # The incoming W3C trace context continues the caller's trace here and is persisted on the
     # execution row so the worker links its own span back to this request.
     with telemetry.request_span("remediation.intake", request.headers.get("traceparent"), **telemetry.request_attributes(payload)) as span:

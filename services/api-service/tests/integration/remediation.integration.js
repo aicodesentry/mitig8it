@@ -27,7 +27,8 @@ process.env.REMEDIATION_SERVICE_URL = 'http://repair.invalid';
 process.env.REMEDIATION_SERVICE_INTERNAL_SECRET = 'repair-secret';
 process.env.GITHUB_SERVICE_URL = 'http://github.invalid';
 process.env.GITHUB_SERVICE_INTERNAL_SECRET = 'github-secret';
-process.env.REMEDIATION_SANDBOX_IMAGE_DIGEST = 'sha256:integration';
+process.env.REMEDIATION_SANDBOX_IMAGE_DIGEST = 'registry.example/runner@sha256:' + 'd'.repeat(64);
+process.env.REMEDIATION_SERVICE_IMAGE_DIGEST = 'registry.example/remediation@sha256:' + 'e'.repeat(64);
 process.env.REMEDIATION_VERIFICATION_CHECKS_JSON = '["unit"]';
 process.env.REMEDIATION_ALLOWED_RULE_FAMILIES_JSON = '["injection"]';
 process.env.REMEDIATION_INPUT_USD_PER_MILLION_TOKENS = '3';
@@ -36,7 +37,7 @@ process.env.REMEDIATION_OUTBOX_MAX_ATTEMPTS = '2';
 // This suite exercises workflow/RLS behavior with synthetic verification evidence.
 // Aggregate release readiness has separate gate tests; production stays fail-closed
 // against the unchanged committed artifact.
-require('../../src/quality-release.json').remediation_release_verified = true;
+Object.assign(require('../../src/quality-release.json'), require('../../../../tests/fixtures/verified-quality-release.json'));
 
 const { pool } = require('../../src/config/database');
 const { applyMigrations } = require('../../src/services/migrationRunner');
@@ -628,7 +629,7 @@ test('one automatic job is queued per head after analysis, it is claimable witho
     [first.job_id, f.installation, f.repo, [open], 'a'.repeat(64), 'c'.repeat(64),
       JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64'), base_sha256: sha256(original), new_sha256: sha256(fixed) }] }),
       JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, base_sha256: sha256(original), new_sha256: sha256(fixed), unified_diff: '@@ -3 +3 @@\n-old\n+new' }], rationale: 'Parameterize the query.',
-        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), generated_tests: [{ path: 'tests/orders.regression.test.js' }], limitations: [] } })]
+        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), repair_model: 'test-reviewed-model', repair_service_image: 'registry.example/remediation@sha256:' + 'e'.repeat(64), sandbox_image_digest: 'registry.example/runner@sha256:' + 'd'.repeat(64), generated_tests: [{ path: 'tests/orders.regression.test.js' }], limitations: [] } })]
   );
   await workerQuery(
     `INSERT INTO verification_runs (job_id,installation_id,repository_id,candidate_digest,original_tree_sha,candidate_tree_sha,base_sha,verifier_identity,policy_version,outcome,evidence_digest,coverage_gaps,limitations)
@@ -686,7 +687,7 @@ test('a second completed analysis on the same head reuses the ready job and repu
     [queued.job_id, f.installation, f.repo, [open], 'a'.repeat(64), 'c'.repeat(64),
       JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64'), base_sha256: sha256(original), new_sha256: sha256(fixed) }] }),
       JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, base_sha256: sha256(original), new_sha256: sha256(fixed), unified_diff: '@@ -3 +3 @@\n-old\n+new' }],
-        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), limitations: [] } })]
+        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), repair_model: 'test-reviewed-model', repair_service_image: 'registry.example/remediation@sha256:' + 'e'.repeat(64), sandbox_image_digest: 'registry.example/runner@sha256:' + 'd'.repeat(64), limitations: [] } })]
   );
   await workerQuery(
     `INSERT INTO verification_runs (job_id,installation_id,repository_id,candidate_digest,original_tree_sha,candidate_tree_sha,base_sha,verifier_identity,policy_version,outcome,evidence_digest,coverage_gaps,limitations)

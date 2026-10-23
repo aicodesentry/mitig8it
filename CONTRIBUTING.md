@@ -29,8 +29,8 @@ make test
 
 `make deps` creates two virtualenvs under `.venv/` and runs `npm ci` in the frontend and the two
 Node services. There are two virtualenvs because there cannot be one: the analysis service pins
-semgrep 1.173.0, which requires `opentelemetry-api~=1.37.0`, and the remediation service pins
-`opentelemetry-api==1.44.0`. CI installs them separately for the same reason.
+semgrep 1.182.1, which requires `opentelemetry-api~=1.37.0`, and the remediation service pins
+`opentelemetry-api==1.45.1`. CI and the Action image isolate them for the same reason.
 
 `make test` runs the suites in this order and stops at the first failure: analysis service,
 remediation service, api service, github service, frontend, action orchestrator, benchmark

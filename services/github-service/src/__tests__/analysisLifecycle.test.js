@@ -1,5 +1,5 @@
 jest.mock('axios', () => jest.fn());
-jest.mock('../quality-release.json', () => ({ schema_version: 'v1', remediation_release_verified: true }));
+jest.mock('../quality-release.json', () => require('../../../../tests/fixtures/verified-quality-release.json'));
 jest.mock('../services/githubAppAuth', () => ({getInstallationToken: jest.fn().mockResolvedValue('fixture-token'), getAppBotLogin: jest.fn().mockResolvedValue('fixture[bot]')}));
 const axios = require('axios');
 const {fetchPullRequestFiles, postInlineComment} = require('../services/githubInternalOperations');

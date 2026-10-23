@@ -6,6 +6,8 @@ const path = require('path');
 const crypto = require('crypto');
 const Ajv2020 = require('ajv/dist/2020');
 
+jest.mock('../src/quality-release.json', () => require('../../../tests/fixtures/verified-quality-release.json'));
+
 const schema = require(path.resolve(__dirname, '../../remediation-service/contracts/repair-request.schema.json'));
 
 describe('repair request contract', () => {
@@ -47,5 +49,7 @@ describe('repair request contract', () => {
     expect(valid).toBe(true);
     expect(payload.attempt).toBe(1);
     expect(payload.policy.supported_platform).toBe('linux');
+    expect(payload.versions.repair_model).toBe('test-reviewed-model');
+    expect(payload.versions.repair_service_image).toBe(require('../../../tests/fixtures/verified-quality-release.json').service.image_digest);
   });
 });

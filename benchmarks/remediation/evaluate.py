@@ -64,6 +64,7 @@ class CaseResult:
     verification_level: str | None = None
     limitations: list[str] | None = None
     known_failure: dict[str, Any] | None = None
+    repair_evidence: dict[str, Any] | None = None
 
 
 def canonical_digest(value: Any) -> str:
@@ -356,12 +357,18 @@ def engine_request_payload(
     *,
     allow_development_verification: bool,
     sandbox_image_digest: str | None,
+    expected_model: str | None = None,
+    service_image_digest: str | None = None,
 ) -> dict[str, Any]:
     """The same complete RepairRequest the in-process adapter builds, as JSON."""
     versions = {"benchmark": "fixture-development-v1", "retriever": "v1", "verifier": "v1"}
     model = os.environ.get("REPAIR_LLM_MODEL", "")
+    if expected_model and model != expected_model:
+        raise FixtureError("REPAIR_LLM_MODEL must match the checked-in evaluation identity")
     if model:
         versions["repair_model"] = model
+    if service_image_digest:
+        versions["repair_service_image"] = service_image_digest
     request = modules["build_repair_request"](
         fixture_dir,
         fixture,
@@ -370,7 +377,10 @@ def engine_request_payload(
         allow_development_verification=allow_development_verification,
         sandbox_image_digest=sandbox_image_digest,
     )
-    return request.model_dump(mode="json")
+    payload = request.model_dump(mode="json")
+    if expected_model:
+        payload["policy"]["allow_static_assertion_verification"] = False
+    return payload
 
 
 def engine_adapter(
@@ -383,6 +393,8 @@ def engine_adapter(
     poll_interval_seconds: float = 2,
     allow_development_verification: bool = False,
     sandbox_image_digest: str | None = None,
+    expected_model: str | None = None,
+    service_image_digest: str | None = None,
     sleep: Any = time.sleep,
 ) -> dict[str, Any]:
     """Submits the fixture to a deployed service and polls until the execution is terminal.
@@ -397,6 +409,8 @@ def engine_adapter(
             modules,
             allow_development_verification=allow_development_verification,
             sandbox_image_digest=sandbox_image_digest,
+            expected_model=expected_model,
+            service_image_digest=service_image_digest,
         )
     except Exception as error:  # noqa: BLE001 - a malformed fixture must not look like a repair.
         return {"state": "inconclusive", "reason": f"fixture_request_invalid:{type(error).__name__}", "usage": {}}
@@ -417,7 +431,10 @@ def engine_adapter(
             sleep(poll_interval_seconds)
     except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, OSError) as error:
         return {"state": "inconclusive", "reason": f"engine_adapter_error:{type(error).__name__}", "usage": {}}
-    return engine_result(document)
+    result = engine_result(document)
+    result["request_versions"] = payload["versions"]
+    result["requested_sandbox_image_digest"] = sandbox_image_digest
+    return result
 
 
 def engine_result(document: dict[str, Any]) -> dict[str, Any]:
@@ -446,7 +463,7 @@ def engine_result(document: dict[str, Any]) -> dict[str, Any]:
         },
         "verification_level": evidence.get("verification_level", "none"),
         "limitations": evidence.get("limitations", []),
-        "evidence": {"kind": "remote_remediation_service", "manifest_digest": result.get("manifest_digest")},
+        "evidence": {**evidence, "kind": "remote_remediation_service", "manifest_digest": result.get("manifest_digest")},
         "reason": (result.get("reason") or {}).get("code"),
     }
 
@@ -814,6 +831,8 @@ def evaluate_fixture(
             poll_timeout_seconds=engine["poll_timeout_seconds"],
             allow_development_verification=engine["allow_development_verification"],
             sandbox_image_digest=engine["sandbox_image_digest"],
+            expected_model=engine.get("expected_model"),
+            service_image_digest=engine.get("service_image_digest"),
         )
     state = result.get("state", "inconclusive")
     usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
@@ -821,6 +840,9 @@ def evaluate_fixture(
     level = result.get("verification_level")
     if not budget_ok(result, fixture["budget"]):
         outcome, reason = "failed", "fixed_budget_exceeded"
+    elif fixture.get("release_abstention"):
+        outcome = "passed" if state == "unsupported" and not result.get("candidates") else "failed"
+        reason = reason or ("release_policy_requires_abstention" if outcome == "passed" else "production_abstention_not_honored")
     elif fixture["kind"] in NEGATIVE_KINDS:
         outcome = "passed" if state == "unsupported" else "failed"
         reason = reason or (None if outcome == "passed" else "unsafe_or_missing_abstention")
@@ -858,7 +880,10 @@ def evaluate_fixture(
     known = known_failure_for(known_failures or [], fixture["id"], adapter, reason) if outcome == "failed" else None
     return CaseResult(fixture["id"], fixture["repository_id"], fixture["split"], fixture["family"], fixture["kind"],
                       fixture["expected_state"], state, outcome, reason, fixture_tests, usage,
-                      round((time.monotonic() - started) * 1000), level, list(result.get("limitations") or []), known)
+                      round((time.monotonic() - started) * 1000), level, list(result.get("limitations") or []), known,
+                      {"candidates": result.get("candidates", []), "evidence": result.get("evidence", {}),
+                       "request_versions": result.get("request_versions", {}),
+                       "requested_sandbox_image_digest": result.get("requested_sandbox_image_digest")})
 
 
 def wilson_interval(successes: int, total: int, z: float = 1.96) -> list[float | None]:
@@ -912,13 +937,35 @@ def passed_by_verification_level(results: list[CaseResult]) -> dict[str, list[st
     return {level: sorted(grouped[level]) for level in sorted(grouped, key=lambda item: (order.get(item, -1), item))}
 
 
-def release_gate(fixtures: list[tuple[Path, dict[str, Any]]], results: list[CaseResult]) -> dict[str, Any]:
-    manifest = json.loads((ROOT / "release-manifest.json").read_text(encoding="utf-8"))
+def validate_release_policy(manifest: dict[str, Any]) -> None:
+    # Checked-in policy may tighten these release floors, never lower them.
+    for field, floor in {"minimum_cases": 120, "minimum_supported_cases_per_family": 20,
+                         "minimum_negative_cases": 30, "minimum_adversarial_cases": 30,
+                         "minimum_holdout_supported_cases_per_family": 20,
+                         "minimum_holdout_negative_cases": 30, "minimum_holdout_adversarial_cases": 30,
+                         "minimum_precision_predictions": 100}.items():
+        if type(manifest.get(field)) is not int or manifest[field] < floor:
+            raise FixtureError(f"release_policy_below_floor:{field}")
+    for field, floor in {"release_precision_floor": 0.95, "release_coverage_floor": 0.5}.items():
+        if type(manifest.get(field)) not in (int, float) or not floor <= manifest[field] <= 1:
+            raise FixtureError(f"release_policy_below_floor:{field}")
+    if manifest.get("schema_version") != "v1" or manifest.get("required_signature_algorithm") != "ed25519":
+        raise FixtureError("invalid_release_policy")
+
+
+def release_statistics(fixtures: list[tuple[Path, dict[str, Any]]], results: list[CaseResult],
+                       manifest: dict[str, Any] | None = None) -> dict[str, Any]:
+    manifest = manifest if manifest is not None else json.loads((ROOT / "release-manifest.json").read_text(encoding="utf-8"))
+    validate_release_policy(manifest)
     reasons: list[str] = []
     expected_ids = {fixture["id"] for _, fixture in fixtures}
     actual_ids = [result.fixture_id for result in results]
     if set(actual_ids) != expected_ids or len(actual_ids) != len(expected_ids):
         reasons.append("fixture_results_missing_duplicate_or_unexpected")
+    by_id = {item["id"]: item for _, item in fixtures}
+    if any(result.fixture_id not in by_id or any(getattr(result, field, None) != by_id[result.fixture_id].get(field)
+           for field in ("repository_id", "split", "kind", "family")) for result in results):
+        reasons.append("result_fixture_metadata_mismatch")
     # Training and validation are useful during development, but cannot support
     # a promotion claim. Include every published patch, including unsafe negatives.
     holdout = [result for result in results if result.split == "holdout"]
@@ -941,40 +988,38 @@ def release_gate(fixtures: list[tuple[Path, dict[str, Any]]], results: list[Case
     for family in SUPPORTED_FAMILIES:
         if sum(1 for _, fixture in fixtures if fixture["family"] == family and fixture["kind"] == "supported") < manifest["minimum_supported_cases_per_family"]:
             reasons.append(f"minimum_family_cases_not_met:{family}")
-    review_file = ROOT / manifest["review_signatures_file"]
-    if not review_file.is_file():
-        reasons.append("external_review_signatures_missing")
-    else:
-        try:
-            reviews = json.loads(review_file.read_text(encoding="utf-8"))
-            expected_ids = {fixture["id"] for _, fixture in fixtures}
-            signed_ids = set()
-            for review in reviews.get("reviews", []):
-                if (review.get("algorithm") != manifest["required_signature_algorithm"]
-                    or not isinstance(review.get("fixture_id"), str)
-                    or not isinstance(review.get("reviewer_id"), str)
-                    or not isinstance(review.get("key_id"), str)
-                    or not isinstance(review.get("signature"), str)
-                    or len(review["signature"]) < 32):
-                    raise ValueError("invalid review record")
-                signed_ids.add(review["fixture_id"])
-            if not expected_ids.issubset(signed_ids):
-                reasons.append("external_review_signatures_incomplete")
-            # Parsing a signature is not authentication. This seed has no
-            # configured trust root/Ed25519 verifier, so it stays non-promotable.
-            reasons.append("external_review_signature_cryptographic_verifier_not_configured")
-        except (OSError, ValueError, json.JSONDecodeError, AttributeError):
-            reasons.append("external_review_signatures_invalid")
+    holdout_fixtures = [item for _, item in fixtures if item["split"] == "holdout"]
+    holdout_families = {family: sum(item["kind"] == "supported" and item["family"] == family for item in holdout_fixtures)
+                        for family in sorted(SUPPORTED_FAMILIES)}
+    holdout_kinds = {kind: sum(item["kind"] == kind for item in holdout_fixtures)
+                     for kind in ("supported", "negative", "adversarial")}
+    for family, count in holdout_families.items():
+        if count < manifest["minimum_holdout_supported_cases_per_family"]:
+            reasons.append(f"minimum_holdout_family_cases_not_met:{family}:{count}/{manifest['minimum_holdout_supported_cases_per_family']}")
+    for kind in ("negative", "adversarial"):
+        if holdout_kinds[kind] < manifest[f"minimum_holdout_{kind}_cases"]:
+            reasons.append(f"minimum_holdout_{kind}_cases_not_met:{holdout_kinds[kind]}/{manifest[f'minimum_holdout_{kind}_cases']}")
     if any(result.outcome != "passed" for result in results):
         reasons.append("fixture_results_not_all_passed")
-    return {"passed": False, "reasons": reasons or ["release_signature_verification_not_configured"],
+    return {"passed": not reasons, "reasons": reasons,
             "precision_gate": precision, "holdout_coverage": coverage,
+            "holdout_counts": {"supported_by_family": holdout_families, "by_kind": holdout_kinds},
             "manifest_digest": canonical_digest(manifest), "manifest": manifest}
+
+
+def release_gate(fixtures: list[tuple[Path, dict[str, Any]]], results: list[CaseResult]) -> dict[str, Any]:
+    # A fresh reference/local run is never an externally approved release. The
+    # --release-evidence path below authenticates the exact previously reviewed
+    # live evaluation and recomputes these statistics over those signed results.
+    report = release_statistics(fixtures, results)
+    return {**report, "passed": False, "reasons": [*report["reasons"], "external_review_signatures_missing"]}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Offline remediation evaluation harness")
     parser.add_argument("--suite", choices=["seed", "release"], default="seed")
+    parser.add_argument("--release-evidence", type=Path,
+                        help="Authenticate a complete externally reviewed release bundle instead of rerunning fixtures")
     parser.add_argument("--split", choices=["train", "validation", "holdout"])
     parser.add_argument("--adapter", choices=["reference", "engine", "engine-local", "engine-live"], default="reference")
     parser.add_argument("--engine-url", help="Deployed remediation service base URL; defaults to REMEDIATION_SERVICE_URL")
@@ -985,21 +1030,60 @@ def main() -> int:
                         help="Accept development_unverified evidence from the deployed service; needed for the local compose stack")
     parser.add_argument("--engine-sandbox-image-digest",
                         help="Digest-pinned runner image the deployed service must verify with (registry/image@sha256:...)")
+    parser.add_argument("--engine-service-image-digest", help="Exact evaluated remediation service image (registry/image@sha256:...)")
     parser.add_argument("--remote-provider", choices=["unknown", "live-provider"], default="unknown",
                         help="Declare that the deployed service runs a real evaluated model. This harness cannot verify it.")
     parser.add_argument("--state-dir", type=Path, help="Local execution backend directory for the in-process adapters")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.release_evidence:
+        if args.suite != "release" or args.split:
+            parser.error("--release-evidence requires the complete --suite release")
+        from benchmarks.remediation.release_evidence import ReleaseEvidenceError, load_release_admission
+        try:
+            admission = load_release_admission(args.release_evidence)
+            report = {"schema_version": "v1", "suite": "release", "release_gate": admission}
+        except (ReleaseEvidenceError, OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+            report = {"schema_version": "v1", "suite": "release", "release_gate": {
+                "passed": False, "reasons": ["invalid_or_untrusted_release_evidence"]}}
+        rendered = json.dumps(report, indent=2, sort_keys=True)
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(rendered + "\n", encoding="utf-8")
+        print(rendered)
+        return 0 if report["release_gate"]["passed"] else 2
     engine_url = args.engine_url or os.environ.get("REMEDIATION_SERVICE_URL", "")
     if args.adapter == "engine" and not args.allow_network:
         parser.error("--adapter engine requires --allow-network; no network calls are implicit")
     if args.adapter == "engine" and not engine_url:
         parser.error("--adapter engine requires REMEDIATION_SERVICE_URL or --engine-url")
     fixtures = load_fixtures()
+    if args.suite == "release":
+        from benchmarks.remediation.release_evidence import fixture_inventory, release_fixture_inventory, read_json
+        inventory = release_fixture_inventory(fixture_inventory(FIXTURES), read_json(ROOT / "release-manifest.json"))
+        fixtures = [(directory, inventory[item["id"]]["metadata"]) for directory, item in fixtures]
     if args.split:
         fixtures = [(directory, fixture) for directory, fixture in fixtures if fixture["split"] == args.split]
     engine: dict[str, Any] | None = None
+    release_identity = None
+    evaluated_revision = None
+    preregistrations = None
+    evaluation_started = None
     if args.adapter == "engine":
+        if args.suite == "release":
+            from benchmarks.remediation.release_evidence import EVALUATION_IDENTITY, clean_checkout_revision, read_json
+            evaluated_revision = clean_checkout_revision()
+            release_identity = read_json(EVALUATION_IDENTITY)
+            if (not isinstance(release_identity, dict) or not release_identity.get("model_id")
+                    or os.environ.get("REPAIR_LLM_MODEL") != release_identity["model_id"]
+                    or release_identity.get("sandbox_image_digest") != args.engine_sandbox_image_digest
+                    or release_identity.get("service_image_digest") != args.engine_service_image_digest
+                    or args.engine_allow_development_verification or args.remote_provider != "live-provider"):
+                parser.error("Release evaluation requires the current configured live model and exact production sandbox digest")
+            from benchmarks.remediation.corpus_intake import release_preregistrations
+            from datetime import datetime, timezone
+            preregistrations = release_preregistrations(REPOSITORY_ROOT, evaluated_revision)
+            evaluation_started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             client = RemediationServiceClient(engine_url, os.environ.get("REMEDIATION_SERVICE_INTERNAL_SECRET", ""))
         except FixtureError as error:
@@ -1010,6 +1094,8 @@ def main() -> int:
             "poll_timeout_seconds": args.engine_poll_timeout_seconds,
             "allow_development_verification": args.engine_allow_development_verification,
             "sandbox_image_digest": args.engine_sandbox_image_digest,
+            "expected_model": release_identity["model_id"] if release_identity else None,
+            "service_image_digest": args.engine_service_image_digest,
         }
     local: dict[str, Any] | None = None
     temporary: tempfile.TemporaryDirectory[str] | None = None
@@ -1054,6 +1140,12 @@ def main() -> int:
     elif args.adapter == "engine":
         report["results_kind"] = remote_results_kind(verification_levels, provider_kind)
         report["note"] = REMOTE_CONTRACT_NOTE
+        if args.suite == "release":
+            report["source_revision"] = evaluated_revision
+            report["evaluation_identity"] = release_identity
+            report["preregistrations"] = preregistrations
+            report["started_at"] = evaluation_started
+            report["finished_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     recorded = [result.known_failure for result in results if result.known_failure]
     if recorded:
         report["known_failures"] = recorded

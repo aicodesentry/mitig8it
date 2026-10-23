@@ -7,6 +7,12 @@ inputs:
   component:
     description: analysis, remediation, or all
     default: all
+  release-evidence-url:
+    description: Optional public HTTPS signed evidence bundle for this exact source SHA (never credentials)
+    default: ''
+  deployment-driver:
+    description: Read-only ordered topology/identity preflight without artifact generation
+    default: ''
 runs:
   using: composite
   steps:
@@ -14,16 +20,40 @@ runs:
       with:
         python-version: '3.11'
     - shell: bash
-      run: python -m pip install --quiet pyyaml
+      run: python -m pip install --quiet pyyaml -r benchmarks/requirements-quality.txt
     - shell: bash
       env:
         QUALITY_ENVIRONMENT: ${{ inputs.environment }}
         QUALITY_COMPONENT: ${{ inputs.component }}
+        QUALITY_EVIDENCE_URL: ${{ inputs.release-evidence-url || vars.REMEDIATION_RELEASE_EVIDENCE_URL }}
+        QUALITY_DEPLOYMENT_DRIVER: ${{ inputs.deployment-driver }}
       run: |
         set -euo pipefail
         python -m benchmarks.rule_quality_gate
         case "$QUALITY_ENVIRONMENT" in
-          production) python -m benchmarks.production_readiness --component "$QUALITY_COMPONENT" ;;
+          production)
+            evidence_path="$GITHUB_WORKSPACE/benchmarks/remediation/release/evidence.json"
+            if [ -n "$QUALITY_EVIDENCE_URL" ]; then
+              python - <<'PY'
+        import os
+        from urllib.parse import urlsplit
+        url = urlsplit(os.environ['QUALITY_EVIDENCE_URL'])
+        if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+            raise SystemExit('Release evidence URL must be credential-free public HTTPS without query/fragment')
+        PY
+              evidence_path="$RUNNER_TEMP/remediation-release-evidence.json"
+              curl --proto '=https' --proto-redir '=https' --location --max-redirs 3 \
+                --connect-timeout 10 --max-time 30 --max-filesize 20971520 \
+                --fail --silent --show-error --output "$evidence_path" "$QUALITY_EVIDENCE_URL"
+            fi
+            echo "REMEDIATION_RELEASE_EVIDENCE_PATH=$evidence_path" >> "$GITHUB_ENV"
+            if [ -n "$QUALITY_DEPLOYMENT_DRIVER" ]; then
+              python -m benchmarks.production_readiness --preflight-deployment-driver "$QUALITY_DEPLOYMENT_DRIVER" --release-evidence "$evidence_path"
+            else
+              python -m benchmarks.production_readiness --component "$QUALITY_COMPONENT" --release-evidence "$evidence_path" --refresh-release-artifacts
+              python -m benchmarks.production_readiness --component "$QUALITY_COMPONENT" --release-evidence "$evidence_path"
+            fi
+            ;;
           staging) python -m benchmarks.production_readiness --component "$QUALITY_COMPONENT" --compatibility ;;
           *) echo "Unknown quality environment: $QUALITY_ENVIRONMENT" >&2; exit 2 ;;
         esac

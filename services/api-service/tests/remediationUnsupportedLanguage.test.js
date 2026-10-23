@@ -6,7 +6,7 @@
 // check is a per-finding skip, exactly as the documented abstain table says.
 jest.mock('../src/config/database', () => ({ pool: { query: jest.fn(), connect: jest.fn() }, transaction: jest.fn() }));
 jest.mock('../src/utils/logger', () => ({ warn: jest.fn(), error: jest.fn(), info: jest.fn() }));
-jest.mock('../src/quality-release.json', () => ({ schema_version: 'v1', remediation_release_verified: true }));
+jest.mock('../src/quality-release.json', () => require('../../../tests/fixtures/verified-quality-release.json'));
 
 const fs = require('fs');
 const path = require('path');
@@ -27,7 +27,8 @@ const FLAGS = {
   REMEDIATION_ENABLED: 'true', REMEDIATION_GENERATE_ENABLED: 'true', REMEDIATION_PUBLISH_ENABLED: 'true',
   REMEDIATION_SERVICE_URL: 'http://repair', REMEDIATION_SERVICE_INTERNAL_SECRET: 'secret',
   GITHUB_SERVICE_URL: 'http://github', GITHUB_SERVICE_INTERNAL_SECRET: 'secret',
-  REMEDIATION_SANDBOX_IMAGE_DIGEST: 'sha256:abc', REMEDIATION_VERIFICATION_CHECKS_JSON: '["unit"]',
+  REMEDIATION_SANDBOX_IMAGE_DIGEST: 'registry.example/runner@sha256:' + 'd'.repeat(64), REMEDIATION_VERIFICATION_CHECKS_JSON: '["unit"]',
+  REMEDIATION_SERVICE_IMAGE_DIGEST: 'registry.example/remediation@sha256:' + 'e'.repeat(64),
   REMEDIATION_ALLOWED_RULE_FAMILIES_JSON: '["sql_parameterization"]',
   REMEDIATION_INPUT_USD_PER_MILLION_TOKENS: '1', REMEDIATION_OUTPUT_USD_PER_MILLION_TOKENS: '2',
 };

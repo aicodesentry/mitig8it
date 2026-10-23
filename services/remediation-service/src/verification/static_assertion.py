@@ -26,15 +26,16 @@ reaches for it only for a family that declares it (`families.declares_static_ass
 `FAMILY_VERIFICATION`) or for a
 finding whose execution was refused for a reason that goes into the evidence.
 
-**Where the rules run.** Not here. This service cannot install semgrep: its image pins
-`opentelemetry-api==1.44.0` and semgrep needs `~=1.37.0`, which is the reason
-`action/requirements.txt` gives for excluding them from one environment. The rules and the runner
-belong to the analysis service, so the match sets are asked of it through a `RuleOracle`. Two
+**Where the rules run.** Not here. This service cannot install semgrep in its own environment: its
+image pins `opentelemetry-api==1.45.1` and semgrep needs `~=1.37.0`. The Action therefore isolates
+the scanner in a dedicated virtualenv. The rules and the runner belong to the analysis service,
+so the match sets are asked of it through a `RuleOracle`. Two
 implementations, because the two deployments differ:
 
 * `InProcessRuleOracle` imports the analysis service's own modules. This is what the GitHub
-  Action uses, where the engine and the analysis service already run in one process with semgrep
-  present (`action/orchestrator/analysis.py`), and what the benchmark and the replay harness use.
+  Action uses, where the engine and analysis modules share a process while the isolated Semgrep
+  executable is on `PATH` (`action/orchestrator/analysis.py`), and what the benchmark and the
+  replay harness use.
 * `HttpRuleOracle` posts to `POST /verify/static-assertion` with the shared internal secret, the
   same header and env var the api-service uses to reach the analysis service. This is the App,
   where the two are separate Cloud Run services.
