@@ -499,6 +499,62 @@ async function reconcileReviewThreads(survey, { graphql, operations, base, headS
 
 // --- publishing ------------------------------------------------------------------------
 
+// github-service wraps a refused GitHub write as a 502 whose `detail` is GitHub's own response
+// body, so the status a caller needs to act on lives there, as a string, rather than on the
+// error. An axios error that reached here unwrapped carries it on `response`.
+function githubStatusOf(error) {
+  const direct = Number(error?.response?.status || 0);
+  if (direct) return direct;
+  const detail = error?.detail;
+  return Number((detail && typeof detail === 'object' && detail.status) || 0) || 0;
+}
+
+function githubMessageOf(error) {
+  const detail = error?.detail;
+  if (detail && typeof detail === 'object') return String(detail.message || '');
+  return typeof detail === 'string' ? detail : '';
+}
+
+function describeError(error) {
+  const status = githubStatusOf(error);
+  const message = githubMessageOf(error);
+  const base = String(error?.message || error);
+  if (!status && !message) return base;
+  return `${base} (GitHub${status ? ` ${status}` : ''}${message ? `: ${message}` : ''})`;
+}
+
+// The run could not finish, so the check says so in place of a result. Neutral, because a
+// review that did not happen is neither a pass nor a block, and the summary says it is not a
+// clean review so nobody reads the grey check as one.
+async function publishErrorCheck(request) {
+  const { githubIdentity, operations } = service();
+  githubIdentity.useProvider(createWorkflowTokenProvider({
+    token: request.token,
+    repositoryFullName: request.repository_full_name,
+    botLogin: request.bot_login,
+  }));
+  const [owner, repo] = request.repository_full_name.split('/');
+  const results = { check: null, errors: [], warnings: [] };
+  const errorClass = String(request.error_class || 'Error');
+  const detail = String(request.error_message || '').slice(0, 1000);
+  try {
+    results.check = await operations.createCheckRun({
+      owner,
+      repo,
+      installation_id: request.installation_id,
+      head_sha: request.head_sha,
+      conclusion: 'neutral',
+      title: 'Review did not complete',
+      summary: `Mitig8it ${versionLabel(request)} did not finish reviewing this commit (${errorClass}). `
+        + 'No result is reported for it, and this is not a clean review.'
+        + (detail ? ` ${detail}` : ''),
+    });
+  } catch (error) {
+    results.errors.push(`check run: ${describeError(error)}`);
+  }
+  return results;
+}
+
 async function publish(request, { fetchImpl, graphql } = {}) {
   const { githubIdentity, operations } = service();
   githubIdentity.useProvider(createWorkflowTokenProvider({
@@ -515,9 +571,13 @@ async function publish(request, { fetchImpl, graphql } = {}) {
     installation_id: request.installation_id,
     commit_sha: request.head_sha,
   };
+  // `errors` is what failed the publish: the review or the check run, the two things a reader
+  // relies on. `warnings` is everything else that went wrong, one inline edit or the fix
+  // sections, which costs the reader one comment rather than the review and must not turn the
+  // job red on its own.
   const results = {
     review: null, inline: [], fixes: null, check: null, threads: null,
-    posted: 0, edited: 0, unchanged: 0, errors: [],
+    posted: 0, edited: 0, unchanged: 0, errors: [], warnings: [],
   };
 
   // 1. What the pull request already carries, in one walk of its review threads. This is the
@@ -584,7 +644,7 @@ async function publish(request, { fetchImpl, graphql } = {}) {
     results.posted = fresh.length;
     for (const comment of fresh) results.inline.push({ path: comment.path, line: comment.line, comment_id: 0 });
   } catch (error) {
-    results.errors.push(`review: ${error.message}`);
+    results.errors.push(`review: ${describeError(error)}`);
   }
 
   // 4. The comments that already exist and have changed, edited in place by their marker. This
@@ -600,7 +660,7 @@ async function publish(request, { fetchImpl, graphql } = {}) {
       results.edited += 1;
       results.inline.push({ path: comment.path, line: comment.line, comment_id: posted.comment_id });
     } catch (error) {
-      results.errors.push(`inline ${comment.path}:${comment.line}: ${error.message}`);
+      results.warnings.push(`inline ${comment.path}:${comment.line}: ${describeError(error)}`);
     }
   }
 
@@ -640,7 +700,7 @@ async function publish(request, { fetchImpl, graphql } = {}) {
         sections: request.fix_sections,
       });
     } catch (error) {
-      results.errors.push(`fixes: ${error.message}`);
+      results.warnings.push(`fixes: ${describeError(error)}`);
     }
   }
 
@@ -657,7 +717,7 @@ async function publish(request, { fetchImpl, graphql } = {}) {
       summary: summary.summary,
     });
   } catch (error) {
-    results.errors.push(`check run: ${error.message}`);
+    results.errors.push(`check run: ${describeError(error)}`);
   }
 
   return results;
@@ -670,8 +730,9 @@ async function main() {
     process.exit(2);
   }
   const request = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
-  const results = await publish(request);
+  const results = request.mode === 'error_check' ? await publishErrorCheck(request) : await publish(request);
   process.stdout.write(`${JSON.stringify(results, null, 2)}\n`);
+  for (const warning of results.warnings || []) process.stderr.write(`publish warning: ${warning}\n`);
   if (results.errors.length > 0) {
     for (const error of results.errors) process.stderr.write(`publish error: ${error}\n`);
     process.exit(1);
@@ -687,6 +748,8 @@ if (require.main === module) {
 
 module.exports = {
   publish,
+  publishErrorCheck,
+  githubStatusOf,
   buildReviewBody,
   checkRunSummary,
   createGraphQLClient,

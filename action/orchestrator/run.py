@@ -59,7 +59,29 @@ REFUSED_PERMISSION_MESSAGE = (
 
 
 class ActionError(Exception):
-    """A condition the run cannot continue past, reported without a traceback."""
+    """A condition the run cannot continue past, reported without a traceback.
+
+    Like every other failure, it decides the exit code by `fail-on`: a run that could not finish
+    exits 0 under `fail-on: none`, because adding the action must not turn a merge red for a
+    reason that is ours.
+    """
+
+    # True for a refusal the workflow's author has to act on, which fails the job whatever
+    # `fail-on` says. A refusal that exited 0 would read as a review that ran.
+    always_fails = False
+
+
+class RefusalError(ActionError):
+    """The workflow asked for something the action will not do: fix the workflow to proceed."""
+
+    always_fails = True
+
+
+class PublishError(ActionError):
+    """The review or the check run could not be published."""
+
+
+DEFAULT_MAX_FILES = 200
 
 
 # --- what produced this review ---------------------------------------------------------------
@@ -156,7 +178,7 @@ def assert_least_privilege(reader: github_api.GitHubReader) -> Dict[str, bool]:
     """Refuse to run when the workflow granted write access to file contents."""
     permissions = reader.repository_permissions()
     if permissions.get("push"):
-        raise ActionError(REFUSED_PERMISSION_MESSAGE)
+        raise RefusalError(REFUSED_PERMISSION_MESSAGE)
     return permissions
 
 
@@ -603,24 +625,100 @@ def run_publisher(request: Dict[str, Any]) -> Dict[str, Any]:
         os.unlink(request_path)
     if completed.stderr:
         sys.stderr.write(completed.stderr)
-    if completed.returncode != 0:
-        raise ActionError(f"publishing failed: {completed.stderr.strip() or 'unknown error'}")
     try:
-        return json.loads(completed.stdout or "{}")
+        results = json.loads(completed.stdout) if (completed.stdout or "").strip() else None
     except json.JSONDecodeError:
+        results = None
+    if not isinstance(results, dict):
+        if completed.returncode != 0:
+            # The publisher died before it could say what it did, so nothing is known to have
+            # been posted.
+            raise PublishError(
+                f"publishing failed: {completed.stderr.strip()[-2000:] or 'unknown error'}"
+            )
         return {}
+    # A nonzero exit with a report is a publish that ran and lost something. The report says
+    # what, and the caller decides which of those losses fail the run.
+    return results
+
+
+def requested_fail_on() -> str:
+    return input_value("fail-on", "none").strip().lower()
+
+
+def max_files_input() -> int:
+    """The `max-files` input, or the default with a warning when it is not a number.
+
+    `int("two hundred")` used to end the run with a traceback before anything was read.
+    """
+    raw = input_value("max-files", str(DEFAULT_MAX_FILES))
+    try:
+        return max(1, int(raw.strip()))
+    except (TypeError, ValueError):
+        annotate(
+            "warning",
+            f"max-files must be a whole number, got {raw!r}; using {DEFAULT_MAX_FILES}.",
+        )
+        return DEFAULT_MAX_FILES
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     del argv
+    context: Dict[str, Any] = {}
     try:
-        return _run()
-    except ActionError as error:
-        annotate("error", str(error))
+        return _run(context)
+    except Exception as error:  # noqa: BLE001 - every failure gets the same defined outcome
+        return report_failure(error, context)
+
+
+def report_failure(error: BaseException, context: Dict[str, Any]) -> int:
+    """What a run that could not finish does instead of a traceback.
+
+    An error annotation says what went wrong. A neutral check run says the commit was not
+    reviewed, when the token and the host allow one, so the pull request never shows a clean
+    result it did not earn. The exit code follows `fail-on`: 0 under `none`, because the
+    repository asked never to be blocked, and 1 otherwise, because a repository that asked to be
+    blocked on findings should not pass a commit nobody reviewed. A refusal the workflow author
+    has to fix fails either way.
+    """
+    known = isinstance(error, ActionError)
+    message = str(error) if known else f"{type(error).__name__}: {error}"
+    annotate("error", message if known else f"Mitig8it did not complete: {message}")
+    if not known:
+        import traceback  # noqa: PLC0415
+
+        print("::group::Traceback", flush=True)
+        traceback.print_exception(type(error), error, error.__traceback__, file=sys.stdout)
+        print("::endgroup::", flush=True)
+
+    target = context.get("check_target")
+    if target and not getattr(error, "always_fails", False):
+        try:
+            outcome = run_publisher(
+                {
+                    **target,
+                    "mode": "error_check",
+                    "error_class": type(error).__name__,
+                    "error_message": message[:1000],
+                }
+            )
+            for problem in outcome.get("errors") or []:
+                annotate("warning", f"the neutral check run could not be posted: {problem}")
+        except Exception as check_error:  # noqa: BLE001 - reporting must not fail the report
+            annotate("warning", f"the neutral check run could not be posted: {check_error}")
+
+    write_summary(
+        f"### {CHECK_RUN_NAME}\n\nThe review did not complete: {message}\n\n"
+        "No result is reported for this commit, and it is not a clean review.\n"
+    )
+    if getattr(error, "always_fails", False):
         return 1
+    fail_on = context.get("fail_on") or requested_fail_on()
+    return 0 if fail_on == "none" else 1
 
 
-def _run() -> int:
+def _run(context: Optional[Dict[str, Any]] = None) -> int:
+    context = {} if context is None else context
     # First line of every log, so a run that fails before it publishes still says what it was.
     identity = version_identity()
     log(f"Mitig8it {identity['label']}.")
@@ -631,11 +729,12 @@ def _run() -> int:
     if not token:
         raise ActionError("no github-token was provided")
 
-    fail_on = input_value("fail-on", "none").strip().lower()
+    fail_on = requested_fail_on()
     if fail_on not in FAIL_ON_CHOICES:
-        raise ActionError(f"fail-on must be one of {', '.join(FAIL_ON_CHOICES)}")
+        raise RefusalError(f"fail-on must be one of {', '.join(FAIL_ON_CHOICES)}")
+    context["fail_on"] = fail_on
     post_fixes = boolean_input("post-fixes", True)
-    max_files = max(1, int(input_value("max-files", "200")))
+    max_files = max_files_input()
 
     model_key = input_value("model-api-key")
     model_configured = bool(model_key)
@@ -655,6 +754,17 @@ def _run() -> int:
         raise ActionError("the event payload carried no pull request number or head sha")
 
     reader = github_api.GitHubReader(token=token, repository=repository, api_url=api_url)
+    installation_id = int(((event.get("repository") or {}).get("id")) or 1)
+    # From here on a failure can say so on the pull request with a neutral check run.
+    context["check_target"] = {
+        "token": token,
+        "repository_full_name": repository,
+        "pr_number": pr_number,
+        "head_sha": head_sha,
+        "installation_id": installation_id,
+        "bot_login": "github-actions[bot]",
+        "versionLabel": identity["label"],
+    }
 
     log("Checking that the workflow granted no more permission than the review needs.")
     assert_least_privilege(reader)
@@ -738,7 +848,7 @@ def _run() -> int:
         pr_number=pr_number,
         head_sha=head_sha,
         base_sha=base_sha or head_sha,
-        installation_id=int(((event.get("repository") or {}).get("id")) or 1),
+        installation_id=installation_id,
         actor_login=os.environ.get("GITHUB_ACTOR", "github-actions") or "github-actions",
         counts=counts,
         findings=len(findings),
@@ -762,9 +872,11 @@ def _run() -> int:
     if fixes_withheld:
         request["fixesWithheldReason"] = "independent_release_evidence_missing"
     results = run_publisher(request)
-    errors = results.get("errors") or []
-    for error in errors:
-        annotate("warning", f"publish: {error}")
+    # One inline edit or the fix sections failing costs the reader a comment, not the review,
+    # so it is a warning. The review or the check failing is a publish that did not happen.
+    for warning in results.get("warnings") or []:
+        annotate("warning", f"publish: {warning}")
+    publish_errors = [str(error) for error in results.get("errors") or []]
 
     # Exactly one line about the threads, whatever happened, and a warning rather than a log line
     # when some of them could not be closed. Never more than one: a token that may not resolve
@@ -807,6 +919,9 @@ def _run() -> int:
         + f"\nMitig8it {identity['label']}."
         + (f" Image `{identity['digest']}`.\n" if identity["digest"] else "\n")
     )
+
+    if publish_errors:
+        raise PublishError("publishing failed: " + "; ".join(publish_errors))
 
     if conclusion == "failure":
         annotate(

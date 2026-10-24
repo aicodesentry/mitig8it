@@ -82,6 +82,24 @@ which half of the product produced a given result.
 `fail-on` defaults to `none` deliberately. Adding a security review should not break a merge on
 the day you add it. Turn it up once you have seen what it reports on your code.
 
+### When the review cannot finish
+
+A run can stop before it publishes: the scanner fails, the pull request head moves while the files
+are being read, or GitHub rejects the review. The action then writes an error annotation and the
+job summary, and posts a neutral `Mitig8it Security Review` check titled **Review did not
+complete** when the token allows it, naming the error class. That check is not a clean result,
+and it says so.
+
+The exit code follows `fail-on`. Under `fail-on: none` the job exits 0, because you asked never
+to be blocked. Under `high` or `critical` it exits 1, because a commit that was never reviewed
+should not pass a gate that asked to block on findings. The one exception is a workflow the
+action refuses to run under (`contents: write`, or an unknown `fail-on` value): that fails the
+job whatever `fail-on` says, because it needs a change to the workflow.
+
+A failure that costs one comment rather than the review is a warning, not a failure: an inline
+comment that could not be edited, or the fix suggestions not being attached. A `max-files` value
+that is not a number falls back to the default with a warning.
+
 ## Excluding paths
 
 A `.mitig8it.yml` at the repository root keeps paths out of the review:
