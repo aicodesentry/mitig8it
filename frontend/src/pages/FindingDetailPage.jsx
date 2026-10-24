@@ -3,6 +3,16 @@ import { useParams } from 'react-router'
 import { findingAPI, DISMISSAL_REASONS } from '../services/api'
 import RemediationPanel from '../components/RemediationPanel'
 
+const STATUS_LABELS = {
+  open: 'Open',
+  dismissed: 'Dismissed',
+  accepted_risk: 'Accepted risk',
+  fixed: 'Fixed',
+}
+
+const reasonLabel = (value) =>
+  DISMISSAL_REASONS.find((option) => option.value === value)?.label || value
+
 export default function FindingDetailPage() {
   const { findingId } = useParams()
   const [finding, setFinding] = useState(null)
@@ -25,7 +35,9 @@ export default function FindingDetailPage() {
       status,
       status === 'dismissed' ? reason : null
     )
-    setFinding(updated.finding)
+    // Merge rather than replace: the PATCH row may lack the joined repository and PR
+    // fields the header needs, and a missing field must not erase what is on screen.
+    setFinding((previous) => ({ ...previous, ...updated.finding }))
   }
 
   return (
@@ -33,9 +45,15 @@ export default function FindingDetailPage() {
       <div className="rounded-xl border border-neutral-200 bg-white p-6">
         <h1 className="text-2xl font-semibold text-neutral-900">{finding.title}</h1>
         <p className="mt-2 text-sm text-neutral-600">
-          {finding.repository_full_name} • PR #{finding.pr_number} • {finding.category}
+          {finding.repository_full_name} • PR #{finding.pr_number ?? finding.pull_request_number} • {finding.category}
         </p>
         <p className="mt-2 text-sm text-neutral-600">Severity: {finding.severity} • Confidence: {Math.round(Number(finding.confidence) * 100)}%</p>
+        <p data-testid="finding-status" className="mt-2 text-sm text-neutral-600">
+          Status: <span className="font-semibold text-neutral-900">{STATUS_LABELS[finding.status] || finding.status || 'Unknown'}</span>
+          {finding.status === 'dismissed' && finding.dismissal_reason && (
+            <> • Reason: {reasonLabel(finding.dismissal_reason)}</>
+          )}
+        </p>
       </div>
 
       <div className="rounded-xl border border-neutral-200 bg-white p-6">

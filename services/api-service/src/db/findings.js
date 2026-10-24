@@ -99,11 +99,13 @@ async function getById(findingId, userId) {
 async function updateStatus(findingId, userId, { status, dismissalReason }) {
   return transaction(async (client) => {
     const finding = await client.query(
-      `SELECT f.id, f.repository_id, u.github_username AS actor_login
+      `SELECT f.id, f.repository_id, u.github_username AS actor_login,
+              r.full_name AS repository_full_name, pr.pr_number
        FROM findings f
        JOIN repositories r ON r.id = f.repository_id
        JOIN repository_access ra ON ra.repository_id = r.id
        LEFT JOIN users u ON u.id = ra.user_id
+       LEFT JOIN pull_requests pr ON pr.id = f.pull_request_id
        WHERE f.id = $1 AND ra.user_id = $2`,
       [findingId, userId]
     );
@@ -138,7 +140,14 @@ async function updateStatus(findingId, userId, { status, dismissalReason }) {
       });
     }
 
-    return updated;
+    // Return the same joined shape as getById so a client can replace its copy of the
+    // finding with this one without losing the repository name and PR number.
+    if (!updated) return updated;
+    return {
+      ...updated,
+      repository_full_name: finding.rows[0].repository_full_name,
+      pr_number: finding.rows[0].pr_number ?? null,
+    };
   });
 }
 
