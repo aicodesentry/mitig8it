@@ -888,6 +888,8 @@ def _js_eval_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedPro
     source = snapshot.full_content(path)
     line = _finding_line(finding)
     function, untrusted, members = js_eval_site(source, line)
+    if isinstance(function, JsRoute):
+        return _js_eval_route_proof(finding, path, function, untrusted, members)
     attack = _js_call_arguments(function, untrusted, members, "payload")
     document = _js_call_arguments(function, untrusted, members, _js(JS_EVAL_DOCUMENT))
     body = [
@@ -909,6 +911,38 @@ def _js_eval_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedPro
         finding.stable_id, CODE_INJECTION_EVAL, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
         f"{function.name}({reached}) with a payload that would run a command: nothing is compiled, and a JSON document still parses",
         None,
+    )
+
+
+def _js_eval_route_proof(finding: FindingSnapshot, path: str, route: JsRoute, untrusted: str, members: tuple[str, ...]) -> GeneratedProof:
+    """The eval proof for a route callback: the payload goes in as the request value it reads.
+
+    A repaired route may answer the payload with an error (`JSON.parse` throws and Express turns
+    that into a 500), so the first request is allowed to fail; what it may not do is compile
+    anything. A JSON document must then still be accepted, which is the route's own promise.
+    """
+    if untrusted != route.req or len(members) != 2 or members[0] not in ("query", "params", "body"):
+        raise SiteError("eval_argument_not_request_data")
+    source_name, field = members
+
+    def options(value: str) -> str:
+        return f"{{ {source_name}: {{ {_js(field)}: {value} }} }}"
+
+    drive = f"h.invoke(app, {_js(route.method)}, {_js(route.route)}, "
+    body = _js_header(path) + [
+        f"  const payload = {_js(JS_EVAL_PAYLOAD)};",
+        f"  await {drive}{options('payload')}).catch(() => null);",
+        "  h.assert.noCode();",
+        f"  const out = await {drive}{options(_js(JS_EVAL_DOCUMENT))});",
+        "  h.assert(out.status < 400, `expected a JSON document to still be accepted, got ${out.status}`);",
+        "});",
+        "",
+    ]
+    return GeneratedProof(
+        finding.stable_id, CODE_INJECTION_EVAL, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
+        f"{route.method.upper()} {route.route} with {route.req}.{source_name}.{field} set to a payload that would run a command: "
+        "nothing is compiled, and a JSON document is still accepted",
+        route,
     )
 
 
