@@ -331,8 +331,15 @@ function foldSameLineProven(proven) {
         if (loser === winner) continue;
         const differs = replacementText(loser.section.hunk) !== winnerText;
         winner.section.finding_ids.push(String(loser.finding.id));
+        // The covered section names the winner's candidate, so it carries the winner's
+        // release identity too, exactly as a covered finding below does. Blank identity
+        // fields under a candidate id make the publication gate reject the whole batch.
         Object.assign(loser.section, emptySection(loser.finding), {
           candidate_id: winner.section.candidate_id,
+          verification_level: winner.section.verification_level,
+          repair_model: winner.section.repair_model,
+          repair_service_image: winner.section.repair_service_image,
+          sandbox_image_digest: winner.section.sandbox_image_digest,
           covered_by: label,
           finding_ids: [String(winner.finding.id), String(loser.finding.id)],
           superseded_by: differs ? `${label}: its verified fix replaces the same lines with different text, and GitHub accepts one suggestion per line.` : '',
