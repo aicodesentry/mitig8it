@@ -98,8 +98,10 @@ and it says so.
 The exit code follows `fail-on`. Under `fail-on: none` the job exits 0, because you asked never
 to be blocked. Under `high` or `critical` it exits 1, because a commit that was never reviewed
 should not pass a gate that asked to block on findings. The one exception is a workflow the
-action refuses to run under (`contents: write`, or an unknown `fail-on` value): that fails the
-job whatever `fail-on` says, because it needs a change to the workflow.
+action refuses to run under: `contents: write`, an unknown `fail-on` value, no `github-token`, or
+a run outside a `pull_request` event (no readable event payload, no pull request in it, or no
+`GITHUB_REPOSITORY`). That fails the job whatever `fail-on` says, because it needs a change to
+the workflow.
 
 A failure that costs one comment rather than the review is a warning, not a failure: an inline
 comment that could not be edited, or the fix suggestions not being attached. A `max-files` value

@@ -72,7 +72,8 @@ class ActionError(Exception):
 
 
 class RefusalError(ActionError):
-    """The workflow asked for something the action will not do: fix the workflow to proceed."""
+    """The workflow asked for something the action will not do, or left out something it needs
+    (a token, the event payload, the repository name): fix the workflow to proceed."""
 
     always_fails = True
 
@@ -174,15 +175,21 @@ def annotate(level: str, message: str) -> None:
 def load_event() -> Dict[str, Any]:
     path = os.environ.get("GITHUB_EVENT_PATH")
     if not path or not Path(path).is_file():
-        raise ActionError("GITHUB_EVENT_PATH is not set; this action runs on pull_request events")
-    with open(path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+        raise RefusalError("GITHUB_EVENT_PATH is not set; this action runs on pull_request events")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            event = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise RefusalError(f"the event payload at GITHUB_EVENT_PATH could not be read: {error}") from error
+    if not isinstance(event, dict):
+        raise RefusalError("the event payload at GITHUB_EVENT_PATH is not a JSON object")
+    return event
 
 
 def pull_request_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
     pull = event.get("pull_request")
     if not isinstance(pull, dict):
-        raise ActionError(
+        raise RefusalError(
             "This action only runs on pull_request events. Add "
             "`on: pull_request` to the workflow."
         )
@@ -914,7 +921,7 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
 
     token = input_value("github-token") or os.environ.get("GITHUB_TOKEN", "")
     if not token:
-        raise ActionError("no github-token was provided")
+        raise RefusalError("no github-token was provided")
 
     fail_on = requested_fail_on()
     if fail_on not in FAIL_ON_CHOICES:
@@ -930,7 +937,12 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
         # turns it off rather than relying on the absence of a key.
         os.environ["LLM_TRIAGE_ENABLED"] = "false"
 
-    repository = os.environ.get("GITHUB_REPOSITORY", "")
+    repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if repository.count("/") != 1 or not all(repository.split("/")):
+        raise RefusalError(
+            f"GITHUB_REPOSITORY must be owner/name, got {repository!r}; run the action from a "
+            "GitHub Actions workflow, which sets it"
+        )
     api_url = os.environ.get("GITHUB_API_URL") or PUBLIC_API_URL
     if api_url.rstrip("/") != PUBLIC_API_URL:
         # Checked before the first request, so the token never reaches a host it was not
@@ -938,11 +950,14 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
         raise ActionError(enterprise_server_message(api_url))
     event = load_event()
     pull = pull_request_from_event(event)
-    pr_number = int(pull.get("number") or 0)
+    try:
+        pr_number = int(pull.get("number") or 0)
+    except (TypeError, ValueError):
+        pr_number = 0
     head_sha = str((pull.get("head") or {}).get("sha") or "")
     base_sha = str((pull.get("base") or {}).get("sha") or "")
     if not pr_number or not head_sha:
-        raise ActionError("the event payload carried no pull request number or head sha")
+        raise RefusalError("the event payload carried no pull request number or head sha")
 
     reader = github_api.GitHubReader(token=token, repository=repository, api_url=api_url)
     installation_id = int(((event.get("repository") or {}).get("id")) or 1)
