@@ -817,3 +817,68 @@ test('repair evidence outlives the execution record: it is persisted with the co
   assert.equal((await request(app).get(`/api/remediations/${jobId}/evidence`)).status, 401);
   assert.equal((await request(app).get(`/api/remediations/${randomUUID()}/evidence`).auth(f.token, { type: 'bearer' })).status, 404);
 });
+
+// "Commit suggestion" on a published fix lands as a push whose commit GitHub co-authors
+// to the app. The whole path runs here against the real schema and the runtime role:
+// the observed_apply action for an automatic job (which has no human creator), the
+// applied_on_github outcome, and the supersede of the job for the new head, all in the
+// webhook's one transaction.
+test('a push of a Commit suggestion commit records the observed apply, the outcome and the supersede', async () => {
+  const autoGenerate = require('../../src/services/remediationAutoGenerate');
+  const f = await fixture();
+  const open = await insertOpenFinding(f, f.run, { severity: 'high', path: 'src/app.js', title: 'SQL injection' });
+  const queued = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: f.pr, analysisRunId: f.run });
+  assert.equal(queued.enqueued, true);
+  const ready = await makeReady(f, queued.job_id);
+  assert.equal(ready.job.created_by, null, 'an automatic job has no human creator');
+  const fingerprint = (await pool.query('SELECT fingerprint FROM findings WHERE id=$1', [open])).rows[0].fingerprint;
+  await pool.query(
+    `INSERT INTO finding_outcomes (installation_id,repository_id,pull_request_id,finding_id,fingerprint,outcome,source,job_id)
+     VALUES ($1,$2,$3,$4,$5,'fix_published','remediation',$6)`,
+    [f.installation, f.repo, f.pr, open, fingerprint, queued.job_id]);
+
+  const applied = crypto.randomBytes(20).toString('hex');
+  const response = await signedWebhook(createApp(), 'push', {
+    ref: 'refs/heads/feature', before: f.head, after: applied,
+    repository: { id: f.n, full_name: f.fullName },
+    installation: { id: f.installation },
+    sender: { login: 'reviewer' }, pusher: { name: 'reviewer' },
+    commits: [{
+      id: applied,
+      message: 'Apply suggestions from code review\n\nCo-authored-by: mitig8it[bot] <1+mitig8it[bot]@users.noreply.github.com>',
+      author: { username: 'reviewer' }, modified: ['src/app.js'], added: [],
+    }],
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+
+  const actions = await workerQuery(
+    `SELECT action_type, actor_id, actor_login, state, observed_commit_sha, candidate_ids
+       FROM remediation_actions WHERE job_id=$1`, [queued.job_id]);
+  assert.equal(actions.rowCount, 1);
+  assert.equal(actions.rows[0].action_type, 'observed_apply');
+  assert.equal(actions.rows[0].actor_id, null);
+  assert.equal(actions.rows[0].actor_login, 'reviewer');
+  assert.equal(actions.rows[0].state, 'applied');
+  assert.equal(actions.rows[0].observed_commit_sha, applied);
+  assert.deepEqual(actions.rows[0].candidate_ids, [ready.candidate]);
+
+  const outcomes = await pool.query(
+    "SELECT commit_sha FROM finding_outcomes WHERE finding_id=$1 AND outcome='applied_on_github'", [open]);
+  assert.equal(outcomes.rowCount, 1);
+  assert.equal(outcomes.rows[0].commit_sha, applied);
+
+  const job = (await workerQuery('SELECT state, cancellation_reason FROM remediation_jobs WHERE id=$1', [queued.job_id])).rows[0];
+  assert.equal(job.state, 'superseded');
+  assert.equal(job.cancellation_reason, 'head_changed');
+
+  // A redelivery of the same push records nothing new.
+  const again = await signedWebhook(createApp(), 'push', {
+    ref: 'refs/heads/feature', before: f.head, after: applied,
+    repository: { id: f.n, full_name: f.fullName }, installation: { id: f.installation },
+    sender: { login: 'reviewer' },
+    commits: [{ id: applied, message: 'x\n\nCo-authored-by: mitig8it[bot] <bot@example.invalid>', author: { username: 'reviewer' }, modified: ['src/app.js'] }],
+  });
+  assert.equal(again.status, 200);
+  const count = await workerQuery("SELECT COUNT(*)::int n FROM remediation_actions WHERE pull_request_id=$1 AND action_type='observed_apply'", [f.pr]);
+  assert.equal(count.rows[0].n, 1);
+});

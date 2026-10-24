@@ -44,6 +44,11 @@ const PURGE_STEPS = [
   ['remediation_jobs', 'DELETE FROM remediation_jobs WHERE installation_id = $1'],
   ['workflow_outbox', 'DELETE FROM workflow_outbox WHERE installation_id = $1'],
   ['workflow_events', 'DELETE FROM workflow_events WHERE installation_id = $1'],
+  // The outcome log (0023) references repositories and installations with NO ACTION,
+  // so it must go before either. Its daily roll-up (0024) would cascade, but it is
+  // named here so the purge's audit row counts it like every other table.
+  ['finding_outcomes', 'DELETE FROM finding_outcomes WHERE installation_id = $1'],
+  ['quality_metrics_daily', 'DELETE FROM quality_metrics_daily WHERE installation_id = $1'],
   ['analysis_run_findings', `DELETE FROM analysis_run_findings WHERE analysis_run_id IN (
       SELECT ar.id FROM analysis_runs ar JOIN repositories r ON r.id = ar.repository_id
        WHERE r.installation_id = $1)`],

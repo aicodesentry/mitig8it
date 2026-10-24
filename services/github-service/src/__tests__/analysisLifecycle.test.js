@@ -184,9 +184,10 @@ test('marking fixes applied with no fingerprints makes no GitHub call', async ()
   .toEqual({applied:0, unchanged:0});
  expect(axios).not.toHaveBeenCalled();
 });
-// A pull request over the cap is reviewed as far as the cap allows. Refusing it was the
-// one case where a developer got no review at all, and a partial review that says so is
-// worth more than nothing. The selection must be deterministic and must be declared.
+// The adapter lists every analysable file of the pull request in path order. The review
+// cap (200) is applied by the control plane after the repository's `.mitig8it.yml`
+// exclusions, which the adapter does not know: capping here first let excluded vendored
+// files take every place under the cap, so a run could review none of the real files.
 function filesPage(total) {
  // GitHub paginates 100 at a time; the filenames are deliberately out of order so the
  // test proves the sort rather than GitHub's own ordering.
@@ -197,27 +198,22 @@ function filesPage(total) {
  };
 }
 
-test('a pull request over the file cap is reviewed to the cap and says so', async () => {
+test('a pull request over 200 files is listed whole, for the control plane to cap after exclusions', async () => {
  const page = filesPage(250);
  axios.mockImplementation(async r => ({data: r.url.includes('/files?') ? page(r.url) : {head: {sha: 'head-a'}}}));
  const result = await fetchPullRequestFiles(request);
- expect(result.files).toHaveLength(200);
- expect(result.limitation).toEqual({kind: 'file_cap', message: 'Reviewed 200 of 250 changed files'});
+ expect(result.files).toHaveLength(250);
+ expect(result.limitation).toBeUndefined();
 });
 
-test('the reviewed files are the first 200 in path order, whatever order GitHub returned', async () => {
+test('the listed files are in path order, whatever order GitHub returned', async () => {
  const page = filesPage(250);
  axios.mockImplementation(async r => ({data: r.url.includes('/files?') ? page(r.url) : {head: {sha: 'head-a'}}}));
  const first = await fetchPullRequestFiles(request);
  const paths = first.files.map(f => f.path);
-
  expect(paths).toEqual([...paths].sort());
- // 250 files named file-0001..file-0250: the cap keeps the lowest 200 paths.
  expect(paths[0]).toBe('src/file-0001.py');
- expect(paths[199]).toBe('src/file-0200.py');
- expect(paths).not.toContain('src/file-0201.py');
 
- // The same pull request always yields the same 200 files.
  jest.clearAllMocks();
  const shuffled = filesPage(250);
  axios.mockImplementation(async r => ({data: r.url.includes('/files?') ? [...shuffled(r.url)].reverse() : {head: {sha: 'head-a'}}}));
@@ -225,7 +221,40 @@ test('the reviewed files are the first 200 in path order, whatever order GitHub 
  expect(second.files.map(f => f.path)).toEqual(paths);
 });
 
-test('a pull request at or under the cap is reviewed whole and declares no limitation', async () => {
+// A changed file over 500 KB is left out of the content response, and that is the only
+// reason a requested path is ever left out: the control plane reads an absent path as
+// "too large", reports it as not analysed and carries on. So anything else that would
+// silently drop a path is refused instead.
+describe('file content size limit', () => {
+ const {fetchFileContents} = require('../services/githubInternalOperations');
+ const contentRequest = paths => ({repository_full_name: 'owner/repo', installation_id: 1, ref: 'head-a', paths});
+ const encoded = text => Buffer.from(text, 'utf8').toString('base64');
+
+ test('a file over 500 KB is omitted and the others are returned', async () => {
+  const big = 'x'.repeat(600 * 1024);
+  axios.mockImplementation(async r => ({data: r.url.includes('/contents/big.js')
+   ? {size: big.length, encoding: 'base64', content: encoded(big)}
+   : {size: 5, encoding: 'base64', content: encoded('ok=1\n')}}));
+  const result = await fetchFileContents(contentRequest(['big.js', 'small.js']));
+  expect(result.files).toEqual([{path: 'small.js', content: 'ok=1\n'}]);
+ });
+
+ test('a file over 1 MB, which GitHub returns without content, is omitted rather than read as empty', async () => {
+  axios.mockImplementation(async () => ({data: {size: 2 * 1024 * 1024, encoding: 'none', content: ''}}));
+  const result = await fetchFileContents(contentRequest(['huge.js']));
+  expect(result.files).toEqual([]);
+ });
+
+ test('an invalid path or more than 200 paths is refused, never silently dropped', async () => {
+  axios.mockImplementation(async () => ({data: {size: 1, encoding: 'base64', content: encoded('x')}}));
+  await expect(fetchFileContents(contentRequest(['ok.js', '']))).rejects.toMatchObject({statusCode: 400});
+  await expect(fetchFileContents(contentRequest(Array.from({length: 201}, (_, i) => `f${i}.js`))))
+   .rejects.toMatchObject({statusCode: 400});
+  expect(axios).not.toHaveBeenCalled();
+ });
+});
+
+test('a pull request at or under 200 files declares no limitation', async () => {
  const page = filesPage(200);
  axios.mockImplementation(async r => ({data: r.url.includes('/files?') ? page(r.url) : {head: {sha: 'head-a'}}}));
  const result = await fetchPullRequestFiles(request);
@@ -233,7 +262,7 @@ test('a pull request at or under the cap is reviewed whole and declares no limit
  expect(result.limitation).toBeUndefined();
 });
 
-test('the cap counts analysable files, so excluded paths never push a reviewable PR over it', async () => {
+test('dist/ and node_modules paths are never listed as analysable', async () => {
  // 150 analysable files plus 150 that the dist/ and node_modules filters drop.
  const analysable = Array.from({length: 150}, (_, i) => ({filename: `src/${String(i).padStart(4, '0')}.py`, status: 'added', patch: '+x=1'}));
  const excluded = [
@@ -251,7 +280,7 @@ test('the cap counts analysable files, so excluded paths never push a reviewable
  expect(result.limitation).toBeUndefined();
 });
 
-test('a deleted file is not analysable and never occupies a slot under the cap', async () => {
+test('a deleted file is not analysable and is never listed', async () => {
  const all = [
   ...Array.from({length: 210}, (_, i) => ({filename: `del/${i}.py`, status: 'removed', patch: ''})),
   ...Array.from({length: 5}, (_, i) => ({filename: `src/${i}.py`, status: 'modified', patch: '+x=1'})),

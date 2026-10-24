@@ -9,6 +9,9 @@ jest.mock('../src/db/remediation', () => ({
   supersedeForHeadChange: jest.fn(async () => ({ jobs: [], candidates: [], mergeIntents: [] })),
   // The same push scan that records the outcome also records the observed apply
   // action (PR 442); the handler walks the pushed commits once and feeds both.
+  // This mock only checks the routing. The SQL, the ordering against the supersede and
+  // the RLS scope are exercised against the real schema in
+  // tests/integration/remediation.integration.js ("a push of a Commit suggestion ...").
   recordObservedApply: jest.fn(async () => ([])),
 }));
 jest.mock('../src/utils/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));

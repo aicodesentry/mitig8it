@@ -841,7 +841,7 @@ describe('PR Analysis Orchestrator — pure functions', () => {
       return Promise.resolve({ data: {} });
     });
 
-    const files = await __private.enrichFilesForTier2({
+    const { files, limitations } = await __private.enrichFilesForTier2({
       repositoryFullName: 'owner/repo',
       installationId: 12345,
       commitSha: 'abc123',
@@ -865,6 +865,7 @@ describe('PR Analysis Orchestrator — pure functions', () => {
     expect(files[0].reviewable_line_spans).toEqual([{ start: 1, end: 2 }]);
     expect(files[1].content).toBe('');
     expect(files[1].reviewable_line_spans).toEqual([{ start: 1, end: 1 }]);
+    expect(limitations).toEqual([]);
   });
 });
 

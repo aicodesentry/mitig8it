@@ -26,61 +26,124 @@ const purge = require('../../src/services/installationPurge');
 const KEEP = 43;
 const DOOMED = 42;
 
-// Every table the purge deletes from, plus the installation row itself. Asserting
-// against this list is what makes a newly added tenant table fail the test loudly
-// instead of quietly surviving an uninstall.
-const SCOPED_TABLES = [...purge.purgeTables(), 'installations'];
+// The tables an installation's data can live in are derived from the schema, not from
+// the purge's own list: every table with an installation_id or repository_id column,
+// every table with a foreign key to repositories or installations, and the analysis run join table that hangs off
+// analysis_runs. A table added by a later migration joins this list on its own, and the
+// seeding test below then fails until the fixture writes a row into it. That is what
+// keeps a new tenant table from quietly surviving an uninstall.
+//
+// users is the one table that keeps its rows: the account belongs to the person, and
+// the purge only clears the denormalized installation_id on it.
+const EXTRA_SCOPED_TABLES = ['analysis_run_findings'];
+let SCOPED_TABLES = [];
+let TABLE_COLUMNS = new Map();
 
-// How to count the rows of one installation in each table. Tables without an
-// installation_id are counted through repositories, exactly as the purge scopes them.
-const COUNT_SQL = {
-  installations: 'SELECT COUNT(*) c FROM installations WHERE id = $1',
-  user_installations: 'SELECT COUNT(*) c FROM user_installations WHERE installation_id = $1',
-  repositories: 'SELECT COUNT(*) c FROM repositories WHERE installation_id = $1',
-  repository_access: `SELECT COUNT(*) c FROM repository_access WHERE repository_id IN
-    (SELECT id FROM repositories WHERE installation_id = $1)`,
-  pull_requests: `SELECT COUNT(*) c FROM pull_requests WHERE repository_id IN
-    (SELECT id FROM repositories WHERE installation_id = $1)`,
-  analysis_runs: `SELECT COUNT(*) c FROM analysis_runs WHERE repository_id IN
-    (SELECT id FROM repositories WHERE installation_id = $1)`,
-  analysis: `SELECT COUNT(*) c FROM analysis WHERE repository_id IN
-    (SELECT id FROM repositories WHERE installation_id = $1)`,
-  analysis_run_findings: `SELECT COUNT(*) c FROM analysis_run_findings WHERE analysis_run_id IN
-    (SELECT ar.id FROM analysis_runs ar JOIN repositories r ON r.id = ar.repository_id
-      WHERE r.installation_id = $1)`,
-  findings: `SELECT COUNT(*) c FROM findings WHERE installation_id = $1 OR repository_id IN
-    (SELECT id FROM repositories WHERE installation_id = $1)`,
-  suppressions: `SELECT COUNT(*) c FROM suppressions WHERE repository_id IN
-    (SELECT id FROM repositories WHERE installation_id = $1)`,
-  audit_logs: `SELECT COUNT(*) c FROM audit_logs WHERE repository_id IN
-    (SELECT id FROM repositories WHERE installation_id = $1)`,
-  webhook_events: `SELECT COUNT(*) c FROM webhook_events WHERE repository_id IN
-    (SELECT id FROM repositories WHERE installation_id = $1)`,
-};
-
-function countSql(table) {
-  return COUNT_SQL[table] || `SELECT COUNT(*) c FROM ${table} WHERE installation_id = $1`;
+async function discoverScopedTables() {
+  const columns = await pool.query(
+    `SELECT table_name, column_name FROM information_schema.columns
+      WHERE table_schema = 'public'`);
+  TABLE_COLUMNS = new Map();
+  for (const row of columns.rows) {
+    if (!TABLE_COLUMNS.has(row.table_name)) TABLE_COLUMNS.set(row.table_name, new Set());
+    TABLE_COLUMNS.get(row.table_name).add(row.column_name);
+  }
+  const referencing = await pool.query(
+    `SELECT DISTINCT child.relname AS table_name
+       FROM pg_constraint c
+       JOIN pg_class child ON child.oid = c.conrelid
+       JOIN pg_class parent ON parent.oid = c.confrelid
+       JOIN pg_namespace n ON n.oid = child.relnamespace
+      WHERE c.contype = 'f' AND n.nspname = 'public'
+        AND parent.relname IN ('repositories', 'installations')`);
+  const tables = new Set(['installations', ...EXTRA_SCOPED_TABLES]);
+  for (const [table, cols] of TABLE_COLUMNS) {
+    // A repository_id column without a foreign key (the legacy `analysis` table) still
+    // holds the installation's data, so it counts too.
+    if (cols.has('installation_id') || cols.has('repository_id')) tables.add(table);
+  }
+  for (const row of referencing.rows) tables.add(row.table_name);
+  return [...tables].sort();
 }
 
-// The purge's own DELETEs run with the worker tenant scope set. Counting must too, or
-// row level security hides rows that are still there and the test passes on a lie.
-async function countRows(table, installationId) {
+// The rows of one installation in a table, as a WHERE clause over the ids captured
+// before the purge. Tables are matched by installation_id when they have it, and
+// otherwise by the repository ids and row ids the installation owned, so a row whose
+// repository_id was SET NULL by the delete is still found if it survived.
+function scopeOf(table, scope) {
+  const cols = TABLE_COLUMNS.get(table) || new Set();
+  if (table === 'installations') return { sql: 'id = $1', params: [scope.installationId] };
+  if (table === 'analysis_run_findings') {
+    return { sql: 'analysis_run_id = ANY($1::uuid[])', params: [scope.analysisRunIds] };
+  }
+  const clauses = [];
+  const params = [];
+  if (cols.has('installation_id')) {
+    params.push(scope.installationId);
+    clauses.push(`installation_id = $${params.length}`);
+  }
+  if (cols.has('repository_id')) {
+    params.push(scope.repositoryIds);
+    clauses.push(`repository_id = ANY($${params.length}::uuid[])`);
+  }
+  if (table !== 'users' && cols.has('id') && scope.rowIds && scope.rowIds[table]) {
+    params.push(scope.rowIds[table]);
+    clauses.push(`id = ANY($${params.length}::uuid[])`);
+  }
+  if (clauses.length === 0) throw new Error(`No way to scope ${table} to an installation`);
+  return { sql: clauses.join(' OR '), params };
+}
+
+async function withTenant(installationId, fn) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [String(installationId)]);
     await client.query("SELECT set_config('app.remediation_worker', '1', true)");
-    const result = await client.query(countSql(table), [installationId]);
+    const result = await fn(client);
     await client.query('COMMIT');
-    return Number(result.rows[0].c);
+    return result;
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* released below */ }
+    throw error;
   } finally {
     client.release();
   }
 }
 
-async function countAll(installationId) {
+// Everything the purge must reach for one installation: its repositories, its analysis
+// runs, and the id of every row in every scoped table. Captured before the purge so the
+// assertion afterwards does not depend on parents that the purge itself deletes.
+async function captureScope(installationId) {
+  return withTenant(installationId, async (client) => {
+    const repositoryIds = (await client.query(
+      'SELECT id FROM repositories WHERE installation_id = $1', [installationId])).rows.map((r) => r.id);
+    const analysisRunIds = (await client.query(
+      'SELECT id FROM analysis_runs WHERE repository_id = ANY($1::uuid[])', [repositoryIds])).rows.map((r) => r.id);
+    const scope = { installationId, repositoryIds, analysisRunIds, rowIds: {} };
+    for (const table of SCOPED_TABLES) {
+      const cols = TABLE_COLUMNS.get(table) || new Set();
+      if (table === 'installations' || table === 'users' || !cols.has('id')) continue;
+      const { sql, params } = scopeOf(table, scope);
+      scope.rowIds[table] = (await client.query(`SELECT id FROM ${table} WHERE ${sql}`, params)).rows.map((r) => r.id);
+    }
+    return scope;
+  });
+}
+
+// The purge's own DELETEs run with the worker tenant scope set. Counting must too, or
+// row level security hides rows that are still there and the test passes on a lie.
+async function countRows(table, scope) {
+  return withTenant(scope.installationId, async (client) => {
+    const { sql, params } = scopeOf(table, scope);
+    const result = await client.query(`SELECT COUNT(*) c FROM ${table} WHERE ${sql}`, params);
+    return Number(result.rows[0].c);
+  });
+}
+
+async function countAll(scope) {
   const counts = {};
-  for (const table of SCOPED_TABLES) counts[table] = await countRows(table, installationId);
+  for (const table of SCOPED_TABLES) counts[table] = await countRows(table, scope);
   return counts;
 }
 
@@ -217,6 +280,18 @@ async function seedInstallation(installationId, { login }) {
       `INSERT INTO workflow_outbox (aggregate_id, installation_id, repository_id, event_sequence, event_type, payload)
        VALUES ($1,$2,$3,1,'remediation.ready','{}'::jsonb)`, [jobId, installationId, repositoryId]);
 
+    // The outcome log and its daily roll-up. Every dismissal, suppression, thread event
+    // and re-analysis writes an outcome row, so a real installation always has some.
+    await client.query(
+      `INSERT INTO finding_outcomes (installation_id, repository_id, pull_request_id, finding_id, fingerprint,
+         rule_id, outcome, source)
+       VALUES ($1,$2,$3,$4,$5,'sql_injection','dismissed','workspace')`,
+      [installationId, repositoryId, pullRequestId, findingId, `${installationId}-fingerprint`]);
+    await client.query(
+      `INSERT INTO quality_metrics_daily (installation_id, repository_id, rule_id, day, findings_new)
+       VALUES ($1,$2,'sql_injection',CURRENT_DATE,1), ($1,NULL,NULL,CURRENT_DATE,1)`,
+      [installationId, repositoryId]);
+
     await client.query('COMMIT');
     return { userId, repositoryId, pullRequestId, jobId, actionId, findingId };
   } catch (error) {
@@ -231,31 +306,33 @@ before(async () => {
   await pool.query('DROP SCHEMA public CASCADE');
   await pool.query('CREATE SCHEMA public');
   await applyMigrations();
+  SCOPED_TABLES = await discoverScopedTables();
 });
 
 after(async () => { await pool.end(); });
 
 beforeEach(async () => {
-  await pool.query(`TRUNCATE
-    remediation_job_evidence, usage_reservations, remediation_attempts, verification_runs, merge_intents,
-    remediation_writer_leases, remediation_actions, repair_memory, remediation_candidates, remediation_jobs,
-    workflow_outbox, workflow_events, analysis_run_findings, suppressions, findings, analysis_runs, analysis,
-    pull_requests, audit_logs, webhook_events, repository_access, repositories, user_installations,
-    installations, users, webhook_deliveries CASCADE`);
+  await pool.query(`TRUNCATE ${[...SCOPED_TABLES, 'users', 'webhook_deliveries'].join(', ')} CASCADE`);
 });
 
 test('every table the purge covers is actually seeded, so a zero afterwards means something', async () => {
   await seedInstallation(DOOMED, { login: 'doomed-org' });
-  const counts = await countAll(DOOMED);
+  const counts = await countAll(await captureScope(DOOMED));
   for (const table of SCOPED_TABLES) {
     assert.ok(counts[table] > 0, `${table} was not seeded, so purging it proves nothing`);
+  }
+  // The schema-derived list must cover at least everything the purge already names.
+  for (const table of purge.purgeTables()) {
+    assert.ok(SCOPED_TABLES.includes(table), `${table} is purged but not discovered from the schema`);
   }
 });
 
 test('purging one installation removes every row for it and touches no other installation', async () => {
   await seedInstallation(DOOMED, { login: 'doomed-org' });
   await seedInstallation(KEEP, { login: 'kept-org' });
-  const before = await countAll(KEEP);
+  const doomedScope = await captureScope(DOOMED);
+  const keptScope = await captureScope(KEEP);
+  const before = await countAll(keptScope);
 
   await pool.query(
     "UPDATE installations SET status='deleted', deleted_at=NOW() - INTERVAL '25 hours', purge_after=NOW() - INTERVAL '1 hour' WHERE id=$1",
@@ -264,12 +341,12 @@ test('purging one installation removes every row for it and touches no other ins
   const result = await purge.purgeInstallation(DOOMED);
   assert.equal(result.purged, true);
 
-  const after = await countAll(DOOMED);
+  const after = await countAll(doomedScope);
   for (const table of SCOPED_TABLES) {
     assert.equal(after[table], 0, `${table} still has rows for the purged installation`);
   }
 
-  const kept = await countAll(KEEP);
+  const kept = await countAll(keptScope);
   assert.deepEqual(kept, before, 'the other installation was modified by the purge');
 
   // The user account survives; only its link to the purged installation goes.
@@ -300,7 +377,8 @@ test('one audit row records the counts per table and survives the purge', async 
 
 test('a reinstall inside the grace period cancels the purge and no row is deleted', async () => {
   await seedInstallation(DOOMED, { login: 'doomed-org' });
-  const before = await countAll(DOOMED);
+  const scope = await captureScope(DOOMED);
+  const before = await countAll(scope);
 
   // Marking an installation deleted also fires the long-standing
   // revoke_inactive_installation_access trigger, which revokes the derived access rows.
@@ -325,7 +403,7 @@ test('a reinstall inside the grace period cancels the purge and no row is delete
   await pool.query("UPDATE installations SET updated_at = NOW() WHERE id = $1", [DOOMED]);
   assert.deepEqual(await purge.purgeDeletedInstallations(10), { due: 0, purged: 0, skipped: 0, failed: 0 });
 
-  const after = await countAll(DOOMED);
+  const after = await countAll(scope);
   for (const table of SCOPED_TABLES) {
     if (derivedAccess.has(table)) continue;
     assert.equal(after[table], before[table], `${table} lost rows although the purge was cancelled`);
@@ -339,6 +417,8 @@ test('a reinstall inside the grace period cancels the purge and no row is delete
 test('the sweep purges only what is due, and the grace period holds everything else', async () => {
   await seedInstallation(DOOMED, { login: 'doomed-org' });
   await seedInstallation(KEEP, { login: 'kept-org' });
+  const doomedScope = await captureScope(DOOMED);
+  const keptScope = await captureScope(KEEP);
 
   await pool.query(
     "UPDATE installations SET deleted_at=NOW(), purge_after=NOW() - INTERVAL '1 minute' WHERE id=$1", [DOOMED]);
@@ -349,10 +429,10 @@ test('the sweep purges only what is due, and the grace period holds everything e
   assert.deepEqual(summary, { due: 1, purged: 1, skipped: 0, failed: 0 });
 
   for (const table of SCOPED_TABLES) {
-    assert.equal(await countRows(table, DOOMED), 0, `${table} survived for the due installation`);
+    assert.equal(await countRows(table, doomedScope), 0, `${table} survived for the due installation`);
   }
-  assert.equal(await countRows('installations', KEEP), 1);
-  assert.ok(await countRows('remediation_jobs', KEEP) > 0);
+  assert.equal(await countRows('installations', keptScope), 1);
+  assert.ok(await countRows('remediation_jobs', keptScope) > 0);
 });
 
 test('a marked installation is skipped by the claim queries while it waits to be purged', async () => {

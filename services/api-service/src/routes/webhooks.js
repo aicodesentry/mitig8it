@@ -266,15 +266,6 @@ router.post('/github', async (req, res) => {
         }
       }
 
-      // A branch push moves the head of every open pull request from that branch.
-      if (event === 'push' && payload.repository?.id && typeof payload.ref === 'string' && payload.ref.startsWith('refs/heads/') && payload.after) {
-        const branch = payload.ref.slice('refs/heads/'.length);
-        await remediationDb.supersedeForBranchPush({
-          client, repositoryGithubId: payload.repository.id,
-          branch, newHeadSha: payload.after, reason: 'head_changed',
-        });
-      }
-
       // A reviewer resolving the bot's thread, or replying "not an issue" to it, is a
       // decision about a finding. Both land in the outcome log on the same transaction
       // as the delivery marker, so a redelivery records nothing twice.
@@ -314,6 +305,18 @@ router.post('/github', async (req, res) => {
             }
           }
         }
+      }
+
+      // A branch push moves the head of every open pull request from that branch.
+      // It runs after the observed apply above on purpose: the job whose fixes the
+      // pushed commit applied is the ready one for the old head, and superseding it
+      // first would leave nothing for the apply to be recorded against.
+      if (event === 'push' && payload.repository?.id && typeof payload.ref === 'string' && payload.ref.startsWith('refs/heads/') && payload.after) {
+        const branch = payload.ref.slice('refs/heads/'.length);
+        await remediationDb.supersedeForBranchPush({
+          client, repositoryGithubId: payload.repository.id,
+          branch, newHeadSha: payload.after, reason: 'head_changed',
+        });
       }
 
       await client.query(
