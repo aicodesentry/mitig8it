@@ -270,3 +270,31 @@ def test_the_scanner_s_limitations_reach_the_check_the_review_and_the_job_summar
         assert "Syntax error at line 3" in text
         assert "Tier 1 stopped after 0 of 1 files" in text
     assert any("Not fully analysed" in line for line in harness.annotations("warning"))
+
+
+# --- large files ----------------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        fake_github.contents_payload("x = 1\n" * 100_000),  # 600 kB: over the 500 kB cap
+        {"type": "file", "encoding": "none", "content": "", "size": 2_400_000},  # over 1 MB
+    ],
+    ids=["600kB", "2MB"],
+)
+def test_a_large_file_is_reported_not_analysed_and_the_run_continues(harness, payload):
+    harness.api.reroute(r"/repos/acme/widgets/contents/src/app\.py", payload)
+    seen = {}
+
+    def analyze(_repository, _number, _sha, files):
+        seen["files"] = files
+        return [finding(4)], []
+
+    harness.monkeypatch.setattr(analysis, "analyze", analyze)
+    assert harness.main() == 0
+    assert seen["files"][0]["content"] == "", "the patch is still scanned"
+    check = harness.calls("check")[0]
+    assert "Not fully analysed" in check["summary"]
+    assert "src/app.py" in check["summary"]
+    assert "(partial review)" in check["title"]
+    assert len(harness.calls("review")) == 1

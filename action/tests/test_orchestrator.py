@@ -165,15 +165,53 @@ def test_the_payload_is_accepted_by_the_analysis_service_model(api):
     assert reports.reviewable_line_spans == [{"start": 3, "end": 4}]
 
 
-def test_an_unreadable_file_fails_the_run_closed(api, event, monkeypatch):
-    """A file skipped for size must not become a clean review."""
+def test_an_oversized_file_is_absent_and_says_why(api):
+    """A file skipped for size must not become a clean review, nor end the run.
+
+    Between the 500 kB cap and GitHub's 1 MB contents limit the file used to be dropped here and
+    the run then failed outright, so a pull request touching one generated file got no review.
+    """
     api.reroute(
         r"/repos/acme/widgets/contents/src/reports\.py",
         fake_github.contents_payload("x" * (pr_scope.MAX_FILE_CONTENT_BYTES + 1)),
     )
     reader = reader_for(api)
-    contents = reader.file_contents(["src/reports.py"], HEAD_SHA)
+    contents, limitations = reader.file_contents_with_limitations(["src/reports.py"], HEAD_SHA)
     assert contents == {}, "an oversized file is absent rather than truncated"
+    assert reader.file_contents(["src/reports.py"], HEAD_SHA) == {}
+    assert len(limitations) == 1
+    assert limitations[0]["kind"] == "not_analyzed"
+    assert limitations[0]["reason"] == "size"
+    assert limitations[0]["path"] == "src/reports.py"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # Over 1 MB the contents API answers with no content and says so.
+        {"type": "file", "encoding": "none", "content": "", "size": 2_400_000},
+        # The same answer from an API that leaves the encoding out.
+        {"type": "file", "content": "", "size": 2_400_000},
+    ],
+)
+def test_a_file_github_will_not_inline_is_missing_not_empty(api, payload):
+    """A 2 MB file used to be read as an empty file and reviewed as one, silently."""
+    api.reroute(r"/repos/acme/widgets/contents/src/reports\.py", payload)
+    reader = reader_for(api)
+    contents, limitations = reader.file_contents_with_limitations(["src/reports.py"], HEAD_SHA)
+    assert "src/reports.py" not in contents
+    assert [(item["path"], item["reason"]) for item in limitations] == [("src/reports.py", "size")]
+    assert "2400000 bytes" in limitations[0]["message"]
+
+
+def test_an_empty_file_is_still_an_empty_file(api):
+    api.reroute(
+        r"/repos/acme/widgets/contents/src/reports\.py",
+        {"type": "file", "encoding": "base64", "content": "", "size": 0},
+    )
+    contents, limitations = reader_for(api).file_contents_with_limitations(["src/reports.py"], HEAD_SHA)
+    assert contents == {"src/reports.py": ""}
+    assert limitations == []
 
 
 # --- the permission refusal ---------------------------------------------------------------

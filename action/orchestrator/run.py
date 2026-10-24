@@ -847,15 +847,22 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
     log(pr_scope.scope_summary(scope) or "Nothing in this pull request is reviewable.")
 
     wanted = [f["path"] for f in scoped if pr_scope.should_fetch_full_file_content(f)]
-    contents = reader.file_contents(wanted, head_sha) if wanted else {}
-    missing = [path for path in wanted if path not in contents]
+    contents: Dict[str, str] = {}
+    if wanted:
+        contents, content_limitations = reader.file_contents_with_limitations(wanted, head_sha)
+        # A file too large to read whole is still reviewed through its patch, and is named
+        # under "Not fully analysed" so the review never claims more than it read.
+        limitations.extend(content_limitations)
+        for item in content_limitations:
+            log(f"{item['path']}: {item['message']}.")
+    accounted = {str(item.get("path") or "") for item in limitations}
+    missing = [path for path in wanted if path not in contents and path not in accounted]
     if missing:
-        # Production fails closed here for the same reason: a scan that silently skipped a file
-        # would report a clean result it did not earn.
+        # A file that is absent for no stated reason is still fatal: a scan that silently
+        # skipped it would report a clean result it did not earn.
         raise ActionError(
             "Required source content response is incomplete; these files could not be read at "
-            f"the head commit (they may exceed {pr_scope.MAX_FILE_CONTENT_BYTES} bytes): "
-            + ", ".join(missing[:10])
+            "the head commit: " + ", ".join(missing[:10])
         )
 
     analysis_files = pr_scope.build_analysis_files(scoped, contents)
