@@ -510,6 +510,37 @@ function buildTier2FilePayload(file, contentByPath = new Map()) {
   };
 }
 
+// The analysable files one run reviews. Applied after the repository's `.mitig8it.yml`
+// exclusions, so excluded files never take places under it: a pull request with 300
+// vendored files sorting first and 50 real ones reviews the 50. Over the cap the run
+// reviews the first FILE_CAP in path order, so the same pull request always yields the
+// same files, and states how many of how many it reviewed. It never refuses the run.
+const FILE_CAP = 200;
+
+function capReviewedFiles(files) {
+  const source = Array.isArray(files) ? files : [];
+  if (source.length <= FILE_CAP) return { files: source, limitation: null };
+  const ordered = [...source].sort((a, b) => {
+    const left = String(a?.path || '');
+    const right = String(b?.path || '');
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  return {
+    files: ordered.slice(0, FILE_CAP),
+    limitation: { kind: 'file_cap', message: `Reviewed ${FILE_CAP} of ${ordered.length} changed files` },
+  };
+}
+
+// The adapter omits a requested path from the content response only when its content is
+// over its size limit (500 KB); every other failure throws. Such a file is still scanned
+// by tier 1 through its diff. Tier 2 skips it, and the run states it as a file that was
+// not fully analysed instead of failing the whole review.
+const OVERSIZED_LIMITATION = Object.freeze({
+  kind: 'not_analyzed',
+  type: 'File too large',
+  message: 'The file is over the 500 KB content limit; only its diff was scanned.',
+});
+
 async function enrichFilesForTier2({ files, repositoryFullName, installationId, commitSha }) {
   const sourceFiles = Array.isArray(files) ? files : [];
   const candidates = sourceFiles.filter(shouldFetchFullFileContent);
@@ -531,12 +562,13 @@ async function enrichFilesForTier2({ files, repositoryFullName, installationId, 
     } catch (error) {
       throw new Error(`Required source content retrieval failed: ${error.message}`);
     }
-    if (candidates.some(file => !contentByPath.has(file.path))) {
-      throw new Error('Required source content response is incomplete');
-    }
   }
-
-  return sourceFiles.map((file) => buildTier2FilePayload(file, contentByPath));
+  const oversized = new Set(candidates.filter((file) => !contentByPath.has(file.path)).map((file) => file.path));
+  return {
+    files: sourceFiles.filter((file) => !oversized.has(file.path))
+      .map((file) => buildTier2FilePayload(file, contentByPath)),
+    limitations: [...oversized].map((path) => ({ path, ...OVERSIZED_LIMITATION })),
+  };
 }
 
 function severityRank(severity) {
@@ -1267,8 +1299,8 @@ async function runAnalysisJob(payload) {
   let allFindings = [];
   let files = [];
   let excludedFileCount = 0;
-  // Limitations the run must state rather than hide. `file_cap`: a pull request over the
-  // adapter's cap is reviewed as far as the cap allows, and the check summary says how many of
+  // Limitations the run must state rather than hide. `file_cap`: a pull request with more
+  // analysable files than FILE_CAP after exclusions is reviewed as far as the cap allows, and the check summary says how many of
   // how many files that was. `path_exclusion`: the repository's own `.mitig8it.yml` kept files
   // out of the analysis, and the summary says how many, so silence about a directory is never
   // mistaken for a clean bill of health.
@@ -1317,12 +1349,20 @@ async function runAnalysisJob(payload) {
         runId, excluded: excludedFileCount,
       });
     }
-    tier2Files = await enrichFilesForTier2({
+    const capped = capReviewedFiles(files);
+    files = capped.files;
+    if (capped.limitation) {
+      analysisLimitations = [...analysisLimitations, capped.limitation];
+      logger.warn('Analysis run is limited', { runId, kind: capped.limitation.kind, message: capped.limitation.message });
+    }
+    const enriched = await enrichFilesForTier2({
       files,
       repositoryFullName,
       installationId,
       commitSha,
     });
+    tier2Files = enriched.files;
+    const contentLimitations = enriched.limitations;
 
     // Required analysis and persistence must all succeed before final publication.
     const requiredTier = async (path, data, timeout) => {
@@ -1336,6 +1376,7 @@ async function runAnalysisJob(payload) {
     // A file the scanner could only parse partially is a gap in coverage, not a
     // failed scan. The run reports it instead of implying complete analysis.
     limitations = normalizeLimitations([
+      ...contentLimitations,
       ...(tier1.analysis_limitations || []),
       ...(tier2.analysis_limitations || []),
     ]);
@@ -1648,6 +1689,8 @@ module.exports = {
     compareReviewComments,
     didTier3MeaningfullyChangeFindings,
     enrichFilesForTier2,
+    capReviewedFiles,
+    FILE_CAP,
     fileExtension,
     githubServiceRequest,
     hasTier3RenderableSuggestions,

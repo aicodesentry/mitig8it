@@ -60,6 +60,8 @@ function unary(client, method, request, timeoutMs = 45000) {
   });
 }
 
+const GITHUB_GRPC_MAX_RECEIVE_BYTES = 64 * 1024 * 1024;
+
 const REMEDIATION_TIMEOUT_MS = Number(process.env.GITHUB_REMEDIATION_TIMEOUT_MS || 30000);
 
 async function remediationUnary(client, method, request) {
@@ -103,9 +105,13 @@ class GitHubGrpcClient {
       fallbackTarget: 'github-service:50051',
       audience: process.env.GITHUB_GRPC_AUDIENCE,
     });
+    // The pull request file list is not capped by the adapter (the control plane caps it
+    // after its exclusions), and GitHub lists up to 3000 files with their patches. That can
+    // pass grpc-js's 4 MB default receive limit, which would fail the run outright.
     this.client = new githubGrpc.GitHubServiceClient(
       config.target,
-      config.credentials
+      config.credentials,
+      { 'grpc.max_receive_message_length': GITHUB_GRPC_MAX_RECEIVE_BYTES }
     );
   }
 
