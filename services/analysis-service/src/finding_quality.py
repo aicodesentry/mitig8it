@@ -1,5 +1,6 @@
 import hashlib
 import re
+import time
 from typing import Any, Dict, Iterable, List, Optional
 
 from comment_stripper import strip_lines
@@ -181,6 +182,10 @@ def entry_scan_text(entry: Dict[str, Any], *, blank_strings: bool = False) -> st
     return str(entry.get(key, entry.get("content", "")) or "")
 
 
+class ScanDeadlineExceeded(Exception):
+    """A tier 1 scan reached its `deadline` between two lines and stopped."""
+
+
 def find_pattern_match_entry(
     patch: str,
     pattern,
@@ -189,11 +194,17 @@ def find_pattern_match_entry(
     exclusion=None,
     blank_strings: bool = False,
     content: Any = None,
+    deadline: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     """First reviewable line of `patch` that `pattern` matches and `exclusion` does not.
 
     `exclusion` is the second pass that replaces a negative lookahead: the condition is
     evaluated against the same text the pattern saw, where backtracking cannot defeat it.
+
+    `deadline` is a `time.monotonic()` value checked before each line. A regex cannot be
+    interrupted, so a caller's budget is otherwise only checked between whole patterns, and
+    one pattern over a file of long lines can run far past it. Past the deadline this raises
+    `ScanDeadlineExceeded` rather than returning None, which would read as "no match".
     """
     entries = parse_patch_entries(patch, path, content)
     if not entries:
@@ -203,6 +214,8 @@ def find_pattern_match_entry(
         for entry in entries:
             if require_added and entry["kind"] != "add":
                 continue
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ScanDeadlineExceeded()
             if is_transcript_artifact_line(entry["content"]):
                 continue
             text = entry_scan_text(entry, blank_strings=blank_strings)
@@ -222,10 +235,11 @@ def pattern_matches_reviewable_content(
     exclusion=None,
     blank_strings: bool = False,
     content: Any = None,
+    deadline: Optional[float] = None,
 ) -> bool:
     return find_pattern_match_entry(
         patch, pattern, path=path, exclusion=exclusion,
-        blank_strings=blank_strings, content=content,
+        blank_strings=blank_strings, content=content, deadline=deadline,
     ) is not None
 
 
