@@ -7,20 +7,37 @@ export default function RepositoryDetailsPage() {
   const [repository, setRepository] = useState(null)
   const [summary, setSummary] = useState(null)
   const [pullRequests, setPullRequests] = useState([])
+  const [error, setError] = useState('')
 
   useEffect(() => {
+    let active = true
+    setRepository(null)
+    setError('')
     const load = async () => {
       const repoData = await repositoryAPI.get(repositoryId)
       const prData = await repositoryAPI.listPRs(repositoryId)
+      if (!active) return
+      if (!repoData?.repository) {
+        setError('Repository not found')
+        return
+      }
       setRepository(repoData.repository)
       setSummary(repoData.summary)
       setPullRequests(prData.pull_requests || [])
     }
 
     load().catch((err) => {
-      console.error(err)
+      if (!active) return
+      setError(err?.response?.status === 404
+        ? 'Repository not found'
+        : 'Could not load this repository. Refresh to try again.')
     })
+    return () => { active = false }
   }, [repositoryId])
+
+  if (error) {
+    return <div role="alert" className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-6 text-sm text-red-700 dark:text-red-400">{error}</div>
+  }
 
   if (!repository) {
     return <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-6 text-sm text-neutral-500 dark:text-neutral-400">Loading repository...</div>
