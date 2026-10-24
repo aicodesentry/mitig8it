@@ -81,3 +81,24 @@ def validate_snapshot_tree(entries: list[GitTreeEntry], expected_oid: str, files
             raise GitTreeError(f"snapshot file is not bound to a Git blob: {path}")
         if git_blob_sha1(content.encode("utf-8")) != entry.sha:
             raise GitTreeError(f"snapshot content differs from head Git blob: {path}")
+
+
+def snapshot_blob_mismatches(entries: list[GitTreeEntry], files: dict[str, str]) -> list[str]:
+    """The snapshot paths bound to a head blob whose content hashes to something else.
+
+    A file the caller could not read faithfully (not UTF-8, or too large for the contents API, so
+    it arrived replaced or empty) differs from its blob. That is a fact about that one file: the
+    engine drops it and refuses the findings in it, and still repairs every file whose content
+    is the commit's. A path with no blob entry at all is not listed here; `validate_snapshot_tree`
+    still refuses that request, because it is not a read failure but a request naming content the
+    commit does not have.
+    """
+    metadata = {entry.path: entry for entry in entries if entry.type != "tree"}
+    mismatched: list[str] = []
+    for path, content in files.items():
+        entry = metadata.get(path)
+        if entry is None or entry.type != "blob":
+            continue
+        if git_blob_sha1(content.encode("utf-8")) != entry.sha:
+            mismatched.append(path)
+    return sorted(mismatched)

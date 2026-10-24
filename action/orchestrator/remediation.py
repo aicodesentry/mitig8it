@@ -43,6 +43,47 @@ DEFAULT_OUTPUT_USD_PER_MILLION = 1.0
 MAX_REPAIR_FINDINGS = 100
 SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
+# Files the engine reads besides the ones it repairs: dependency manifests and lockfiles decide
+# which imports a repair may add and what the sandbox installs. They travel with the request when
+# the pull request carries them; every other file without a repairable finding stays behind.
+DEPENDENCY_FILE_NAMES = frozenset(
+    {
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "pipfile",
+        "pipfile.lock",
+        "poetry.lock",
+        "pdm.lock",
+        "uv.lock",
+    }
+)
+
+
+def _is_dependency_file(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1].lower()
+    return name in DEPENDENCY_FILE_NAMES or (name.startswith("requirements") and name.endswith(".txt"))
+
+
+def request_files(files: Dict[str, str], findings: Sequence[Dict[str, Any]]) -> Dict[str, str]:
+    """The files a repair request carries: those with a repairable finding, and dependency files.
+
+    Sending every file in the pull request meant one file the action could not read faithfully
+    (not UTF-8, or too large for the contents API) was in every request. Its content no longer
+    matched its blob, and the engine refused the whole request, so no file was repaired.
+    """
+    wanted = {str(finding.get("file_path") or "") for finding in findings}
+    return {
+        path: content
+        for path, content in files.items()
+        if path in wanted or _is_dependency_file(path)
+    }
+
 
 def remediation_root() -> Path:
     configured = os.environ.get(REMEDIATION_ROOT_ENV)
@@ -173,23 +214,29 @@ def build_request(
     tree_entries: Sequence[Dict[str, Any]],
     tree_truncated: bool,
     model_configured: bool,
+    head_tree_oid: str | None = None,
 ):
     """Assemble the engine's request from what the action already read from GitHub.
 
-    Only the files the repair touches are sent as content; the tree entries cover the whole
-    commit, because the engine verifies each file's hash against its entry and would otherwise
-    have nothing to verify against.
+    Only the files with a repairable finding, and the dependency files beside them, are sent as
+    content; the tree entries cover the whole commit, because the engine verifies each file's
+    hash against its entry and would otherwise have nothing to verify against.
+
+    `head_tree_oid` is the tree sha GitHub reported for the head commit. The engine checks the
+    entries against it, which is what binds them to the commit. Without it the oid is computed
+    from the same entries it is then checked against, which binds nothing; that fallback stays
+    only until every caller passes the sha.
     """
     modules = _modules()
     git_blob_sha1 = modules["git_blob_sha1"]
     compute_tree_oid = modules["git_tree"].compute_tree_oid
 
     # git_blob_sha1 hashes the bytes git would store, so the text is encoded first. The engine
-    # checks each of these against the commit's tree entry and refuses the request if one
-    # differs, which is what stops a repair being built against content the commit never had.
+    # checks each of these against the commit's tree entry and refuses the findings in any file
+    # that differs, which is what stops a repair being built against content the commit never had.
     snapshot_files = [
         {"path": path, "content": content, "sha": git_blob_sha1(content.encode("utf-8"))}
-        for path, content in sorted(files.items())
+        for path, content in sorted(request_files(files, findings[:MAX_REPAIR_FINDINGS]).items())
     ]
     if not snapshot_files:
         raise ValueError("a repair request needs at least one file")
@@ -240,7 +287,7 @@ def build_request(
         "findings": snapshots,
         "files": snapshot_files,
         "tree_entries": [entry.model_dump() for entry in entries],
-        "head_tree_oid": compute_tree_oid(entries),
+        "head_tree_oid": str(head_tree_oid) if head_tree_oid else compute_tree_oid(entries),
         "tree_truncated": bool(tree_truncated),
         "versions": {"orchestrator": "action-v1"},
         "policy": {
@@ -310,6 +357,10 @@ def fix_sections(response, findings_by_id: Dict[str, Dict[str, Any]]) -> List[Di
                 if change.get("unified_diff")
             )
         )
+        # The level decides which proof sentence is true: a static assertion ran no test.
+        level = str(
+            getattr(candidate, "verification_level", "") or evidence.get("verification_level") or ""
+        )
         for finding_id in getattr(candidate, "finding_ids", []) or []:
             finding = findings_by_id.get(str(finding_id))
             if not finding:
@@ -327,11 +378,11 @@ def fix_sections(response, findings_by_id: Dict[str, Dict[str, Any]]) -> List[Di
                     "extra_hunks": extra_hunks,
                     "unified_diff": unified_diff,
                     "not_suggestable_reason": reason,
-                    "verification_level": str(evidence.get("verification_level") or ""),
+                    "verification_level": level,
                     "stated_intent": str(getattr(candidate, "intended_behavior", "")),
-                    "proof": inline_fixes.proof_line(evidence, finding),
+                    "proof": inline_fixes.proof_line(evidence, finding, level),
                     "limitations": [str(item) for item in (evidence.get("limitations") or [])],
-                    "evidence": inline_fixes.evidence_lines(evidence),
+                    "evidence": inline_fixes.evidence_lines(evidence, level),
                     "finding_ids": [str(finding_id)],
                 }
             )

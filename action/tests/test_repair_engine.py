@@ -224,6 +224,14 @@ def test_a_javascript_finding_is_in_a_supported_repair_family():
     )
 
 
+def _without_argv(value):
+    if isinstance(value, dict):
+        return {key: _without_argv(item) for key, item in value.items() if key != "argv"}
+    if isinstance(value, list):
+        return [_without_argv(item) for item in value]
+    return value
+
+
 def test_a_javascript_repair_runs_its_verification_in_this_runtime(sandbox):
     """The runtime proof: the engine must reach a verdict rather than refuse the runtime.
 
@@ -240,7 +248,9 @@ def test_a_javascript_repair_runs_its_verification_in_this_runtime(sandbox):
         "the engine refused the Node runtime, which is what pinning the remediation "
         "service's NODE_VERSION in action/Dockerfile exists to prevent"
     )
-    rendered = repr(response.evidence or {}) + repr(response.reason or {})
+    # The check argv carries `--experimental-strip-types` as a flag it passes, not a refusal, and
+    # it is in the evidence whenever a verification ran, so only the reported text is searched.
+    rendered = repr(_without_argv(response.evidence or {})) + repr(response.reason or {})
     for missing in ("stripTypeScriptTypes", "registerHooks", "--experimental-strip-types"):
         assert missing not in rendered, (
             f"the sandbox harness reported {missing} unavailable in this runtime"
@@ -302,3 +312,102 @@ def test_a_javascript_repair_produces_a_clickable_suggestion(sandbox):
     assert section["hunk"]["start_line"] == 2
     assert section["hunk"]["end_line"] == 2
     assert "sk-live-" not in "\n".join(section["hunk"]["replacement_lines"])
+
+
+# --- One unreadable file ---------------------------------------------------------------
+#
+# The action reads file contents through the contents API and decodes them as UTF-8 with
+# replacement, so a latin-1 file arrives altered and no longer hashes to its blob. The engine
+# used to refuse the whole request for that one file (`invalid_git_tree`), so a clean file beside
+# it lost its repair too.
+
+LATIN1_JS_BYTES = (
+    "// Café billing client (latin-1 on disk).\n"
+    'const apiKey = "sk-live-0b1c2d3e4f5a6b7c";\n'
+    "\n"
+    "module.exports = { apiKey };\n"
+).encode("latin-1")
+
+LATIN1_FINDING = {
+    **JS_CREDENTIAL_FINDING,
+    "fingerprint": "fp-latin1",
+    "file_path": "lib/legacy.js",
+}
+
+
+def _entries(blobs):
+    from src.digests import git_blob_sha1  # noqa: PLC0415
+
+    return [
+        {"path": path, "mode": "100644", "type": "blob", "sha": git_blob_sha1(raw)}
+        for path, raw in blobs.items()
+    ]
+
+
+def test_one_latin1_file_does_not_stop_the_repair_of_a_clean_file(sandbox):
+    blobs = {
+        "app.js": JS_CREDENTIAL_SRC.encode("utf-8"),
+        "lib/legacy.js": LATIN1_JS_BYTES,
+        "package.json": JS_PACKAGE.encode("utf-8"),
+    }
+    # What github_api hands the action: bytes decoded with errors="replace".
+    contents = {path: raw.decode("utf-8", errors="replace") for path, raw in blobs.items()}
+    assert contents["lib/legacy.js"].encode("utf-8") != LATIN1_JS_BYTES
+    request = remediation.build_request(
+        repository_full_name="acme/widgets",
+        pull_request_number=42,
+        head_sha="a" * 40,
+        base_sha="b" * 40,
+        findings=[JS_CREDENTIAL_FINDING, LATIN1_FINDING],
+        files=contents,
+        tree_entries=_entries(blobs),
+        tree_truncated=False,
+        model_configured=False,
+    )
+    response = remediation.repair(request, model_configured=False)
+
+    assert (response.reason or {}).get("code") != "invalid_git_tree", response.reason
+    assert response.state == "ready", f"the clean file was not repaired: {response.reason}"
+    repaired = {fid for candidate in response.candidates for fid in candidate.finding_ids}
+    assert "fp-jssecret" in repaired
+    assert "fp-latin1" not in repaired
+    refused = {item["finding_id"]: item for item in response.skipped}
+    assert refused["fp-latin1"]["code"] == "snapshot_content_mismatch"
+    assert "lib/legacy.js" in refused["fp-latin1"]["message"]
+
+
+def test_only_files_with_a_repairable_finding_and_dependency_files_are_sent():
+    files = {"src/reports.py": SRC, "src/other.py": "x = 1\n", "requirements.txt": "flask\n"}
+    request = build([SQL_FINDING], files=files)
+    assert sorted(item.path for item in request.files) == ["requirements.txt", "src/reports.py"]
+
+
+def test_the_tree_is_checked_against_the_sha_github_reported():
+    """Computing the expected oid from the entries it checks binds them to nothing."""
+    from src.git_tree import compute_tree_oid  # noqa: PLC0415
+
+    honest = build([SQL_FINDING])
+    reported = honest.head_tree_oid
+    assert reported == compute_tree_oid(honest.tree_entries)
+
+    from src.digests import git_blob_sha1  # noqa: PLC0415
+
+    entries = [
+        {"path": "src/reports.py", "mode": "100644", "type": "blob", "sha": git_blob_sha1(SRC.encode("utf-8"))},
+        {"path": "src/extra.py", "mode": "100644", "type": "blob", "sha": "0" * 40},
+    ]
+    request = remediation.build_request(
+        repository_full_name="acme/widgets",
+        pull_request_number=42,
+        head_sha="a" * 40,
+        base_sha="b" * 40,
+        findings=[SQL_FINDING],
+        files={"src/reports.py": SRC},
+        tree_entries=entries,
+        tree_truncated=False,
+        model_configured=False,
+        head_tree_oid=reported,
+    )
+    assert request.head_tree_oid == reported
+    response = remediation.repair(request, model_configured=False)
+    assert (response.reason or {}).get("code") == "invalid_git_tree"

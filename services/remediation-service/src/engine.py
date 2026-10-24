@@ -13,7 +13,7 @@ from .batch import BatchPolicyError, ImmutableBatch, build_immutable_batch
 from .digests import digest_json
 from .families import declares_static_assertion, family_supported, language_of_path, rule_family
 from .gates import UNSUPPORTED_LANGUAGE_MESSAGE, static_gate
-from .git_tree import GitTreeError, compute_tree_oid, validate_snapshot_tree
+from .git_tree import GitTreeError, compute_tree_oid, snapshot_blob_mismatches, validate_snapshot_tree
 from .grouping import group_findings_by_language
 from .models import Candidate, FindingSnapshot, RepairPolicy, RepairRequest, RepairResponse, VerificationSummary
 from .patches import (
@@ -57,6 +57,22 @@ RETRY_SOURCE = "retry"
 # executed pass failed to prove, and only where the reason execution could not prove them is
 # recorded. It is never tried before the executed passes and never instead of one.
 STATIC_ASSERTION_SOURCE = "static_assertion"
+
+# The abstention a provider gives when no model is configured at all (the Action's keyless
+# provider). Such a pass never attempted a repair, so it does not supply the group's reason.
+MODEL_NOT_CONFIGURED = "model_not_configured"
+
+# A finding whose file arrived with content that differs from the file's head Git blob.
+SNAPSHOT_CONTENT_MISMATCH = "snapshot_content_mismatch"
+
+
+def snapshot_mismatch_message(path: str) -> str:
+    return (
+        f"The content received for {path} differs from its blob in the head Git tree (a file that "
+        "is not UTF-8, or too large to read, arrives altered), so no repair is built for it."
+    )
+
+
 STATIC_ASSERTION_NOT_COMBINABLE = (
     "This job also produced a candidate verified by execution, and a batch carries one kind of "
     "evidence: the statically asserted candidate is not shipped beside it."
@@ -933,8 +949,16 @@ class RepairEngine:
         trace = [entry for item in passes for entry in item.trace]
         usage = _aggregate_usage([GroupOutcome(index, finding_ids, item.state, None, None, [], None, None, item.trace, item.usage, True) for item in passes])
         # The group's reason is the group pass's own: a focused retry that stopped is recorded
-        # under `retries`, and the verification-based reason of the pass before it stands.
-        last = model_pass if model_pass is not None else (passes[-1] if passes else None)
+        # under `retries`, and the verification-based reason of the pass before it stands. A
+        # model pass that only abstained because no model is configured never tried anything,
+        # so when the template pass ran, its reason is the one that explains the group.
+        unconfigured = (
+            model_pass is not None
+            and not model_pass.ready
+            and model_pass.reason_code == MODEL_NOT_CONFIGURED
+        )
+        reason_pass = template if unconfigured and template is not None else model_pass
+        last = reason_pass if reason_pass is not None else (passes[-1] if passes else None)
         evidence: dict[str, Any] = {
             "proofs": proof_report,
             "templates": template_report,
@@ -979,6 +1003,20 @@ class RepairEngine:
                 return _reason_response(request, "unsupported", "complete_git_tree_required", "A complete, non-truncated head Git tree is required for an applicable repair.", request_digest, snapshot.manifest_digest)
             if request.policy.input_usd_per_million_tokens <= 0 or request.policy.output_usd_per_million_tokens <= 0:
                 return _reason_response(request, "unsupported", "provider_pricing_missing", "Versioned provider pricing is required for spend enforcement.", request_digest, snapshot.manifest_digest)
+            # One file whose content differs from its head blob (a file the caller could not read
+            # as UTF-8, or one too large to fetch) is dropped and its findings refused below, by
+            # name; it does not refuse the repairs of every other file in the request.
+            mismatched = set(
+                snapshot_blob_mismatches(
+                    request.tree_entries,
+                    {path: snapshot.full_content(path) for path in snapshot.paths},
+                )
+            )
+            if mismatched:
+                request = request.model_copy(
+                    update={"files": [item for item in request.files if item.path not in mismatched]}
+                )
+                snapshot = Snapshot(request)
             try:
                 validate_snapshot_tree(
                     request.tree_entries,
@@ -1004,6 +1042,8 @@ class RepairEngine:
                     skipped.append({"finding_id": finding_id, "code": "unsupported_rule_family", "message": "This finding is outside the enabled repair families."})
                 elif family not in allowed:
                     skipped.append({"finding_id": finding_id, "code": "rule_family_disabled", "message": "The repair family is disabled by policy."})
+                elif finding.affected_path in mismatched:
+                    skipped.append({"finding_id": finding_id, "code": SNAPSHOT_CONTENT_MISMATCH, "message": snapshot_mismatch_message(finding.affected_path)})
                 elif not finding.affected_path or finding.affected_path not in snapshot.paths:
                     skipped.append({"finding_id": finding_id, "code": "affected_source_missing", "message": "The exact affected source file is absent from the snapshot."})
                 elif path_forbidden(finding.affected_path, request):
