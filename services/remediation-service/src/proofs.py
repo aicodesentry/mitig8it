@@ -383,8 +383,12 @@ def _js_specifiers(source: str) -> list[str]:
     return found
 
 
-def _js_resolve(snapshot: Snapshot, from_path: str, specifier: str) -> str | None:
-    """The snapshot path a relative specifier names, by the rules the harness resolves it with."""
+def _js_resolve(snapshot: Snapshot, from_path: str, specifier: str, paths: set[str] | None = None) -> str | None:
+    """The snapshot path a relative specifier names, by the rules the harness resolves it with.
+
+    `paths` replaces the snapshot's own paths, which is how the same rules are asked of the head
+    commit's whole tree.
+    """
     base = PurePosixPath(PurePosixPath(from_path).parent / specifier)
     parts: list[str] = []
     for part in base.parts:
@@ -402,20 +406,34 @@ def _js_resolve(snapshot: Snapshot, from_path: str, specifier: str) -> str | Non
         candidates.insert(0, stem[: -len(written.group(0))] + "." + written.group(1) + "ts")
     candidates += [stem + suffix for suffix in (*TYPESCRIPT_SUFFIXES, *NODE_LOADABLE_SUFFIXES)]
     candidates += [stem + "/index" + suffix for suffix in (*TYPESCRIPT_SUFFIXES, *NODE_LOADABLE_SUFFIXES)]
-    paths = set(snapshot.paths)
+    paths = set(snapshot.paths) if paths is None else paths
     return next((candidate for candidate in candidates if candidate in paths), None)
 
 
-def _js_loadable(snapshot: Snapshot, path: str) -> None:
+def _tree_blob_paths(snapshot: Snapshot) -> set[str]:
+    return {entry.path for entry in snapshot.request.tree_entries if entry.type == "blob"}
+
+
+def _js_loadable(snapshot: Snapshot, path: str) -> list[tuple[str, str]]:
     """Raises unless the sandbox's `node` can load the module a generated proof has to load.
 
     The subject is not the only file that has to load: importing it imports everything it names
     at load time, and a failure anywhere in that closure is a proof that fails identically on
     both trees. Those are the failures this refuses in advance, with the module that caused them
-    named. A relative import the snapshot does not carry is not inspected and not refused: the
-    snapshot is a budgeted slice of the tree, so absence there says nothing about the repository.
+    named.
+
+    A relative import that resolves to no file in the snapshot fails the load the same way, because
+    the sandbox materializes the snapshot and nothing else. It is refused by name, and the name
+    says which of two things happened: `local_module_missing` when the head commit's tree has no
+    such file either (the module cannot load anywhere, as `require('./db')` with no `db.js` in
+    the repository), and `local_module_not_in_snapshot` when the tree has it and the caller did
+    not send it. Only load-time imports are walked, so a `require` inside a function body is
+    still never counted. Those are returned rather than raised, as `(code, specifier)`, because
+    one proof can still load the module: a module-scope proof that stubs the very specifier it
+    drives (`h.load(path, { stubs: { './settings': ... } })`). `_js_require_local` decides.
     """
     installed = _js_install_populates_node_modules(snapshot)
+    missing: list[tuple[str, str]] = []
     pending = [path]
     seen: set[str] = set()
     while pending and len(seen) < MAX_WALKED_MODULES:
@@ -434,6 +452,9 @@ def _js_loadable(snapshot: Snapshot, path: str) -> None:
                 found = _js_resolve(snapshot, current, specifier)
                 if found is not None:
                     pending.append(found)
+                    continue
+                code = "local_module_missing" if _js_resolve(snapshot, current, specifier, _tree_blob_paths(snapshot)) is None else "local_module_not_in_snapshot"
+                missing.append((code, specifier))
                 continue
             name = specifier[5:] if specifier.startswith("node:") else specifier
             if name in NODE_BUILTIN_MODULES or name in HARNESS_FAKED_MODULES:
@@ -444,6 +465,14 @@ def _js_loadable(snapshot: Snapshot, path: str) -> None:
                 # unverified, with the install log saying why, rather than refused here.
                 continue
             raise SiteError(f"dependency_not_available_in_sandbox:{name.split('/')[0]}")
+    return missing
+
+
+def _js_require_local(missing: list[tuple[str, str]], stubbed: tuple[str, ...] = ()) -> None:
+    """Raises for the first unresolvable local import the proof does not stub itself."""
+    for code, specifier in missing:
+        if specifier not in stubbed:
+            raise SiteError(f"{code}:{specifier}")
 
 
 # The calls the harness records for each family. A generated proof asserts on those recorders, so
@@ -1607,6 +1636,11 @@ def _py_cookie_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedP
 
 # --- entry point ----------------------------------------------------------------------------
 
+# The JavaScript families whose proof is not built from the enclosing site: a secret literal is in
+# no function, and the rest find their own entry point.
+_JS_SITELESS_FAMILIES = frozenset({HARDCODED_CREDENTIAL, CODE_INJECTION_EVAL, PASSWORD_HASHING, COOKIE_FLAGS})
+
+
 def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, language: str) -> GeneratedProof | ProofFallback:
     """The service-generated test for one finding, or the reason the model has to write it."""
     path = finding.affected_path
@@ -1615,7 +1649,10 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
             # Every JavaScript proof loads the module, so loadability is decided once, before the
             # families that need no enclosing scope: a secret literal is not inside any function,
             # and neither is a parser a route calls.
-            _js_loadable(snapshot, path)
+            missing = _js_loadable(snapshot, path)
+            site = js_site_for_line(snapshot.full_content(path), _finding_line(finding)) if family not in _JS_SITELESS_FAMILIES else None
+            stubbed = (site.key,) if isinstance(site, ModuleScope) and site.driver == "config" and site.key else ()
+            _js_require_local(missing, stubbed)
             if family == HARDCODED_CREDENTIAL:
                 return _js_credential_proof(snapshot, finding)
             if family == CODE_INJECTION_EVAL:
@@ -1624,7 +1661,6 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
                 return _js_password_proof(snapshot, finding)
             if family == COOKIE_FLAGS:
                 return _js_cookie_proof(snapshot, finding)
-            site = js_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if isinstance(site, ModuleScope):
                 return _js_module_scope_proof(snapshot, finding, site, family)
             if family == SQL_PARAMETERIZATION:
