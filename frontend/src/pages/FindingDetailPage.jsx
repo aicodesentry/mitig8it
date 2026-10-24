@@ -17,27 +17,55 @@ export default function FindingDetailPage() {
   const { findingId } = useParams()
   const [finding, setFinding] = useState(null)
   const [reason, setReason] = useState(DISMISSAL_REASONS[0].value)
+  const [loadError, setLoadError] = useState('')
+  const [updateError, setUpdateError] = useState('')
 
   useEffect(() => {
+    let active = true
+    setFinding(null)
+    setLoadError('')
     findingAPI
       .get(findingId)
-      .then((data) => setFinding(data.finding))
-      .catch((err) => console.error(err))
+      .then((data) => {
+        if (!active) return
+        if (data?.finding) setFinding(data.finding)
+        else setLoadError('Finding not found')
+      })
+      .catch((err) => {
+        if (!active) return
+        setLoadError(err?.response?.status === 404
+          ? 'Finding not found'
+          : 'Could not load this finding. Refresh to try again.')
+      })
+    return () => { active = false }
   }, [findingId])
+
+  if (loadError) {
+    return (
+      <div role="alert" className="rounded-xl border border-neutral-200 bg-white p-6 text-sm text-neutral-700">
+        {loadError}
+      </div>
+    )
+  }
 
   if (!finding) {
     return <div className="rounded-xl border border-neutral-200 bg-white p-6 text-sm text-neutral-500">Loading finding...</div>
   }
 
   const setStatus = async (status) => {
-    const updated = await findingAPI.updateStatus(
-      finding.id,
-      status,
-      status === 'dismissed' ? reason : null
-    )
-    // Merge rather than replace: the PATCH row may lack the joined repository and PR
-    // fields the header needs, and a missing field must not erase what is on screen.
-    setFinding((previous) => ({ ...previous, ...updated.finding }))
+    setUpdateError('')
+    try {
+      const updated = await findingAPI.updateStatus(
+        finding.id,
+        status,
+        status === 'dismissed' ? reason : null
+      )
+      // Merge rather than replace: the PATCH row may lack the joined repository and PR
+      // fields the header needs, and a missing field must not erase what is on screen.
+      setFinding((previous) => ({ ...previous, ...updated.finding }))
+    } catch (_failure) {
+      setUpdateError('Could not update this finding. The status was not changed. Refresh and check your access before retrying.')
+    }
   }
 
   return (
@@ -80,6 +108,8 @@ export default function FindingDetailPage() {
       </div>
 
       <RemediationPanel pullRequestId={finding.pull_request_id} findingId={finding.id} />
+
+      {updateError && <p role="alert" className="text-sm text-red-700">{updateError}</p>}
 
       <div className="flex gap-2">
         <button onClick={() => setStatus('open')} className="rounded-lg border border-neutral-300 px-4 py-2 text-sm">Mark Open</button>

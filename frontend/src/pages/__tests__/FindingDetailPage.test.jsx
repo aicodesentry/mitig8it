@@ -101,3 +101,33 @@ describe('status changes', () => {
     expect(screen.getByTestId('finding-status')).toHaveTextContent('Wrong rule match')
   })
 })
+
+describe('failures', () => {
+  it('shows an error and keeps the previous status when the PATCH fails', async () => {
+    api.updateStatus.mockRejectedValue({ response: { status: 403 } })
+    renderPage()
+    await screen.findByText('SQL injection', { selector: 'h1' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not update this finding')
+    expect(screen.getByTestId('finding-status')).toHaveTextContent('Open')
+    expect(screen.getByText(/acme\/api/)).toHaveTextContent('acme/api • PR #42')
+  })
+
+  it('says the finding was not found on a 404 instead of loading forever', async () => {
+    api.get.mockRejectedValue({ response: { status: 404 } })
+    renderPage()
+
+    expect(await screen.findByText('Finding not found')).toBeInTheDocument()
+    expect(screen.queryByText('Loading finding...')).toBeNull()
+  })
+
+  it('shows a load error for any other failure', async () => {
+    api.get.mockRejectedValue({ response: { status: 500 } })
+    renderPage()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load this finding')
+    expect(screen.queryByText('Loading finding...')).toBeNull()
+  })
+})
