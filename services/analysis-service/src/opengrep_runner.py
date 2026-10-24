@@ -703,6 +703,13 @@ RESOURCE_LIMIT_ERROR_TYPES = {
 LIMITATION_PARTIAL_PARSE = "partial_parse"
 LIMITATION_NOT_ANALYZED = "not_analyzed"
 
+# The scanner skips a target over this many bytes without an error, and with `--quiet` its JSON
+# does not list the file under `paths.skipped` either. `_skipped_target_limitations` turns both
+# the size rule and any listed skip into a `not_analyzed` limitation.
+SCANNER_MAX_TARGET_BYTES = 500_000
+SKIP_REASON_SIZE = "size"
+_SCANNER_SIZE_SKIP_REASONS = {"exceeded_size_limit", "too_big"}
+
 _ERROR_LINE_PATTERN = re.compile(r"at line [^\s:]*:(\d+)")
 
 
@@ -859,7 +866,7 @@ def _run_semgrep(target_dir: str, config: Optional[str] = None) -> Dict[str, Any
                 "--metrics=off",
                 "--disable-version-check",
                 "--timeout", "30",
-                "--max-target-bytes", "500000",
+                "--max-target-bytes", str(SCANNER_MAX_TARGET_BYTES),
                 target_dir,
             ],
             capture_output=True,
@@ -1028,6 +1035,59 @@ def _repo_relative_scan_path(scan_path: str, tmpdir: str, known_paths: List[str]
     return relative
 
 
+def _skipped_target_limitations(
+    output: Dict[str, Any],
+    batch: List[Dict[str, Any]],
+    tmpdir: str,
+) -> List[Dict[str, Any]]:
+    """A `not_analyzed` limitation for every file of `batch` the scanner did not read.
+
+    A skipped target produces no result and no error, so without this a file the scanner never
+    opened is indistinguishable from a clean one. A file over the size limit is reported from
+    its own size, because the scanner only lists skips in verbose mode; anything the output does
+    list under `paths.skipped` is reported with the scanner's reason.
+    """
+    known_paths = [entry["path"] for entry in batch]
+    limitations: Dict[str, Dict[str, Any]] = {}
+
+    for entry in batch:
+        size = int(entry.get("size") or 0)
+        if size > SCANNER_MAX_TARGET_BYTES:
+            limitations[entry["path"]] = {
+                "path": entry["path"],
+                "kind": LIMITATION_NOT_ANALYZED,
+                "reason": SKIP_REASON_SIZE,
+                "type": "File over the scanner size limit",
+                "message": (
+                    f"Tier 2 skipped this file: {size} bytes is over the "
+                    f"{SCANNER_MAX_TARGET_BYTES}-byte scanner limit"
+                ),
+                "line": None,
+            }
+
+    paths = output.get("paths")
+    skipped = paths.get("skipped") if isinstance(paths, dict) else None
+    for item in skipped if isinstance(skipped, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            continue
+        path = _repo_relative_scan_path(item["path"], tmpdir, known_paths)
+        if path not in known_paths or path in limitations:
+            continue
+        reason = str(item.get("reason") or "skipped")
+        if reason in _SCANNER_SIZE_SKIP_REASONS:
+            reason = SKIP_REASON_SIZE
+        limitations[path] = {
+            "path": path,
+            "kind": LIMITATION_NOT_ANALYZED,
+            "reason": reason,
+            "type": "Skipped by the scanner",
+            "message": f"Tier 2 skipped this file ({reason})"[:200],
+            "line": None,
+        }
+
+    return list(limitations.values())
+
+
 def _scan_batch(batch: List[Dict[str, Any]]) -> tuple:
     """Scan one batch and return (findings, limitations).
 
@@ -1061,6 +1121,7 @@ def _scan_batch(batch: List[Dict[str, Any]]) -> tuple:
             }
             for limitation in output.get("analysis_limitations", [])
         ]
+        limitations.extend(_skipped_target_limitations(output, batch, tmpdir))
 
     return findings, limitations
 
