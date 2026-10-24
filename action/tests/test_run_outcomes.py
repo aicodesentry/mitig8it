@@ -230,3 +230,25 @@ def test_contents_write_is_refused_whatever_fail_on_says(harness):
     assert harness.main() == 1
     assert any("refuses to run with `contents: write`" in line for line in harness.annotations("error"))
     assert harness.calls("check") == []
+
+
+# --- GitHub Enterprise Server ----------------------------------------------------------------
+
+def test_an_enterprise_server_api_is_refused_before_the_token_goes_anywhere(harness):
+    """The publisher's write path is hard-wired to api.github.com, so a GHES token would be sent
+    to the wrong host. The run stops before any request instead."""
+    harness.monkeypatch.setenv("GITHUB_API_URL", "https://ghe.example.com/api/v3")
+    assert harness.main() == 0
+    errors = harness.annotations("error")
+    assert errors and "GitHub Enterprise Server" in errors[0]
+    assert "https://ghe.example.com/api/v3" in errors[0]
+    assert harness.api.calls == [], "nothing was read with the token"
+    assert harness.publisher.calls() == [], "nothing was written with the token"
+    assert harness.main(fail_on="high") == 1
+
+
+def test_the_public_api_url_with_a_trailing_slash_is_accepted(harness):
+    harness.monkeypatch.setenv("GITHUB_API_URL", "https://api.github.com/")
+    harness.findings = [finding(4)]
+    assert harness.main() == 0
+    assert len(harness.calls("review")) == 1

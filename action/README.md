@@ -61,6 +61,11 @@ By default, **nothing**. The scanner, its rule files, the repair engine and the 
 in the image. The only host contacted is the GitHub API the runner was already talking to, and
 the only thing sent to it is the review you can read on the pull request.
 
+GitHub Enterprise Server is not supported yet. The publishing code addresses `api.github.com`
+directly, so when `GITHUB_API_URL` names any other host the action stops before its first request
+with an error annotation, rather than send the workflow token to the wrong server. Under
+`fail-on: none` that run exits 0.
+
 If you set `model-api-key`, that changes, and it changes only for the parts that need a model:
 redacted code snippets around a finding are sent to the model provider you name, for triage and
 for repair generation. Without the key the model paths are switched off, only the deterministic

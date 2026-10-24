@@ -82,6 +82,21 @@ class PublishError(ActionError):
 
 
 DEFAULT_MAX_FILES = 200
+PUBLIC_API_URL = "https://api.github.com"
+
+
+def enterprise_server_message(api_url: str) -> str:
+    """Why the action stops on GitHub Enterprise Server rather than half-working there.
+
+    The reads would go to the runner's API base, but the writes reuse github-service's
+    publishing code, which addresses api.github.com directly. On GHES that sends the
+    workflow token to the wrong host and every write fails, so the run stops first.
+    """
+    return (
+        f"Mitig8it does not support GitHub Enterprise Server yet (GITHUB_API_URL is {api_url}). "
+        "Its publishing code addresses api.github.com directly, so on this host it would send "
+        "the workflow token to the wrong server. Nothing was read or posted."
+    )
 
 
 # --- what produced this review ---------------------------------------------------------------
@@ -744,7 +759,11 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
         os.environ["LLM_TRIAGE_ENABLED"] = "false"
 
     repository = os.environ.get("GITHUB_REPOSITORY", "")
-    api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    api_url = os.environ.get("GITHUB_API_URL") or PUBLIC_API_URL
+    if api_url.rstrip("/") != PUBLIC_API_URL:
+        # Checked before the first request, so the token never reaches a host it was not
+        # issued for.
+        raise ActionError(enterprise_server_message(api_url))
     event = load_event()
     pull = pull_request_from_event(event)
     pr_number = int(pull.get("number") or 0)
