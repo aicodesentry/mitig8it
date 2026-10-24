@@ -240,7 +240,18 @@ def test_a_javascript_repair_runs_its_verification_in_this_runtime(sandbox):
         "the engine refused the Node runtime, which is what pinning the remediation "
         "service's NODE_VERSION in action/Dockerfile exists to prevent"
     )
-    rendered = repr(response.evidence or {}) + repr(response.reason or {})
+    # The check's own argv names `--experimental-strip-types` as the flag it runs with; what
+    # must not appear is a report that the runtime lacks it, so the argv lists are left out.
+    # The command here builds `--author=${author}`, which is proven since the embedded-argument
+    # assertion, so a verified run now carries its checks in the evidence.
+    def without_argv(value):
+        if isinstance(value, dict):
+            return {key: without_argv(item) for key, item in value.items() if key != "argv"}
+        if isinstance(value, list):
+            return [without_argv(item) for item in value]
+        return value
+
+    rendered = repr(without_argv(response.evidence or {})) + repr(response.reason or {})
     for missing in ("stripTypeScriptTypes", "registerHooks", "--experimental-strip-types"):
         assert missing not in rendered, (
             f"the sandbox harness reported {missing} unavailable in this runtime"
