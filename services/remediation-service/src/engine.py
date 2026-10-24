@@ -24,7 +24,7 @@ from .patches import (
     combine_patch_bundles,
     path_forbidden,
 )
-from .proofs import GeneratedProof, generate_proof
+from .proofs import GeneratedProof, generate_proof, proof_refusal_message
 from .retrieval import Snapshot, SnapshotError
 from .sandbox import BrokerConfigurationError, create_sandbox_broker
 from .splitting import DEPENDENT_HUNK_UNPROVEN, split_hunks
@@ -927,6 +927,11 @@ class RepairEngine:
             elif finding_id in failures:
                 failure = failures[finding_id]
                 unproven.append({"finding_id": finding_id, "code": str(failure.get("code") or "not_repaired"), "message": str(failure.get("message") or "No candidate proved this finding.")})
+            elif str(proof_report.get(finding_id) or "").startswith("model:"):
+                # The service could not write a test for this shape and nothing else proved it:
+                # the shape is the reason, so the line names it.
+                refusal = str(proof_report[finding_id])[len("model:"):]
+                unproven.append({"finding_id": finding_id, "code": f"proof_not_generated:{refusal}"[:120], "message": proof_refusal_message(refusal)})
             else:
                 unproven.append({"finding_id": finding_id, "code": "not_repaired", "message": "No regression test reproduced this finding, so no candidate claims it."})
 
@@ -1075,13 +1080,29 @@ class RepairEngine:
             remaining_tool_calls, remaining_tokens, remaining_usd = budget.tool_calls, budget.tokens, budget.usd
             outcomes.append(outcome)
             accepted.extend(entries)
-            if outcome.evidence.get("candidate_sources") or outcome.reason_code == DEPENDENT_HUNK_UNPROVEN:
-                # A finding the group could not prove beside one it did is reported, never
-                # carried silently; a group that proved nothing carries its reason instead.
-                skipped.extend(
-                    {"finding_id": str(item["finding_id"]), "code": str(item["code"]), "message": str(item["message"])}
-                    for item in unproven
-                )
+            # A finding the group could not prove is reported, never carried silently, whether
+            # or not the group proved anything else: `skipped` is the only list the App and the
+            # Action read a finding's `No automatic fix` line from, so a reason kept in the group
+            # report alone is a finding published with no fix and no reason.
+            skipped.extend(
+                {"finding_id": str(item["finding_id"]), "code": str(item["code"]), "message": str(item["message"])}
+                for item in unproven
+            )
+
+        # A group that never ran (the budget floor) or ended before attributing a reason per
+        # finding still owes each of its findings one line, which is the group's own reason.
+        reported = {str(item["finding_id"]) for item in skipped}
+        claimed_ids = {finding_id for candidate, _, _ in accepted for finding_id in candidate.finding_ids}
+        for outcome in outcomes:
+            for finding_id in outcome.finding_ids:
+                if finding_id in reported or finding_id in claimed_ids:
+                    continue
+                reported.add(finding_id)
+                skipped.append({
+                    "finding_id": finding_id,
+                    "code": str(outcome.reason_code or "no_verified_candidate"),
+                    "message": str(outcome.message or "No verified repair was produced."),
+                })
 
         # A batch carries one kind of evidence. A statically asserted candidate says nothing ran;
         # an executed one says a test failed before the change and passed after it. Shipping both
@@ -1116,6 +1137,7 @@ class RepairEngine:
                     request_digest,
                     snapshot.manifest_digest,
                     {"groups": group_report},
+                    skipped=skipped,
                 )
             return RepairResponse(
                 skipped=skipped,

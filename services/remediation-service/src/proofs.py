@@ -112,6 +112,35 @@ class ProofFallback:
     reason: str
 
 
+# The sentence a pull request reader gets when the service could not write a regression test for
+# a finding and nothing else proved it. The code is kept in the sentence, because it is what a
+# maintainer searches for; the phrase says which shape of code it was.
+_PROOF_REFUSAL_PHRASES = {
+    "enclosing_function_not_found": "the code is not inside a function or route a test can call",
+    "enclosing_route_not_found": "the code is not inside a route a test can drive",
+    "no_untrusted_parameter": "no parameter of the enclosing function reaches the sink",
+    "no_request_input_in_route": "no request input of the route reaches the sink",
+    "no_request_input_in_view": "no request input of the view reaches the sink",
+    "function_not_exported": "the enclosing function is not exported, so a test cannot call it",
+    "eval_argument_not_an_identifier": "eval is given an expression rather than one variable",
+    "eval_argument_not_request_data": "the value given to eval does not come from the request or a parameter",
+    "module_not_loadable_by_node": "the module is not a file Node can load",
+    "local_module_missing": "the module requires {detail}, which is not in the repository at this commit, so no test can load it",
+    "local_module_not_in_snapshot": "the module requires {detail}, which was not part of the files the repair was given",
+    "dependency_not_available_in_sandbox": "the module requires the package {detail}, which the sandbox does not have",
+    "typescript_syntax_not_strippable": "the TypeScript uses {detail}, which Node cannot run without a build step",
+}
+
+
+def proof_refusal_message(reason: str) -> str:
+    """One line naming why no regression test could be generated, for a finding's no-fix line."""
+    code, _, detail = str(reason or "").partition(":")
+    phrase = _PROOF_REFUSAL_PHRASES.get(code)
+    if phrase is None:
+        return f"No regression test could be generated for this code shape ({reason}), so no fix could be verified."
+    return f"No regression test could be generated: {phrase.format(detail=detail or 'a module')} ({code})."
+
+
 def _js(value: Any) -> str:
     return json.dumps(value)
 
