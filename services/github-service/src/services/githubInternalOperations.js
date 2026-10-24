@@ -34,7 +34,7 @@ function validateOwnerRepo(owner, repo) {
   }
 }
 
-const GITHUB_TIMEOUT_MS = 25000;
+const { GITHUB_TIMEOUT_MS } = require('./githubTimeout');
 const READ_METHODS = new Set(['get', 'head']);
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 

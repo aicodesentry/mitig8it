@@ -1,5 +1,6 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
+const { GITHUB_TIMEOUT_MS } = require('./githubTimeout');
 
 class GitHubCommentService {
   /**
@@ -15,6 +16,7 @@ class GitHubCommentService {
         path: filePath,
         line: lineNumber,
       }, {
+        timeout: GITHUB_TIMEOUT_MS,
         headers: {
           'Authorization': `Bearer ${githubToken}`,
           'Accept': 'application/vnd.github+json',
@@ -38,6 +40,7 @@ class GitHubCommentService {
       const response = await axios.post(url, {
         body: body
       }, {
+        timeout: GITHUB_TIMEOUT_MS,
         headers: {
           'Authorization': `Bearer ${githubToken}`,
           'Accept': 'application/vnd.github+json',
@@ -58,6 +61,7 @@ class GitHubCommentService {
     try {
       const url = `https://api.github.com/repos/${owner}/${repo}/issues/comments/${commentId}`;
       const response = await axios.patch(url, { body }, {
+        timeout: GITHUB_TIMEOUT_MS,
         headers: {
           'Authorization': `Bearer ${githubToken}`,
           'Accept': 'application/vnd.github+json',
@@ -76,6 +80,7 @@ class GitHubCommentService {
   async listSummaryComments(owner, repo, prNumber, githubToken, page = 1) {
     const url = `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`;
     const response = await axios.get(url, {
+      timeout: GITHUB_TIMEOUT_MS,
       headers: {
         'Authorization': `Bearer ${githubToken}`,
         'Accept': 'application/vnd.github+json',
