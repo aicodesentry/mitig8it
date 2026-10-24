@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { randomUUID } = require('node:crypto');
 const url = new URL(process.env.DATABASE_URL || 'postgres://invalid');
 assert.ok(['postgres:', 'postgresql:'].includes(url.protocol)
@@ -12,6 +13,7 @@ assert.ok(['postgres:', 'postgresql:'].includes(url.protocol)
   'DATABASE_URL must name a disposable loopback *_test database');
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'isolated-lifecycle-test';
+process.env.GITHUB_WEBHOOK_SECRET = 'isolated-lifecycle-webhook-secret';
 const { pool } = require('../../src/config/database');
 const { applyMigrations, MIGRATIONS_DIR } = require('../../src/services/migrationRunner');
 const findings = require('../../src/db/findings');
@@ -212,4 +214,53 @@ test('server quota admits exactly five concurrent analyses and scopes history by
   assert.equal(history.body.total, 5);
   const other = await request(app).get(`/api/analysis/history?user_id=${f.user}`).auth(outsider.token, { type: 'bearer' });
   assert.equal(other.body.total, 0);
+});
+
+function signedWebhook(app, event, payload) {
+  const raw = Buffer.from(JSON.stringify(payload));
+  const signature = `sha256=${crypto.createHmac('sha256', process.env.GITHUB_WEBHOOK_SECRET).update(raw).digest('hex')}`;
+  return request(app).post('/webhooks/github')
+    .set('x-github-event', event).set('x-github-delivery', randomUUID())
+    .set('x-hub-signature-256', signature).set('Content-Type', 'application/json').send(raw.toString('utf8'));
+}
+
+// A reinstall of the App, or a repository transferred to another account that has the
+// App, arrives as a new installation id for a repository already on file. The upsert
+// moves the repository to it. Its outcome log moves with it: the rows describe that
+// repository's findings, and the composite key ties them to the repository's tenant.
+test('a repository with outcome history moves to a new installation and is analysed there', async () => {
+  const f = await fixture();
+  const outcomes = require('../../src/db/findingOutcomes');
+  const outcomeId = await outcomes.recordOutcome(null, {
+    repositoryId: f.repo, installationId: f.installation, pullRequestId: f.pr,
+    fingerprint: 'f'.repeat(64), outcome: 'dismissed', source: 'workspace',
+  });
+  assert.ok(outcomeId);
+
+  const github = (await pool.query('SELECT github_id, full_name FROM repositories WHERE id=$1', [f.repo])).rows[0];
+  const newInstallation = nextId++;
+  await pool.query("INSERT INTO installations (id,status) VALUES ($1,'active')", [newInstallation]);
+
+  const app = createApp();
+  const headSha = 'c'.repeat(40);
+  const response = await signedWebhook(app, 'pull_request', {
+    action: 'synchronize',
+    installation: { id: newInstallation },
+    repository: { id: Number(github.github_id), name: 'fixture', full_name: github.full_name, private: true, default_branch: 'main' },
+    pull_request: {
+      id: 555, number: 1, title: 'Moved', body: '', state: 'open', draft: false,
+      head: { sha: headSha, ref: 'feature' }, base: { sha: 'b'.repeat(40), ref: 'main' },
+      user: { login: 'dev' }, html_url: 'https://github.com/fixture/repo/pull/1',
+    },
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+
+  const repo = (await pool.query('SELECT installation_id FROM repositories WHERE id=$1', [f.repo])).rows[0];
+  assert.equal(String(repo.installation_id), String(newInstallation));
+  const queued = await pool.query(
+    "SELECT id FROM analysis_runs WHERE repository_id=$1 AND commit_sha=$2 AND status='pending'", [f.repo, headSha]);
+  assert.equal(queued.rowCount, 1);
+  const outcome = (await pool.query('SELECT installation_id, repository_id FROM finding_outcomes WHERE id=$1', [outcomeId])).rows[0];
+  assert.equal(String(outcome.installation_id), String(newInstallation), 'the outcome row was left on the old tenant');
+  assert.equal(outcome.repository_id, f.repo);
 });
