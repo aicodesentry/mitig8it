@@ -283,6 +283,72 @@ jobs:
       # Fixture-driven flows; no API, repair service, or GitHub backend runs.
       - run: npm run test:remediation-browser
 
+  # The repair service and the action suites also run in remediation.yml and action-build.yml,
+  # but those are path-filtered, and a skipped workflow cannot be a required check. These two
+  # jobs make both suites part of Required CI on every pull request. The setup matches the
+  # path-filtered jobs so the two places test the same thing.
+  remediation-service-tests:
+    name: Repair service unit and broker contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          # Python 3.12 matches services/remediation-service/Dockerfile.
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/remediation-service/requirements-test.txt
+      - run: pip install -r services/remediation-service/requirements-test.txt
+      # The static assertion tests drive the real rule oracle, which shells out to the analysis
+      # service's scanner. It goes in its own virtualenv for the reason remediation.yml gives:
+      # the scanner and this service pin conflicting opentelemetry versions.
+      - name: Install the scanner the rule oracle runs, beside the test environment
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^semgrep==\(.*\)$/\1/p' services/analysis-service/src/requirements.txt | head -n 1)"
+          if [ -z "${version}" ]; then
+            echo "services/analysis-service/src/requirements.txt no longer pins semgrep" >&2
+            exit 1
+          fi
+          python -m venv /tmp/rule-scanner
+          /tmp/rule-scanner/bin/pip install --disable-pip-version-check "semgrep==${version}"
+          mkdir -p /tmp/rule-scanner-bin
+          ln -sf /tmp/rule-scanner/bin/semgrep /tmp/rule-scanner-bin/semgrep
+          echo "/tmp/rule-scanner-bin" >> "$GITHUB_PATH"
+      - name: The rule oracle must be available here, so its tests run rather than skip
+        run: |
+          set -euo pipefail
+          semgrep --version
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "services/remediation-service")
+          from src.verification.static_assertion import InProcessRuleOracle
+          reason = InProcessRuleOracle.unavailable_reason()
+          if reason is not None:
+              sys.exit(f"the static assertion tests would skip in this job: {reason}")
+          PY
+      - run: pytest services/remediation-service/tests -q
+
+  action-tests:
+    name: Action orchestrator unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      # The parity tests run the Node implementation, on the major the action image pins.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '22'
+      - name: Install the test dependencies
+        run: pip install pytest httpx pyyaml
+      - name: Run the tests
+        run: pytest tests -q
+        working-directory: action
+
   ci-required:
     name: Required CI
     runs-on: ubuntu-latest
@@ -298,6 +364,8 @@ jobs:
       - remediation-integration-tests
       - remediation-github-tests
       - remediation-browser-tests
+      - remediation-service-tests
+      - action-tests
     if: ${{ always() }}
     steps:
       - name: Report required job results
