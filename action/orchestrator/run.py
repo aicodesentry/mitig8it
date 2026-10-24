@@ -59,7 +59,44 @@ REFUSED_PERMISSION_MESSAGE = (
 
 
 class ActionError(Exception):
-    """A condition the run cannot continue past, reported without a traceback."""
+    """A condition the run cannot continue past, reported without a traceback.
+
+    Like every other failure, it decides the exit code by `fail-on`: a run that could not finish
+    exits 0 under `fail-on: none`, because adding the action must not turn a merge red for a
+    reason that is ours.
+    """
+
+    # True for a refusal the workflow's author has to act on, which fails the job whatever
+    # `fail-on` says. A refusal that exited 0 would read as a review that ran.
+    always_fails = False
+
+
+class RefusalError(ActionError):
+    """The workflow asked for something the action will not do: fix the workflow to proceed."""
+
+    always_fails = True
+
+
+class PublishError(ActionError):
+    """The review or the check run could not be published."""
+
+
+DEFAULT_MAX_FILES = 200
+PUBLIC_API_URL = "https://api.github.com"
+
+
+def enterprise_server_message(api_url: str) -> str:
+    """Why the action stops on GitHub Enterprise Server rather than half-working there.
+
+    The reads would go to the runner's API base, but the writes reuse github-service's
+    publishing code, which addresses api.github.com directly. On GHES that sends the
+    workflow token to the wrong host and every write fails, so the run stops first.
+    """
+    return (
+        f"Mitig8it does not support GitHub Enterprise Server yet (GITHUB_API_URL is {api_url}). "
+        "Its publishing code addresses api.github.com directly, so on this host it would send "
+        "the workflow token to the wrong server. Nothing was read or posted."
+    )
 
 
 # --- what produced this review ---------------------------------------------------------------
@@ -156,11 +193,40 @@ def assert_least_privilege(reader: github_api.GitHubReader) -> Dict[str, bool]:
     """Refuse to run when the workflow granted write access to file contents."""
     permissions = reader.repository_permissions()
     if permissions.get("push"):
-        raise ActionError(REFUSED_PERMISSION_MESSAGE)
+        raise RefusalError(REFUSED_PERMISSION_MESSAGE)
     return permissions
 
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+# The reason an unanchored finding carries when it sits on a line the pull request did not add,
+# in a file whose patch is known. The action has no baseline, so this is how it tells code the
+# author wrote from code they only touched the file around.
+PRE_EXISTING = "pre_existing"
+
+
+def is_pre_existing(finding: Dict[str, Any], patches_by_path: Dict[str, str]) -> bool:
+    """True for a finding on a line the pull request did not add, in a file whose patch is known.
+
+    Tier 2 scans the whole file and tier 1 reads context lines, so a one-line edit to a legacy
+    file reports every old problem in it. Those are listed, not counted: a pull request must not
+    be blocked by code its author did not write. A file with no patch (GitHub omits the patch of
+    a very large diff) cannot be told apart, so its findings are counted, which is the side that
+    cannot let a new file slip past `fail-on`.
+    """
+    path = str(finding.get("file_path") or "")
+    line = int(finding.get("line_start") or 0)
+    patch = patches_by_path.get(path) or ""
+    if not path or line <= 0 or not patch:
+        return False
+    return line not in pr_scope.reviewable_lines(patch)
+
+
+def counted_findings(
+    findings: Sequence[Dict[str, Any]], patches_by_path: Dict[str, str]
+) -> List[Dict[str, Any]]:
+    """The findings `fail-on` and the blocking total count: everything not pre-existing."""
+    return [finding for finding in findings if not is_pre_existing(finding, patches_by_path)]
 
 
 def plan_comments(
@@ -206,7 +272,8 @@ def plan_comments(
         severity = str(finding.get("severity") or "").lower()
         if not path or line <= 0:
             continue
-        if line in pr_scope.reviewable_lines(patches_by_path.get(path, "")):
+        patch = patches_by_path.get(path, "") or ""
+        if line in pr_scope.reviewable_lines(patch):
             anchored.append(
                 {
                     "path": path,
@@ -223,7 +290,7 @@ def plan_comments(
                 "line": line,
                 "severity": severity,
                 "rule": str(finding.get("rule_id") or finding.get("title") or ""),
-                "reason": "line_outside_diff",
+                "reason": PRE_EXISTING if patch else "line_outside_diff",
             }
         )
 
@@ -269,6 +336,12 @@ def review_totals(
     arithmetic to trust any of them. They are computed once here and rendered three times.
     """
     runtime = sum(int(counts.get(key, 0)) for key in ("critical", "high", "medium", "low"))
+    # Pre-existing findings stay in every total a reader sees and leave the blocking one, which
+    # is the number `fail-on` acts on.
+    pre_existing = [item for item in unanchored if item.get("reason") == PRE_EXISTING]
+    pre_existing_blocking = sum(
+        1 for item in pre_existing if str(item.get("severity") or "") in ("critical", "high")
+    )
     return {
         "runtime": runtime,
         "critical": int(counts.get("critical", 0)),
@@ -276,9 +349,12 @@ def review_totals(
         "medium": int(counts.get("medium", 0)),
         "low": int(counts.get("low", 0)),
         "informational": int(counts.get("info", 0)),
-        "blocking": int(counts.get("critical", 0)) + int(counts.get("high", 0)),
+        "blocking": max(
+            0, int(counts.get("critical", 0)) + int(counts.get("high", 0)) - pre_existing_blocking
+        ),
         "inline": len(comments),
         "unanchored": len(unanchored),
+        "preexisting": len(pre_existing),
     }
 
 
@@ -499,6 +575,24 @@ def manifest_digest(action_id: str, head_sha: str, base_sha: str, sections: Sequ
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
+LIMITATION_ANNOTATION_HEADING = "Not fully analysed"
+
+
+def normalize_limitation(limitation: Dict[str, Any]) -> Dict[str, str]:
+    """One limitation in the three fields every surface renders: what kind, where, and why."""
+    return {
+        "kind": str(limitation.get("kind") or ""),
+        "path": str(limitation.get("path") or ""),
+        "message": str(limitation.get("message") or "").strip(),
+    }
+
+
+def limitation_line(limitation: Dict[str, str]) -> str:
+    path = limitation.get("path") or ""
+    message = limitation.get("message") or limitation.get("kind") or "not analysed"
+    return f"{path}: {message}" if path else message
+
+
 def build_publish_request(
     *,
     token: str,
@@ -521,6 +615,7 @@ def build_publish_request(
     bot_login: str = "github-actions[bot]",
     action_id: Optional[str] = None,
     version_label: Optional[str] = None,
+    limitations: Sequence[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
     """Everything the Node publisher needs, in one place the tests can build without a network."""
     action_id = action_id or f"action-{uuid.uuid4().hex[:16]}"
@@ -563,7 +658,121 @@ def build_publish_request(
         "active_fingerprints": sorted(set(active_fingerprints)),
         "inline_comments": list(inline_comments),
         "fix_sections": list(fix_sections),
+        # What the review could not read in full. The check summary and the review body list
+        # them under "Not fully analysed", because a partial review must never read as a
+        # complete, clean one.
+        "limitations": [normalize_limitation(item) for item in limitations],
     }
+
+
+def limitations_markdown(limitations: Sequence[Dict[str, str]]) -> str:
+    """The job summary's "Not fully analysed" list, or "" when the review was complete."""
+    if not limitations:
+        return ""
+    rows = [f"- {limitation_line(item)}" for item in limitations[:50]]
+    if len(limitations) > 50:
+        rows.append(f"- and {len(limitations) - 50} more")
+    return f"#### {LIMITATION_ANNOTATION_HEADING}\n\n" + "\n".join(rows) + "\n\n"
+
+
+READ_ONLY_REASON = (
+    "GitHub gives fork and Dependabot pull requests a read-only token, so nothing could be posted"
+)
+READ_ONLY_ANNOTATION_CAP = 50
+
+
+def fork_reason(pull: Dict[str, Any], repository: str) -> str:
+    """Why this run's token is read-only, or "" when nothing says so before the first write.
+
+    A pull request whose head lives in another repository is a fork's, and a workflow run on it
+    gets a read-only token. A head repository that is missing altogether is a fork that was
+    deleted. Same-repository pull requests carry no such signal in the event.
+    """
+    head_repo = (pull.get("head") or {}).get("repo")
+    base_repo = (pull.get("base") or {}).get("repo") or {}
+    base_name = str(base_repo.get("full_name") or repository or "")
+    head_name = str((head_repo or {}).get("full_name") or "")
+    if head_repo is None or (head_name and base_name and head_name.lower() != base_name.lower()):
+        return f"This pull request comes from a fork. {READ_ONLY_REASON}."
+    return ""
+
+
+def _annotation_property(value: Any) -> str:
+    return (
+        str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        .replace(":", "%3A").replace(",", "%2C")
+    )
+
+
+def report_read_only(reason: str, report: Dict[str, Any]) -> int:
+    """A review that could not be posted, reported where a read-only token can still write.
+
+    The job summary carries the findings, the counts and the reason, and each runtime finding
+    becomes a workflow annotation on its file and line. The exit code is the one `fail-on`
+    would have given, worked out from the same counts.
+    """
+    counts = report["counts"]
+    counted = report["counted"]
+    plan = report["plan"]
+    entries = [
+        {**comment, "counted": True} for comment in plan["comments"]
+    ] + [
+        {**item, "counted": item.get("reason") != PRE_EXISTING} for item in plan["unanchored"]
+    ]
+    titles = {
+        (str(f.get("file_path") or ""), int(f.get("line_start") or 0)):
+            str(f.get("title") or f.get("rule_id") or "Security finding")
+        for f in report["findings"]
+    }
+    annotate("warning", reason)
+    for entry in entries[:READ_ONLY_ANNOTATION_CAP]:
+        title = titles.get((entry["path"], entry["line"]), "Security finding")
+        note = "" if entry["counted"] else " (pre-existing in a touched file, not counted)"
+        print(
+            f"::warning file={_annotation_property(entry['path'])},line={entry['line']},"
+            f"title={_annotation_property('Mitig8it ' + str(entry['severity']))}::"
+            + f"{title}{note}".replace("%", "%25").replace("\n", "%0A"),
+            flush=True,
+        )
+
+    rows = []
+    for entry in entries[:READ_ONLY_ANNOTATION_CAP]:
+        title = titles.get((entry["path"], entry["line"]), "Security finding").replace("|", "/")
+        counted_label = "yes" if entry["counted"] else "pre-existing, not counted"
+        rows.append(f"| {entry['severity']} | {title} | `{entry['path']}:{entry['line']}` | {counted_label} |")
+    table = (
+        "| Severity | Finding | Location | Counted |\n| --- | --- | --- | --- |\n" + "\n".join(rows) + "\n\n"
+        if rows else ""
+    )
+    if len(entries) > READ_ONLY_ANNOTATION_CAP:
+        table += f"{plural(len(entries) - READ_ONLY_ANNOTATION_CAP, 'further finding')} not listed.\n\n"
+    write_summary(
+        f"### {CHECK_RUN_NAME}\n\n{reason}\n\n"
+        f"{plural(len(report['findings']), 'finding')}: {counts['critical']} critical, "
+        f"{counts['high']} high, {counts['medium']} medium, {counts['low']} low, "
+        f"{counts['info']} informational. Counted towards fail-on: {counted['critical']} critical, "
+        f"{counted['high']} high.\n\n"
+        + table
+        + limitations_markdown(report["limitations"])
+    )
+    write_outputs(
+        {
+            "findings": len(report["findings"]),
+            "critical": counted["critical"],
+            "high": counted["high"],
+            "fixes": 0,
+            "conclusion": report["conclusion"],
+            "excluded": report["excluded"],
+        }
+    )
+    if report["conclusion"] == "failure":
+        annotate(
+            "error",
+            f"Mitig8it: {counted['critical']} critical and {counted['high']} high findings on "
+            f"lines this pull request added exceed fail-on: {report['fail_on']}.",
+        )
+        return 1
+    return 0
 
 
 def write_summary(text: str) -> None:
@@ -603,24 +812,100 @@ def run_publisher(request: Dict[str, Any]) -> Dict[str, Any]:
         os.unlink(request_path)
     if completed.stderr:
         sys.stderr.write(completed.stderr)
-    if completed.returncode != 0:
-        raise ActionError(f"publishing failed: {completed.stderr.strip() or 'unknown error'}")
     try:
-        return json.loads(completed.stdout or "{}")
+        results = json.loads(completed.stdout) if (completed.stdout or "").strip() else None
     except json.JSONDecodeError:
+        results = None
+    if not isinstance(results, dict):
+        if completed.returncode != 0:
+            # The publisher died before it could say what it did, so nothing is known to have
+            # been posted.
+            raise PublishError(
+                f"publishing failed: {completed.stderr.strip()[-2000:] or 'unknown error'}"
+            )
         return {}
+    # A nonzero exit with a report is a publish that ran and lost something. The report says
+    # what, and the caller decides which of those losses fail the run.
+    return results
+
+
+def requested_fail_on() -> str:
+    return input_value("fail-on", "none").strip().lower()
+
+
+def max_files_input() -> int:
+    """The `max-files` input, or the default with a warning when it is not a number.
+
+    `int("two hundred")` used to end the run with a traceback before anything was read.
+    """
+    raw = input_value("max-files", str(DEFAULT_MAX_FILES))
+    try:
+        return max(1, int(raw.strip()))
+    except (TypeError, ValueError):
+        annotate(
+            "warning",
+            f"max-files must be a whole number, got {raw!r}; using {DEFAULT_MAX_FILES}.",
+        )
+        return DEFAULT_MAX_FILES
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     del argv
+    context: Dict[str, Any] = {}
     try:
-        return _run()
-    except ActionError as error:
-        annotate("error", str(error))
+        return _run(context)
+    except Exception as error:  # noqa: BLE001 - every failure gets the same defined outcome
+        return report_failure(error, context)
+
+
+def report_failure(error: BaseException, context: Dict[str, Any]) -> int:
+    """What a run that could not finish does instead of a traceback.
+
+    An error annotation says what went wrong. A neutral check run says the commit was not
+    reviewed, when the token and the host allow one, so the pull request never shows a clean
+    result it did not earn. The exit code follows `fail-on`: 0 under `none`, because the
+    repository asked never to be blocked, and 1 otherwise, because a repository that asked to be
+    blocked on findings should not pass a commit nobody reviewed. A refusal the workflow author
+    has to fix fails either way.
+    """
+    known = isinstance(error, ActionError)
+    message = str(error) if known else f"{type(error).__name__}: {error}"
+    annotate("error", message if known else f"Mitig8it did not complete: {message}")
+    if not known:
+        import traceback  # noqa: PLC0415
+
+        print("::group::Traceback", flush=True)
+        traceback.print_exception(type(error), error, error.__traceback__, file=sys.stdout)
+        print("::endgroup::", flush=True)
+
+    target = context.get("check_target")
+    if target and not getattr(error, "always_fails", False):
+        try:
+            outcome = run_publisher(
+                {
+                    **target,
+                    "mode": "error_check",
+                    "error_class": type(error).__name__,
+                    "error_message": message[:1000],
+                }
+            )
+            for problem in outcome.get("errors") or []:
+                annotate("warning", f"the neutral check run could not be posted: {problem}")
+        except Exception as check_error:  # noqa: BLE001 - reporting must not fail the report
+            annotate("warning", f"the neutral check run could not be posted: {check_error}")
+
+    write_summary(
+        f"### {CHECK_RUN_NAME}\n\nThe review did not complete: {message}\n\n"
+        "No result is reported for this commit, and it is not a clean review.\n"
+    )
+    if getattr(error, "always_fails", False):
         return 1
+    fail_on = context.get("fail_on") or requested_fail_on()
+    return 0 if fail_on == "none" else 1
 
 
-def _run() -> int:
+def _run(context: Optional[Dict[str, Any]] = None) -> int:
+    context = {} if context is None else context
     # First line of every log, so a run that fails before it publishes still says what it was.
     identity = version_identity()
     log(f"Mitig8it {identity['label']}.")
@@ -631,11 +916,12 @@ def _run() -> int:
     if not token:
         raise ActionError("no github-token was provided")
 
-    fail_on = input_value("fail-on", "none").strip().lower()
+    fail_on = requested_fail_on()
     if fail_on not in FAIL_ON_CHOICES:
-        raise ActionError(f"fail-on must be one of {', '.join(FAIL_ON_CHOICES)}")
+        raise RefusalError(f"fail-on must be one of {', '.join(FAIL_ON_CHOICES)}")
+    context["fail_on"] = fail_on
     post_fixes = boolean_input("post-fixes", True)
-    max_files = max(1, int(input_value("max-files", "200")))
+    max_files = max_files_input()
 
     model_key = input_value("model-api-key")
     model_configured = bool(model_key)
@@ -645,7 +931,11 @@ def _run() -> int:
         os.environ["LLM_TRIAGE_ENABLED"] = "false"
 
     repository = os.environ.get("GITHUB_REPOSITORY", "")
-    api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    api_url = os.environ.get("GITHUB_API_URL") or PUBLIC_API_URL
+    if api_url.rstrip("/") != PUBLIC_API_URL:
+        # Checked before the first request, so the token never reaches a host it was not
+        # issued for.
+        raise ActionError(enterprise_server_message(api_url))
     event = load_event()
     pull = pull_request_from_event(event)
     pr_number = int(pull.get("number") or 0)
@@ -655,6 +945,24 @@ def _run() -> int:
         raise ActionError("the event payload carried no pull request number or head sha")
 
     reader = github_api.GitHubReader(token=token, repository=repository, api_url=api_url)
+    installation_id = int(((event.get("repository") or {}).get("id")) or 1)
+    # A pull request from a fork runs with a read-only token, so the review is reported into
+    # the job summary and nothing is attempted on the pull request. Dependabot's come from the
+    # same repository and are recognised by the 403 on the first write instead.
+    read_only = fork_reason(pull, repository)
+    if read_only:
+        log(read_only)
+    else:
+        # From here on a failure can say so on the pull request with a neutral check run.
+        context["check_target"] = {
+            "token": token,
+            "repository_full_name": repository,
+            "pr_number": pr_number,
+            "head_sha": head_sha,
+            "installation_id": installation_id,
+            "bot_login": "github-actions[bot]",
+            "versionLabel": identity["label"],
+        }
 
     log("Checking that the workflow granted no more permission than the review needs.")
     assert_least_privilege(reader)
@@ -671,8 +979,10 @@ def _run() -> int:
     excluded_files = pr_scope.excluded_file_count(raw_files, exclusions)
     if excluded_files:
         log(repo_config.exclusion_summary(excluded_files) + ".")
+    limitations: List[Dict[str, Any]] = []
     cap_limitation = pr_scope.changed_file_limitation(raw_files, exclusions)
     if cap_limitation:
+        limitations.append(cap_limitation)
         log(cap_limitation["message"] + "; the rest of the change was not reviewed.")
     if len(scoped) > max_files:
         raise ActionError(
@@ -683,20 +993,37 @@ def _run() -> int:
     log(pr_scope.scope_summary(scope) or "Nothing in this pull request is reviewable.")
 
     wanted = [f["path"] for f in scoped if pr_scope.should_fetch_full_file_content(f)]
-    contents = reader.file_contents(wanted, head_sha) if wanted else {}
-    missing = [path for path in wanted if path not in contents]
+    contents: Dict[str, str] = {}
+    if wanted:
+        contents, content_limitations = reader.file_contents_with_limitations(wanted, head_sha)
+        # A file too large to read whole is still reviewed through its patch, and is named
+        # under "Not fully analysed" so the review never claims more than it read.
+        limitations.extend(content_limitations)
+        for item in content_limitations:
+            log(f"{item['path']}: {item['message']}.")
+    accounted = {str(item.get("path") or "") for item in limitations}
+    missing = [path for path in wanted if path not in contents and path not in accounted]
     if missing:
-        # Production fails closed here for the same reason: a scan that silently skipped a file
-        # would report a clean result it did not earn.
+        # A file that is absent for no stated reason is still fatal: a scan that silently
+        # skipped it would report a clean result it did not earn.
         raise ActionError(
             "Required source content response is incomplete; these files could not be read at "
-            f"the head commit (they may exceed {pr_scope.MAX_FILE_CONTENT_BYTES} bytes): "
-            + ", ".join(missing[:10])
+            "the head commit: " + ", ".join(missing[:10])
         )
 
     analysis_files = pr_scope.build_analysis_files(scoped, contents)
     log("Scanning.")
-    findings = analysis.analyze(repository, pr_number, head_sha, analysis_files)
+    findings, analysis_limitations = analysis.analyze(
+        repository, pr_number, head_sha, analysis_files
+    )
+    limitations.extend(analysis_limitations)
+    if limitations:
+        annotate(
+            "warning",
+            f"{LIMITATION_ANNOTATION_HEADING}: "
+            + "; ".join(limitation_line(normalize_limitation(item)) for item in limitations[:10])
+            + (f"; and {len(limitations) - 10} more" if len(limitations) > 10 else ""),
+        )
     counts = analysis.severity_counts(findings)
     log(
         f"{plural(len(findings), 'finding')}: {counts['critical']} critical, "
@@ -708,7 +1035,7 @@ def _run() -> int:
     fixes_withheld = post_fixes and bool(findings) and not fix_publication_ready()
     if fixes_withheld:
         log("Fix publication withheld: independent release evidence is missing.")
-    if post_fixes and findings and not fixes_withheld:
+    if post_fixes and findings and not fixes_withheld and not read_only:
         fix_sections = generate_fixes(
             reader=reader,
             repository=repository,
@@ -731,14 +1058,24 @@ def _run() -> int:
             "they are listed in the review body rather than on the diff."
         )
 
-    conclusion = fail_conclusion(fail_on, counts)
+    # Every finding is reported; only the ones on lines this pull request added are counted.
+    counted_counts = analysis.severity_counts(counted_findings(findings, patches_by_path))
+    pre_existing_total = sum(1 for item in unanchored if item.get("reason") == PRE_EXISTING)
+    if pre_existing_total:
+        log(
+            f"{plural(pre_existing_total, 'finding')} pre-existing in a touched file, not "
+            "counted towards fail-on."
+        )
+    conclusion = fail_conclusion(fail_on, counts) if fail_on == "none" else fail_conclusion(
+        fail_on, counted_counts
+    )
     request = build_publish_request(
         token=token,
         repository=repository,
         pr_number=pr_number,
         head_sha=head_sha,
         base_sha=base_sha or head_sha,
-        installation_id=int(((event.get("repository") or {}).get("id")) or 1),
+        installation_id=installation_id,
         actor_login=os.environ.get("GITHUB_ACTOR", "github-actions") or "github-actions",
         counts=counts,
         findings=len(findings),
@@ -756,15 +1093,41 @@ def _run() -> int:
         # login. Assuming it meant every re-run created a second comment instead of editing.
         bot_login=reader.viewer_login(),
         version_label=identity["label"],
+        limitations=limitations,
     )
+
+    read_only_report = {
+        "findings": findings,
+        "counts": counts,
+        "counted": counted_counts,
+        "plan": plan,
+        "limitations": request["limitations"],
+        "conclusion": conclusion,
+        "fail_on": fail_on,
+        "excluded": excluded_files,
+    }
+    if read_only:
+        return report_read_only(read_only, read_only_report)
 
     log("Publishing.")
     if fixes_withheld:
         request["fixesWithheldReason"] = "independent_release_evidence_missing"
     results = run_publisher(request)
-    errors = results.get("errors") or []
-    for error in errors:
-        annotate("warning", f"publish: {error}")
+    if results.get("read_only"):
+        return report_read_only(
+            f"{READ_ONLY_REASON} ({results['read_only']}).", read_only_report
+        )
+    if results.get("check_read_only"):
+        annotate(
+            "warning",
+            "The review was posted but the check run was not: the token may not create check "
+            "runs. Grant `checks: write` to the job. " + str(results["check_read_only"]),
+        )
+    # One inline edit or the fix sections failing costs the reader a comment, not the review,
+    # so it is a warning. The review or the check failing is a publish that did not happen.
+    for warning in results.get("warnings") or []:
+        annotate("warning", f"publish: {warning}")
+    publish_errors = [str(error) for error in results.get("errors") or []]
 
     # Exactly one line about the threads, whatever happened, and a warning rather than a log line
     # when some of them could not be closed. Never more than one: a token that may not resolve
@@ -779,8 +1142,8 @@ def _run() -> int:
     write_outputs(
         {
             "findings": len(findings),
-            "critical": counts["critical"],
-            "high": counts["high"],
+            "critical": counted_counts["critical"],
+            "high": counted_counts["high"],
             "fixes": len(fix_sections),
             "conclusion": conclusion,
             "excluded": excluded_files,
@@ -792,6 +1155,7 @@ def _run() -> int:
         f"{plural(len(findings), 'finding')}, {counts['critical']} critical, "
         f"{counts['high']} high, {plural(len(fix_sections), 'fix suggestion')}.\n\n"
         + (f"{exclusion_line}.\n\n" if exclusion_line else "")
+        + limitations_markdown(request["limitations"])
         + (
             "Fix suggestions were withheld because independent release evidence is missing.\n"
             if fixes_withheld else (
@@ -808,11 +1172,14 @@ def _run() -> int:
         + (f" Image `{identity['digest']}`.\n" if identity["digest"] else "\n")
     )
 
+    if publish_errors:
+        raise PublishError("publishing failed: " + "; ".join(publish_errors))
+
     if conclusion == "failure":
         annotate(
             "error",
-            f"Mitig8it: {counts['critical']} critical and {counts['high']} high findings "
-            f"exceed fail-on: {fail_on}.",
+            f"Mitig8it: {counted_counts['critical']} critical and {counted_counts['high']} high "
+            f"findings on lines this pull request added exceed fail-on: {fail_on}.",
         )
         return 1
     return 0

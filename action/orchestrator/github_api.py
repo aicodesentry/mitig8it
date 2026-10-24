@@ -14,7 +14,7 @@ import base64
 import logging
 import random
 import time
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote
 
 import httpx
@@ -27,6 +27,30 @@ BASE_DELAY_SECONDS = 1.0
 MAX_DELAY_SECONDS = 60.0
 REQUEST_TIMEOUT_SECONDS = 30.0
 PAGE_SIZE = 100
+# Above this the contents API returns metadata with no inline content.
+CONTENTS_API_INLINE_LIMIT_BYTES = 1_000_000
+# The analysis service's own spelling, so every surface renders the kind the same way.
+LIMITATION_NOT_ANALYZED = "not_analyzed"
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _size_limitation(path: str, size: int) -> Dict[str, Any]:
+    described = f"{size} bytes" if size else "too large for the contents API"
+    return {
+        "kind": LIMITATION_NOT_ANALYZED,
+        "path": path,
+        "reason": "size",
+        "message": (
+            f"not analysed whole ({described}, above the {pr_scope.MAX_FILE_CONTENT_BYTES}-byte "
+            "limit for full-file analysis); only its patch was read"
+        ),
+    }
 
 
 class GitHubError(Exception):
@@ -164,13 +188,22 @@ class GitHubReader:
         return files
 
     def file_contents(self, paths: Iterable[str], ref: str) -> Dict[str, str]:
-        """Head-revision text for each path, skipping any file over the byte cap.
+        """Head-revision text for each path, without the files that could not be read whole."""
+        return self.file_contents_with_limitations(paths, ref)[0]
 
-        A skipped file is simply absent from the result. The caller treats that as fatal, which
-        is what production does: reporting a review as complete when a file was never read would
-        be a false clean bill.
+    def file_contents_with_limitations(
+        self, paths: Iterable[str], ref: str
+    ) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
+        """Head-revision text for each path, and a `not_analyzed` limitation for each skipped one.
+
+        A skipped file is absent from the contents and named in the limitations, never present
+        as an empty or truncated string: the scanner would report a clean result for text it
+        never saw. Two cases are skipped for size. Text over the byte cap is dropped rather than
+        cut. Over 1 MB the contents API returns no content at all (`encoding: "none"`, or an
+        empty `content` beside a large `size`), and that used to be stored as an empty file.
         """
         contents: Dict[str, str] = {}
+        limitations: List[Dict[str, Any]] = []
         for path in list(paths)[: pr_scope.MAX_CHANGED_FILES]:
             if not path or not isinstance(path, str):
                 continue
@@ -185,14 +218,32 @@ class GitHubReader:
                 text = payload
             else:
                 raw = payload.get("content") or ""
+                size = _int_or_zero(payload.get("size"))
+                withheld = str(payload.get("encoding") or "").lower() == "none" or (
+                    not raw and size > CONTENTS_API_INLINE_LIMIT_BYTES
+                )
+                if withheld:
+                    limitations.append(_size_limitation(path, size))
+                    continue
                 try:
                     text = base64.b64decode(raw).decode("utf-8", errors="replace")
                 except (ValueError, TypeError):
+                    limitations.append(
+                        {
+                            "kind": LIMITATION_NOT_ANALYZED,
+                            "path": path,
+                            "reason": "unreadable",
+                            "message": "not analysed whole: GitHub returned content that "
+                            "could not be decoded; only its patch was read",
+                        }
+                    )
                     continue
-            if len(text.encode("utf-8")) > pr_scope.MAX_FILE_CONTENT_BYTES:
+            byte_size = len(text.encode("utf-8"))
+            if byte_size > pr_scope.MAX_FILE_CONTENT_BYTES:
+                limitations.append(_size_limitation(path, byte_size))
                 continue
             contents[path] = text
-        return contents
+        return contents, limitations
 
     def git_tree(self, head_sha: str) -> Dict[str, Any]:
         """The complete recursive tree at the head commit.

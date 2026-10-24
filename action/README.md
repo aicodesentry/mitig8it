@@ -61,6 +61,11 @@ By default, **nothing**. The scanner, its rule files, the repair engine and the 
 in the image. The only host contacted is the GitHub API the runner was already talking to, and
 the only thing sent to it is the review you can read on the pull request.
 
+GitHub Enterprise Server is not supported yet. The publishing code addresses `api.github.com`
+directly, so when `GITHUB_API_URL` names any other host the action stops before its first request
+with an error annotation, rather than send the workflow token to the wrong server. Under
+`fail-on: none` that run exits 0.
+
 If you set `model-api-key`, that changes, and it changes only for the parts that need a model:
 redacted code snippets around a finding are sent to the model provider you name, for triage and
 for repair generation. Without the key the model paths are switched off, only the deterministic
@@ -81,6 +86,41 @@ which half of the product produced a given result.
 
 `fail-on` defaults to `none` deliberately. Adding a security review should not break a merge on
 the day you add it. Turn it up once you have seen what it reports on your code.
+
+### When the review cannot finish
+
+A run can stop before it publishes: the scanner fails, the pull request head moves while the files
+are being read, or GitHub rejects the review. The action then writes an error annotation and the
+job summary, and posts a neutral `Mitig8it Security Review` check titled **Review did not
+complete** when the token allows it, naming the error class. That check is not a clean result,
+and it says so.
+
+The exit code follows `fail-on`. Under `fail-on: none` the job exits 0, because you asked never
+to be blocked. Under `high` or `critical` it exits 1, because a commit that was never reviewed
+should not pass a gate that asked to block on findings. The one exception is a workflow the
+action refuses to run under (`contents: write`, or an unknown `fail-on` value): that fails the
+job whatever `fail-on` says, because it needs a change to the workflow.
+
+A failure that costs one comment rather than the review is a warning, not a failure: an inline
+comment that could not be edited, or the fix suggestions not being attached. A `max-files` value
+that is not a number falls back to the default with a warning.
+
+A review GitHub rejects because one inline comment is not on the diff is posted again once,
+without the new comments, which are then listed in the review body with the findings that could
+not be anchored.
+
+### Fork and Dependabot pull requests
+
+GitHub gives a workflow run on a fork's pull request, and on a Dependabot pull request, a
+read-only token. The action cannot post a review or a check with it, so it reports in the job
+instead: the job summary carries the counts, every finding with its location, anything not fully
+analysed, and the reason ("GitHub gives fork and Dependabot pull requests a read-only token, so
+nothing could be posted"), and each finding becomes a workflow annotation on its file and line.
+
+A fork is recognised from the event before anything is attempted. A Dependabot pull request comes
+from the same repository, so it is recognised by GitHub's 403 on the first write. Either way the
+job exits as `fail-on` decides from the counts: 0 under `fail-on: none`. When only the check run is
+refused, the review stays posted and a warning asks for `checks: write`.
 
 ## Excluding paths
 
@@ -111,11 +151,20 @@ committed-secret rule is the one that most often fires there. What it does say i
 language-aware rule ran on them, which is what a reader needs in order to know what a clean
 result is worth.
 
+When the review could not read something in full, the check summary, the review body and the job
+summary list it under **Not fully analysed**, one line per file: a file the scanner parsed only
+in part, a file it gave up on, a time budget that ran out, a file too large to fetch, or the
+changed-file cap. The check title then ends in `(partial review)`, and a review with no findings
+says "no security issues found in what was analysed" rather than claiming the whole pull request
+is clean.
+
 Full syntax and limits: [Repository Configuration](../docs/getting-started/configuration.md).
 
 ### Outputs
 
-`findings`, `critical`, `high`, `fixes`, `conclusion`.
+`findings`, `critical`, `high`, `fixes`, `conclusion`. `findings` counts everything reported;
+`critical` and `high` count only findings on lines the pull request added, the ones `fail-on`
+acts on.
 
 ## How fixes are applied
 
@@ -192,6 +241,14 @@ Those findings are listed in the review body instead, under **Findings on lines 
 did not change**, with their severity, rule, path and line and a permalink to the commit that was
 reviewed. They are counted separately in the check summary. The App does the same, in the same
 words.
+
+The scanner reads a changed file whole, so a one-line edit to a legacy file can report problems
+that were already there. The action has no baseline to compare against, so it uses the diff: a
+finding on a line the pull request did not add, in a file whose patch GitHub returned, is marked
+**pre-existing in a touched file, not counted**. It stays in the review body list so the author
+still sees it, and it is left out of the blocking total, the `critical` and `high` outputs, and
+`fail-on`. Only findings on added lines can fail the job. When GitHub omits a file's patch (a
+very large diff) the action cannot tell old lines from new, so those findings are counted.
 
 The check title, the check summary and the review body state one total, computed once, with the
 breakdown beside it.

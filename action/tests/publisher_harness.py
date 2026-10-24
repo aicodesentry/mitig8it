@@ -45,6 +45,25 @@ function load() {
 function save(state) { fs.writeFileSync(statePath, JSON.stringify(state, null, 2)); }
 function record(state, name, detail) { state.calls.push({ name, ...detail }); }
 
+// A write GitHub refused, shaped the way github-service surfaces it: `externalError` wraps the
+// axios failure as a 502 OperationError whose `detail` is GitHub's own response body, which
+// carries the real status as a string. A test asks for one with `Publisher.fail`.
+function maybeFail(state, name, p) {
+  const rule = (state.fail || {})[name];
+  if (!rule) return;
+  if (rule.onlyWithComments && !(p.comments || []).length) return;
+  if (typeof rule.times === 'number') {
+    if (rule.times <= 0) return;
+    rule.times -= 1;
+  }
+  record(state, `${name}-rejected`, { comments: (p.comments || []).length });
+  save(state);
+  const error = new Error(`Failed (${name})`);
+  error.statusCode = 502;
+  error.detail = { message: rule.message, status: String(rule.status) };
+  throw error;
+}
+
 // github-service's envelope rule, copied by the test from githubInternalOperations.js.
 function validateEnvelope(payload) {
   const digest = payload.manifest_digest;
@@ -70,6 +89,7 @@ module.exports = {
   submitPullRequestReview: async (p) => {
     await roundTrip();
     const state = load();
+    maybeFail(state, 'review', p);
     for (const comment of p.comments || []) {
       state.comments.push({
         id: state.nextId, path: comment.path, line: comment.line, body: comment.body,
@@ -89,6 +109,7 @@ module.exports = {
     await roundTrip();
     await roundTrip();
     const state = load();
+    maybeFail(state, 'inline', p);
     const marker = String(p.body).match(/<!-- mitig8it-finding:[^>]+ -->/)?.[0];
     if (marker) {
       const existing = state.comments.find(
@@ -167,13 +188,16 @@ module.exports = {
 
   publishFindingFixSections: async (p) => {
     validateEnvelope(p);
-    const state = load(); record(state, 'fixes', { sections: p.sections.length }); save(state);
+    const state = load();
+    maybeFail(state, 'fixes', p);
+    record(state, 'fixes', { sections: p.sections.length }); save(state);
     return { published: p.sections.length };
   },
 
   createCheckRun: async (p) => {
     await roundTrip();
     const state = load();
+    maybeFail(state, 'check', p);
     record(state, 'check', { title: p.title, conclusion: p.conclusion, summary: p.summary });
     save(state);
     return { check_run_id: 3 };
@@ -203,6 +227,28 @@ class Publisher:
             json.dumps({"comments": [], "calls": [], "nextId": 1, "botLogin": bot_login}),
             encoding="utf-8",
         )
+
+    def fail(
+        self,
+        operation: str,
+        status: int,
+        message: str,
+        *,
+        only_with_comments: bool = False,
+        times: int | None = None,
+    ) -> None:
+        """Make one stubbed write fail the way GitHub refuses it.
+
+        `operation` is `review`, `inline`, `fixes` or `check`. `only_with_comments` limits a
+        review failure to a review that carries inline comments, which is how GitHub's 422 for
+        a comment outside the diff behaves; `times` stops failing after that many refusals.
+        """
+        state = self.state()
+        rule = {"status": status, "message": message, "onlyWithComments": only_with_comments}
+        if times is not None:
+            rule["times"] = times
+        state.setdefault("fail", {})[operation] = rule
+        self.state_path.write_text(json.dumps(state), encoding="utf-8")
 
     def state(self) -> dict:
         return json.loads(self.state_path.read_text(encoding="utf-8"))
