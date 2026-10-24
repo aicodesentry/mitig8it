@@ -167,6 +167,24 @@ function computeHunk(original, replacement, preferredLine) {
 // The repair service states each candidate's evidence in full sentences (its regression test
 // failed on the original code and passed on the fix, which checks passed, which did not run);
 // a candidate from an older service version without that summary gets the lines built here.
+// The one verification level at which nothing ran. A fix at that level, or any fix whose evidence
+// names no generated test, must not be described with the regression-test sentence: that
+// sentence claims a test failed on the original code and passed on the fix, and here no test ran.
+// action/orchestrator/inline_fixes.py declares the same strings; its parity test compares them.
+const STATIC_ASSERTION_LEVEL = 'static_assertion';
+const STATIC_ASSERTION_PROOF = 'the rule that flagged this line no longer matches the patched file and nothing else in the '
+  + 'file changed; no test ran and no code was executed.';
+const NO_TEST_PROOF = 'no generated regression test is recorded for this fix, so no test ran and no test result '
+  + 'is claimed.';
+const STATIC_ASSERTION_EVIDENCE = 'Static assertion: the rule that flagged this line no longer matches the patched file, no '
+  + 'other rule started matching it, and nothing else in the file changed. No test ran and no '
+  + 'code was executed.';
+const NO_TEST_EVIDENCE = 'No generated regression test is recorded for this fix; no test ran.';
+
+function candidateLevel(candidate) {
+  return String(candidate?.verification_level || candidate?.preview?.evidence?.verification_level || '');
+}
+
 function evidenceLines(candidate) {
   const evidence = candidate.preview?.evidence || {};
   const summary = Array.isArray(evidence.summary) ? evidence.summary.map((item) => String(item ?? '').trim()).filter(Boolean) : [];
@@ -179,9 +197,9 @@ function evidenceLines(candidate) {
     .map((test) => test?.path || test?.name).filter(Boolean);
   const limitations = Array.isArray(evidence.limitations) ? evidence.limitations : [];
   const lines = [];
-  lines.push(tests.length
-    ? `Regression test ${tests.join(', ')}: failed on the original code, passed on the fix.`
-    : 'Generated regression test: failed on the original code, passed on the fix.');
+  if (candidateLevel(candidate) === STATIC_ASSERTION_LEVEL) lines.push(STATIC_ASSERTION_EVIDENCE);
+  else if (tests.length) lines.push(`Regression test ${tests.join(', ')}: failed on the original code, passed on the fix.`);
+  else lines.push(NO_TEST_EVIDENCE);
   const syntaxNotRun = limitations.some((item) => /syntax check (skipped|unavailable)/i.test(String(item)));
   lines.push(syntaxNotRun ? 'Syntax check: not run (see limitations).' : 'Syntax check: passed on the fixed file.');
   if (evidence.evidence_digest) lines.push(`Evidence digest: ${String(evidence.evidence_digest).slice(0, 12)}.`);
@@ -190,13 +208,16 @@ function evidenceLines(candidate) {
 
 // What the regression test asserted, as one sentence. The manifest names the test and the
 // finding it reproduces; an entry that states its own assertion is quoted, otherwise the
-// assertion is the finding it was written for: that the flaw is no longer reproducible.
+// assertion is the finding it was written for: that the flaw is no longer reproducible. A static
+// assertion, or a fix whose evidence names no generated test, says what was checked and that no
+// test ran, never the regression-test sentence.
 function proofLine(candidate, finding) {
+  if (candidateLevel(candidate) === STATIC_ASSERTION_LEVEL) return STATIC_ASSERTION_PROOF;
   const evidence = candidate.preview?.evidence || {};
   const tests = (Array.isArray(evidence.generated_tests) ? evidence.generated_tests : []).filter((test) => test?.path || test?.name);
   const own = tests.filter((test) => test.finding_id && test.finding_id === finding.id);
   const test = (own.length ? own : tests)[0];
-  if (!test) return 'the generated regression test failed on the original code and passed on the fix.';
+  if (!test) return NO_TEST_PROOF;
   const name = String(test.path || test.name);
   const stated = String(test.assertion || test.asserts || test.description || '').trim().replace(/\.$/, '');
   const location = finding.file_path ? ` at ${finding.file_path}${finding.line_start ? `:${finding.line_start}` : ''}` : '';

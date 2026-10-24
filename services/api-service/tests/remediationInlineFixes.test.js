@@ -135,8 +135,31 @@ test('the proof line quotes a test that states its own assertion and picks the t
   ] } } });
   expect(inline.proofLine(stated, context().findings[0]))
     .toBe('regression test tests/orders.regression.test.js asserts that a quoted id cannot change the WHERE clause; it failed on the original code and passed on the fix.');
+  // A candidate whose evidence names no generated test claims no test result.
   expect(inline.proofLine(candidate({ preview: { ...candidate().preview, evidence: {} } }), context().findings[0]))
-    .toBe('the generated regression test failed on the original code and passed on the fix.');
+    .toBe('no generated regression test is recorded for this fix, so no test ran and no test result is claimed.');
+});
+
+// Nothing executes at the static assertion level, so neither the proof nor the evidence may
+// say a regression test failed on the original code and passed on the fix.
+test('a static assertion candidate never claims a regression test ran', () => {
+  const finding = context().findings[0];
+  const withTest = candidate({ verification_level: 'static_assertion', preview: { ...candidate().preview, evidence: {
+    ...candidate().preview.evidence, verification_level: 'static_assertion', summary: [],
+  } } });
+  const noTests = candidate({ verification_level: 'static_assertion', preview: { ...candidate().preview, evidence: {
+    verification_level: 'static_assertion', limitations: ['No code was executed.'],
+  } } });
+  for (const item of [withTest, noTests]) {
+    const proof = inline.proofLine(item, finding);
+    const evidence = inline.evidenceLines(item).join(' ');
+    expect(proof.toLowerCase()).not.toContain('regression test failed');
+    expect(`${proof} ${evidence}`).not.toContain('failed on the original code');
+    expect(proof).toContain('no longer matches the patched file');
+    expect(proof).toContain('no test ran');
+  }
+  const noLevel = candidate({ preview: { ...candidate().preview, evidence: {} } });
+  expect(inline.evidenceLines(noLevel).join(' ')).not.toContain('failed on the original code');
 });
 
 // Two findings on the same lines of the same file (two rules for one traversal): the

@@ -172,6 +172,51 @@ def test_proof_and_evidence_come_from_the_keys_the_app_reads():
     ]
 
 
+
+def test_a_static_assertion_never_claims_a_regression_test_ran():
+    """Nothing executes at the static assertion level, so no sentence may say a test failed and passed."""
+    static_evidence = {
+        "verification_level": "static_assertion",
+        "limitations": ["No code was executed."],
+        "evidence_digest": "abcdef0123456789",
+    }
+    response = SimpleNamespace(
+        candidates=[
+            candidate(
+                [change("pygoat/settings.py", SETTINGS_ORIGINAL, SETTINGS_FIXED)],
+                evidence=static_evidence,
+            )
+        ]
+    )
+    section = remediation.fix_sections(response, {"fp-1": PYGOAT_FINDING})[0]
+    assert section["verification_level"] == "static_assertion"
+    rendered = " ".join([section["proof"], *section["evidence"]])
+    assert "regression test failed" not in rendered.lower()
+    assert "failed on the original code" not in rendered
+    assert "no longer matches the patched file" in section["proof"]
+    assert "no test ran" in section["proof"]
+
+
+def test_a_static_assertion_with_a_test_entry_still_says_no_test_ran():
+    """The level, not the presence of a manifest entry, decides whether anything executed."""
+    evidence = {
+        "verification_level": "static_assertion",
+        "generated_tests": [{"path": "tests/test_secret.py", "finding_id": "fp-1"}],
+    }
+    proof = remediation.inline_fixes.proof_line(evidence, PYGOAT_FINDING)
+    assert "regression test" not in proof.lower()
+    assert "no test ran" in proof
+
+
+def test_a_fix_without_generated_tests_claims_no_test_result():
+    evidence = {"verification_level": "development_unverified"}
+    proof = remediation.inline_fixes.proof_line(evidence, PYGOAT_FINDING)
+    lines = remediation.inline_fixes.evidence_lines(evidence)
+    assert "regression test failed" not in proof.lower()
+    assert "failed on the original code" not in proof
+    assert "no test ran" in proof
+    assert not any("failed on the original code" in line for line in lines)
+
 def test_the_hunk_survives_the_publish_envelope():
     """github-service validates the section it receives; a hunk it rejects is a hunk lost."""
     response = SimpleNamespace(

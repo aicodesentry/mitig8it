@@ -310,6 +310,10 @@ def fix_sections(response, findings_by_id: Dict[str, Dict[str, Any]]) -> List[Di
                 if change.get("unified_diff")
             )
         )
+        # The level decides which proof sentence is true: a static assertion ran no test.
+        level = str(
+            getattr(candidate, "verification_level", "") or evidence.get("verification_level") or ""
+        )
         for finding_id in getattr(candidate, "finding_ids", []) or []:
             finding = findings_by_id.get(str(finding_id))
             if not finding:
@@ -327,11 +331,11 @@ def fix_sections(response, findings_by_id: Dict[str, Dict[str, Any]]) -> List[Di
                     "extra_hunks": extra_hunks,
                     "unified_diff": unified_diff,
                     "not_suggestable_reason": reason,
-                    "verification_level": str(evidence.get("verification_level") or ""),
+                    "verification_level": level,
                     "stated_intent": str(getattr(candidate, "intended_behavior", "")),
-                    "proof": inline_fixes.proof_line(evidence, finding),
+                    "proof": inline_fixes.proof_line(evidence, finding, level),
                     "limitations": [str(item) for item in (evidence.get("limitations") or [])],
-                    "evidence": inline_fixes.evidence_lines(evidence),
+                    "evidence": inline_fixes.evidence_lines(evidence, level),
                     "finding_ids": [str(finding_id)],
                 }
             )

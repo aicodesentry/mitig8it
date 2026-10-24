@@ -17,6 +17,7 @@ compares them against these on the same inputs, so a change on either side fails
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 # remediationInlineFixes.js: const MAX_ALIGNED_LINES = 1500;
@@ -26,6 +27,26 @@ MAX_ALIGNED_LINES = 1500
 MAX_DIFF_CHARS = 6000
 
 TRUNCATION_NOTICE = "\n... (diff truncated; the full change is in the Mitig8it preview)"
+
+# The one verification level at which nothing ran. A fix at that level, or any fix whose evidence
+# names no generated test, must not be described with the regression-test sentence: that sentence
+# claims a test failed on the original code and passed on the fix, and here no test ran.
+# remediationInlineFixes.js declares the same strings; test_inline_fix_parity.py compares them.
+STATIC_ASSERTION_LEVEL = "static_assertion"
+STATIC_ASSERTION_PROOF = (
+    "the rule that flagged this line no longer matches the patched file and nothing else in the "
+    "file changed; no test ran and no code was executed."
+)
+NO_TEST_PROOF = (
+    "no generated regression test is recorded for this fix, so no test ran and no test result "
+    "is claimed."
+)
+STATIC_ASSERTION_EVIDENCE = (
+    "Static assertion: the rule that flagged this line no longer matches the patched file, no "
+    "other rule started matching it, and nothing else in the file changed. No test ran and no "
+    "code was executed."
+)
+NO_TEST_EVIDENCE = "No generated regression test is recorded for this fix; no test ran."
 
 
 def split_lines(text: Any) -> List[str]:
@@ -236,7 +257,11 @@ def compute_hunk(
     }
 
 
-def evidence_lines(evidence: Dict[str, Any]) -> List[str]:
+def _level(evidence: Dict[str, Any], verification_level: Any = None) -> str:
+    return str(verification_level or evidence.get("verification_level") or "")
+
+
+def evidence_lines(evidence: Dict[str, Any], verification_level: Any = None) -> List[str]:
     """The `**Evidence:**` lines of a fix's details block, as `evidenceLines` builds them.
 
     The engine states each candidate's evidence in full sentences under `summary`; the action
@@ -262,11 +287,13 @@ def evidence_lines(evidence: Dict[str, Any]) -> List[str]:
         if isinstance(test, dict) and (test.get("path") or test.get("name"))
     ]
     limitations = [str(item) for item in (evidence.get("limitations") or [])]
-    lines = [
-        f"Regression test {', '.join(tests)}: failed on the original code, passed on the fix."
-        if tests
-        else "Generated regression test: failed on the original code, passed on the fix."
-    ]
+    if _level(evidence, verification_level) == STATIC_ASSERTION_LEVEL:
+        first = STATIC_ASSERTION_EVIDENCE
+    elif tests:
+        first = f"Regression test {', '.join(tests)}: failed on the original code, passed on the fix."
+    else:
+        first = NO_TEST_EVIDENCE
+    lines = [first]
     syntax_not_run = any(
         re.search(r"syntax check (skipped|unavailable)", item, re.IGNORECASE)
         for item in limitations
@@ -282,8 +309,16 @@ def evidence_lines(evidence: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def proof_line(evidence: Dict[str, Any], finding: Dict[str, Any]) -> str:
-    """What the regression test asserted, in one sentence, as `proofLine` states it."""
+def proof_line(
+    evidence: Dict[str, Any], finding: Dict[str, Any], verification_level: Any = None
+) -> str:
+    """What the regression test asserted, in one sentence, as `proofLine` states it.
+
+    A static assertion, or a fix whose evidence names no generated test, gets a sentence that
+    says what was checked and that no test ran, never the regression-test sentence.
+    """
+    if _level(evidence, verification_level) == STATIC_ASSERTION_LEVEL:
+        return STATIC_ASSERTION_PROOF
     tests = [
         test
         for test in (evidence.get("generated_tests") or [])
@@ -293,7 +328,7 @@ def proof_line(evidence: Dict[str, Any], finding: Dict[str, Any]) -> str:
     own = [test for test in tests if test.get("finding_id") and test.get("finding_id") == fingerprint]
     chosen = (own or tests or [None])[0]
     if chosen is None:
-        return "the generated regression test failed on the original code and passed on the fix."
+        return NO_TEST_PROOF
     name = str(chosen.get("path") or chosen.get("name"))
     stated = str(
         chosen.get("assertion") or chosen.get("asserts") or chosen.get("description") or ""
