@@ -105,6 +105,23 @@ A failure that costs one comment rather than the review is a warning, not a fail
 comment that could not be edited, or the fix suggestions not being attached. A `max-files` value
 that is not a number falls back to the default with a warning.
 
+A review GitHub rejects because one inline comment is not on the diff is posted again once,
+without the new comments, which are then listed in the review body with the findings that could
+not be anchored.
+
+### Fork and Dependabot pull requests
+
+GitHub gives a workflow run on a fork's pull request, and on a Dependabot pull request, a
+read-only token. The action cannot post a review or a check with it, so it reports in the job
+instead: the job summary carries the counts, every finding with its location, anything not fully
+analysed, and the reason ("GitHub gives fork and Dependabot pull requests a read-only token, so
+nothing could be posted"), and each finding becomes a workflow annotation on its file and line.
+
+A fork is recognised from the event before anything is attempted. A Dependabot pull request comes
+from the same repository, so it is recognised by GitHub's 403 on the first write. Either way the
+job exits as `fail-on` decides from the counts: 0 under `fail-on: none`. When only the check run is
+refused, the review stays posted and a warning asks for `checks: write`.
+
 ## Excluding paths
 
 A `.mitig8it.yml` at the repository root keeps paths out of the review:

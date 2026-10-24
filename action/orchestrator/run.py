@@ -675,6 +675,106 @@ def limitations_markdown(limitations: Sequence[Dict[str, str]]) -> str:
     return f"#### {LIMITATION_ANNOTATION_HEADING}\n\n" + "\n".join(rows) + "\n\n"
 
 
+READ_ONLY_REASON = (
+    "GitHub gives fork and Dependabot pull requests a read-only token, so nothing could be posted"
+)
+READ_ONLY_ANNOTATION_CAP = 50
+
+
+def fork_reason(pull: Dict[str, Any], repository: str) -> str:
+    """Why this run's token is read-only, or "" when nothing says so before the first write.
+
+    A pull request whose head lives in another repository is a fork's, and a workflow run on it
+    gets a read-only token. A head repository that is missing altogether is a fork that was
+    deleted. Same-repository pull requests carry no such signal in the event.
+    """
+    head_repo = (pull.get("head") or {}).get("repo")
+    base_repo = (pull.get("base") or {}).get("repo") or {}
+    base_name = str(base_repo.get("full_name") or repository or "")
+    head_name = str((head_repo or {}).get("full_name") or "")
+    if head_repo is None or (head_name and base_name and head_name.lower() != base_name.lower()):
+        return f"This pull request comes from a fork. {READ_ONLY_REASON}."
+    return ""
+
+
+def _annotation_property(value: Any) -> str:
+    return (
+        str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        .replace(":", "%3A").replace(",", "%2C")
+    )
+
+
+def report_read_only(reason: str, report: Dict[str, Any]) -> int:
+    """A review that could not be posted, reported where a read-only token can still write.
+
+    The job summary carries the findings, the counts and the reason, and each runtime finding
+    becomes a workflow annotation on its file and line. The exit code is the one `fail-on`
+    would have given, worked out from the same counts.
+    """
+    counts = report["counts"]
+    counted = report["counted"]
+    plan = report["plan"]
+    entries = [
+        {**comment, "counted": True} for comment in plan["comments"]
+    ] + [
+        {**item, "counted": item.get("reason") != PRE_EXISTING} for item in plan["unanchored"]
+    ]
+    titles = {
+        (str(f.get("file_path") or ""), int(f.get("line_start") or 0)):
+            str(f.get("title") or f.get("rule_id") or "Security finding")
+        for f in report["findings"]
+    }
+    annotate("warning", reason)
+    for entry in entries[:READ_ONLY_ANNOTATION_CAP]:
+        title = titles.get((entry["path"], entry["line"]), "Security finding")
+        note = "" if entry["counted"] else " (pre-existing in a touched file, not counted)"
+        print(
+            f"::warning file={_annotation_property(entry['path'])},line={entry['line']},"
+            f"title={_annotation_property('Mitig8it ' + str(entry['severity']))}::"
+            + f"{title}{note}".replace("%", "%25").replace("\n", "%0A"),
+            flush=True,
+        )
+
+    rows = []
+    for entry in entries[:READ_ONLY_ANNOTATION_CAP]:
+        title = titles.get((entry["path"], entry["line"]), "Security finding").replace("|", "/")
+        counted_label = "yes" if entry["counted"] else "pre-existing, not counted"
+        rows.append(f"| {entry['severity']} | {title} | `{entry['path']}:{entry['line']}` | {counted_label} |")
+    table = (
+        "| Severity | Finding | Location | Counted |\n| --- | --- | --- | --- |\n" + "\n".join(rows) + "\n\n"
+        if rows else ""
+    )
+    if len(entries) > READ_ONLY_ANNOTATION_CAP:
+        table += f"{plural(len(entries) - READ_ONLY_ANNOTATION_CAP, 'further finding')} not listed.\n\n"
+    write_summary(
+        f"### {CHECK_RUN_NAME}\n\n{reason}\n\n"
+        f"{plural(len(report['findings']), 'finding')}: {counts['critical']} critical, "
+        f"{counts['high']} high, {counts['medium']} medium, {counts['low']} low, "
+        f"{counts['info']} informational. Counted towards fail-on: {counted['critical']} critical, "
+        f"{counted['high']} high.\n\n"
+        + table
+        + limitations_markdown(report["limitations"])
+    )
+    write_outputs(
+        {
+            "findings": len(report["findings"]),
+            "critical": counted["critical"],
+            "high": counted["high"],
+            "fixes": 0,
+            "conclusion": report["conclusion"],
+            "excluded": report["excluded"],
+        }
+    )
+    if report["conclusion"] == "failure":
+        annotate(
+            "error",
+            f"Mitig8it: {counted['critical']} critical and {counted['high']} high findings on "
+            f"lines this pull request added exceed fail-on: {report['fail_on']}.",
+        )
+        return 1
+    return 0
+
+
 def write_summary(text: str) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
@@ -846,16 +946,23 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
 
     reader = github_api.GitHubReader(token=token, repository=repository, api_url=api_url)
     installation_id = int(((event.get("repository") or {}).get("id")) or 1)
-    # From here on a failure can say so on the pull request with a neutral check run.
-    context["check_target"] = {
-        "token": token,
-        "repository_full_name": repository,
-        "pr_number": pr_number,
-        "head_sha": head_sha,
-        "installation_id": installation_id,
-        "bot_login": "github-actions[bot]",
-        "versionLabel": identity["label"],
-    }
+    # A pull request from a fork runs with a read-only token, so the review is reported into
+    # the job summary and nothing is attempted on the pull request. Dependabot's come from the
+    # same repository and are recognised by the 403 on the first write instead.
+    read_only = fork_reason(pull, repository)
+    if read_only:
+        log(read_only)
+    else:
+        # From here on a failure can say so on the pull request with a neutral check run.
+        context["check_target"] = {
+            "token": token,
+            "repository_full_name": repository,
+            "pr_number": pr_number,
+            "head_sha": head_sha,
+            "installation_id": installation_id,
+            "bot_login": "github-actions[bot]",
+            "versionLabel": identity["label"],
+        }
 
     log("Checking that the workflow granted no more permission than the review needs.")
     assert_least_privilege(reader)
@@ -928,7 +1035,7 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
     fixes_withheld = post_fixes and bool(findings) and not fix_publication_ready()
     if fixes_withheld:
         log("Fix publication withheld: independent release evidence is missing.")
-    if post_fixes and findings and not fixes_withheld:
+    if post_fixes and findings and not fixes_withheld and not read_only:
         fix_sections = generate_fixes(
             reader=reader,
             repository=repository,
@@ -989,10 +1096,33 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
         limitations=limitations,
     )
 
+    read_only_report = {
+        "findings": findings,
+        "counts": counts,
+        "counted": counted_counts,
+        "plan": plan,
+        "limitations": request["limitations"],
+        "conclusion": conclusion,
+        "fail_on": fail_on,
+        "excluded": excluded_files,
+    }
+    if read_only:
+        return report_read_only(read_only, read_only_report)
+
     log("Publishing.")
     if fixes_withheld:
         request["fixesWithheldReason"] = "independent_release_evidence_missing"
     results = run_publisher(request)
+    if results.get("read_only"):
+        return report_read_only(
+            f"{READ_ONLY_REASON} ({results['read_only']}).", read_only_report
+        )
+    if results.get("check_read_only"):
+        annotate(
+            "warning",
+            "The review was posted but the check run was not: the token may not create check "
+            "runs. Grant `checks: write` to the job. " + str(results["check_read_only"]),
+        )
     # One inline edit or the fix sections failing costs the reader a comment, not the review,
     # so it is a warning. The review or the check failing is a publish that did not happen.
     for warning in results.get("warnings") or []:

@@ -335,3 +335,53 @@ def test_only_the_added_line_counts_when_both_are_present(harness):
     ]
     assert harness.main(fail_on="critical") == 0, "the only critical is pre-existing"
     assert harness.calls("check")[0]["conclusion"] == "success"
+
+
+# --- read-only tokens: forks and Dependabot -------------------------------------------------------
+
+READ_ONLY_SENTENCE = (
+    "GitHub gives fork and Dependabot pull requests a read-only token, so nothing could be posted"
+)
+
+
+def test_a_fork_pull_request_reports_in_the_job_summary_and_posts_nothing(harness):
+    harness.event["pull_request"]["head"]["repo"] = {"full_name": "someone/widgets"}
+    harness.findings = [finding(4, severity="critical")]
+    assert harness.main() == 0
+    assert harness.publisher.calls() == [], "no review or check is attempted"
+    summary = harness.summary()
+    assert READ_ONLY_SENTENCE in summary
+    assert "src/app.py:4" in summary
+    assert "1 critical" in summary
+    warnings = harness.annotations("warning")
+    assert any(line.startswith("::warning file=src/app.py,line=4") for line in warnings)
+    assert any(READ_ONLY_SENTENCE in line for line in warnings)
+    assert harness.annotations("error") == []
+
+
+def test_a_fork_pull_request_still_exits_by_fail_on(harness):
+    harness.event["pull_request"]["head"]["repo"] = None  # the fork was deleted
+    harness.findings = [finding(4, severity="critical")]
+    assert harness.main(fail_on="high") == 1
+    assert harness.publisher.calls() == []
+
+
+def test_a_403_on_the_review_and_the_check_is_a_read_only_run_not_a_failure(harness):
+    """Dependabot's pull requests come from the same repository, so the 403 is the signal."""
+    harness.publisher.fail("review", 403, "Resource not accessible by integration")
+    harness.publisher.fail("check", 403, "Resource not accessible by integration")
+    harness.findings = [finding(4, severity="medium")]
+    assert harness.main(fail_on="high") == 0
+    assert [call["name"] for call in harness.publisher.calls()] == ["review-rejected"]
+    assert READ_ONLY_SENTENCE in harness.summary()
+    assert "src/app.py:4" in harness.summary()
+    assert harness.annotations("error") == []
+
+
+def test_a_403_on_the_check_alone_is_a_warning(harness):
+    harness.publisher.fail("check", 403, "Resource not accessible by integration")
+    harness.findings = [finding(4, severity="medium")]
+    assert harness.main(fail_on="high") == 0
+    assert len(harness.calls("review")) == 1
+    assert any("checks: write" in line for line in harness.annotations("warning"))
+    assert harness.annotations("error") == []
