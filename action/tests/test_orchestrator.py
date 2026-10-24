@@ -719,3 +719,23 @@ def test_too_many_files_is_reviewed_to_the_cap_and_says_so():
 def test_a_pull_request_within_the_cap_reports_no_limitation():
     files = [{"filename": "src/a.py", "status": "modified", "patch": "+x"}]
     assert pr_scope.changed_file_limitation(files) is None
+
+
+# --- patch parsing ---------------------------------------------------------------------------
+
+def test_a_no_newline_marker_does_not_advance_the_new_file_line():
+    """`\\ No newline at end of file` is a marker, not a line in either file.
+
+    Counting it as context put `+c` on line 4 of a three-line file. An inline comment there is
+    one GitHub rejects, and it rejected the whole review with it.
+    """
+    patch = (
+        "@@ -1,2 +1,3 @@\n"
+        " a\n"
+        "-b\n"
+        "\\ No newline at end of file\n"
+        "+b\n"
+        "+c\n"
+    )
+    assert sorted(pr_scope.reviewable_lines(patch)) == [2, 3]
+    assert pr_scope.extract_reviewable_line_spans(patch) == [{"start": 2, "end": 3}]
