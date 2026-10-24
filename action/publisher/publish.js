@@ -159,13 +159,53 @@ function unanchoredSection(request, totals) {
   return lines;
 }
 
+// What the review could not read in full: a file the scanner parsed in part or gave up on, a
+// tier 1 budget that ran out, the changed-file cap. The analysis service has always reported
+// these and the action used to drop them, so a partly analysed pull request read exactly like a
+// complete, clean one. They are listed on both surfaces, and a review with any of them never
+// claims to have found nothing without saying where it did not look.
+const LIMITATIONS_HEADING = 'Not fully analysed';
+const LIMITATION_ROW_CAP = 20;
+
+function limitationsOf(request) {
+  return (request.limitations || []).filter((item) => item && typeof item === 'object');
+}
+
+function limitationText(item) {
+  const message = String(item.message || item.kind || 'not analysed');
+  return item.path ? `${item.path}: ${message}` : message;
+}
+
+function limitationsSection(request) {
+  const limitations = limitationsOf(request);
+  if (!limitations.length) return [];
+  const shown = limitations.slice(0, LIMITATION_ROW_CAP);
+  const lines = [
+    '',
+    `#### ${LIMITATIONS_HEADING} (${limitations.length})`,
+    '',
+    'The review could not read everything in this pull request. A finding could be missing from '
+    + 'these, so the result above covers only what was analysed.',
+    '',
+  ];
+  for (const item of shown) {
+    const path = item.path ? `\`${String(item.path).replace(/`/g, '')}\`: ` : '';
+    lines.push(`- ${path}${String(item.message || item.kind || 'not analysed')}`);
+  }
+  if (limitations.length > shown.length) {
+    lines.push(`- and ${limitations.length - shown.length} more`);
+  }
+  return lines;
+}
+
 function buildReviewBody(request) {
   const totals = totalsOf(request);
   const { fixes } = request;
+  const partial = limitationsOf(request).length > 0;
   const lines = ['<!-- mitig8it-review -->'];
   lines.push(totals.runtime > 0
     ? `### Mitig8it - ${plural(totals.runtime, 'finding')} detected`
-    : '### Mitig8it - no security issues found');
+    : `### Mitig8it - no security issues found${partial ? ' in what was analysed' : ''}`);
   lines.push(severityTable(totals));
 
   if (totals.runtime > 0) {
@@ -194,6 +234,7 @@ function buildReviewBody(request) {
   }
 
   lines.push(...unanchoredSection(request, totals));
+  lines.push(...limitationsSection(request));
 
   lines.push('');
   // The version goes in the footer rather than at the top, because it is the line a reader looks
@@ -233,15 +274,21 @@ function checkRunSummary(request) {
     const excluded = Number(request.excludedFiles || 0);
     if (excluded > 0) parts.push(`${plural(excluded, 'file')} excluded by .mitig8it.yml.`);
   }
+  const limitations = limitationsOf(request);
+  if (limitations.length) {
+    const shown = limitations.slice(0, LIMITATION_ROW_CAP).map(limitationText);
+    const more = limitations.length > shown.length ? `; and ${limitations.length - shown.length} more` : '';
+    parts.push(`${LIMITATIONS_HEADING} (${limitations.length}): ${shown.join('; ')}${more}.`);
+  }
   return {
     // `fail-on: none` keeps a neutral conclusion so a security review never blocks a merge that
     // the repository did not ask it to block.
     conclusion: request.failConclusion,
     // The same total the summary and the review body state, with the blocking share beside it
     // rather than in place of it.
-    title: totals.runtime > 0
+    title: (totals.runtime > 0
       ? `${plural(totals.runtime, 'finding')}, ${totals.blocking} critical or high`
-      : 'No security findings',
+      : 'No security findings') + (limitations.length ? ' (partial review)' : ''),
     summary: parts.join(' '),
   };
 }
@@ -759,5 +806,6 @@ module.exports = {
   surveyReviewThreads,
   threadFingerprint,
   UNANCHORED_HEADING,
+  LIMITATIONS_HEADING,
   CHECK_RUN_NAME,
 };

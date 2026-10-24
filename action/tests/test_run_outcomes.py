@@ -108,7 +108,7 @@ class Harness:
     def _analyze(self, _repository, _number, _sha, _files):
         if self.analysis_error is not None:
             raise self.analysis_error
-        return list(self.findings)
+        return list(self.findings), list(self.limitations)
 
     def stop(self) -> None:
         self.graphql.stop()
@@ -252,3 +252,21 @@ def test_the_public_api_url_with_a_trailing_slash_is_accepted(harness):
     harness.findings = [finding(4)]
     assert harness.main() == 0
     assert len(harness.calls("review")) == 1
+
+
+# --- limitations reach the output --------------------------------------------------------------
+
+def test_the_scanner_s_limitations_reach_the_check_the_review_and_the_job_summary(harness):
+    harness.limitations = [
+        {"path": "src/app.py", "kind": "partial_parse", "type": "Syntax error",
+         "message": "Syntax error at line 3", "line": 3},
+        {"kind": "budget", "path": "", "message": "Tier 1 stopped after 0 of 1 files (20 s budget)"},
+    ]
+    assert harness.main() == 0
+    check = harness.calls("check")[0]
+    body = harness.calls("review")[0]["body"]
+    for text in (check["summary"], body, harness.summary()):
+        assert "Not fully analysed" in text
+        assert "Syntax error at line 3" in text
+        assert "Tier 1 stopped after 0 of 1 files" in text
+    assert any("Not fully analysed" in line for line in harness.annotations("warning"))

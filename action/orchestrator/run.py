@@ -536,6 +536,24 @@ def manifest_digest(action_id: str, head_sha: str, base_sha: str, sections: Sequ
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
+LIMITATION_ANNOTATION_HEADING = "Not fully analysed"
+
+
+def normalize_limitation(limitation: Dict[str, Any]) -> Dict[str, str]:
+    """One limitation in the three fields every surface renders: what kind, where, and why."""
+    return {
+        "kind": str(limitation.get("kind") or ""),
+        "path": str(limitation.get("path") or ""),
+        "message": str(limitation.get("message") or "").strip(),
+    }
+
+
+def limitation_line(limitation: Dict[str, str]) -> str:
+    path = limitation.get("path") or ""
+    message = limitation.get("message") or limitation.get("kind") or "not analysed"
+    return f"{path}: {message}" if path else message
+
+
 def build_publish_request(
     *,
     token: str,
@@ -558,6 +576,7 @@ def build_publish_request(
     bot_login: str = "github-actions[bot]",
     action_id: Optional[str] = None,
     version_label: Optional[str] = None,
+    limitations: Sequence[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
     """Everything the Node publisher needs, in one place the tests can build without a network."""
     action_id = action_id or f"action-{uuid.uuid4().hex[:16]}"
@@ -600,7 +619,21 @@ def build_publish_request(
         "active_fingerprints": sorted(set(active_fingerprints)),
         "inline_comments": list(inline_comments),
         "fix_sections": list(fix_sections),
+        # What the review could not read in full. The check summary and the review body list
+        # them under "Not fully analysed", because a partial review must never read as a
+        # complete, clean one.
+        "limitations": [normalize_limitation(item) for item in limitations],
     }
+
+
+def limitations_markdown(limitations: Sequence[Dict[str, str]]) -> str:
+    """The job summary's "Not fully analysed" list, or "" when the review was complete."""
+    if not limitations:
+        return ""
+    rows = [f"- {limitation_line(item)}" for item in limitations[:50]]
+    if len(limitations) > 50:
+        rows.append(f"- and {len(limitations) - 50} more")
+    return f"#### {LIMITATION_ANNOTATION_HEADING}\n\n" + "\n".join(rows) + "\n\n"
 
 
 def write_summary(text: str) -> None:
@@ -800,8 +833,10 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
     excluded_files = pr_scope.excluded_file_count(raw_files, exclusions)
     if excluded_files:
         log(repo_config.exclusion_summary(excluded_files) + ".")
+    limitations: List[Dict[str, Any]] = []
     cap_limitation = pr_scope.changed_file_limitation(raw_files, exclusions)
     if cap_limitation:
+        limitations.append(cap_limitation)
         log(cap_limitation["message"] + "; the rest of the change was not reviewed.")
     if len(scoped) > max_files:
         raise ActionError(
@@ -825,7 +860,17 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
 
     analysis_files = pr_scope.build_analysis_files(scoped, contents)
     log("Scanning.")
-    findings = analysis.analyze(repository, pr_number, head_sha, analysis_files)
+    findings, analysis_limitations = analysis.analyze(
+        repository, pr_number, head_sha, analysis_files
+    )
+    limitations.extend(analysis_limitations)
+    if limitations:
+        annotate(
+            "warning",
+            f"{LIMITATION_ANNOTATION_HEADING}: "
+            + "; ".join(limitation_line(normalize_limitation(item)) for item in limitations[:10])
+            + (f"; and {len(limitations) - 10} more" if len(limitations) > 10 else ""),
+        )
     counts = analysis.severity_counts(findings)
     log(
         f"{plural(len(findings), 'finding')}: {counts['critical']} critical, "
@@ -885,6 +930,7 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
         # login. Assuming it meant every re-run created a second comment instead of editing.
         bot_login=reader.viewer_login(),
         version_label=identity["label"],
+        limitations=limitations,
     )
 
     log("Publishing.")
@@ -923,6 +969,7 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
         f"{plural(len(findings), 'finding')}, {counts['critical']} critical, "
         f"{counts['high']} high, {plural(len(fix_sections), 'fix suggestion')}.\n\n"
         + (f"{exclusion_line}.\n\n" if exclusion_line else "")
+        + limitations_markdown(request["limitations"])
         + (
             "Fix suggestions were withheld because independent release evidence is missing.\n"
             if fixes_withheld else (

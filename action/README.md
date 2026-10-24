@@ -134,6 +134,13 @@ committed-secret rule is the one that most often fires there. What it does say i
 language-aware rule ran on them, which is what a reader needs in order to know what a clean
 result is worth.
 
+When the review could not read something in full, the check summary, the review body and the job
+summary list it under **Not fully analysed**, one line per file: a file the scanner parsed only
+in part, a file it gave up on, a time budget that ran out, a file too large to fetch, or the
+changed-file cap. The check title then ends in `(partial review)`, and a review with no findings
+says "no security issues found in what was analysed" rather than claiming the whole pull request
+is clean.
+
 Full syntax and limits: [Repository Configuration](../docs/getting-started/configuration.md).
 
 ### Outputs
