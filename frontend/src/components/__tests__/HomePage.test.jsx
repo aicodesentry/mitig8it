@@ -133,4 +133,26 @@ describe('PullRequestReviewPreview', () => {
     expect(screen.getByRole('button', { name: 'Commit suggestion' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Apply in Mitig8it' })).toBeNull()
   })
+
+  it('says sign-in failed when the URL carries an OAuth error', () => {
+    render(
+      <MemoryRouter initialEntries={['/?error=access_denied']}>
+        <HomePage />
+      </MemoryRouter>
+    )
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Sign-in failed')
+    expect(alert).toHaveTextContent('access_denied')
+  })
+
+  it('shows no sign-in error without one in the URL', () => {
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>
+    )
+
+    expect(screen.queryByText(/Sign-in failed/)).toBeNull()
+  })
 })
