@@ -385,3 +385,34 @@ def test_a_403_on_the_check_alone_is_a_warning(harness):
     assert len(harness.calls("review")) == 1
     assert any("checks: write" in line for line in harness.annotations("warning"))
     assert harness.annotations("error") == []
+
+
+# --- missing or malformed required inputs ------------------------------------------------------
+
+def test_a_missing_token_fails_the_job_whatever_fail_on_says(harness):
+    """A workflow-author problem, like the contents: write refusal, never a quiet exit 0."""
+    harness.monkeypatch.delenv("INPUT_GITHUB_TOKEN", raising=False)
+    harness.monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert harness.main() == 1
+    assert any("no github-token was provided" in line for line in harness.annotations("error"))
+    assert harness.api.calls == []
+    assert harness.publisher.calls() == []
+
+
+def test_a_missing_repository_name_fails_the_job(harness):
+    harness.monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    assert harness.main() == 1
+    assert any("GITHUB_REPOSITORY" in line for line in harness.annotations("error"))
+
+
+def test_an_unreadable_event_payload_fails_the_job(harness, tmp_path):
+    bad = tmp_path / "bad-event.json"
+    bad.write_text("{not json")
+    harness.write_event = lambda: harness.monkeypatch.setenv("GITHUB_EVENT_PATH", str(bad))
+    assert harness.main() == 1
+    assert any("could not be read" in line for line in harness.annotations("error"))
+
+
+def test_a_missing_event_path_fails_the_job(harness):
+    harness.write_event = lambda: harness.monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    assert harness.main() == 1
