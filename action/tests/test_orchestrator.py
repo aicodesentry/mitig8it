@@ -343,7 +343,8 @@ def test_a_finding_outside_the_diff_is_reported_rather_than_dropped():
             "line": 99,
             "severity": "high",
             "rule": "sql.injection.raw_query",
-            "reason": "line_outside_diff",
+            # The patch is known and line 99 is not one it added: code the author did not write.
+            "reason": "pre_existing",
         }
     ]
 
@@ -777,3 +778,37 @@ def test_a_no_newline_marker_does_not_advance_the_new_file_line():
     )
     assert sorted(pr_scope.reviewable_lines(patch)) == [2, 3]
     assert pr_scope.extract_reviewable_line_spans(patch) == [{"start": 2, "end": 3}]
+
+
+# --- pre-existing findings -------------------------------------------------------------------
+
+def test_a_finding_off_the_added_lines_of_a_known_patch_is_pre_existing():
+    findings = [
+        {"fingerprint": "old", "file_path": "src/reports.py", "line_start": 1, "severity": "critical"},
+        {"fingerprint": "new", "file_path": "src/reports.py", "line_start": 4, "severity": "high"},
+    ]
+    patches = {"src/reports.py": PATCH}
+    plan = run.plan_comments(findings, patches)
+    assert [item["reason"] for item in plan["unanchored"]] == ["pre_existing"]
+    counted = run.counted_findings(findings, patches)
+    assert [item["fingerprint"] for item in counted] == ["new"]
+
+
+def test_a_finding_in_a_file_without_a_patch_is_still_counted():
+    """GitHub omits the patch of a very large diff. Without it the action cannot tell what was
+    added, so it counts the finding rather than let a new file slip past fail-on."""
+    findings = [{"fingerprint": "x", "file_path": "gen/big.py", "line_start": 9000, "severity": "critical"}]
+    assert run.counted_findings(findings, {"gen/big.py": ""}) == findings
+    plan = run.plan_comments(findings, {"gen/big.py": ""})
+    assert plan["unanchored"][0]["reason"] == "line_outside_diff"
+
+
+def test_review_totals_separate_pre_existing_from_blocking():
+    counts = {"critical": 2, "high": 1, "medium": 0, "low": 0, "info": 0}
+    unanchored = [
+        {"path": "a.py", "line": 1, "severity": "critical", "rule": "r", "reason": "pre_existing"},
+    ]
+    totals = run.review_totals(counts, [{}, {}], unanchored)
+    assert totals["runtime"] == 3
+    assert totals["preexisting"] == 1
+    assert totals["blocking"] == 2

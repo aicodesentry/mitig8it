@@ -145,7 +145,9 @@ Full syntax and limits: [Repository Configuration](../docs/getting-started/confi
 
 ### Outputs
 
-`findings`, `critical`, `high`, `fixes`, `conclusion`.
+`findings`, `critical`, `high`, `fixes`, `conclusion`. `findings` counts everything reported;
+`critical` and `high` count only findings on lines the pull request added, the ones `fail-on`
+acts on.
 
 ## How fixes are applied
 
@@ -222,6 +224,14 @@ Those findings are listed in the review body instead, under **Findings on lines 
 did not change**, with their severity, rule, path and line and a permalink to the commit that was
 reviewed. They are counted separately in the check summary. The App does the same, in the same
 words.
+
+The scanner reads a changed file whole, so a one-line edit to a legacy file can report problems
+that were already there. The action has no baseline to compare against, so it uses the diff: a
+finding on a line the pull request did not add, in a file whose patch GitHub returned, is marked
+**pre-existing in a touched file, not counted**. It stays in the review body list so the author
+still sees it, and it is left out of the blocking total, the `critical` and `high` outputs, and
+`fail-on`. Only findings on added lines can fail the job. When GitHub omits a file's patch (a
+very large diff) the action cannot tell old lines from new, so those findings are counted.
 
 The check title, the check summary and the review body state one total, computed once, with the
 breakdown beside it.

@@ -199,6 +199,35 @@ def assert_least_privilege(reader: github_api.GitHubReader) -> Dict[str, bool]:
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
+# The reason an unanchored finding carries when it sits on a line the pull request did not add,
+# in a file whose patch is known. The action has no baseline, so this is how it tells code the
+# author wrote from code they only touched the file around.
+PRE_EXISTING = "pre_existing"
+
+
+def is_pre_existing(finding: Dict[str, Any], patches_by_path: Dict[str, str]) -> bool:
+    """True for a finding on a line the pull request did not add, in a file whose patch is known.
+
+    Tier 2 scans the whole file and tier 1 reads context lines, so a one-line edit to a legacy
+    file reports every old problem in it. Those are listed, not counted: a pull request must not
+    be blocked by code its author did not write. A file with no patch (GitHub omits the patch of
+    a very large diff) cannot be told apart, so its findings are counted, which is the side that
+    cannot let a new file slip past `fail-on`.
+    """
+    path = str(finding.get("file_path") or "")
+    line = int(finding.get("line_start") or 0)
+    patch = patches_by_path.get(path) or ""
+    if not path or line <= 0 or not patch:
+        return False
+    return line not in pr_scope.reviewable_lines(patch)
+
+
+def counted_findings(
+    findings: Sequence[Dict[str, Any]], patches_by_path: Dict[str, str]
+) -> List[Dict[str, Any]]:
+    """The findings `fail-on` and the blocking total count: everything not pre-existing."""
+    return [finding for finding in findings if not is_pre_existing(finding, patches_by_path)]
+
 
 def plan_comments(
     findings: Sequence[Dict[str, Any]],
@@ -243,7 +272,8 @@ def plan_comments(
         severity = str(finding.get("severity") or "").lower()
         if not path or line <= 0:
             continue
-        if line in pr_scope.reviewable_lines(patches_by_path.get(path, "")):
+        patch = patches_by_path.get(path, "") or ""
+        if line in pr_scope.reviewable_lines(patch):
             anchored.append(
                 {
                     "path": path,
@@ -260,7 +290,7 @@ def plan_comments(
                 "line": line,
                 "severity": severity,
                 "rule": str(finding.get("rule_id") or finding.get("title") or ""),
-                "reason": "line_outside_diff",
+                "reason": PRE_EXISTING if patch else "line_outside_diff",
             }
         )
 
@@ -306,6 +336,12 @@ def review_totals(
     arithmetic to trust any of them. They are computed once here and rendered three times.
     """
     runtime = sum(int(counts.get(key, 0)) for key in ("critical", "high", "medium", "low"))
+    # Pre-existing findings stay in every total a reader sees and leave the blocking one, which
+    # is the number `fail-on` acts on.
+    pre_existing = [item for item in unanchored if item.get("reason") == PRE_EXISTING]
+    pre_existing_blocking = sum(
+        1 for item in pre_existing if str(item.get("severity") or "") in ("critical", "high")
+    )
     return {
         "runtime": runtime,
         "critical": int(counts.get("critical", 0)),
@@ -313,9 +349,12 @@ def review_totals(
         "medium": int(counts.get("medium", 0)),
         "low": int(counts.get("low", 0)),
         "informational": int(counts.get("info", 0)),
-        "blocking": int(counts.get("critical", 0)) + int(counts.get("high", 0)),
+        "blocking": max(
+            0, int(counts.get("critical", 0)) + int(counts.get("high", 0)) - pre_existing_blocking
+        ),
         "inline": len(comments),
         "unanchored": len(unanchored),
+        "preexisting": len(pre_existing),
     }
 
 
@@ -912,7 +951,17 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
             "they are listed in the review body rather than on the diff."
         )
 
-    conclusion = fail_conclusion(fail_on, counts)
+    # Every finding is reported; only the ones on lines this pull request added are counted.
+    counted_counts = analysis.severity_counts(counted_findings(findings, patches_by_path))
+    pre_existing_total = sum(1 for item in unanchored if item.get("reason") == PRE_EXISTING)
+    if pre_existing_total:
+        log(
+            f"{plural(pre_existing_total, 'finding')} pre-existing in a touched file, not "
+            "counted towards fail-on."
+        )
+    conclusion = fail_conclusion(fail_on, counts) if fail_on == "none" else fail_conclusion(
+        fail_on, counted_counts
+    )
     request = build_publish_request(
         token=token,
         repository=repository,
@@ -963,8 +1012,8 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
     write_outputs(
         {
             "findings": len(findings),
-            "critical": counts["critical"],
-            "high": counts["high"],
+            "critical": counted_counts["critical"],
+            "high": counted_counts["high"],
             "fixes": len(fix_sections),
             "conclusion": conclusion,
             "excluded": excluded_files,
@@ -999,8 +1048,8 @@ def _run(context: Optional[Dict[str, Any]] = None) -> int:
     if conclusion == "failure":
         annotate(
             "error",
-            f"Mitig8it: {counts['critical']} critical and {counts['high']} high findings "
-            f"exceed fail-on: {fail_on}.",
+            f"Mitig8it: {counted_counts['critical']} critical and {counted_counts['high']} high "
+            f"findings on lines this pull request added exceed fail-on: {fail_on}.",
         )
         return 1
     return 0

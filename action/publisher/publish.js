@@ -65,6 +65,7 @@ function totalsOf(request) {
     blocking: (counts.critical || 0) + (counts.high || 0),
     inline,
     unanchored,
+    preexisting: 0,
   };
 }
 
@@ -132,6 +133,14 @@ function permalink(request, path, line) {
 const UNANCHORED_HEADING = 'Findings on lines this pull request did not change';
 const UNANCHORED_ROW_CAP = 50;
 
+// A finding on a line the pull request did not add, in a file whose patch is known, is code
+// the author did not write. It is listed so they still see it and left out of `fail-on`.
+const PRE_EXISTING_LABEL = 'pre-existing in a touched file, not counted';
+
+function countedLabel(finding) {
+  return finding.reason === 'pre_existing' ? PRE_EXISTING_LABEL : 'yes';
+}
+
 function unanchoredSection(request, totals) {
   const findings = request.unanchored_findings || [];
   if (!findings.length) return [];
@@ -142,15 +151,19 @@ function unanchoredSection(request, totals) {
     '',
     'GitHub accepts an inline comment only on a line the pull request touches, and a comment on '
     + 'the nearest line that it does touch would point at the wrong code. These are listed here '
-    + 'instead, against the commit that was reviewed.',
+    + 'instead, against the commit that was reviewed.'
+    + (Number(totals.preexisting || 0) > 0
+      ? ` ${plural(Number(totals.preexisting), 'finding')} here ${Number(totals.preexisting) === 1 ? 'is' : 'are'} `
+        + `${PRE_EXISTING_LABEL}: on a line this pull request did not add, so not counted towards \`fail-on\`.`
+      : ''),
     '',
-    '| Severity | Rule | Location |',
-    '| --- | --- | --- |',
+    '| Severity | Rule | Location | Counted |',
+    '| --- | --- | --- | --- |',
   ];
   for (const finding of shown) {
     const rule = finding.rule ? `\`${String(finding.rule).replace(/[`|]/g, '')}\`` : '-';
     const location = `[${String(finding.path).replace(/[|]/g, '')}:${finding.line}](${permalink(request, finding.path, finding.line)})`;
-    lines.push(`| ${finding.severity || 'unknown'} | ${rule} | ${location} |`);
+    lines.push(`| ${finding.severity || 'unknown'} | ${rule} | ${location} | ${countedLabel(finding)} |`);
   }
   if (findings.length > shown.length) {
     lines.push('');
@@ -259,6 +272,10 @@ function checkRunSummary(request) {
         + 'this pull request did not change, listed in the review body.'
       : 'All of them are annotated on the diff.');
   }
+  const preexisting = Number(totals.preexisting || 0);
+  if (preexisting > 0) {
+    parts.push(`${plural(preexisting, 'finding')} ${preexisting === 1 ? 'is' : 'are'} ${PRE_EXISTING_LABEL} towards fail-on.`);
+  }
   if (totals.informational > 0) {
     parts.push(`${plural(totals.informational, 'informational finding')} in test code, not posted.`);
   }
@@ -288,6 +305,7 @@ function checkRunSummary(request) {
     // rather than in place of it.
     title: (totals.runtime > 0
       ? `${plural(totals.runtime, 'finding')}, ${totals.blocking} critical or high`
+        + (Number(totals.preexisting || 0) > 0 ? `, ${totals.preexisting} pre-existing not counted` : '')
       : 'No security findings') + (limitations.length ? ' (partial review)' : ''),
     summary: parts.join(' '),
   };

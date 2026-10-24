@@ -298,3 +298,40 @@ def test_a_large_file_is_reported_not_analysed_and_the_run_continues(harness, pa
     assert "src/app.py" in check["summary"]
     assert "(partial review)" in check["title"]
     assert len(harness.calls("review")) == 1
+
+
+# --- pre-existing code in a touched file -------------------------------------------------------
+
+def test_a_finding_on_an_unchanged_line_does_not_fail_fail_on_high(harness):
+    """Touching a legacy file must not block the pull request for code its author did not write."""
+    harness.findings = [finding(1, severity="critical", fingerprint="fp-old")]
+    assert harness.main(fail_on="high") == 0
+    check = harness.calls("check")[0]
+    assert check["conclusion"] == "success"
+    assert "0 critical or high" in check["title"]
+    assert "1 pre-existing" in check["title"]
+    assert "pre-existing in a touched file, not counted" in check["summary"]
+    body = harness.calls("review")[0]["body"]
+    assert "src/app.py:1" in body, "the author still sees it"
+    assert "pre-existing in a touched file, not counted" in body
+    outputs = harness.output_path.read_text()
+    assert "critical=0" in outputs
+    assert "conclusion=success" in outputs
+
+
+def test_a_finding_on_an_added_line_fails_fail_on_high(harness):
+    harness.findings = [finding(4, severity="critical", fingerprint="fp-new")]
+    assert harness.main(fail_on="high") == 1
+    check = harness.calls("check")[0]
+    assert check["conclusion"] == "failure"
+    assert "1 critical or high" in check["title"]
+    assert "pre-existing" not in check["title"]
+
+
+def test_only_the_added_line_counts_when_both_are_present(harness):
+    harness.findings = [
+        finding(1, severity="critical", fingerprint="fp-old"),
+        finding(4, severity="high", fingerprint="fp-new"),
+    ]
+    assert harness.main(fail_on="critical") == 0, "the only critical is pre-existing"
+    assert harness.calls("check")[0]["conclusion"] == "success"
