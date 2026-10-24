@@ -133,3 +133,54 @@ def test_patch_allows_node_builtins_and_declared_dependencies(request_payload, s
         [whole_file_change("src/db.ts", source, replacement)],
     )
     assert bundle.patches[0].new_sha256 == content_sha256(replacement)
+
+
+# --- Line endings -------------------------------------------------------------------------
+#
+# A suggestion committed on GitHub writes the replaced lines with the line ending the file
+# already uses there. The verified bytes must be those bytes, so the replacement reuses the
+# replaced block's line ending rather than always writing LF.
+
+from src.patches import _hunk_text  # noqa: E402
+
+
+def test_a_crlf_block_keeps_crlf():
+    assert _hunk_text(["x = 1", "import os"], "x = 0\r\n") == "x = 1\r\nimport os\r\n"
+
+
+def test_an_lf_block_stays_lf():
+    assert _hunk_text(["x = 1", "import os"], "x = 0\n") == "x = 1\nimport os\n"
+
+
+def test_a_mixed_file_follows_the_replaced_block():
+    # A CRLF block inside an otherwise LF file, and an LF block inside a CRLF file.
+    assert _hunk_text(["a", "b"], "old\r\n") == "a\r\nb\r\n"
+    assert _hunk_text(["a", "b"], "old\n", "\r\n") == "a\nb\n"
+
+
+def test_a_final_line_without_a_newline_uses_the_file_ending_and_adds_none():
+    assert _hunk_text(["a", "b"], "old", "\r\n") == "a\r\nb"
+    assert _hunk_text(["a", "b"], "old") == "a\nb"
+
+
+def test_apply_hunks_on_a_crlf_file_writes_crlf_only(request_payload):
+    from src.patches import apply_hunks  # noqa: PLC0415
+
+    source = "import x\r\nconst a = 1;\r\nconst b = 2;\r\n"
+    payload = dict(request_payload)
+    payload["files"] = [{"path": "src/db.ts", "content": source}]
+    payload["tree_entries"] = []
+    payload["head_tree_oid"] = None
+    snapshot = Snapshot(RepairRequest.model_validate(payload))
+    contents = apply_hunks(
+        snapshot,
+        [
+            {
+                "path": "src/db.ts",
+                "start_line": 2,
+                "original_lines": ["const a = 1;"],
+                "replacement_lines": ["const a = 10;", "const c = 3;"],
+            }
+        ],
+    )
+    assert contents["src/db.ts"] == "import x\r\nconst a = 10;\r\nconst c = 3;\r\nconst b = 2;\r\n"

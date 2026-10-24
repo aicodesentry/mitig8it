@@ -1124,8 +1124,41 @@ def locate_hunk(path: str, file_lines: list[str], hunk: dict[str, Any]) -> tuple
     return start, end
 
 
-def _hunk_text(replacement_lines: Any, replaced_block: str) -> str:
-    """Renders a hunk's replacement lines, preserving the replaced block's trailing newline."""
+def _line_ending(text: str) -> str | None:
+    """The first line ending in `text` (CRLF, LF or a lone CR), or None when it has none."""
+    for index, char in enumerate(text):
+        if char == "\r":
+            return "\r\n" if text[index + 1 : index + 2] == "\n" else "\r"
+        if char == "\n":
+            return "\n"
+    return None
+
+
+def _trailing_ending(text: str) -> str:
+    """The line ending `text` ends with, or "" when its last line has none."""
+    if text.endswith("\r\n"):
+        return "\r\n"
+    if text.endswith(("\n", "\r")):
+        return text[-1]
+    return ""
+
+
+def _preceding_ending(original_lines: list[str], start: int) -> str:
+    """The ending of the line before `start` (1-based), for a block that carries none itself."""
+    if start >= 2:
+        return _line_ending(original_lines[start - 2]) or "\n"
+    return "\n"
+
+
+def _hunk_text(replacement_lines: Any, replaced_block: str, file_ending: str = "\n") -> str:
+    """Renders a hunk's replacement lines with the replaced block's own line endings.
+
+    A suggestion committed on GitHub keeps the line ending the file uses where it lands, so the
+    bytes verified here must too: the lines are joined with the block's line ending (CRLF in a
+    CRLF block, whatever the rest of the file uses), and the block's trailing ending, or its
+    absence on a final line, is kept. A block with no line ending at all, the last line of a file
+    without a final newline, joins with `file_ending`, the ending of the line above it.
+    """
     if not isinstance(replacement_lines, list) or any(not isinstance(line, str) for line in replacement_lines):
         raise PatchPolicyError(
             "replacement_lines_must_be_a_list_of_strings",
@@ -1139,8 +1172,8 @@ def _hunk_text(replacement_lines: Any, replaced_block: str) -> str:
         )
     if not replacement_lines:
         return ""
-    trailing = "\n" if replaced_block.endswith(("\n", "\r")) else ""
-    return "\n".join(replacement_lines) + trailing
+    separator = _line_ending(replaced_block) or file_ending
+    return separator.join(replacement_lines) + _trailing_ending(replaced_block)
 
 
 def locate_hunks(snapshot: Snapshot, proposed_changes: list[dict[str, Any]]) -> list[LocatedHunk]:
@@ -1177,7 +1210,7 @@ def locate_hunks(snapshot: Snapshot, proposed_changes: list[dict[str, Any]]) -> 
             # miscounted start_line never decides which lines are replaced.
             start, end = locate_hunk(path, original_lines, hunk)
             replaced_block = "".join(original_lines[start - 1 : end])
-            _hunk_text(hunk["replacement_lines"], replaced_block)
+            _hunk_text(hunk["replacement_lines"], replaced_block, _preceding_ending(original_lines, start))
             finding_id = hunk.get("finding_id")
             if finding_id is not None and (not isinstance(finding_id, str) or not finding_id.strip()):
                 raise PatchPolicyError("hunk_finding_id_invalid", "finding_id must be one of the task's finding ids.")
@@ -1213,7 +1246,11 @@ def render_hunks(snapshot: Snapshot, hunks: list[LocatedHunk] | tuple[LocatedHun
         updated = list(original_lines)
         for hunk in sorted(items, key=lambda item: (item.start_line, item.end_line), reverse=True):
             replaced_block = "".join(original_lines[hunk.start_line - 1 : hunk.end_line])
-            text = _hunk_text(list(hunk.replacement_lines), replaced_block)
+            text = _hunk_text(
+                list(hunk.replacement_lines),
+                replaced_block,
+                _preceding_ending(original_lines, hunk.start_line),
+            )
             updated[hunk.start_line - 1 : hunk.end_line] = [text] if text else []
         contents[path] = "".join(updated)
     return contents
