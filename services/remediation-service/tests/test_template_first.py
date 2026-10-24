@@ -648,3 +648,29 @@ async def test_a_django_view_running_raw_sql_through_connection_cursor_is_templa
     assert "'{name}'" not in fixed
     assert verification.status == "passed" and verification.proven_finding_ids == ["sql-11"]
     assert _outcomes(verification)["sql-11"] == ("failed", "passed")
+
+
+
+@requires_node
+@pytest.mark.asyncio
+async def test_without_a_model_key_the_group_refusal_is_the_template_pass_reason():
+    """The model pass only abstained because no key was configured; the template pass is the one
+    that ran, so its reason is the group's, not the abstention's `model_not_configured`."""
+    from src.engine import TEMPLATE, _Pass  # noqa: PLC0415
+
+    findings = [{"snapshot_id": "sql-13", "cwe_id": "CWE-89", "file_path": "services/orders.js", "line_start": 14, "line_end": 14}]
+    request = _request([("services/orders.js", ORDERS_JS), ("services/package.json", ORDERS_PACKAGE)], findings)
+
+    class FailingTemplate(RepairEngine):
+        async def _template_pass(self, group_request, snapshot, verifier, proofs, report, failures):
+            for finding in group_request.findings:
+                report[finding.stable_id] = "not_proven"
+            return _Pass(
+                TEMPLATE, group_request, "inconclusive", None, None, None, "template_verification_failed",
+                "The template candidate did not prove its findings.", [], {"input_tokens": 0, "output_tokens": 0, "provider_request_ids": []},
+            )
+
+    abstain = ProviderAction("abstain", {"reason_code": "model_not_configured", "explanation": "No model key was given."})
+    response = await FailingTemplate(lambda group_request: _local_agent(_Scripted([abstain]))).repair(request)
+    assert response.state != "ready"
+    assert response.reason["code"] == "template_verification_failed", response.reason

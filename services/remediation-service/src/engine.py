@@ -58,6 +58,10 @@ RETRY_SOURCE = "retry"
 # recorded. It is never tried before the executed passes and never instead of one.
 STATIC_ASSERTION_SOURCE = "static_assertion"
 
+# The abstention a provider gives when no model is configured at all (the Action's keyless
+# provider). Such a pass never attempted a repair, so it does not supply the group's reason.
+MODEL_NOT_CONFIGURED = "model_not_configured"
+
 # A finding whose file arrived with content that differs from the file's head Git blob.
 SNAPSHOT_CONTENT_MISMATCH = "snapshot_content_mismatch"
 
@@ -945,8 +949,16 @@ class RepairEngine:
         trace = [entry for item in passes for entry in item.trace]
         usage = _aggregate_usage([GroupOutcome(index, finding_ids, item.state, None, None, [], None, None, item.trace, item.usage, True) for item in passes])
         # The group's reason is the group pass's own: a focused retry that stopped is recorded
-        # under `retries`, and the verification-based reason of the pass before it stands.
-        last = model_pass if model_pass is not None else (passes[-1] if passes else None)
+        # under `retries`, and the verification-based reason of the pass before it stands. A
+        # model pass that only abstained because no model is configured never tried anything,
+        # so when the template pass ran, its reason is the one that explains the group.
+        unconfigured = (
+            model_pass is not None
+            and not model_pass.ready
+            and model_pass.reason_code == MODEL_NOT_CONFIGURED
+        )
+        reason_pass = template if unconfigured and template is not None else model_pass
+        last = reason_pass if reason_pass is not None else (passes[-1] if passes else None)
         evidence: dict[str, Any] = {
             "proofs": proof_report,
             "templates": template_report,

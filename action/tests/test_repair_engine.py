@@ -224,6 +224,14 @@ def test_a_javascript_finding_is_in_a_supported_repair_family():
     )
 
 
+def _without_argv(value):
+    if isinstance(value, dict):
+        return {key: _without_argv(item) for key, item in value.items() if key != "argv"}
+    if isinstance(value, list):
+        return [_without_argv(item) for item in value]
+    return value
+
+
 def test_a_javascript_repair_runs_its_verification_in_this_runtime(sandbox):
     """The runtime proof: the engine must reach a verdict rather than refuse the runtime.
 
@@ -240,7 +248,9 @@ def test_a_javascript_repair_runs_its_verification_in_this_runtime(sandbox):
         "the engine refused the Node runtime, which is what pinning the remediation "
         "service's NODE_VERSION in action/Dockerfile exists to prevent"
     )
-    rendered = repr(response.evidence or {}) + repr(response.reason or {})
+    # The check argv carries `--experimental-strip-types` as a flag it passes, not a refusal, and
+    # it is in the evidence whenever a verification ran, so only the reported text is searched.
+    rendered = repr(_without_argv(response.evidence or {})) + repr(response.reason or {})
     for missing in ("stripTypeScriptTypes", "registerHooks", "--experimental-strip-types"):
         assert missing not in rendered, (
             f"the sandbox harness reported {missing} unavailable in this runtime"
