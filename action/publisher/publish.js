@@ -620,6 +620,42 @@ async function publishErrorCheck(request) {
   return results;
 }
 
+// GitHub gives a workflow run from a fork, and a Dependabot pull request, a read-only token.
+// Its writes come back 403 "Resource not accessible by integration". That is not a fault to
+// report as a failed publish: it is a run that can only report into its own job summary.
+function isReadOnlyRefusal(error) {
+  if (githubStatusOf(error) === 403) return true;
+  return /resource not accessible by integration/i.test(githubMessageOf(error));
+}
+
+function readOnlyReason(error) {
+  return `GitHub refused the write with a read-only token: ${describeError(error)}`;
+}
+
+// The request as it is once GitHub has refused a review's new comments: those comments listed
+// as findings that could not be anchored, and every total moved to match.
+function withRejectedComments(request, rejected) {
+  const totals = { ...totalsOf(request) };
+  totals.inline = Math.max(0, Number(totals.inline || 0) - rejected.length);
+  totals.unanchored = Number(totals.unanchored || 0) + rejected.length;
+  const rejectedFindings = rejected.map((comment) => ({
+    path: comment.path,
+    line: comment.line,
+    severity: comment.severity || 'unknown',
+    rule: comment.rule || '',
+    reason: 'rejected_by_github',
+  }));
+  const rejectedPaths = new Set(rejected.map((comment) => `${comment.path}:${comment.line}`));
+  return {
+    ...request,
+    totals,
+    inline_comments: (request.inline_comments || []).filter(
+      (comment) => !rejectedPaths.has(`${comment.path}:${comment.line}`),
+    ),
+    unanchored_findings: [...(request.unanchored_findings || []), ...rejectedFindings],
+  };
+}
+
 async function publish(request, { fetchImpl, graphql } = {}) {
   const { githubIdentity, operations } = service();
   githubIdentity.useProvider(createWorkflowTokenProvider({
@@ -699,18 +735,54 @@ async function publish(request, { fetchImpl, graphql } = {}) {
   // the job: 39 of its 209 seconds. REQUEST_CHANGES would demand a dismissal from a human
   // before merge, which an action installed by five lines of YAML has not earned, so the event
   // stays COMMENT and `fail-on` carries the blocking decision.
-  try {
-    results.review = await operations.submitPullRequestReview({
-      ...base,
-      body: buildReviewBody(request),
-      event: 'COMMENT',
-      comments: fresh.map((comment) => ({ path: comment.path, line: comment.line, body: comment.body })),
-    });
-    results.posted = fresh.length;
-    for (const comment of fresh) results.inline.push({ path: comment.path, line: comment.line, comment_id: 0 });
-  } catch (error) {
-    results.errors.push(`review: ${describeError(error)}`);
+  //
+  // GitHub validates every comment in the review and answers 422 for the whole review when one
+  // of them is not on the diff, without saying which. One bad anchor used to lose the summary
+  // and every comment with it. So a 422 is retried once, without the new comments, and those are
+  // listed in the body as findings that could not be anchored. Their thread markers are absent
+  // this run, and the next run that can anchor them posts them.
+  let reviewRequest = request;
+  let reviewComments = fresh;
+  results.rejected = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      results.review = await operations.submitPullRequestReview({
+        ...base,
+        body: buildReviewBody(reviewRequest),
+        event: 'COMMENT',
+        comments: reviewComments.map((comment) => ({ path: comment.path, line: comment.line, body: comment.body })),
+      });
+      results.posted = reviewComments.length;
+      for (const comment of reviewComments) results.inline.push({ path: comment.path, line: comment.line, comment_id: 0 });
+      break;
+    } catch (error) {
+      const status = githubStatusOf(error);
+      if (status === 422 && attempt === 1 && reviewComments.length > 0) {
+        results.rejected = reviewComments.map((comment) => ({ path: comment.path, line: comment.line }));
+        results.warnings.push(
+          `review: GitHub rejected ${plural(reviewComments.length, 'inline comment')} `
+          + `(${describeError(error)}); posted the review without them and listed them in its body`,
+        );
+        reviewRequest = withRejectedComments(request, reviewComments);
+        reviewComments = [];
+        continue;
+      }
+      if (isReadOnlyRefusal(error)) {
+        results.read_only = readOnlyReason(error);
+      } else {
+        results.errors.push(`review: ${describeError(error)}`);
+      }
+      break;
+    }
   }
+  if (results.read_only) {
+    // A token that may not review may not check, edit or resolve either, and a check run that
+    // described a review nobody can see would be worse than none. The orchestrator reports the
+    // findings in the job summary instead.
+    return results;
+  }
+  // Every later surface describes what was actually posted.
+  request = reviewRequest;
 
   // 4. The comments that already exist and have changed, edited in place by their marker. This
   // is a PATCH and creates no review, so the timeline stays at one entry per run.
@@ -782,7 +854,11 @@ async function publish(request, { fetchImpl, graphql } = {}) {
       summary: summary.summary,
     });
   } catch (error) {
-    results.errors.push(`check run: ${describeError(error)}`);
+    if (isReadOnlyRefusal(error)) {
+      results.check_read_only = readOnlyReason(error);
+    } else {
+      results.errors.push(`check run: ${describeError(error)}`);
+    }
   }
 
   return results;
@@ -813,6 +889,8 @@ if (require.main === module) {
 
 module.exports = {
   publish,
+  isReadOnlyRefusal,
+  withRejectedComments,
   publishErrorCheck,
   githubStatusOf,
   buildReviewBody,
