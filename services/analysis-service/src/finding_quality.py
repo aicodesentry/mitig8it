@@ -114,6 +114,12 @@ def parse_patch_entries(patch: str, path: Any = None, content: Any = None) -> Li
             old_line += 1
             continue
 
+        # `\ No newline at end of file` annotates the line before it and is a line of neither
+        # file. Read as context it advanced both counters, so every line after it in the hunk
+        # was reported one line low and a review comment could anchor past the end of the file.
+        if raw_line.startswith("\\"):
+            continue
+
         # Named apart from the `content` parameter, which is the whole file: rebinding it here
         # emptied the file text before `_annotate_scan_text` ever saw it.
         line_text = raw_line[1:] if raw_line.startswith(" ") else raw_line

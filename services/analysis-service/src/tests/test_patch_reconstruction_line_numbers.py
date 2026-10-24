@@ -100,3 +100,44 @@ class TestScannerReportsTheFilesLineNumbers:
         assert findings, "the reconstructed file produced no finding"
         assert {finding["line_start"] for finding in findings} == {501}
         assert {finding["code_snippet"] for finding in findings} == {"subprocess.run('ls ' + name, shell=True)"}
+
+
+# The old file lacked a final newline and the pull request appends a line, the common case
+# for the marker. `b` is rewritten only to gain its newline.
+NO_NEWLINE_PATCH = "\n".join([
+    "@@ -1,2 +1,3 @@",
+    " a",
+    "-b",
+    "\\ No newline at end of file",
+    "+b",
+    "+eval(user_input)",
+    "",
+])
+
+
+class TestTier1LineNumbersAfterNoNewlineMarker:
+    """Tier 1 reads the patch directly, so it has its own copy of the line arithmetic.
+
+    `\\ No newline at end of file` is not a line of either file. It used to be read as a
+    context line and advance the new-side counter, so `+eval(user_input)` was reported at line
+    4 of a three-line file and GitHub rejected the review comment anchored there.
+    """
+
+    def test_the_marker_is_not_an_entry_and_does_not_shift_later_lines(self):
+        from finding_quality import parse_patch_entries
+
+        entries = parse_patch_entries(NO_NEWLINE_PATCH, "app.py")
+        assert [(entry["kind"], entry["line_number"], entry["content"]) for entry in entries] == [
+            ("context", 1, "a"),
+            ("add", 2, "b"),
+            ("add", 3, "eval(user_input)"),
+            # The empty string after the patch's final newline, read as it always has been.
+            ("context", 4, ""),
+        ]
+
+    def test_a_tier1_finding_on_the_last_added_line_reports_line_3(self):
+        from main import ChangedFile, pattern_findings
+
+        findings = pattern_findings([ChangedFile(path="app.py", patch=NO_NEWLINE_PATCH)], [])
+        evals = [finding for finding in findings if finding["rule_id"] == "code.injection.eval"]
+        assert [finding["line_start"] for finding in evals] == [3]
