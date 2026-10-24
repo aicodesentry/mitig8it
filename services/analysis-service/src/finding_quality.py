@@ -178,7 +178,13 @@ def _annotate_scan_text(entries: List[Dict[str, Any]], path: Any, content: Any =
             entry["scan_text"] = code_only
             entry["scan_text_no_strings"] = no_strings
             number = int(entry.get("line_number") or 0)
-            if 1 <= number <= len(file_lines) and file_lines[number - 1] == entry["content"]:
+            # A patch of a CRLF file keeps the `\r` on every line and `_file_lines` drops it, so
+            # the two are compared without it. Only the scan text comes from the file; the
+            # entry's own content, and so the snippet and fingerprint, keep the `\r`.
+            text = entry["content"]
+            if text.endswith("\r"):
+                text = text[:-1]
+            if 1 <= number <= len(file_lines) and file_lines[number - 1] == text:
                 entry["scan_text"] = whole_code[number - 1]
                 entry["scan_text_no_strings"] = whole_blanked[number - 1]
 
