@@ -159,6 +159,8 @@ jobs:
           -x ./tests -x ./grpc_generated -x ./grpc_server/generated
           -s B608
       - run: pytest tests -q
+        env:
+          MITIG8IT_REQUIRE_SCANNER: '1'
 
       - name: Rule publication precision gate
         working-directory: ${{ github.workspace }}
