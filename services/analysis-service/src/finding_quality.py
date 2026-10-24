@@ -1,5 +1,6 @@
 import hashlib
 import re
+import time
 from typing import Any, Dict, Iterable, List, Optional
 
 from comment_stripper import strip_lines
@@ -113,6 +114,12 @@ def parse_patch_entries(patch: str, path: Any = None, content: Any = None) -> Li
             old_line += 1
             continue
 
+        # `\ No newline at end of file` annotates the line before it and is a line of neither
+        # file. Read as context it advanced both counters, so every line after it in the hunk
+        # was reported one line low and a review comment could anchor past the end of the file.
+        if raw_line.startswith("\\"):
+            continue
+
         # Named apart from the `content` parameter, which is the whole file: rebinding it here
         # emptied the file text before `_annotate_scan_text` ever saw it.
         line_text = raw_line[1:] if raw_line.startswith(" ") else raw_line
@@ -171,7 +178,13 @@ def _annotate_scan_text(entries: List[Dict[str, Any]], path: Any, content: Any =
             entry["scan_text"] = code_only
             entry["scan_text_no_strings"] = no_strings
             number = int(entry.get("line_number") or 0)
-            if 1 <= number <= len(file_lines) and file_lines[number - 1] == entry["content"]:
+            # A patch of a CRLF file keeps the `\r` on every line and `_file_lines` drops it, so
+            # the two are compared without it. Only the scan text comes from the file; the
+            # entry's own content, and so the snippet and fingerprint, keep the `\r`.
+            text = entry["content"]
+            if text.endswith("\r"):
+                text = text[:-1]
+            if 1 <= number <= len(file_lines) and file_lines[number - 1] == text:
                 entry["scan_text"] = whole_code[number - 1]
                 entry["scan_text_no_strings"] = whole_blanked[number - 1]
 
@@ -179,6 +192,10 @@ def _annotate_scan_text(entries: List[Dict[str, Any]], path: Any, content: Any =
 def entry_scan_text(entry: Dict[str, Any], *, blank_strings: bool = False) -> str:
     key = "scan_text_no_strings" if blank_strings else "scan_text"
     return str(entry.get(key, entry.get("content", "")) or "")
+
+
+class ScanDeadlineExceeded(Exception):
+    """A tier 1 scan reached its `deadline` between two lines and stopped."""
 
 
 def find_pattern_match_entry(
@@ -189,11 +206,17 @@ def find_pattern_match_entry(
     exclusion=None,
     blank_strings: bool = False,
     content: Any = None,
+    deadline: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     """First reviewable line of `patch` that `pattern` matches and `exclusion` does not.
 
     `exclusion` is the second pass that replaces a negative lookahead: the condition is
     evaluated against the same text the pattern saw, where backtracking cannot defeat it.
+
+    `deadline` is a `time.monotonic()` value checked before each line. A regex cannot be
+    interrupted, so a caller's budget is otherwise only checked between whole patterns, and
+    one pattern over a file of long lines can run far past it. Past the deadline this raises
+    `ScanDeadlineExceeded` rather than returning None, which would read as "no match".
     """
     entries = parse_patch_entries(patch, path, content)
     if not entries:
@@ -203,6 +226,8 @@ def find_pattern_match_entry(
         for entry in entries:
             if require_added and entry["kind"] != "add":
                 continue
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ScanDeadlineExceeded()
             if is_transcript_artifact_line(entry["content"]):
                 continue
             text = entry_scan_text(entry, blank_strings=blank_strings)
@@ -222,10 +247,11 @@ def pattern_matches_reviewable_content(
     exclusion=None,
     blank_strings: bool = False,
     content: Any = None,
+    deadline: Optional[float] = None,
 ) -> bool:
     return find_pattern_match_entry(
         patch, pattern, path=path, exclusion=exclusion,
-        blank_strings=blank_strings, content=content,
+        blank_strings=blank_strings, content=content, deadline=deadline,
     ) is not None
 
 

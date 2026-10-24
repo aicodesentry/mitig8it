@@ -199,3 +199,50 @@ class TestTruePositivesStillFire:
             "ssrf.untrusted_url_fetch",
             "xxe.xml_parsing",
         }, sorted(uncovered)
+
+
+def _crlf(text):
+    return text.replace("\n", "\r\n")
+
+
+def _tier1_crlf(case):
+    """The case as GitHub serves it for a file with Windows line endings.
+
+    The patch keeps a `\\r` at the end of every line and the head content has CRLF endings.
+    """
+    payload = AnalyzePRRequest(
+        repository_full_name="acme/app",
+        pull_request_number=1,
+        commit_sha="a" * 40,
+        files=[{"path": case["path"], "patch": _crlf(_case_patch(case)), "content": _crlf(_content(case))}],
+    )
+    return analyze_tier1_payload(payload)
+
+
+class TestCrlfFilesReadTheSameAsLf:
+    """A trailing `\\r` on each patch line used to stop the line matching the file's own text, so
+    the comment stripper fell back to reading the hunk alone and a docstring example in a CRLF
+    file was reported (`fp.redirect.docstring-code-block.flask`)."""
+
+    @pytest.mark.parametrize(
+        "case",
+        [case for case in FALSE_POSITIVES if "known_gap" not in case],
+        ids=_ids([case for case in FALSE_POSITIVES if "known_gap" not in case]),
+    )
+    def test_a_false_positive_does_not_post_under_crlf(self, case):
+        posted = [finding["rule_id"] for finding in _tier1_crlf(case)["findings"]]
+        assert case["rule_id"] not in posted
+
+    @pytest.mark.parametrize("case", TRUE_POSITIVES, ids=_ids(TRUE_POSITIVES))
+    def test_a_true_positive_still_fires_under_crlf(self, case):
+        result = _tier1_crlf(case)
+        if case["rule_id"] in QUARANTINED_RULE_IDS:
+            assert result["quarantined_findings"].get(case["rule_id"], 0) >= 1
+            return
+        assert case["rule_id"] in [finding["rule_id"] for finding in result["findings"]]
+
+    def test_the_finding_is_reported_at_the_lf_file_line(self):
+        case = next(case for case in TRUE_POSITIVES if case["id"] == "tp.sql.injection")
+        lf = [(f["rule_id"], f["line_start"]) for f in _tier1(case)["findings"]]
+        crlf = [(f["rule_id"], f["line_start"]) for f in _tier1_crlf(case)["findings"]]
+        assert crlf == lf
