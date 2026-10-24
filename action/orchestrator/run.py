@@ -499,6 +499,11 @@ def manifest_digest(action_id: str, head_sha: str, base_sha: str, sections: Sequ
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
+def fix_count(sections: Sequence[Dict[str, Any]]) -> int:
+    """Sections that carry a fix. One without a candidate is a `No automatic fix` line."""
+    return sum(1 for section in sections if section.get("candidate_id"))
+
+
 def build_publish_request(
     *,
     token: str,
@@ -536,10 +541,12 @@ def build_publish_request(
         "bot_login": bot_login,
         "action_id": action_id,
         "idempotency_key": f"{repository}:{pr_number}:{head_sha}",
-        "manifest_digest": manifest_digest(action_id, head_sha, base_sha, fix_sections),
+        "manifest_digest": manifest_digest(
+            action_id, head_sha, base_sha, [section for section in fix_sections if section.get("candidate_id")]
+        ),
         "counts": counts,
         "findings": findings,
-        "fixes": len(fix_sections),
+        "fixes": fix_count(fix_sections),
         "modelConfigured": model_configured,
         # One string, composed once here, rendered by the publisher in two places. The publisher
         # derives nothing of its own from it, the same rule `counts` follows, so a check summary
@@ -719,7 +726,7 @@ def _run() -> int:
             contents=contents,
             model_configured=model_configured,
         )
-        log(f"{plural(len(fix_sections), 'fix suggestion')} produced.")
+        log(f"{plural(fix_count(fix_sections), 'fix suggestion')} produced.")
 
     patches_by_path = {f["path"]: f.get("patch") or "" for f in scoped}
     plan = plan_comments(findings, patches_by_path)
@@ -781,7 +788,7 @@ def _run() -> int:
             "findings": len(findings),
             "critical": counts["critical"],
             "high": counts["high"],
-            "fixes": len(fix_sections),
+            "fixes": fix_count(fix_sections),
             "conclusion": conclusion,
             "excluded": excluded_files,
         }
@@ -790,7 +797,7 @@ def _run() -> int:
     write_summary(
         f"### {CHECK_RUN_NAME}\n\n"
         f"{plural(len(findings), 'finding')}, {counts['critical']} critical, "
-        f"{counts['high']} high, {plural(len(fix_sections), 'fix suggestion')}.\n\n"
+        f"{counts['high']} high, {plural(fix_count(fix_sections), 'fix suggestion')}.\n\n"
         + (f"{exclusion_line}.\n\n" if exclusion_line else "")
         + (
             "Fix suggestions were withheld because independent release evidence is missing.\n"
@@ -829,14 +836,42 @@ def generate_fixes(
     contents: Dict[str, str],
     model_configured: bool,
 ) -> List[Dict[str, Any]]:
-    """Attempt a repair for every finding the engine has a family and a language for.
+    """A fix section for every finding a repair was verified for, and a reason for every other.
 
     Imported lazily so that a run which produced no findings never pays for loading the repair
     engine, and so a repository with no repairable finding still publishes its review when the
-    engine cannot start.
+    engine cannot start. Every reported finding without a fix gets a `No automatic fix` line,
+    the way the App's comment does: a finding with neither is a promise the review broke.
     """
     from . import remediation  # noqa: PLC0415
 
+    sections, skipped, fallback = _repair_sections(
+        remediation,
+        reader=reader,
+        repository=repository,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        base_sha=base_sha,
+        findings=findings,
+        contents=contents,
+        model_configured=model_configured,
+    )
+    return sections + remediation.no_fix_sections(findings, sections, skipped=skipped, fallback=fallback)
+
+
+def _repair_sections(
+    remediation,
+    *,
+    reader: github_api.GitHubReader,
+    repository: str,
+    pr_number: int,
+    head_sha: str,
+    base_sha: str,
+    findings: Sequence[Dict[str, Any]],
+    contents: Dict[str, str],
+    model_configured: bool,
+):
+    """`(fix sections, the engine's skipped list, the run's reason for anything else)`."""
     try:
         repairable = [
             finding
@@ -846,9 +881,9 @@ def generate_fixes(
         ]
     except RuntimeError as error:
         annotate("warning", f"repairs unavailable: {error}")
-        return []
+        return [], [], f"Repairs were unavailable in this run: {error}"
     if not repairable:
-        return []
+        return [], [], "The exact affected source file is absent from the snapshot."
 
     tree = reader.git_tree(head_sha)
     if tree.get("truncated"):
@@ -857,31 +892,45 @@ def generate_fixes(
             "the repository tree at this commit is too large to verify a repair against, so no "
             "fixes were generated.",
         )
-        return []
+        return [], [], "The repository tree at this commit is too large to verify a repair against."
 
+    blobs = [e for e in tree.get("tree") or [] if e.get("type") == "blob"]
     ranked = remediation.rank_findings(repairable)
     try:
+        # A proof loads the whole module, so the unchanged local modules it requires travel with
+        # the changed files; without them the load fails on both trees.
+        files = remediation.with_local_imports(
+            dict(contents),
+            {str(e.get("path") or "") for e in blobs},
+            lambda paths: reader.file_contents(paths, head_sha),
+        )
         request = remediation.build_request(
             repository_full_name=repository,
             pull_request_number=pr_number,
             head_sha=head_sha,
             base_sha=base_sha or head_sha,
             findings=ranked,
-            files={path: text for path, text in contents.items()},
-            tree_entries=[e for e in tree.get("tree") or [] if e.get("type") == "blob"],
+            files=files,
+            tree_entries=blobs,
             tree_truncated=bool(tree.get("truncated")),
             model_configured=model_configured,
         )
         response = remediation.repair(request, model_configured)
     except Exception as error:  # noqa: BLE001 - a failed repair must never fail the review
         annotate("warning", f"repair generation failed: {error}")
-        return []
+        return [], [], "Repair generation failed in this run."
 
     findings_by_id = {
         str(finding.get("fingerprint") or f"finding-{index}"): finding
         for index, finding in enumerate(ranked)
     }
-    return remediation.fix_sections(response, findings_by_id)
+    reason = getattr(response, "reason", None) or {}
+    fallback = str(reason.get("message") or "") if isinstance(reason, dict) else ""
+    return (
+        remediation.fix_sections(response, findings_by_id),
+        list(getattr(response, "skipped", None) or []),
+        fallback or "No verified repair was produced.",
+    )
 
 
 if __name__ == "__main__":

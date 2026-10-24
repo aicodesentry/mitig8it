@@ -389,6 +389,26 @@ def _js_resolve(snapshot: Snapshot, from_path: str, specifier: str, paths: set[s
     `paths` replaces the snapshot's own paths, which is how the same rules are asked of the head
     commit's whole tree.
     """
+    return _js_resolve_in(from_path, specifier, set(snapshot.paths) if paths is None else paths)
+
+
+def js_local_import_paths(path: str, source: str, paths: set[str]) -> list[str]:
+    """The files among `paths` that `path` imports by a relative specifier while it loads.
+
+    The same specifiers and the same resolution the proof's loadability check uses, so a caller
+    that builds a repair request from a partial tree (the Action sends the changed files) can add
+    exactly the modules a generated proof will need to load the subject.
+    """
+    found: list[str] = []
+    for specifier in _js_specifiers(source):
+        if specifier.startswith("."):
+            resolved = _js_resolve_in(path, specifier, paths)
+            if resolved is not None and resolved not in found:
+                found.append(resolved)
+    return found
+
+
+def _js_resolve_in(from_path: str, specifier: str, paths: set[str]) -> str | None:
     base = PurePosixPath(PurePosixPath(from_path).parent / specifier)
     parts: list[str] = []
     for part in base.parts:
@@ -406,7 +426,6 @@ def _js_resolve(snapshot: Snapshot, from_path: str, specifier: str, paths: set[s
         candidates.insert(0, stem[: -len(written.group(0))] + "." + written.group(1) + "ts")
     candidates += [stem + suffix for suffix in (*TYPESCRIPT_SUFFIXES, *NODE_LOADABLE_SUFFIXES)]
     candidates += [stem + "/index" + suffix for suffix in (*TYPESCRIPT_SUFFIXES, *NODE_LOADABLE_SUFFIXES)]
-    paths = set(snapshot.paths) if paths is None else paths
     return next((candidate for candidate in candidates if candidate in paths), None)
 
 

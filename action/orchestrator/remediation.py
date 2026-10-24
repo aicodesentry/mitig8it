@@ -28,7 +28,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
-from . import inline_fixes
+from . import analysis, inline_fixes
 
 REMEDIATION_ROOT_ENV = "MITIG8IT_REMEDIATION_ROOT"
 DEFAULT_REMEDIATION_ROOT = "/opt/mitig8it/services/remediation-service"
@@ -61,7 +61,7 @@ def _modules():
         raise RuntimeError(f"the remediation service was not found at {root}")
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
-    from src import families, git_tree  # noqa: PLC0415
+    from src import families, git_tree, proofs  # noqa: PLC0415
     from src.agent import RepairAgent  # noqa: PLC0415
     from src.agent.provider import ProviderAction  # noqa: PLC0415
     from src.digests import git_blob_sha1  # noqa: PLC0415
@@ -72,6 +72,7 @@ def _modules():
 
     return {
         "families": families,
+        "proofs": proofs,
         "git_tree": git_tree,
         "git_blob_sha1": git_blob_sha1,
         "RepairAgent": RepairAgent,
@@ -360,3 +361,84 @@ def _hunks_for_finding(
     if not hunk:
         return None, [], "no_line_change"
     return hunk, [], ""
+
+
+# The engine's own sentence for a finding outside every family, so the action and the App say the
+# same thing about the same finding.
+OUTSIDE_FAMILIES_MESSAGE = "This finding is outside the enabled repair families."
+# How many modules beyond the changed files one run may read to let a proof load its subject.
+MAX_LOCAL_IMPORTS = 50
+
+
+def with_local_imports(files: Dict[str, str], tree_paths, fetch) -> Dict[str, str]:
+    """`files` plus every local module they load, read with `fetch(paths) -> {path: text}`.
+
+    The action reads only the changed files, and the sandbox materializes only what the request
+    carries, so a JavaScript module that requires an unchanged sibling (`require('./db')`) cannot
+    load in a proof, and its finding is refused. The closure is followed through the same
+    specifiers and resolution the proof's loadability check uses, bounded by `MAX_LOCAL_IMPORTS`.
+    """
+    resolve = _modules()["proofs"].js_local_import_paths
+    paths = set(tree_paths)
+    merged = dict(files)
+    pending = dict(files)
+    fetched = 0
+    while pending and fetched < MAX_LOCAL_IMPORTS:
+        wanted: List[str] = []
+        for path, text in pending.items():
+            for found in resolve(path, text, paths):
+                if found not in merged and found not in wanted:
+                    wanted.append(found)
+        wanted = wanted[: MAX_LOCAL_IMPORTS - fetched]
+        if not wanted:
+            break
+        got = fetch(wanted) or {}
+        fetched += len(wanted)
+        pending = {path: text for path, text in got.items() if path not in merged}
+        merged.update(pending)
+    return merged
+
+
+def no_fix_sections(
+    findings: Sequence[Dict[str, Any]],
+    sections: Sequence[Dict[str, Any]],
+    *,
+    skipped: Sequence[Dict[str, Any]] = (),
+    fallback: str,
+) -> List[Dict[str, Any]]:
+    """One `No automatic fix` section for each reported finding that has no fix section.
+
+    The reason is the engine's own when it gave one (`response.skipped`), the engine's sentence
+    for a finding outside every family when the action never sent it, and otherwise `fallback`,
+    the run's reason (the engine's response-level reason, or why no repair was attempted).
+    Informational findings are not repaired and get nothing, as in the App. github-service
+    renders a section with `skipped_reason` and no `candidate_id` as that one line.
+    """
+    covered = {str(section.get("finding_fingerprint") or "") for section in sections}
+    reasons = {str(item.get("finding_id") or ""): str(item.get("message") or item.get("code") or "") for item in skipped or []}
+    try:
+        supported = {str(item.get("fingerprint") or "") for item in supported_findings(findings)}
+    except RuntimeError:
+        supported = {str(item.get("fingerprint") or "") for item in findings}
+    out: List[Dict[str, Any]] = []
+    for finding in findings:
+        fingerprint = str(finding.get("fingerprint") or "")
+        if not fingerprint or fingerprint in covered or analysis.is_informational(finding):
+            continue
+        covered.add(fingerprint)
+        reason = reasons.get(fingerprint) or (OUTSIDE_FAMILIES_MESSAGE if fingerprint not in supported else "") or fallback
+        out.append(
+            {
+                "finding_fingerprint": fingerprint,
+                "candidate_id": "",
+                "path": str(finding.get("file_path") or ""),
+                "finding_line": int(finding.get("line_start") or 0),
+                "hunk": None,
+                "extra_hunks": [],
+                "unified_diff": "",
+                "not_suggestable_reason": "",
+                "skipped_reason": reason[:500],
+                "finding_ids": [fingerprint],
+            }
+        )
+    return out
