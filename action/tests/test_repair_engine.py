@@ -323,7 +323,7 @@ def test_a_javascript_repair_produces_a_clickable_suggestion(sandbox):
 
 LATIN1_JS_BYTES = (
     "// Café billing client (latin-1 on disk).\n"
-    'const apiKey = "sk-live-0b1c2d3e4f5a6b7c";\n'
+    'const apiKey = "synthetic-placeholder-not-a-key";\n'
     "\n"
     "module.exports = { apiKey };\n"
 ).encode("latin-1")
