@@ -292,8 +292,12 @@ test('a job publishes a No automatic fix line for a finding it never selected', 
   expect(context.findings.map((finding) => finding.id)).toEqual(['f-js', 'f-cs']);
 
   const sections = buildSections({ job: jobRow, candidates: [], findings: context.findings });
-  expect(sections).toEqual([expect.objectContaining({
-    finding_fingerprint: 'fp-cs', path: 'TestVuln.cs', candidate_id: '',
-    skipped_reason: languages.UNSUPPORTED_LANGUAGE_MESSAGE,
-  })]);
+  // The selected finding that got neither a fix nor a skip entry gets the job's line too.
+  expect(sections).toEqual([
+    expect.objectContaining({
+      finding_fingerprint: 'fp-cs', path: 'TestVuln.cs', candidate_id: '',
+      skipped_reason: languages.UNSUPPORTED_LANGUAGE_MESSAGE,
+    }),
+    expect.objectContaining({ finding_fingerprint: 'fp-js', candidate_id: '', skipped_reason: 'No verified repair was produced for this finding.' }),
+  ]);
 });

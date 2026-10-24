@@ -426,6 +426,17 @@ function buildSections({ job, candidates = [], findings = [] }) {
     covered.add(finding.fingerprint);
     sections.push({ ...emptySection(finding), skipped_reason: String(item.message || item.code || 'no verified fix') });
   }
+  // A finding the job selected and neither fixed nor skipped still gets one line: a finding
+  // published with no fix and no reason is the one outcome the comment must never have. The
+  // repair service lists every unrepaired finding in `skipped`; this covers a response that
+  // did not, with the job's own reason when it has one.
+  const fallback = String(job?.failure_reason?.message || '') || 'No verified repair was produced for this finding.';
+  for (const findingId of Array.isArray(job?.finding_snapshot_ids) ? job.finding_snapshot_ids : []) {
+    const finding = byId.get(findingId);
+    if (!finding?.fingerprint || covered.has(finding.fingerprint)) continue;
+    covered.add(finding.fingerprint);
+    sections.push({ ...emptySection(finding), skipped_reason: fallback });
+  }
   return sections;
 }
 

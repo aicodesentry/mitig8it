@@ -166,6 +166,23 @@ test('a finding on the same lines as a proven finding is covered by that candida
   expect(inline.sameLines({ file_path: 'a.js', line_start: 10, line_end: 12 }, { file_path: 'a.js', line_start: 13 })).toBe(false);
 });
 
+// nebullii/test-only#140: three selected findings in web/pricing.js ended without a
+// candidate and without a skip entry, and the comment said nothing about them. A selected
+// finding the job neither fixed nor skipped still gets one line, with the job's reason.
+test('a selected finding with no candidate and no skip entry still gets a No automatic fix line', () => {
+  const findings = [
+    ...context().findings,
+    { id: 'f3', title: 'Command injection', file_path: 'web/pricing.js', line_start: 24, line_end: 24, fingerprint: 'fp-exec' },
+  ];
+  const job = { ...context().job, finding_snapshot_ids: ['f1', 'f3'] };
+  const sections = inline.buildSections(context({ job, findings }));
+  expect(sections.map((section) => [section.finding_fingerprint, section.candidate_id ? 'fix' : section.skipped_reason])).toEqual([
+    ['fp-sql', 'fix'],
+    ['fp-redirect', 'This finding is outside the enabled repair families.'],
+    ['fp-exec', 'No verified repair was produced for this finding.'],
+  ]);
+});
+
 // The finding comment text travels with every section that carries or is covered by a
 // fix, rendered by the analysis's own comment builder from the snapshotted finding, so
 // the adapter can create the comment for a finding the analysis kept summary only.
