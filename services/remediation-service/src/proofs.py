@@ -62,6 +62,7 @@ from .sites import (
     python_module_value,
     scope_lines_near,
 )
+from .templates import command_value_embedded
 
 SQL_PAYLOAD = "1' OR '1'='1"
 COMMAND_PAYLOAD = "x; rm -rf /"
@@ -630,10 +631,13 @@ def _js_command_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRout
         head = _js_module_header(path) + setup + [f"  const payload = {_js(COMMAND_PAYLOAD)};"]
         drive = _js_function_call(site, arguments)
         what = f"{site.name}({untrusted})"
+    embedded = command_value_embedded(source, line, JAVASCRIPT)
+    assertions = [item.replace("h.assert.argv(", "h.assert.argvEmbedded(") for item in _JS_ARGV_ASSERTIONS] if embedded else _JS_ARGV_ASSERTIONS
     return GeneratedProof(
         finding.stable_id, COMMAND_ARGUMENTS, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT),
-        "\n".join(head + drive + _JS_ARGV_ASSERTIONS),
-        f"{what} = {COMMAND_PAYLOAD!r}: the child must run with an argument array and the payload as its own element",
+        "\n".join(head + drive + assertions),
+        f"{what} = {COMMAND_PAYLOAD!r}: the child must run with an argument array and the payload "
+        + ("intact inside the argument the command builds" if embedded else "as its own element"),
         site,
     )
 
@@ -1235,13 +1239,16 @@ def _py_command_proof(snapshot: Snapshot, finding: FindingSnapshot, function: Py
         arguments, setup = _py_call_arguments(function, untrusted, COMMAND_PAYLOAD, None)
         body += setup + [f"    payload = {_py(COMMAND_PAYLOAD)}", f"    h.call(m.{function.name}, {', '.join(arguments)})"]
         what = f"{function.name}({untrusted})"
+    embedded = command_value_embedded(source, line, PYTHON)
     body += [
         "    h.assert_true(h.subprocess.calls, 'expected one process to be started')",
-        "    h.assert_argv(h.subprocess.calls[0], payload)",
+        "    h.assert_argv_embedded(h.subprocess.calls[0], payload)" if embedded else "    h.assert_argv(h.subprocess.calls[0], payload)",
     ] + _py_footer()
     return GeneratedProof(
         finding.stable_id, COMMAND_ARGUMENTS, PYTHON, test_path(finding.stable_id, PYTHON), "\n".join(body),
-        f"{what} = {COMMAND_PAYLOAD!r}: the process must run with an argv list, no shell, and the payload as its own element", function,
+        f"{what} = {COMMAND_PAYLOAD!r}: the process must run with an argv list, no shell, and the payload "
+        + ("intact inside the argument the command builds" if embedded else "as its own element"),
+        function,
     )
 
 

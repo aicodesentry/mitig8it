@@ -991,6 +991,25 @@ def assert_argv(call_entry, payload, message=None):
         fail(message or "expected the injected input %r to be its own argv element" % payload, call_entry["args"])
 
 
+_SHELLS = {"sh", "bash", "dash", "zsh", "ksh", "csh", "tcsh", "fish", "cmd", "cmd.exe", "powershell", "pwsh"}
+
+
+def assert_argv_embedded(call_entry, payload, message=None):
+    """No shell, no shell as the program, and the payload intact inside one argument after it.
+
+    For a value the command joins to literal text (`/srv/{name}.tgz`), which cannot be its own
+    element: what keeps it from a command separator is that nothing interprets the list."""
+    if not call_entry:
+        fail(message or "no process call was recorded")
+    if call_entry.get("shell") or call_entry.get("args") is None:
+        fail(message or "command ran through a shell: %s" % call_entry.get("command"))
+    args = call_entry["args"]
+    if args and os.path.basename(str(args[0])).lower() in _SHELLS:
+        fail(message or "a shell was started as the program: %s" % args[0], args)
+    if not any(str(payload) in str(item) for item in args[1:]):
+        fail(message or "expected the injected input %r inside one argv element" % payload, args)
+
+
 def _escapes(payload):
     for value in (str(payload), urllib.parse.unquote(str(payload))):
         if ".." in value.replace("\\", "/").split("/") or os.path.isabs(value):

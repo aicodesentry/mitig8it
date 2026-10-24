@@ -242,6 +242,22 @@ class HarnessSpec(unittest.TestCase):
         with self.assertRaises(h.HarnessAssertion):
             h.assert_no_commands()
 
+    def test_embedded_argv_assertion(self):
+        payload = "x; rm -rf /"
+        h.subprocess.calls.clear()
+        h._record_call("subprocess.run", ["tar", "czf", "/srv/archive/%s.tgz" % payload], {})
+        h.assert_argv_embedded(h.subprocess.calls[0], payload)
+        with self.assertRaises(h.HarnessAssertion):
+            h.assert_argv(h.subprocess.calls[0], payload)
+        h._record_call("subprocess.run", ["bash", "-c", "tar czf /srv/archive/%s.tgz" % payload], {})
+        with self.assertRaises(h.HarnessAssertion):
+            h.assert_argv_embedded(h.subprocess.calls[1], payload)
+        h._record_call("subprocess.run", "tar czf /srv/archive/%s.tgz" % payload, {"shell": True})
+        with self.assertRaises(h.HarnessAssertion):
+            h.assert_argv_embedded(h.subprocess.calls[2], payload)
+        with self.assertRaises(h.HarnessAssertion):
+            h.assert_argv_embedded(h.subprocess.calls[0], "other")
+
     def test_path_containment_assertion(self):
         base = os.path.join(ROOT, "reports")
         for payload in ("../../etc/passwd", "..%2f..%2fetc%2fpasswd"):
