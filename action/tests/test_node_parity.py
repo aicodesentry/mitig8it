@@ -53,28 +53,43 @@ def test_vendor_filter_matches_fetch_pull_request_files():
     assert (match.group(2),) == pr_scope.VENDOR_PATH_SUBSTRINGS
 
 
-def test_changed_file_cap_matches_fetch_pull_request_files():
+def test_changed_file_cap_matches_the_api_orchestrator():
     """The cap selects rather than refuses, and the port has to select the same way.
 
-    `fetchPullRequestFiles` sorts by path and takes the first FILE_CAP, reporting a
-    `file_cap` limitation. A port that still raised, or that truncated an unsorted list,
-    would review a different set of files than the hosted product does.
+    The App applies the cap in the api orchestrator (`capReviewedFiles`), after the
+    repository's `.mitig8it.yml` exclusions: it sorts by path, takes the first FILE_CAP and
+    reports a `file_cap` limitation. The adapter lists every analysable file and caps
+    nothing. A port that raised, or truncated an unsorted list, would review a different
+    set of files than the hosted product does.
     """
-    source = read(GITHUB_OPERATIONS)
+    source = read(API_ORCHESTRATOR)
     match = re.search(r"const FILE_CAP = (\d+);", source)
-    assert match, "fetchPullRequestFiles no longer declares a FILE_CAP"
+    assert match, "the api orchestrator no longer declares a FILE_CAP"
     assert int(match.group(1)) == pr_scope.MAX_CHANGED_FILES
     assert "ordered.slice(0, FILE_CAP)" in source, "the cap no longer selects by slice"
     assert "kind: 'file_cap'" in source, "the cap no longer reports a limitation"
+    capped_at = source.index("capReviewedFiles(files)")
+    assert source.index("applyExclusions(files, exclusions)") < capped_at, (
+        "the cap must apply after repository exclusions"
+    )
+    adapter = read(GITHUB_OPERATIONS)
+    assert "FILE_CAP" not in adapter, "the adapter caps the file list again, before exclusions"
 
 
 def test_file_content_byte_cap_matches_fetch_file_contents():
+    """The adapter leaves a file over the byte limit out of the content response, and the
+    api reports that absent path as not analysed. The Action skips content at the same size."""
     source = read(GITHUB_OPERATIONS)
-    match = re.search(
-        r"if \(Buffer\.byteLength\(content \|\| '', 'utf8'\) > (\d+)\) continue;", source
-    )
-    assert match, "fetchFileContents no longer skips oversized files by byte length"
+    match = re.search(r"const MAX_CONTENT_BYTES = (\d+);", source)
+    assert match, "fetchFileContents no longer declares MAX_CONTENT_BYTES"
     assert int(match.group(1)) == pr_scope.MAX_FILE_CONTENT_BYTES
+    assert "if (Buffer.byteLength(content || '', 'utf8') > MAX_CONTENT_BYTES) continue;" in source, (
+        "fetchFileContents no longer skips oversized files by byte length"
+    )
+    orchestrator = read(API_ORCHESTRATOR)
+    assert "type: 'File too large'" in orchestrator, (
+        "the api no longer reports an absent oversized path as a limitation"
+    )
 
 
 def test_tier2_extensions_match_the_api_service_constant():

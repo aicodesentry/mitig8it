@@ -1,0 +1,6 @@
+{
+  "schema_version": "v1",
+  "minimum_reviewers": 1,
+  "max_receipt_age_seconds": 2592000,
+  "keys": []
+}

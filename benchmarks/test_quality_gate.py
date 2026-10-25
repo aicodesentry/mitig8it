@@ -14,22 +14,32 @@ import benchmarks.rule_quality_gate as rule_gate_module
 from benchmarks.quality_gate import precision_gate, wilson_interval
 from benchmarks.rule_quality_gate import evaluate_evidence, evaluate_rules, load_rules
 from benchmarks.remediation.evaluate import CaseResult, release_gate, summarize
+from benchmarks.test_analysis_attestation import SyntheticAuthority, synthetic_evidence
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DIGEST = "a" * 64
 EMPTY = {"schema_version": "v1", "rules": {}}
+_AUTHORITY = None
+
+
+@pytest.fixture(autouse=True)
+def synthetic_review_trust_store(monkeypatch, tmp_path):
+    authority = SyntheticAuthority(tmp_path / "analysis-trusted-reviewers.json")
+    monkeypatch.setattr(sys.modules[__name__], "_AUTHORITY", authority)
+    monkeypatch.setattr(rule_gate_module, "TRUST_STORE", authority.path)
 
 
 def reviewed_evidence(total=100, false=0):
-    return {
+    return _AUTHORITY.sign({
+        "rule_id": "new", "collection_provenance": synthetic_evidence()["collection_provenance"],
         "rule_digest": DIGEST, "corpus": "pinned-independent-replay-v1", "split": "holdout",
         "sampling_plan": "Frozen random PR sample; one finding per independent PR.",
         "observations": [{"id": f"finding-{number}", "sampling_unit": f"repository/pr/{number}",
                           "reviewer": "independent-reviewer", "source": f"pinned-source:{number}",
                           "verdict": "false" if number < false else "true"}
                          for number in range(total)],
-    }
+    })
 
 
 @pytest.mark.parametrize("successes,total,passed", [(0, 0, False), (20, 20, False), (99, 99, False),
@@ -103,6 +113,7 @@ def test_incomplete_observations_cannot_be_silently_discarded(field):
 def test_uncertain_observations_are_reported_and_block_promotion():
     evidence = reviewed_evidence(101)
     evidence["observations"][0]["verdict"] = "uncertain"
+    evidence = _AUTHORITY.sign(evidence)
     result = evaluate_evidence(evidence, DIGEST)
     assert result["reviewed_predictions"] == 100
     assert result["unresolved_predictions"] == 1
@@ -163,6 +174,21 @@ def test_passing_evidence_is_actually_used_by_publication_check():
     assert not evaluate_rules(rules, EMPTY, evidence)["passed"]
 
 
+@pytest.mark.parametrize("change", ["unsigned", "false_identity", "false_population", "missing_identity", "missing_population"])
+def test_statistically_perfect_unauthenticated_candidates_cannot_be_validated(change):
+    evidence = reviewed_evidence()
+    if change == "unsigned": evidence.pop("attestation")
+    elif change == "false_identity": evidence["collection_provenance"]["review_identity_authenticated"] = False
+    elif change == "false_population": evidence["collection_provenance"]["population_sampling_verified"] = False
+    elif change == "missing_identity": evidence["collection_provenance"].pop("review_identity_authenticated")
+    elif change == "missing_population": evidence["collection_provenance"].pop("population_sampling_verified")
+    report = evaluate_rules({"new": {"posting": "post", "rule_digest": DIGEST}}, EMPTY,
+                            {"schema_version": "v1", "rules": {"new": evidence}})
+    assert not report["passed"]
+    assert report["counts"]["validated"] == 0
+    assert report["rules"]["new"]["status"] == "blocked"
+
+
 def test_current_inventory_runs_offline_and_marks_legacy_exceptions_explicitly():
     completed = subprocess.run([sys.executable, "-m", "benchmarks.rule_quality_gate"], cwd=ROOT,
                                capture_output=True, text=True, check=False)
@@ -216,7 +242,8 @@ def test_release_does_not_use_train_or_validation_to_meet_holdout_sample_minimum
 
 def test_release_requires_complete_unique_results_even_when_precision_passes():
     results = [case(number) for number in range(100)]
-    fixtures = [(ROOT, {"id": result.fixture_id, "kind": result.kind, "family": result.family})
+    fixtures = [(ROOT, {"id": result.fixture_id, "kind": result.kind, "family": result.family,
+                        "repository_id": result.repository_id, "split": result.split})
                 for result in results]
     assert release_gate(fixtures, results)["precision_gate"]["passed"]
     duplicate = results + [copy.copy(results[0])]

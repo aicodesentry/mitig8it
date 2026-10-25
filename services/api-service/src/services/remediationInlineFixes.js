@@ -10,11 +10,16 @@ const MAX_DIFF_CHARS = 6000;
 
 function verifiedRepairProblem(candidate) {
   const evidence = candidate.preview?.evidence || {};
+  const releaseIdentity = policy.releaseEvidenceIdentity();
+  if (!releaseIdentity) return 'The production repair release evidence is missing, invalid, or expired.';
   if (evidence.status !== 'passed' || !/^(?:sha256:)?[a-f0-9]{64}$/i.test(evidence.evidence_digest || '')) {
     return 'The complete repair has no passing independent verification evidence.';
   }
-  if (!['independent_sandbox', 'isolated_job'].includes(candidate.verification_level)
-      || evidence.verification_level !== candidate.verification_level) {
+  if (candidate.verification_level !== releaseIdentity.verification_level
+      || evidence.verification_level !== releaseIdentity.verification_level
+      || evidence.repair_model !== releaseIdentity.model_id
+      || evidence.repair_service_image !== releaseIdentity.service_image_digest
+      || evidence.sandbox_image_digest !== releaseIdentity.sandbox_image_digest) {
     return 'The repair was not verified by an independently executed sandbox check.';
   }
   if ((evidence.limitations || []).some((item) => /syntax.*(?:failed|unavailable|not run|skipped)|undefined_name|missing_dependency|dependency_not_available/i.test(String(item)))) {
@@ -167,6 +172,24 @@ function computeHunk(original, replacement, preferredLine) {
 // The repair service states each candidate's evidence in full sentences (its regression test
 // failed on the original code and passed on the fix, which checks passed, which did not run);
 // a candidate from an older service version without that summary gets the lines built here.
+// The one verification level at which nothing ran. A fix at that level, or any fix whose evidence
+// names no generated test, must not be described with the regression-test sentence: that
+// sentence claims a test failed on the original code and passed on the fix, and here no test ran.
+// action/orchestrator/inline_fixes.py declares the same strings; its parity test compares them.
+const STATIC_ASSERTION_LEVEL = 'static_assertion';
+const STATIC_ASSERTION_PROOF = 'the rule that flagged this line no longer matches the patched file and nothing else in the '
+  + 'file changed; no test ran and no code was executed.';
+const NO_TEST_PROOF = 'no generated regression test is recorded for this fix, so no test ran and no test result '
+  + 'is claimed.';
+const STATIC_ASSERTION_EVIDENCE = 'Static assertion: the rule that flagged this line no longer matches the patched file, no '
+  + 'other rule started matching it, and nothing else in the file changed. No test ran and no '
+  + 'code was executed.';
+const NO_TEST_EVIDENCE = 'No generated regression test is recorded for this fix; no test ran.';
+
+function candidateLevel(candidate) {
+  return String(candidate?.verification_level || candidate?.preview?.evidence?.verification_level || '');
+}
+
 function evidenceLines(candidate) {
   const evidence = candidate.preview?.evidence || {};
   const summary = Array.isArray(evidence.summary) ? evidence.summary.map((item) => String(item ?? '').trim()).filter(Boolean) : [];
@@ -179,9 +202,9 @@ function evidenceLines(candidate) {
     .map((test) => test?.path || test?.name).filter(Boolean);
   const limitations = Array.isArray(evidence.limitations) ? evidence.limitations : [];
   const lines = [];
-  lines.push(tests.length
-    ? `Regression test ${tests.join(', ')}: failed on the original code, passed on the fix.`
-    : 'Generated regression test: failed on the original code, passed on the fix.');
+  if (candidateLevel(candidate) === STATIC_ASSERTION_LEVEL) lines.push(STATIC_ASSERTION_EVIDENCE);
+  else if (tests.length) lines.push(`Regression test ${tests.join(', ')}: failed on the original code, passed on the fix.`);
+  else lines.push(NO_TEST_EVIDENCE);
   const syntaxNotRun = limitations.some((item) => /syntax check (skipped|unavailable)/i.test(String(item)));
   lines.push(syntaxNotRun ? 'Syntax check: not run (see limitations).' : 'Syntax check: passed on the fixed file.');
   if (evidence.evidence_digest) lines.push(`Evidence digest: ${String(evidence.evidence_digest).slice(0, 12)}.`);
@@ -190,13 +213,16 @@ function evidenceLines(candidate) {
 
 // What the regression test asserted, as one sentence. The manifest names the test and the
 // finding it reproduces; an entry that states its own assertion is quoted, otherwise the
-// assertion is the finding it was written for: that the flaw is no longer reproducible.
+// assertion is the finding it was written for: that the flaw is no longer reproducible. A static
+// assertion, or a fix whose evidence names no generated test, says what was checked and that no
+// test ran, never the regression-test sentence.
 function proofLine(candidate, finding) {
+  if (candidateLevel(candidate) === STATIC_ASSERTION_LEVEL) return STATIC_ASSERTION_PROOF;
   const evidence = candidate.preview?.evidence || {};
   const tests = (Array.isArray(evidence.generated_tests) ? evidence.generated_tests : []).filter((test) => test?.path || test?.name);
   const own = tests.filter((test) => test.finding_id && test.finding_id === finding.id);
   const test = (own.length ? own : tests)[0];
-  if (!test) return 'the generated regression test failed on the original code and passed on the fix.';
+  if (!test) return NO_TEST_PROOF;
   const name = String(test.path || test.name);
   const stated = String(test.assertion || test.asserts || test.description || '').trim().replace(/\.$/, '');
   const location = finding.file_path ? ` at ${finding.file_path}${finding.line_start ? `:${finding.line_start}` : ''}` : '';
@@ -388,6 +414,9 @@ function buildSections({ job, candidates = [], findings = [] }) {
         evidence: evidenceLines(candidate),
         limitations,
         verification_level: String(candidate.verification_level || evidence.verification_level || ''),
+        repair_model: String(evidence.repair_model || ''),
+        repair_service_image: String(evidence.repair_service_image || ''),
+        sandbox_image_digest: String(evidence.sandbox_image_digest || ''),
       };
       sections.push(section);
       proven.push({ finding, section });
@@ -417,6 +446,10 @@ function buildSections({ job, candidates = [], findings = [] }) {
       candidate_id: match.section.candidate_id,
       covered_by: findingLabel(match.finding),
       finding_ids: [String(match.finding.id), String(finding.id)],
+      verification_level: match.section.verification_level,
+      repair_model: match.section.repair_model,
+      repair_service_image: match.section.repair_service_image,
+      sandbox_image_digest: match.section.sandbox_image_digest,
     });
   }
   const skipped = Array.isArray(job?.failure_reason?.skipped) ? job.failure_reason.skipped : [];
@@ -425,6 +458,17 @@ function buildSections({ job, candidates = [], findings = [] }) {
     if (!finding?.fingerprint || covered.has(finding.fingerprint)) continue;
     covered.add(finding.fingerprint);
     sections.push({ ...emptySection(finding), skipped_reason: String(item.message || item.code || 'no verified fix') });
+  }
+  // A finding the job selected and neither fixed nor skipped still gets one line: a finding
+  // published with no fix and no reason is the one outcome the comment must never have. The
+  // repair service lists every unrepaired finding in `skipped`; this covers a response that
+  // did not, with the job's own reason when it has one.
+  const fallback = String(job?.failure_reason?.message || '') || 'No verified repair was produced for this finding.';
+  for (const findingId of Array.isArray(job?.finding_snapshot_ids) ? job.finding_snapshot_ids : []) {
+    const finding = byId.get(findingId);
+    if (!finding?.fingerprint || covered.has(finding.fingerprint)) continue;
+    covered.add(finding.fingerprint);
+    sections.push({ ...emptySection(finding), skipped_reason: fallback });
   }
   return sections;
 }

@@ -115,6 +115,20 @@ describe('transport selection', () => {
 });
 
 describe('gRPC request and response mapping', () => {
+  test('fix-section identities survive actual protobuf serialization without dropping release bindings', async () => {
+    const response = new githubPb.FindingFixSectionsResponse();
+    response.setState('published');
+    const { client, calls } = stubGrpcClient('publishFindingFixSections', response);
+    const section = { candidate_id: 'candidate', finding_fingerprint: 'fp', path: 'file.js', finding_line: 1,
+      verification_level: 'independent_sandbox', repair_model: 'reviewed-model',
+      repair_service_image: 'registry/remediation@sha256:' + 'e'.repeat(64),
+      sandbox_image_digest: 'registry/runner@sha256:' + 'd'.repeat(64) };
+    await client.publishFindingFixSections({ ...envelopeBody, sections: [section] });
+    const decoded = githubPb.FindingFixSectionsRequest.deserializeBinary(calls[0].request.serializeBinary()).getSectionsList()[0];
+    expect(decoded.getRepairModel()).toBe(section.repair_model);
+    expect(decoded.getRepairServiceImage()).toBe(section.repair_service_image);
+    expect(decoded.getSandboxImageDigest()).toBe(section.sandbox_image_digest);
+  });
   test('snapshot sends the envelope and finding paths and returns the REST snapshot shape', async () => {
     const response = new githubPb.RemediationSnapshotResponse();
     const file = new githubPb.RemediationSourceFile();

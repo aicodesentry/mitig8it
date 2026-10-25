@@ -210,7 +210,7 @@ async def test_a_scanner_the_process_does_not_have_is_not_a_rule_that_matched_no
 
     A checkout carries the analysis service's module and its rule files, so an oracle loads. It
     does not carry the scanner, because semgrep's `opentelemetry-api~=1.37.0` and this service's
-    `==1.44.0` cannot both be satisfied in one environment. Clause 4 is the one that breaks first:
+    `==1.45.1` cannot both be satisfied in one environment. Clause 4 is the one that breaks first:
     its input is every rule's matches on both files, and that needs tier 2.
 
     The patch under test is a correct repair. It is still refused, and the refusal says the rule

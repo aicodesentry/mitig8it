@@ -6,6 +6,8 @@ const path = require('path');
 const crypto = require('crypto');
 const Ajv2020 = require('ajv/dist/2020');
 
+jest.mock('../src/quality-release.json', () => require('../../../tests/fixtures/verified-quality-release.json'));
+
 const schema = require(path.resolve(__dirname, '../../remediation-service/contracts/repair-request.schema.json'));
 
 describe('repair request contract', () => {
@@ -47,5 +49,22 @@ describe('repair request contract', () => {
     expect(valid).toBe(true);
     expect(payload.attempt).toBe(1);
     expect(payload.policy.supported_platform).toBe('linux');
+    expect(payload.versions.repair_model).toBe('test-reviewed-model');
+    expect(payload.versions.repair_service_image).toBe(require('../../../tests/fixtures/verified-quality-release.json').service.image_digest);
+  });
+
+  test('the control plane stays within every shared repair-service limit', () => {
+    const { DEFAULT_POLICY } = require('../src/services/remediationPolicy');
+    const repairPolicy = schema.$defs.RepairPolicy.properties;
+    const sharedLimits = [
+      'max_snapshot_files',
+      'max_file_bytes',
+      'max_snapshot_bytes',
+      'max_output_chars',
+    ];
+
+    for (const name of sharedLimits) {
+      expect(DEFAULT_POLICY[name]).toBeLessThanOrEqual(repairPolicy[name].default);
+    }
   });
 });

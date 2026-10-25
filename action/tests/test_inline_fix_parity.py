@@ -211,3 +211,95 @@ def test_max_diff_chars_matches_the_api_service():
     source = INLINE_FIXES_JS.read_text(encoding="utf-8")
     line = next(line for line in source.splitlines() if line.startswith("const MAX_DIFF_CHARS = "))
     assert int(line.split("=")[1].strip().rstrip(";")) == inline_fixes.MAX_DIFF_CHARS
+
+
+# The proof and evidence sentences, run through both renderers on the same candidates. The
+# static assertion and the no-test cases are the ones that matter: a sentence there that differs
+# between the App and the action, or that claims a regression test ran, is a false trust claim.
+PROOF_FINDING = {
+    "id": "f1",
+    "fingerprint": "f1",
+    "rule_id": "cwe-89.sql-injection",
+    "title": "SQL injection",
+    "file_path": "services/orders.js",
+    "line_start": 3,
+}
+PROOF_CASES = [
+    {"level": "static_assertion", "evidence": {"verification_level": "static_assertion"}},
+    {
+        "level": "static_assertion",
+        "evidence": {
+            "verification_level": "static_assertion",
+            "generated_tests": [{"path": "tests/x.test.js", "finding_id": "f1"}],
+        },
+    },
+    {"level": "isolated_job", "evidence": {"verification_level": "isolated_job"}},
+    {"level": "", "evidence": {}},
+    {
+        "level": "isolated_job",
+        "evidence": {
+            "verification_level": "isolated_job",
+            "generated_tests": [{"path": "tests/orders.test.js", "finding_id": "f1"}],
+            "limitations": ["syntax check skipped"],
+            "evidence_digest": "a" * 64,
+        },
+    },
+    {
+        "level": "isolated_job",
+        "evidence": {
+            "verification_level": "isolated_job",
+            "generated_tests": [
+                {"path": "tests/orders.test.js", "finding_id": "f1", "assertion": "a quoted id is data."}
+            ],
+        },
+    },
+]
+
+
+def node_proofs(cases: list[dict]) -> list:
+    source = INLINE_FIXES_JS.read_text(encoding="utf-8")
+    start = source.index("const STATIC_ASSERTION_LEVEL = ")
+    constants = source[start : source.index("function candidateLevel(")]
+    script = "\n".join(
+        [
+            constants,
+            extract(source, "function candidateLevel("),
+            extract(source, "function evidenceLines("),
+            extract(source, "function proofLine("),
+            "const cases = JSON.parse(process.env.PARITY_CASES);",
+            "const finding = JSON.parse(process.env.PARITY_FINDING);",
+            "const out = cases.map((c) => {",
+            "  const candidate = { verification_level: c.level, preview: { evidence: c.evidence } };",
+            "  return { proof: proofLine(candidate, finding), evidence: evidenceLines(candidate) };",
+            "});",
+            "process.stdout.write(JSON.stringify(out));",
+        ]
+    )
+    completed = subprocess.run(
+        ["node", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+        env={
+            **os.environ,
+            "PARITY_CASES": json.dumps(cases),
+            "PARITY_FINDING": json.dumps(PROOF_FINDING),
+        },
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.repo_definition
+def test_proof_and_evidence_sentences_match_the_api_service():
+    expected = node_proofs(PROOF_CASES)
+    for case, want in zip(PROOF_CASES, expected, strict=True):
+        proof = inline_fixes.proof_line(case["evidence"], PROOF_FINDING, case["level"])
+        evidence = inline_fixes.evidence_lines(case["evidence"], case["level"])
+        assert proof == want["proof"], f"proofLine differs on {case!r}"
+        assert evidence == want["evidence"], f"evidenceLines differs on {case!r}"
+        if case["level"] == "static_assertion" or not case["evidence"].get("generated_tests"):
+            assert "regression test failed" not in proof.lower()
+            assert "failed on the original code" not in proof
+            assert not any("failed on the original code" in line for line in evidence)

@@ -1,2 +1,2 @@
-# Offline release-review authentication only; do not install in service images.
+# Offline analysis/remediation review authentication; not needed in service images.
 cryptography==50.0.2

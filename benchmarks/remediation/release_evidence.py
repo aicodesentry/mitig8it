@@ -10,11 +10,13 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import copy
 import hashlib
 import json
 import math
 import re
 import subprocess
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 ROOT = Path(__file__).resolve().parents[2]
 TRUST_STORE = Path(__file__).resolve().parent / "release/trusted-keys.json"
+EVALUATION_IDENTITY = Path(__file__).resolve().parent / "release/evaluation-identity.json"
+INTAKE_ORIGINS = Path(__file__).resolve().parent / "release/intake-origins.json"
+RELEASE_BUNDLE = Path(__file__).resolve().parent / "release/evidence.json"
 DOMAIN = b"mitig8it/remediation-release-evidence/v1\x00"
 PURPOSE = "mitig8it/remediation-release-evidence"
 MAX_RECEIPT_AGE_SECONDS = 30 * 24 * 60 * 60
@@ -34,13 +39,28 @@ IMAGE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9./_:-]*@sha256:[0-9a-f]{64}\Z")
 IDENTIFIER = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._:/@+-]{0,255}\Z")
 RELEASE_INPUT_PATHS = (
     "benchmarks/quality_gate.py",
+    "benchmarks/production_readiness.py",
     "benchmarks/remediation/evaluate.py",
+    "benchmarks/remediation/corpus_intake.py",
     "benchmarks/remediation/fixtures",
     "benchmarks/remediation/release-manifest.json",
     "benchmarks/remediation/release/trusted-keys.json",
+    "benchmarks/remediation/release/evaluation-identity.json",
+    "benchmarks/remediation/release/intake",
+    "benchmarks/remediation/release/intake-origins.json",
     "benchmarks/remediation/release_evidence.py",
     "benchmarks/requirements-quality.txt",
     "services/remediation-service",
+    "services/api-service/src",
+    "services/github-service/src",
+    "services/analysis-service/src",
+    "action",
+    ".github/actions/quality-readiness",
+    ".github/workflows",
+    # These are the only source-tree writes permitted after authentication.
+    # Every subsequent gate compares them with freshly verified derived artifacts.
+    ":(exclude)services/api-service/src/quality-release.json",
+    ":(exclude)services/github-service/src/quality-release.json",
 )
 
 
@@ -154,7 +174,8 @@ def fixture_inventory(directory: Path) -> dict[str, Any]:
 
 def expected_bindings(*, source_revision: str, manifest: dict, fixtures: dict,
                       results: list, provider_id: str, model_id: str,
-                      configuration: dict, sandbox_image_digest: str) -> dict:
+                      configuration: dict, sandbox_image_digest: str, service_image_digest: str,
+                      intake_bindings: dict | None = None) -> dict:
     """Build independently supplied current bindings, never trust receipt bindings.
 
     `results` is the full evaluation result array, including evidence, usage, and
@@ -170,6 +191,8 @@ def expected_bindings(*, source_revision: str, manifest: dict, fixtures: dict,
     require(isinstance(configuration, dict) and bool(configuration), "missing_provider_configuration")
     require(isinstance(sandbox_image_digest, str) and IMAGE.fullmatch(sandbox_image_digest) is not None,
             "sandbox_image_must_be_digest_pinned")
+    require(isinstance(service_image_digest, str) and IMAGE.fullmatch(service_image_digest) is not None,
+            "service_image_must_be_digest_pinned")
     result_ids = set()
     for result in results:
         require(isinstance(result, dict) and _identifier(result.get("fixture_id")), "invalid_result_record")
@@ -183,26 +206,58 @@ def expected_bindings(*, source_revision: str, manifest: dict, fixtures: dict,
         require(metadata.get("id") == fixture_id, "fixture_identity_mismatch")
         require(metadata.get("kind") in ("supported", "negative", "adversarial")
                 and metadata.get("split") in ("train", "validation", "holdout")
-                and metadata.get("expected_state") == ("ready" if metadata.get("kind") == "supported" else "unsupported"),
+                and metadata.get("expected_state") == ("ready" if metadata.get("kind") == "supported"
+                    and not metadata.get("release_abstention") else "unsupported"),
                 "invalid_fixture_metadata")
         for field in ("repository_id", "split", "family", "kind"):
             require(isinstance(metadata.get(field), str) and result.get(field) == metadata[field],
                     "result_fixture_metadata_mismatch")
         require(result.get("outcome") == "passed", "evaluation_result_not_passed")
         require(result.get("observed_state") == metadata.get("expected_state"), "evaluation_state_mismatch")
+        if result["observed_state"] == "unsupported":
+            repair = result.get("repair_evidence") or {}
+            require(isinstance(repair, dict) and not repair.get("candidates"), "abstention_cannot_carry_replacement_code")
         if result["observed_state"] == "ready":
             require(result.get("verification_level") == "independent_sandbox", "production_sandbox_evidence_required")
         for content_digest in fixture["files"].values():
             require(isinstance(content_digest, str) and DIGEST.fullmatch(content_digest) is not None,
                     "invalid_fixture_content_digest")
     require(result_ids == set(fixtures), "fixture_results_missing_or_unexpected")
-    return {
+    bindings = {
         "source_revision": source_revision,
         "manifest_digest": digest(manifest), "fixtures_digest": digest(fixtures), "results_digest": digest(results),
         "provider": {"kind": "live-provider", "provider_id": provider_id, "model_id": model_id,
                      "configuration_digest": digest(configuration)},
         "sandbox": {"verification_level": "independent_sandbox", "image_digest": sandbox_image_digest},
+        "service": {"image_digest": service_image_digest},
     }
+    if intake_bindings is not None:
+        require(isinstance(intake_bindings, dict) and bool(intake_bindings), "invalid_intake_binding")
+        bindings["intake"] = intake_bindings
+    return bindings
+
+
+def release_fixture_inventory(inventory: dict, manifest: dict) -> dict:
+    """Release-only abstention policy; no case or coverage denominator is removed.
+
+    Policy is itself receipt-bound through the current manifest digest. Every
+    abstention entry binds the complete raw fixture bytes and an explicit reason.
+    Seed/static regression demonstrations are never silently reclassified.
+    """
+    table = manifest.get("release_abstentions")
+    require(isinstance(table, dict), "release_abstention_policy_missing")
+    static_ids = {key for key, item in inventory.items()
+                  if item["metadata"].get("expected_verification_level") == "static_assertion"}
+    require(set(table) == static_ids, "static_regression_fixture_requires_explicit_release_abstention")
+    effective = copy.deepcopy(inventory)
+    for key, policy in table.items():
+        require(isinstance(policy, dict) and set(policy) == {"fixture_digest", "reason"}
+                and isinstance(policy["reason"], str) and bool(policy["reason"].strip())
+                and policy["fixture_digest"] == digest(inventory[key]), "release_abstention_fixture_binding_mismatch")
+        require(inventory[key]["metadata"].get("kind") == "supported", "invalid_release_abstention_case_kind")
+        effective[key]["metadata"]["expected_state"] = "unsupported"
+        effective[key]["metadata"]["release_abstention"] = policy
+    return effective
 
 
 def _trusted_keys(store: Any) -> tuple[dict[str, dict], int, int]:
@@ -228,7 +283,8 @@ def _trusted_keys(store: Any) -> tuple[dict[str, dict], int, int]:
 
 def verify_release_evidence(receipt: Any, *, source_revision: str, manifest: dict,
                             fixtures: dict, results: list, provider_id: str, model_id: str,
-                            configuration: dict, sandbox_image_digest: str,
+                            configuration: dict, sandbox_image_digest: str, service_image_digest: str,
+                            intake_bindings: dict | None = None,
                             trust_store_path: Path = TRUST_STORE, now: datetime | None = None) -> dict:
     """Verify a complete receipt against current inputs and explicitly trusted keys.
 
@@ -237,7 +293,8 @@ def verify_release_evidence(receipt: Any, *, source_revision: str, manifest: dic
     """
     bindings = expected_bindings(source_revision=source_revision, manifest=manifest, fixtures=fixtures,
                                  results=results, provider_id=provider_id, model_id=model_id,
-                                 configuration=configuration, sandbox_image_digest=sandbox_image_digest)
+                                 configuration=configuration, sandbox_image_digest=sandbox_image_digest,
+                                 service_image_digest=service_image_digest, intake_bindings=intake_bindings)
     require(isinstance(receipt, dict) and set(receipt) == {"schema_version", "payload", "signatures"}
             and receipt["schema_version"] == "v1", "invalid_release_receipt")
     payload = receipt["payload"]
@@ -285,6 +342,9 @@ def verify_release_evidence(receipt: Any, *, source_revision: str, manifest: dic
         require(_identifier(fixture_id) and fixture_id not in reviewed and fixture_id in fixtures, "duplicate_or_unknown_fixture_review")
         require(_identifier(reviewer_id) and reviewer_id in reviewers, "fixture_reviewer_not_authenticated")
         require(review["verdict"] == "approved", "fixture_review_not_approved")
+        provenance = fixtures[fixture_id]["metadata"].get("intake_provenance") or {}
+        require(reviewer_id not in provenance.get("case_authors", [])
+                and reviewer_id not in provenance.get("oracle_authors", []), "fixture_author_cannot_self_approve")
         require(review["fixture_digest"] == digest(fixtures[fixture_id])
                 and review["result_digest"] == digest(results_by_id[fixture_id]), "fixture_review_binding_mismatch")
         reviewed.add(fixture_id)
@@ -315,11 +375,75 @@ def clean_checkout_revision() -> str:
     return revision
 
 
+def load_release_admission(bundle_path: Path = RELEASE_BUNDLE, *, now: datetime | None = None) -> dict:
+    """Authenticate current full evidence, then recompute immutable quality floors.
+
+    A bundle contains {schema_version, evaluation, receipt}. Expected identity is
+    checked-in policy, never copied from the bundle. Input `passed` and summary
+    booleans are not trusted. This function performs no writes.
+    """
+    bundle = read_json(bundle_path)
+    require(isinstance(bundle, dict) and set(bundle) == {"schema_version", "evaluation", "receipt"}
+            and bundle["schema_version"] == "v1", "invalid_release_bundle")
+    evaluation = bundle["evaluation"]
+    require(isinstance(evaluation, dict) and evaluation.get("schema_version") == "v1"
+            and evaluation.get("suite") == "release" and evaluation.get("adapter") == "engine"
+            and evaluation.get("provider_kind") == "live-provider"
+            and evaluation.get("results_kind") == "repair_quality", "live_production_evaluation_required")
+    revision = clean_checkout_revision()
+    require(evaluation.get("source_revision") == revision, "evaluation_source_revision_mismatch")
+    identity = read_json(EVALUATION_IDENTITY)
+    require(isinstance(identity, dict) and set(identity) == {"provider_id", "model_id", "configuration", "sandbox_image_digest", "service_image_digest"},
+            "current_evaluation_identity_not_configured")
+    require(canonical_json(evaluation.get("evaluation_identity")) == canonical_json(identity), "evaluation_identity_mismatch")
+    fixtures = fixture_inventory(ROOT / "benchmarks/remediation/fixtures")
+    manifest = read_json(ROOT / "benchmarks/remediation/release-manifest.json")
+    results = evaluation.get("results")
+    from benchmarks.remediation.corpus_intake import IntakeError, validate_release_intake
+    try:
+        intake_binding = validate_release_intake(repository=ROOT,
+            fixture_root=ROOT / "benchmarks/remediation/fixtures", source_revision=revision,
+            manifest=manifest, evaluation=evaluation, origin_policy_path=INTAKE_ORIGINS)
+    except (IntakeError, ValueError, OSError, KeyError, TypeError) as error:
+        raise ReleaseEvidenceError("committed_intake_provenance_required:" +
+                                   (str(error) if isinstance(error, IntakeError) else "invalid_intake_inputs")) from error
+    fixtures = release_fixture_inventory(fixtures, manifest)
+    authenticated = verify_release_evidence(bundle["receipt"], source_revision=revision, manifest=manifest,
+        fixtures=fixtures, results=results, intake_bindings=intake_binding, trust_store_path=TRUST_STORE, now=now, **identity)
+    for result in results:
+        if result["observed_state"] == "ready":
+            repair = result.get("repair_evidence")
+            require(isinstance(repair, dict) and isinstance(repair.get("candidates"), list)
+                    and bool(repair["candidates"]) and isinstance(repair.get("evidence"), dict)
+                    and bool(repair["evidence"]), "complete_repair_evidence_missing")
+            require(repair.get("request_versions", {}).get("repair_model") == identity["model_id"]
+                    and repair.get("request_versions", {}).get("repair_service_image") == identity["service_image_digest"]
+                    and repair.get("requested_sandbox_image_digest") == identity["sandbox_image_digest"]
+                    and repair["evidence"].get("verification_level") == "independent_sandbox",
+                    "evaluated_request_identity_mismatch")
+            for candidate in repair["candidates"]:
+                require(isinstance(candidate, dict) and isinstance(candidate.get("path"), str)
+                        and isinstance(candidate.get("replacement_content"), str), "complete_repair_evidence_missing")
+    from benchmarks.remediation.evaluate import release_statistics
+    statistics = release_statistics([(Path(), item["metadata"]) for item in fixtures.values()],
+                                    [SimpleNamespace(**item) for item in results], manifest)
+    require(statistics["passed"], "release_statistics_failed:" + ",".join(statistics["reasons"]))
+    payload = bundle["receipt"]["payload"]
+    artifact = {"schema_version": "v1", "remediation_release_verified": True,
+                "source_revision": revision, "receipt_digest": authenticated["receipt_digest"],
+                "manifest_digest": payload["manifest_digest"], "fixtures_digest": payload["fixtures_digest"],
+                "results_digest": payload["results_digest"], "provider": payload["provider"], "sandbox": payload["sandbox"],
+                "service": payload["service"],
+                "intake": payload["intake"],
+                "expires_at": payload["expires_at"], "authenticated_reviewers": authenticated["authenticated_reviewers"]}
+    return {"passed": True, "reasons": [], "statistics": statistics, "artifact": artifact}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--evaluation", type=Path, required=True, help="Complete current evaluation JSON containing results")
-    parser.add_argument("--identity", type=Path, required=True, help="Non-secret provider_id, model_id, configuration, sandbox_image_digest JSON")
+    parser.add_argument("--identity", type=Path, required=True, help="Non-secret provider/model/config and sandbox/service image digests JSON")
     args = parser.parse_args()
     try:
         # The production CLI cannot substitute a trust store, source SHA or corpus.
@@ -327,7 +451,7 @@ def main() -> int:
         revision = clean_checkout_revision()
         evaluation, identity = read_json(args.evaluation), read_json(args.identity)
         require(isinstance(evaluation, dict) and isinstance(evaluation.get("results"), list), "invalid_evaluation_document")
-        require(isinstance(identity, dict) and set(identity) == {"provider_id", "model_id", "configuration", "sandbox_image_digest"},
+        require(isinstance(identity, dict) and set(identity) == {"provider_id", "model_id", "configuration", "sandbox_image_digest", "service_image_digest"},
                 "invalid_evaluation_identity")
         authenticated = verify_release_evidence(read_json(args.receipt), source_revision=revision,
             manifest=read_json(ROOT / "benchmarks/remediation/release-manifest.json"),

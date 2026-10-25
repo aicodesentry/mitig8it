@@ -16,7 +16,7 @@ import os
 import sys
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
 
 ANALYSIS_SRC_ENV = "MITIG8IT_ANALYSIS_SRC"
 DEFAULT_ANALYSIS_SRC = "/opt/mitig8it/services/analysis-service/src"
@@ -61,8 +61,12 @@ def analyze(
     pull_request_number: int,
     commit_sha: str,
     files: Sequence[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Run the review tiers over the changed files and return the findings.
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Run the review tiers over the changed files and return the findings and limitations.
+
+    The limitations are what the tiers could not do: a file the scanner parsed only in part, a
+    file it gave up on, a tier 1 budget that ran out. Dropping them made a partly analysed pull
+    request read exactly like a complete, clean one, so they travel with the findings.
 
     Tier 2 fails the call closed: a scanner that did not run must never be reported as a scanner
     that found nothing, so an exception here ends the run without publishing a clean result.
@@ -78,7 +82,10 @@ def analyze(
     findings = result.get("findings")
     if not isinstance(findings, list):
         raise RuntimeError("Incomplete analysis response: findings missing")
-    return findings
+    limitations = result.get("analysis_limitations") or []
+    if not isinstance(limitations, list):
+        raise RuntimeError("Incomplete analysis response: analysis_limitations is not a list")
+    return findings, [item for item in limitations if isinstance(item, dict)]
 
 
 def is_informational(finding: Dict[str, Any]) -> bool:

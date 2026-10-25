@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { remediationAPI } from '../services/api'
 import { useAuth } from '../contexts/AuthContext'
 import { getPrivateCacheEpoch } from '../services/privateCache'
@@ -200,13 +200,19 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
     }
   }
 
-  const allCandidates = preview?.candidates || []
-  const allSkipped = preview?.skipped || []
+  const allCandidates = useMemo(() => preview?.candidates || [], [preview?.candidates])
+  const allSkipped = useMemo(() => preview?.skipped || [], [preview?.skipped])
   const previewHead = preview?.head_sha || null
   const previewApplicable = preview ? preview.applicable !== false : false
   const staleHead = Boolean(previewHead && previewApplicable && ((liveHeadSha && liveHeadSha !== previewHead) || rejectedHead === previewHead))
-  const applicableCandidates = allCandidates.filter((candidate) => (candidate.status || 'applicable') === 'applicable')
-  const staleCandidates = allCandidates.filter((candidate) => candidate.status === 'stale')
+  const applicableCandidates = useMemo(
+    () => allCandidates.filter((candidate) => (candidate.status || 'applicable') === 'applicable'),
+    [allCandidates],
+  )
+  const staleCandidates = useMemo(
+    () => allCandidates.filter((candidate) => candidate.status === 'stale'),
+    [allCandidates],
+  )
 
   const generate = (message = 'Repair generation requested.') => perform(
     () => remediationAPI.generate(pullRequestId, { idempotency_key: crypto.randomUUID() }),
@@ -223,10 +229,28 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
   }
 
   const capabilities = state?.capabilities || {}
-  const findings = new Map((preview?.findings || []).map((finding) => [finding.id, finding]))
-  const candidates = findingId ? allCandidates.filter((candidate) => (candidate.finding_ids || []).includes(findingId)) : allCandidates
-  const skipped = findingId ? allSkipped.filter((item) => item.finding_id === findingId) : allSkipped
-  const groups = groupByFile(candidates, preview?.files)
+  const findings = useMemo(
+    () => new Map((preview?.findings || []).map((finding) => [finding.id, finding])),
+    [preview?.findings],
+  )
+  const candidates = useMemo(
+    () => (findingId ? allCandidates.filter((candidate) => (candidate.finding_ids || []).includes(findingId)) : allCandidates),
+    [allCandidates, findingId],
+  )
+  const skipped = useMemo(
+    () => (findingId ? allSkipped.filter((item) => item.finding_id === findingId) : allSkipped),
+    [allSkipped, findingId],
+  )
+  const groups = useMemo(() => groupByFile(candidates, preview?.files), [candidates, preview?.files])
+  const diffsByCandidate = useMemo(() => new Map(candidates.map((candidate) => [
+    candidate.id,
+    (candidate.changes || []).map((change) => {
+      const path = change.path || 'file'
+      return typeof change.unified_diff === 'string' && change.unified_diff.trim()
+        ? serverDiff(change.unified_diff, path)
+        : unifiedDiff(change.original, change.replacement, { path, startLine: change.start_line || change.line_start || 1 })
+    }),
+  ])), [candidates])
   const verification = preview?.verification || null
   const coverageGaps = [...(verification?.coverage_gaps || []), ...(verification?.limitations || [])]
   const action = state?.action || null
@@ -264,10 +288,7 @@ export function RepairSession({ pullRequestId, findingId = null, liveHeadSha = n
         </p>}
         {candidate.rationale && <p className="text-sm text-neutral-700">{candidate.rationale}</p>}
         {(candidate.changes || []).map((change, index) => {
-          const path = change.path || 'file'
-          const diff = typeof change.unified_diff === 'string' && change.unified_diff.trim()
-            ? serverDiff(change.unified_diff, path)
-            : unifiedDiff(change.original, change.replacement, { path, startLine: change.start_line || change.line_start || 1 })
+          const diff = diffsByCandidate.get(candidate.id)?.[index]
           return (
             <div key={`${change.path}:${index}`}>
               <p className="break-all text-sm font-medium">{change.path}</p>

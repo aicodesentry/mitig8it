@@ -2,6 +2,7 @@ const express = require('express');
 const logger = require('../utils/logger');
 const requestContext = require('../utils/requestContext');
 const axios = require('axios');
+const { GITHUB_TIMEOUT_MS } = require('../services/githubTimeout');
 const crypto = require('crypto');
 const { Pool } = require('pg');
 const { ensureInternalAuth } = require('../middleware/internalAuth');
@@ -61,6 +62,7 @@ router.post('/register', async (req, res) => {
     const repoResp = await axios.get(
       `https://api.github.com/repos/${repository_full_name}`,
       {
+        timeout: GITHUB_TIMEOUT_MS,
         headers: {
           Authorization: `Bearer ${github_token}`,
           Accept: 'application/vnd.github+json',
@@ -73,6 +75,7 @@ router.post('/register', async (req, res) => {
     const existingHooksResponse = await axios.get(
       `https://api.github.com/repos/${repository_full_name}/hooks`,
       {
+        timeout: GITHUB_TIMEOUT_MS,
         headers: {
           Authorization: `Bearer ${github_token}`,
           Accept: 'application/vnd.github+json',
@@ -133,6 +136,7 @@ router.post('/register', async (req, res) => {
       `https://api.github.com/repos/${repository_full_name}/hooks`,
       webhookConfig,
       {
+        timeout: GITHUB_TIMEOUT_MS,
         headers: {
           Authorization: `Bearer ${github_token}`,
           Accept: 'application/vnd.github+json',
@@ -292,6 +296,7 @@ router.post('/unregister', ensureInternalAuth, async (req, res) => {
     await axios.delete(
       `https://api.github.com/repos/${repository_full_name}/hooks/${webhook_id}`,
       {
+        timeout: GITHUB_TIMEOUT_MS,
         headers: {
           Authorization: `Bearer ${github_token}`,
           Accept: 'application/vnd.github+json',

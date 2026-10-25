@@ -107,6 +107,19 @@ describe('repair evidence shape', () => {
     expect(verification.verification_level).toBe('independent_sandbox');
   });
 
+  test('a check output tail is redacted before it is persisted', () => {
+    const hostile = response();
+    hostile.evidence.verification_run.checks[0].baseline.output_tail =
+      'AssertionError: password="customer-database-password" and Bearer github_pat_abcdefghijklmnop';
+
+    const { verification } = byKind(buildEvidenceRecords(hostile));
+    const kept = verification.checks.items[0].baseline.output_tail;
+    expect(kept).toContain('[REDACTED_SECRET]');
+    expect(kept).not.toContain('customer-database-password');
+    expect(kept).not.toContain('github_pat_abcdefghijklmnop');
+    expect(verification.checks.items[0].baseline.exit_code).toBe(1);
+  });
+
   test('usage carries the tokens and the settled cost the control plane computed', () => {
     const { usage } = byKind(buildEvidenceRecords(response(), { cost: 0.0123 }));
     expect(usage).toEqual({ input_tokens: 1200, output_tokens: 340, cost_usd: 0.0123, provider_request_ids: ['req_1', 'req_2'] });

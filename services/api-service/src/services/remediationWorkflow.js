@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const grpc = require('@grpc/grpc-js');
 const remediationDb = require('../db/remediation');
 const { RemediationServiceClient } = require('./remediationServiceClient');
 const { GitHubRemediationClient } = require('./githubRemediationClient');
@@ -6,6 +7,7 @@ const policy = require('./remediationPolicy');
 const metrics = require('./remediationMetrics');
 const logger = require('../utils/logger');
 const { withSpan, injectTrace } = require('../utils/telemetry');
+const { redactRepositoryContent } = require('../utils/contentRedaction');
 
 const REPAIR_OUTCOMES = new Set(['ready', 'unsupported', 'inconclusive', 'failed']);
 const STAGE_SEQUENCE = policy.STAGE_SEQUENCE;
@@ -73,11 +75,16 @@ function text(value, limit) {
   return typeof value === 'string' ? value.slice(0, limit) : null;
 }
 
+function normalizeGrpcStatusCode(code) {
+  return typeof code === 'number' && grpc.status[code] ? grpc.status[code] : code;
+}
+
 // A tail keeps the END of the output: the failure is at the bottom, not the top.
 function tail(value, limit = MAX_OUTPUT_TAIL_BYTES) {
   if (typeof value !== 'string') return null;
-  const bytes = Buffer.from(value, 'utf8');
-  return bytes.length <= limit ? value : bytes.subarray(bytes.length - limit).toString('utf8');
+  const redacted = redactRepositoryContent(value);
+  const bytes = Buffer.from(redacted, 'utf8');
+  return bytes.length <= limit ? redacted : bytes.subarray(bytes.length - limit).toString('utf8');
 }
 
 function number(value) {
@@ -255,19 +262,31 @@ async function selectedFindings(job) {
 }
 
 function buildPayload(job, snapshot, findings) {
+  const releaseIdentity = policy.releaseEvidenceIdentity();
+  const versions = { policy_version: job.policy_version };
+  // The remote provider refuses a request whose expected model differs from its
+  // configured model. Carry the reviewed model on every release-eligible request
+  // instead of trusting a mutable secret to keep the same meaning over time.
+  if (releaseIdentity) {
+    versions.repair_model = releaseIdentity.model_id;
+    versions.repair_service_image = releaseIdentity.service_image_digest;
+  }
   return { schema_version: 'v1', job_id: job.id, tenant_id: String(job.installation_id), installation_id: String(job.installation_id), repository_id: job.repository_id,
     repository_full_name: job.repository_full_name, pull_request_id: job.pull_request_id, pull_request_number: job.pr_number,
     head_sha: job.head_sha, base_sha: job.base_sha, analysis_run_id: job.analysis_run_id, stage: job.stage,
     fencing_token: job.fencing_token, attempt: Number(job.attempt_count || 0) + 1, findings, files: snapshot.files,
     tree_entries: snapshot.treeEntries, head_tree_oid: snapshot.headTreeOid,
-    profile: { snapshot_coverage: { provided_paths: snapshot.files.map((file) => file.path) } }, policy: repairPolicy(job.policy_manifest), versions: { policy_version: job.policy_version },
+    profile: { snapshot_coverage: { provided_paths: snapshot.files.map((file) => file.path) } }, policy: repairPolicy(job.policy_manifest), versions,
     limits: { max_files: job.policy_manifest.max_files, max_changed_lines: job.policy_manifest.max_changed_lines, max_attempts: job.policy_manifest.max_attempts, max_tool_calls: job.policy_manifest.max_tool_calls, max_context_tokens: job.policy_manifest.max_context_tokens, max_spend_usd: job.policy_manifest.max_spend_usd } };
 }
 
-// A transient failure is one the next attempt can reasonably survive: the repair
-// service or the GitHub adapter answering 5xx, Cloud Run aborting a request while an
-// instance is still starting (429 "no available instance" or 503), or a dropped
-// connection. A definite rejection (400, 401, 403, 404, 409, 422) is never retried.
+// Question: should executeClaimedJob return this durable remediation job to `queued`,
+// rather than end it as `inconclusive`? A false negative abandons a recoverable repair;
+// a false positive spends another bounded attempt and may repeat a read-only repair
+// request. The repair service or GitHub adapter answering 5xx, Cloud Run aborting a
+// request while an instance is still starting (429 "no available instance" or 503),
+// or a dropped connection qualify. A definite rejection (400, 401, 403, 404, 409,
+// 422) is never retried.
 const TRANSIENT_STATUSES = new Set([429, 502, 503, 504]);
 const TRANSIENT_CODES = new Set(['ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN']);
 function isTransientRepairFailure(error) {
@@ -380,10 +399,11 @@ async function executeClaimedJob(job) {
     // adapter's status lines, and no credential is ever part of one.
     const detail = text(error.message, MAX_REASON_MESSAGE_CHARS);
     const status = Number(error?.response?.status || error?.status || 0) || null;
-    await remediationDb.completeStage(job, { state, stage: state === 'queued' ? stage : 'inconclusive', outcome: error.code || 'repair_failure',
-      reason: { code: error.code || 'repair_failure', message: detail || 'Repair stage could not be completed safely', status, retryable } });
+    const code = normalizeGrpcStatusCode(error.code);
+    await remediationDb.completeStage(job, { state, stage: state === 'queued' ? stage : 'inconclusive', outcome: code || 'repair_failure',
+      reason: { code: code || 'repair_failure', message: detail || 'Repair stage could not be completed safely', status, retryable } });
     logger.warn('Repair stage could not be completed safely', {
-      job_id: job.id, stage, state, retryable, code: error.code || 'repair_failure', status, error: detail,
+      job_id: job.id, stage, state, retryable, code: code || 'repair_failure', status, error: detail,
     });
     metrics.stageAttempts.labels(stage, state).inc();
     metrics.stageDuration.labels(stage, state).observe(Number(process.hrtime.bigint() - started) / 1e9);

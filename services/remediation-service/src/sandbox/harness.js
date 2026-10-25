@@ -419,6 +419,8 @@ assert.notInSource = (target, literal, message) => {
     if (typeof value === 'string' && value.includes(want)) fail(message || `exported value ${key} still carries ${JSON.stringify(want)}`);
   }
 };
+// argvEmbedded(call, payload): an argv array, no shell as the program, the payload inside one element after it.
+assert.argvEmbedded = (call, payload, message) => { if (!call) fail(message || 'no child process call was recorded'); if (typeof call.shell === 'string') fail(message || `command ran through a shell: ${call.shell}`); if (/^(?:.*[\\/])?(?:sh|bash|dash|zsh|ksh|csh|tcsh|fish|cmd(?:\.exe)?|powershell|pwsh)$/i.test(String(call.command))) fail(message || `a shell was started as the program: ${call.command}`); if (!list(call.args).some((a) => String(a).includes(String(payload)))) fail(message || `expected the injected input ${JSON.stringify(payload)} inside one args element of ${call.command}`, call.args); };
 // argv(call, payload): the child ran with an argv array (no shell string) and the injected payload is its own element (the command name itself is argv[0]).
 assert.argv = (call, payload, message) => { if (!call) fail(message || 'no child process call was recorded'); if (typeof call.shell === 'string') fail(message || `command ran through a shell: ${call.shell}`); const want = String(payload); if (want !== call.command && !(Array.isArray(call.args) && call.args.some((a) => String(a) === want))) fail(message || `expected the injected input ${JSON.stringify(payload)} to be its own args element of ${call.command}`, call.args); };
 

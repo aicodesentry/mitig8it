@@ -100,10 +100,33 @@ def test_a_require_inside_a_function_body_is_not_a_load_time_dependency(request_
     assert not isinstance(proof, ProofFallback), getattr(proof, "reason", None)
 
 
-def test_a_relative_import_the_snapshot_does_not_carry_is_not_refused(request_payload):
-    # The snapshot is a budgeted slice of the tree, so a file missing from it says nothing about
-    # the repository. Claiming otherwise would refuse on the harness's own byte budget.
+def test_a_relative_import_the_repository_does_not_have_is_refused_by_name(request_payload):
+    # nebullii/test-only#140: web/pricing.js requires './db' and the repository has no db.js, so
+    # the load threw MODULE_NOT_FOUND on both trees and the finding was reported as a patch whose
+    # test "still fails", which it was not.
     proof = _proof(request_payload, {"src/config.js": "require('./elsewhere');\n" + SECRET})
+    assert isinstance(proof, ProofFallback)
+    assert proof.reason == "local_module_missing:./elsewhere"
+
+
+def test_a_relative_import_the_tree_has_but_the_snapshot_does_not_carry_is_refused_as_such(request_payload):
+    # The sandbox materializes the snapshot and nothing else, so the load fails just the same;
+    # the reason says the file exists and was not sent, rather than that the repository lacks it.
+    files = {"src/config.js": "require('./elsewhere');\n" + SECRET, "src/elsewhere.js": "module.exports = {};\n"}
+    snapshot, finding = _snapshot(request_payload, files, "src/config.js")
+    payload = snapshot.request.model_dump(mode="json")
+    payload["files"] = [item for item in payload["files"] if item["path"] != "src/elsewhere.js"]
+    request = RepairRequest.model_validate(payload)
+    proof = generate_proof(Snapshot(request), request.findings[0], HARDCODED_CREDENTIAL, JAVASCRIPT)
+    assert isinstance(proof, ProofFallback)
+    assert proof.reason == "local_module_not_in_snapshot:./elsewhere"
+
+
+def test_a_relative_import_the_snapshot_carries_is_followed_not_refused(request_payload):
+    proof = _proof(request_payload, {
+        "src/config.js": "require('./elsewhere');\n" + SECRET,
+        "src/elsewhere.js": "module.exports = {};\n",
+    })
     assert not isinstance(proof, ProofFallback), getattr(proof, "reason", None)
 
 

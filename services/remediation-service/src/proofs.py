@@ -62,6 +62,7 @@ from .sites import (
     python_module_value,
     scope_lines_near,
 )
+from .templates import command_value_embedded
 
 SQL_PAYLOAD = "1' OR '1'='1"
 COMMAND_PAYLOAD = "x; rm -rf /"
@@ -110,6 +111,35 @@ class ProofFallback:
     finding_id: str
     family: str
     reason: str
+
+
+# The sentence a pull request reader gets when the service could not write a regression test for
+# a finding and nothing else proved it. The code is kept in the sentence, because it is what a
+# maintainer searches for; the phrase says which shape of code it was.
+_PROOF_REFUSAL_PHRASES = {
+    "enclosing_function_not_found": "the code is not inside a function or route a test can call",
+    "enclosing_route_not_found": "the code is not inside a route a test can drive",
+    "no_untrusted_parameter": "no parameter of the enclosing function reaches the sink",
+    "no_request_input_in_route": "no request input of the route reaches the sink",
+    "no_request_input_in_view": "no request input of the view reaches the sink",
+    "function_not_exported": "the enclosing function is not exported, so a test cannot call it",
+    "eval_argument_not_an_identifier": "eval is given an expression rather than one variable",
+    "eval_argument_not_request_data": "the value given to eval does not come from the request or a parameter",
+    "module_not_loadable_by_node": "the module is not a file Node can load",
+    "local_module_missing": "the module requires {detail}, which is not in the repository at this commit, so no test can load it",
+    "local_module_not_in_snapshot": "the module requires {detail}, which was not part of the files the repair was given",
+    "dependency_not_available_in_sandbox": "the module requires the package {detail}, which the sandbox does not have",
+    "typescript_syntax_not_strippable": "the TypeScript uses {detail}, which Node cannot run without a build step",
+}
+
+
+def proof_refusal_message(reason: str) -> str:
+    """One line naming why no regression test could be generated, for a finding's no-fix line."""
+    code, _, detail = str(reason or "").partition(":")
+    phrase = _PROOF_REFUSAL_PHRASES.get(code)
+    if phrase is None:
+        return f"No regression test could be generated for this code shape ({reason}), so no fix could be verified."
+    return f"No regression test could be generated: {phrase.format(detail=detail or 'a module')} ({code})."
 
 
 def _js(value: Any) -> str:
@@ -354,8 +384,32 @@ def _js_specifiers(source: str) -> list[str]:
     return found
 
 
-def _js_resolve(snapshot: Snapshot, from_path: str, specifier: str) -> str | None:
-    """The snapshot path a relative specifier names, by the rules the harness resolves it with."""
+def _js_resolve(snapshot: Snapshot, from_path: str, specifier: str, paths: set[str] | None = None) -> str | None:
+    """The snapshot path a relative specifier names, by the rules the harness resolves it with.
+
+    `paths` replaces the snapshot's own paths, which is how the same rules are asked of the head
+    commit's whole tree.
+    """
+    return _js_resolve_in(from_path, specifier, set(snapshot.paths) if paths is None else paths)
+
+
+def js_local_import_paths(path: str, source: str, paths: set[str]) -> list[str]:
+    """The files among `paths` that `path` imports by a relative specifier while it loads.
+
+    The same specifiers and the same resolution the proof's loadability check uses, so a caller
+    that builds a repair request from a partial tree (the Action sends the changed files) can add
+    exactly the modules a generated proof will need to load the subject.
+    """
+    found: list[str] = []
+    for specifier in _js_specifiers(source):
+        if specifier.startswith("."):
+            resolved = _js_resolve_in(path, specifier, paths)
+            if resolved is not None and resolved not in found:
+                found.append(resolved)
+    return found
+
+
+def _js_resolve_in(from_path: str, specifier: str, paths: set[str]) -> str | None:
     base = PurePosixPath(PurePosixPath(from_path).parent / specifier)
     parts: list[str] = []
     for part in base.parts:
@@ -373,20 +427,33 @@ def _js_resolve(snapshot: Snapshot, from_path: str, specifier: str) -> str | Non
         candidates.insert(0, stem[: -len(written.group(0))] + "." + written.group(1) + "ts")
     candidates += [stem + suffix for suffix in (*TYPESCRIPT_SUFFIXES, *NODE_LOADABLE_SUFFIXES)]
     candidates += [stem + "/index" + suffix for suffix in (*TYPESCRIPT_SUFFIXES, *NODE_LOADABLE_SUFFIXES)]
-    paths = set(snapshot.paths)
     return next((candidate for candidate in candidates if candidate in paths), None)
 
 
-def _js_loadable(snapshot: Snapshot, path: str) -> None:
+def _tree_blob_paths(snapshot: Snapshot) -> set[str]:
+    return {entry.path for entry in snapshot.request.tree_entries if entry.type == "blob"}
+
+
+def _js_loadable(snapshot: Snapshot, path: str) -> list[tuple[str, str]]:
     """Raises unless the sandbox's `node` can load the module a generated proof has to load.
 
     The subject is not the only file that has to load: importing it imports everything it names
     at load time, and a failure anywhere in that closure is a proof that fails identically on
     both trees. Those are the failures this refuses in advance, with the module that caused them
-    named. A relative import the snapshot does not carry is not inspected and not refused: the
-    snapshot is a budgeted slice of the tree, so absence there says nothing about the repository.
+    named.
+
+    A relative import that resolves to no file in the snapshot fails the load the same way, because
+    the sandbox materializes the snapshot and nothing else. It is refused by name, and the name
+    says which of two things happened: `local_module_missing` when the head commit's tree has no
+    such file either (the module cannot load anywhere, as `require('./db')` with no `db.js` in
+    the repository), and `local_module_not_in_snapshot` when the tree has it and the caller did
+    not send it. Only load-time imports are walked, so a `require` inside a function body is
+    still never counted. Those are returned rather than raised, as `(code, specifier)`, because
+    one proof can still load the module: a module-scope proof that stubs the very specifier it
+    drives (`h.load(path, { stubs: { './settings': ... } })`). `_js_require_local` decides.
     """
     installed = _js_install_populates_node_modules(snapshot)
+    missing: list[tuple[str, str]] = []
     pending = [path]
     seen: set[str] = set()
     while pending and len(seen) < MAX_WALKED_MODULES:
@@ -405,6 +472,9 @@ def _js_loadable(snapshot: Snapshot, path: str) -> None:
                 found = _js_resolve(snapshot, current, specifier)
                 if found is not None:
                     pending.append(found)
+                    continue
+                code = "local_module_missing" if _js_resolve(snapshot, current, specifier, _tree_blob_paths(snapshot)) is None else "local_module_not_in_snapshot"
+                missing.append((code, specifier))
                 continue
             name = specifier[5:] if specifier.startswith("node:") else specifier
             if name in NODE_BUILTIN_MODULES or name in HARNESS_FAKED_MODULES:
@@ -415,6 +485,14 @@ def _js_loadable(snapshot: Snapshot, path: str) -> None:
                 # unverified, with the install log saying why, rather than refused here.
                 continue
             raise SiteError(f"dependency_not_available_in_sandbox:{name.split('/')[0]}")
+    return missing
+
+
+def _js_require_local(missing: list[tuple[str, str]], stubbed: tuple[str, ...] = ()) -> None:
+    """Raises for the first unresolvable local import the proof does not stub itself."""
+    for code, specifier in missing:
+        if specifier not in stubbed:
+            raise SiteError(f"{code}:{specifier}")
 
 
 # The calls the harness records for each family. A generated proof asserts on those recorders, so
@@ -553,10 +631,13 @@ def _js_command_proof(snapshot: Snapshot, finding: FindingSnapshot, site: JsRout
         head = _js_module_header(path) + setup + [f"  const payload = {_js(COMMAND_PAYLOAD)};"]
         drive = _js_function_call(site, arguments)
         what = f"{site.name}({untrusted})"
+    embedded = command_value_embedded(source, line, JAVASCRIPT)
+    assertions = [item.replace("h.assert.argv(", "h.assert.argvEmbedded(") for item in _JS_ARGV_ASSERTIONS] if embedded else _JS_ARGV_ASSERTIONS
     return GeneratedProof(
         finding.stable_id, COMMAND_ARGUMENTS, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT),
-        "\n".join(head + drive + _JS_ARGV_ASSERTIONS),
-        f"{what} = {COMMAND_PAYLOAD!r}: the child must run with an argument array and the payload as its own element",
+        "\n".join(head + drive + assertions),
+        f"{what} = {COMMAND_PAYLOAD!r}: the child must run with an argument array and the payload "
+        + ("intact inside the argument the command builds" if embedded else "as its own element"),
         site,
     )
 
@@ -807,6 +888,8 @@ def _js_eval_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedPro
     source = snapshot.full_content(path)
     line = _finding_line(finding)
     function, untrusted, members = js_eval_site(source, line)
+    if isinstance(function, JsRoute):
+        return _js_eval_route_proof(finding, path, function, untrusted, members)
     attack = _js_call_arguments(function, untrusted, members, "payload")
     document = _js_call_arguments(function, untrusted, members, _js(JS_EVAL_DOCUMENT))
     body = [
@@ -828,6 +911,38 @@ def _js_eval_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedPro
         finding.stable_id, CODE_INJECTION_EVAL, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
         f"{function.name}({reached}) with a payload that would run a command: nothing is compiled, and a JSON document still parses",
         None,
+    )
+
+
+def _js_eval_route_proof(finding: FindingSnapshot, path: str, route: JsRoute, untrusted: str, members: tuple[str, ...]) -> GeneratedProof:
+    """The eval proof for a route callback: the payload goes in as the request value it reads.
+
+    A repaired route may answer the payload with an error (`JSON.parse` throws and Express turns
+    that into a 500), so the first request is allowed to fail; what it may not do is compile
+    anything. A JSON document must then still be accepted, which is the route's own promise.
+    """
+    if untrusted != route.req or len(members) != 2 or members[0] not in ("query", "params", "body"):
+        raise SiteError("eval_argument_not_request_data")
+    source_name, field = members
+
+    def options(value: str) -> str:
+        return f"{{ {source_name}: {{ {_js(field)}: {value} }} }}"
+
+    drive = f"h.invoke(app, {_js(route.method)}, {_js(route.route)}, "
+    body = _js_header(path) + [
+        f"  const payload = {_js(JS_EVAL_PAYLOAD)};",
+        f"  await {drive}{options('payload')}).catch(() => null);",
+        "  h.assert.noCode();",
+        f"  const out = await {drive}{options(_js(JS_EVAL_DOCUMENT))});",
+        "  h.assert(out.status < 400, `expected a JSON document to still be accepted, got ${out.status}`);",
+        "});",
+        "",
+    ]
+    return GeneratedProof(
+        finding.stable_id, CODE_INJECTION_EVAL, JAVASCRIPT, test_path(finding.stable_id, JAVASCRIPT), "\n".join(body),
+        f"{route.method.upper()} {route.route} with {route.req}.{source_name}.{field} set to a payload that would run a command: "
+        "nothing is compiled, and a JSON document is still accepted",
+        route,
     )
 
 
@@ -1158,13 +1273,16 @@ def _py_command_proof(snapshot: Snapshot, finding: FindingSnapshot, function: Py
         arguments, setup = _py_call_arguments(function, untrusted, COMMAND_PAYLOAD, None)
         body += setup + [f"    payload = {_py(COMMAND_PAYLOAD)}", f"    h.call(m.{function.name}, {', '.join(arguments)})"]
         what = f"{function.name}({untrusted})"
+    embedded = command_value_embedded(source, line, PYTHON)
     body += [
         "    h.assert_true(h.subprocess.calls, 'expected one process to be started')",
-        "    h.assert_argv(h.subprocess.calls[0], payload)",
+        "    h.assert_argv_embedded(h.subprocess.calls[0], payload)" if embedded else "    h.assert_argv(h.subprocess.calls[0], payload)",
     ] + _py_footer()
     return GeneratedProof(
         finding.stable_id, COMMAND_ARGUMENTS, PYTHON, test_path(finding.stable_id, PYTHON), "\n".join(body),
-        f"{what} = {COMMAND_PAYLOAD!r}: the process must run with an argv list, no shell, and the payload as its own element", function,
+        f"{what} = {COMMAND_PAYLOAD!r}: the process must run with an argv list, no shell, and the payload "
+        + ("intact inside the argument the command builds" if embedded else "as its own element"),
+        function,
     )
 
 
@@ -1578,6 +1696,11 @@ def _py_cookie_proof(snapshot: Snapshot, finding: FindingSnapshot) -> GeneratedP
 
 # --- entry point ----------------------------------------------------------------------------
 
+# The JavaScript families whose proof is not built from the enclosing site: a secret literal is in
+# no function, and the rest find their own entry point.
+_JS_SITELESS_FAMILIES = frozenset({HARDCODED_CREDENTIAL, CODE_INJECTION_EVAL, PASSWORD_HASHING, COOKIE_FLAGS})
+
+
 def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, language: str) -> GeneratedProof | ProofFallback:
     """The service-generated test for one finding, or the reason the model has to write it."""
     path = finding.affected_path
@@ -1586,7 +1709,10 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
             # Every JavaScript proof loads the module, so loadability is decided once, before the
             # families that need no enclosing scope: a secret literal is not inside any function,
             # and neither is a parser a route calls.
-            _js_loadable(snapshot, path)
+            missing = _js_loadable(snapshot, path)
+            site = js_site_for_line(snapshot.full_content(path), _finding_line(finding)) if family not in _JS_SITELESS_FAMILIES else None
+            stubbed = (site.key,) if isinstance(site, ModuleScope) and site.driver == "config" and site.key else ()
+            _js_require_local(missing, stubbed)
             if family == HARDCODED_CREDENTIAL:
                 return _js_credential_proof(snapshot, finding)
             if family == CODE_INJECTION_EVAL:
@@ -1595,7 +1721,6 @@ def generate_proof(snapshot: Snapshot, finding: FindingSnapshot, family: str, la
                 return _js_password_proof(snapshot, finding)
             if family == COOKIE_FLAGS:
                 return _js_cookie_proof(snapshot, finding)
-            site = js_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if isinstance(site, ModuleScope):
                 return _js_module_scope_proof(snapshot, finding, site, family)
             if family == SQL_PARAMETERIZATION:

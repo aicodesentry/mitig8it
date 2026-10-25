@@ -28,6 +28,10 @@ export default function PullRequestFindingsPage() {
   // The finding whose suppression reason is being chosen, and the reason chosen for it.
   const [suppressingId, setSuppressingId] = useState(null)
   const [suppressReason, setSuppressReason] = useState(DISMISSAL_REASONS[0].value)
+  // Findings suppressed from this page in this visit. Creating a suppression adds a
+  // suppression row but leaves the finding's status alone until the next analysis
+  // applies it, so the reload alone cannot show that the click worked.
+  const [suppressedIds, setSuppressedIds] = useState(() => new Set())
   const requestVersion = useRef(0)
 
   const load = useCallback(async () => {
@@ -51,6 +55,7 @@ export default function PullRequestFindingsPage() {
   useEffect(() => {
     setFindings([])
     setHeadSha(null)
+    setSuppressedIds(new Set())
     load()
     return () => { requestVersion.current += 1 }
   }, [load])
@@ -72,6 +77,7 @@ export default function PullRequestFindingsPage() {
         notes: 'Suppressed from PR findings page'
       })
       setSuppressingId(null)
+      setSuppressedIds((previous) => new Set(previous).add(finding.id))
       await load()
     } catch (_failure) {
       setError('Could not suppress this finding. Refresh and check your access before retrying.')
@@ -91,7 +97,10 @@ export default function PullRequestFindingsPage() {
         </div>
       )}
 
-      {ordered.map((finding) => (
+      {ordered.map((finding) => {
+        const suppressedNow = suppressedIds.has(finding.id)
+        const suppressed = suppressedNow || Boolean(finding.suppression_applied)
+        return (
         <div key={finding.id} className="rounded-xl border border-neutral-200 bg-white p-5">
           <div className="flex items-center justify-between gap-4">
             <div>
@@ -109,6 +118,17 @@ export default function PullRequestFindingsPage() {
                 {finding.severity === 'info' && (
                   <span className="text-xs text-neutral-500">Test code — does not block</span>
                 )}
+                {suppressed && (
+                  <span
+                    data-testid={`suppressed-badge-${finding.id}`}
+                    className="inline-flex rounded-full bg-neutral-100 px-2.5 py-1 text-xs font-semibold text-neutral-600"
+                  >
+                    Suppressed
+                  </span>
+                )}
+                {suppressedNow && !finding.suppression_applied && (
+                  <span className="text-xs text-neutral-500">Takes effect on the next analysis</span>
+                )}
               </p>
               {finding.remediation_patch && (
                 <p className="mt-2 inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
@@ -123,7 +143,7 @@ export default function PullRequestFindingsPage() {
               >
                 Details
               </Link>
-              <button
+              {!suppressed && <button
                 onClick={() => {
                   setSuppressReason(DISMISSAL_REASONS[0].value)
                   setSuppressingId(suppressingId === finding.id ? null : finding.id)
@@ -132,7 +152,7 @@ export default function PullRequestFindingsPage() {
                 className="rounded-lg border border-neutral-300 px-3 py-2 text-xs font-semibold text-neutral-700"
               >
                 Suppress
-              </button>
+              </button>}
             </div>
           </div>
 
@@ -175,7 +195,8 @@ export default function PullRequestFindingsPage() {
             <pre className="mt-2 overflow-auto rounded-lg bg-neutral-50 p-3 text-xs">{finding.remediation_patch}</pre>
           </details>}
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }

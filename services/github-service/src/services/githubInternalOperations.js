@@ -34,7 +34,7 @@ function validateOwnerRepo(owner, repo) {
   }
 }
 
-const GITHUB_TIMEOUT_MS = 25000;
+const { GITHUB_TIMEOUT_MS } = require('./githubTimeout');
 const READ_METHODS = new Set(['get', 'head']);
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
@@ -55,7 +55,9 @@ function retryAfterMs(value, now) {
   return Number.isNaN(at) ? null : Math.max(0, at - now);
 }
 
-// A read can be repeated freely, so the reader retries a transient failure with
+// Question: should this GitHub read be repeated before returning an error to the caller?
+// GitHubReader is the only caller of this status set. A false negative fails a recoverable
+// read; a false positive delays the caller but cannot duplicate state. The reader uses
 // jittered backoff and honours Retry-After. It refuses mutating methods: a retry of a
 // POST after a 502 that GitHub had already applied created duplicate comments.
 class GitHubReader {
@@ -112,9 +114,11 @@ class GitHubWriter {
   }
 }
 
-// A response was never received, or GitHub answered after it may already have applied
-// the mutation. A 429 is included: GitHub's secondary rate limit can reject a request
-// it has partially processed.
+// Question: must the caller reconcile this one-shot GitHub write before it may try
+// anything else? GitHubWriter is the only caller. A false negative can duplicate a
+// mutation; a false positive forces a harmless read-back reconciliation. A response was
+// never received, or GitHub answered after it may already have applied the mutation. A
+// 429 is included because a secondary rate limit can reject a partially processed call.
 function isAmbiguousWriteError(error) {
   const status = error.response?.status;
   return !status || RETRYABLE_STATUSES.has(status);
@@ -147,10 +151,11 @@ async function githubAnalysisWrite(method, url, token, data) {
   return result.response;
 }
 
-// The analysable files of one pull request that a single run may review. Over the cap
-// the run reviews the first FILE_CAP in path order and reports a `file_cap` limitation;
-// it never refuses the pull request.
-const FILE_CAP = 200;
+// The most paths one content request may name, and the largest file whose content is
+// returned. The control plane caps a run at 200 files after its exclusions, so a request
+// never needs more; a file over the size limit is analysed through its diff only.
+const MAX_CONTENT_PATHS = 200;
+const MAX_CONTENT_BYTES = 500000;
 
 async function fetchPullRequestFiles({ repository_full_name, pull_request_number, installation_id, commit_sha }) {
   if (!repository_full_name || !pull_request_number || !installation_id) {
@@ -185,19 +190,13 @@ async function fetchPullRequestFiles({ repository_full_name, pull_request_number
     const scoped = files
         .filter((f) => ['added', 'modified', 'renamed'].includes(f.status))
         .filter((f) => !f.filename.startsWith('dist/') && !f.filename.includes('node_modules'));
-    // A pull request over the cap is reviewed as far as the cap allows rather than
-    // refused: a partial review of a large change is worth more than no review at all,
-    // and refusing was the one case where a developer got nothing. The selection is
-    // sorted by path first so the same pull request always yields the same 200 files,
-    // whatever order GitHub's pagination returned them in, and the limitation says
-    // plainly how many of how many were reviewed.
+    // Every analysable file, sorted by path so the same pull request always yields the same
+    // list whatever order GitHub's pagination returned. The review cap is not applied here:
+    // the control plane applies it after the repository's `.mitig8it.yml` exclusions, which
+    // this adapter does not know. Capping first let excluded files take every place.
     const ordered = [...scoped].sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0));
-    const selected = ordered.slice(0, FILE_CAP);
-    const limitation = ordered.length > FILE_CAP
-      ? { kind: 'file_cap', message: `Reviewed ${FILE_CAP} of ${ordered.length} changed files` }
-      : null;
     return {
-      files: selected.map((f) => ({
+      files: ordered.map((f) => ({
           path: f.filename,
           patch: f.patch || '',
           additions: f.additions,
@@ -205,7 +204,6 @@ async function fetchPullRequestFiles({ repository_full_name, pull_request_number
           status: f.status,
           raw_url: f.raw_url,
         })),
-      ...(limitation ? { limitation } : {}),
     };
   } catch (error) {
     if (error instanceof OperationError) throw error;
@@ -218,25 +216,34 @@ async function fetchFileContents({ repository_full_name, installation_id, ref, p
     throw badRequest('repository_full_name, installation_id, ref and paths are required');
   }
 
+  // A requested path is left out of the response for one reason only: its content is over
+  // MAX_CONTENT_BYTES. The control plane relies on that to report the file as not analysed
+  // rather than fail the run, so nothing else may drop a path silently.
+  if (paths.length > MAX_CONTENT_PATHS) throw badRequest(`at most ${MAX_CONTENT_PATHS} paths may be requested`);
+  if (paths.some((path) => !path || typeof path !== 'string')) throw badRequest('every path must be a non-empty string');
+
   const [owner, repo] = validateRepositoryFullName(repository_full_name);
 
   try {
     const token = await githubIdentity.token(installation_id);
     const files = [];
 
-    for (const path of paths.slice(0, 200)) {
-      if (!path || typeof path !== 'string') continue;
+    for (const path of paths) {
       const encodedPath = path.split('/').map(encodeURIComponent).join('/');
       const response = await githubRequest(
         'get',
         `https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
         token
       );
+      // GitHub returns a file over 1 MB with `encoding: none` and empty content. Reading
+      // that as an empty file would analyse nothing and say nothing, so it is oversized.
+      if (typeof response.data !== 'string'
+          && (response.data.encoding === 'none' || Number(response.data.size) > MAX_CONTENT_BYTES)) continue;
       const content = typeof response.data === 'string'
         ? response.data
         : Buffer.from(response.data.content || '', 'base64').toString('utf8');
 
-      if (Buffer.byteLength(content || '', 'utf8') > 500000) continue;
+      if (Buffer.byteLength(content || '', 'utf8') > MAX_CONTENT_BYTES) continue;
       files.push({ path, content });
     }
 
@@ -969,6 +976,9 @@ function validateFixSection(raw, index) {
     evidence: Array.isArray(raw.evidence) ? raw.evidence.filter((item) => typeof item === 'string').slice(0, 20) : [],
     limitations: Array.isArray(raw.limitations) ? raw.limitations.filter((item) => typeof item === 'string').slice(0, 40) : [],
     verification_level: typeof raw.verification_level === 'string' ? raw.verification_level : '',
+    repair_model: typeof raw.repair_model === 'string' ? raw.repair_model : '',
+    repair_service_image: typeof raw.repair_service_image === 'string' ? raw.repair_service_image : '',
+    sandbox_image_digest: typeof raw.sandbox_image_digest === 'string' ? raw.sandbox_image_digest : '',
     skipped_reason: skipped,
     // The finding comment to create when none carries the marker. It is trimmed of any
     // fix blocks so a stale copy can never smuggle a section past the candidate markers.
@@ -1204,12 +1214,14 @@ function createdFindingBody(section, placement) {
 // from the section's finding body: on its line when the diff shows that line, else as
 // a pull request comment that says why. Comments by another author are never edited.
 async function publishFindingFixSections(payload) {
-  qualityPublication.assertRemediationPublicationReady();
   const envelope = validateActionEnvelope(payload);
   if (!Array.isArray(payload.sections) || !payload.sections.length || payload.sections.length > FIX_SECTION_LIMIT) {
     throw badRequest(`sections must contain 1 to ${FIX_SECTION_LIMIT} entries`);
   }
   const sections = payload.sections.map(validateFixSection);
+  // This is the final write boundary. Every actual candidate must carry the
+  // exact short-lived model and sandbox identity authenticated by this build.
+  qualityPublication.assertRemediationPublicationReady(sections);
   const previewUrl = typeof payload.preview_url === 'string' && /^https?:\/\//.test(payload.preview_url) && !/[\s()]/.test(payload.preview_url)
     ? payload.preview_url.slice(0, 500) : '';
   const commentService = require('./githubCommentService');

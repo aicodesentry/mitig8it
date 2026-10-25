@@ -277,3 +277,123 @@ def test_a_finding_off_the_diff_is_named_in_the_review_body(tmp_path):
     assert "`cwe-95.eval-injection`" in body
     assert f"https://github.com/acme/widgets/blob/{HEAD}/app/routes/error.js#L10" in body
     assert "app/routes/error.js:10" in body
+
+
+# --- what the review could not read ----------------------------------------------------------
+
+PARTIAL_PARSE = {
+    "path": "src/legacy.py",
+    "kind": "partial_parse",
+    "type": "Syntax error",
+    "message": "Syntax error at line 40: unexpected token",
+    "line": 40,
+}
+TIER1_BUDGET = {
+    "kind": "budget",
+    "path": "src/huge.js",
+    "message": "Tier 1 stopped after 9 of 35 rules on this file (2 s per-file cap)",
+}
+
+
+def test_limitations_travel_in_the_publish_request():
+    request = run.build_publish_request(
+        token="t", repository="acme/widgets", pr_number=7, head_sha=HEAD, base_sha=BASE,
+        installation_id=42, actor_login="octocat", counts=NO_COUNTS, findings=0,
+        fix_sections=[], inline_comments=[], model_configured=False, conclusion="success",
+        limitations=[PARTIAL_PARSE, TIER1_BUDGET],
+    )
+    assert request["limitations"] == [
+        {"kind": "partial_parse", "path": "src/legacy.py",
+         "message": "Syntax error at line 40: unexpected token"},
+        {"kind": "budget", "path": "src/huge.js",
+         "message": "Tier 1 stopped after 9 of 35 rules on this file (2 s per-file cap)"},
+    ]
+
+
+def test_a_partial_review_says_so_in_the_check_and_the_review_body(tmp_path):
+    """A partly analysed pull request used to read exactly like a complete, clean one."""
+    if not publisher_harness.node_available():
+        pytest.skip("node is not on PATH")
+    request = a_request([], counts=NO_COUNTS, findings=0, conclusion="success")
+    request["limitations"] = run.build_publish_request(
+        token="t", repository="acme/widgets", pr_number=7, head_sha=HEAD, base_sha=BASE,
+        installation_id=42, actor_login="octocat", counts=NO_COUNTS, findings=0,
+        fix_sections=[], inline_comments=[], model_configured=False, conclusion="success",
+        limitations=[PARTIAL_PARSE, TIER1_BUDGET],
+    )["limitations"]
+    completed, recorded = run_publisher(tmp_path, request)
+
+    assert completed.returncode == 0, completed.stderr
+    check = next(call for call in recorded if call["name"] == "check")
+    body = next(call for call in recorded if call["name"] == "review")["body"]
+    for text in (check["summary"], body):
+        assert "Not fully analysed" in text
+        assert "src/legacy.py" in text
+        assert "Syntax error at line 40" in text
+        assert "src/huge.js" in text
+        assert "Tier 1 stopped after 9 of 35 rules" in text
+    assert "### Mitig8it - no security issues found in what was analysed" in body
+    assert check["title"] != "No security findings", "a partial review is not a clean one"
+    assert "partial" in check["title"].lower()
+
+
+def test_a_complete_review_says_nothing_about_limitations(tmp_path):
+    if not publisher_harness.node_available():
+        pytest.skip("node is not on PATH")
+    request = a_request([], counts=NO_COUNTS, findings=0, conclusion="success")
+    completed, recorded = run_publisher(tmp_path, request)
+    assert completed.returncode == 0, completed.stderr
+    check = next(call for call in recorded if call["name"] == "check")
+    assert "Not fully analysed" not in check["summary"]
+    assert check["title"] == "No security findings"
+
+
+# --- a review GitHub rejects for one comment ---------------------------------------------------
+
+def test_a_review_rejected_for_a_comment_off_the_diff_is_posted_without_it(tmp_path):
+    """GitHub's 422 for one bad anchor used to lose the summary and every comment with it."""
+    if not publisher_harness.node_available():
+        pytest.skip("node is not on PATH")
+    counts = {"critical": 1, "high": 0, "medium": 0, "low": 0, "info": 0}
+    comments = [{"path": "src/db.js", "line": 12, "severity": "critical", "fingerprint": "fp-1",
+                 "body": "<!-- mitig8it-finding:fp-1 -->\n**SQL injection**"}]
+    request = a_request([], counts=counts, findings=1)
+    request["inline_comments"] = comments
+    request["totals"] = run.review_totals(counts, comments, [])
+    server = fake_graphql.FakeGraphQL().start()
+    try:
+        publisher = publisher_harness.Publisher(tmp_path, graphql_url=server.url())
+        publisher.fail("review", 422, "Unprocessable Entity", only_with_comments=True)
+        completed = publisher.run(request)
+        recorded = publisher.calls()
+    finally:
+        server.stop()
+
+    assert completed.returncode == 0, completed.stderr
+    assert [call["name"] for call in recorded] == ["review-rejected", "review", "check"]
+    review = next(call for call in recorded if call["name"] == "review")
+    assert review["comments"] == 0
+    assert "src/db.js:12" in review["body"], "the rejected comment is listed, not lost"
+    assert "Findings on lines this pull request did not change (1)" in review["body"]
+    check = next(call for call in recorded if call["name"] == "check")
+    assert "0 of them are annotated on the diff and 1 are on lines" in check["summary"]
+    results = json.loads(completed.stdout)
+    assert results["rejected"] == [{"path": "src/db.js", "line": 12}]
+    assert results["errors"] == []
+
+
+def test_a_review_rejected_twice_is_still_an_error(tmp_path):
+    if not publisher_harness.node_available():
+        pytest.skip("node is not on PATH")
+    request = a_request([], counts=NO_COUNTS, findings=0, conclusion="success")
+    request["inline_comments"] = [{"path": "a.js", "line": 1, "severity": "low", "fingerprint": "f",
+                                   "body": "<!-- mitig8it-finding:f -->\n**x**"}]
+    server = fake_graphql.FakeGraphQL().start()
+    try:
+        publisher = publisher_harness.Publisher(tmp_path, graphql_url=server.url())
+        publisher.fail("review", 422, "Unprocessable Entity")
+        completed = publisher.run(request)
+    finally:
+        server.stop()
+    assert completed.returncode == 1
+    assert "review" in completed.stderr

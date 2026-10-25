@@ -1,3 +1,6 @@
+// Mocked orchestration tests: SQL and external services are fakes. These assertions prove
+// classification, retry scheduling calls, and fail-closed control flow. Claim timing and
+// durable retry history run against PostgreSQL in tests/integration/lifecycle.integration.js.
 jest.mock('axios', () => ({ post: jest.fn() }));
 jest.mock('../src/db/findings', () => ({
   findByFingerprint: jest.fn(), upsert: jest.fn(), markFixed: jest.fn(),

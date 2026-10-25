@@ -633,6 +633,44 @@ def _py_argv_element(token: list[tuple[str, str]]) -> str:
     return "f" + py_string_literal("".join(text if kind == "lit" else f"{{{text}}}" for kind, text in token))
 
 
+def _embedded(tokens: list[list[tuple[str, str]]]) -> bool:
+    """Whether some argument joins an interpolated value to literal text (`/srv/${name}.tgz`)."""
+    for token in tokens:
+        parts = _unquote_token(token)
+        if any(kind == "expr" for kind, _ in parts) and any(kind == "lit" and text for kind, text in parts):
+            return True
+    return False
+
+
+def command_value_embedded(source: str, line: int, language: str) -> bool:
+    """Whether the command string at `line` puts an untrusted value inside a larger argument.
+
+    The command templates split the string at whitespace, so `"tar czf /srv/" + name + ".tgz"`
+    becomes the argv element `f"/srv/{name}.tgz"`: no shell reads it, which is the repair, but
+    the value cannot be its own element without changing the command. A proof asks for the
+    assertion that fits the shape, and this is how it knows which one. False whenever the sink
+    is not a shape the command templates read.
+    """
+    lines = source.splitlines()
+    if line < 1 or line > len(lines):
+        return False
+    text = lines[line - 1]
+    try:
+        if language == PYTHON:
+            sink = _PY_SUBPROCESS_RE.search(text)
+            if not sink:
+                return False
+            argument, _rest = split_first_argument(text, sink.end())
+            return _embedded(_tokens(py_segments(argument)))
+        sink = _JS_EXEC_RE.search(text) or _JS_SPAWN_RE.search(text)
+        if not sink:
+            return False
+        argument, _rest = split_first_argument(text, sink.end())
+        return _embedded(_tokens(js_segments(argument)))
+    except (TemplateError, ValueError, IndexError):
+        return False
+
+
 def _js_without_shell_option(rest: str) -> str:
     """Removes `shell: true` from a process call's options object, and the object once it empties.
 

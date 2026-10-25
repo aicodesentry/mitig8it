@@ -27,7 +27,8 @@ process.env.REMEDIATION_SERVICE_URL = 'http://repair.invalid';
 process.env.REMEDIATION_SERVICE_INTERNAL_SECRET = 'repair-secret';
 process.env.GITHUB_SERVICE_URL = 'http://github.invalid';
 process.env.GITHUB_SERVICE_INTERNAL_SECRET = 'github-secret';
-process.env.REMEDIATION_SANDBOX_IMAGE_DIGEST = 'sha256:integration';
+process.env.REMEDIATION_SANDBOX_IMAGE_DIGEST = 'registry.example/runner@sha256:' + 'd'.repeat(64);
+process.env.REMEDIATION_SERVICE_IMAGE_DIGEST = 'registry.example/remediation@sha256:' + 'e'.repeat(64);
 process.env.REMEDIATION_VERIFICATION_CHECKS_JSON = '["unit"]';
 process.env.REMEDIATION_ALLOWED_RULE_FAMILIES_JSON = '["injection"]';
 process.env.REMEDIATION_INPUT_USD_PER_MILLION_TOKENS = '3';
@@ -36,7 +37,7 @@ process.env.REMEDIATION_OUTBOX_MAX_ATTEMPTS = '2';
 // This suite exercises workflow/RLS behavior with synthetic verification evidence.
 // Aggregate release readiness has separate gate tests; production stays fail-closed
 // against the unchanged committed artifact.
-require('../../src/quality-release.json').remediation_release_verified = true;
+Object.assign(require('../../src/quality-release.json'), require('../../../../tests/fixtures/verified-quality-release.json'));
 
 const { pool } = require('../../src/config/database');
 const { applyMigrations } = require('../../src/services/migrationRunner');
@@ -228,6 +229,33 @@ test('intake commits the job and its outbox event atomically and replays a dupli
   assert.equal(second.body.job.id, jobId);
   assert.equal(second.body.replay, true);
   assert.equal((await workerQuery('SELECT id FROM remediation_jobs WHERE pull_request_id=$1', [f.pr])).rowCount, 1);
+});
+
+test('candidate feedback writes a repository audit row with the acting user', async () => {
+  const f = await fixture();
+  const app = createApp();
+  const intake = await request(app).post(`/api/pull-requests/${f.pr}/remediations`)
+    .auth(f.token, { type: 'bearer' }).send({});
+  assert.equal(intake.status, 202);
+  const ready = await makeReady(f, intake.body.job.id);
+
+  const response = await request(app).post(`/api/remediations/${intake.body.job.id}/feedback`)
+    .auth(f.token, { type: 'bearer' })
+    .send({ candidate_id: ready.candidate, outcome: 'edited', reason: 'kept the public name' });
+  assert.equal(response.status, 204);
+
+  const audit = await workerQuery(
+    `SELECT user_id, repository_id, action, resource_type, resource_id, details
+       FROM audit_logs
+      WHERE action='remediation.feedback.recorded' AND resource_id=$1`,
+    [ready.candidate]
+  );
+  assert.equal(audit.rowCount, 1);
+  assert.equal(audit.rows[0].user_id, f.user);
+  assert.equal(audit.rows[0].repository_id, f.repo);
+  assert.equal(audit.rows[0].resource_type, 'remediation_candidate');
+  assert.equal(audit.rows[0].details.job_id, intake.body.job.id);
+  assert.equal(audit.rows[0].details.outcome, 'edited');
 });
 
 test('a job that ended in a terminal failure does not shadow a fresh identical request, while a ready job still replays', async () => {
@@ -628,7 +656,7 @@ test('one automatic job is queued per head after analysis, it is claimable witho
     [first.job_id, f.installation, f.repo, [open], 'a'.repeat(64), 'c'.repeat(64),
       JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64'), base_sha256: sha256(original), new_sha256: sha256(fixed) }] }),
       JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, base_sha256: sha256(original), new_sha256: sha256(fixed), unified_diff: '@@ -3 +3 @@\n-old\n+new' }], rationale: 'Parameterize the query.',
-        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), generated_tests: [{ path: 'tests/orders.regression.test.js' }], limitations: [] } })]
+        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), repair_model: 'test-reviewed-model', repair_service_image: 'registry.example/remediation@sha256:' + 'e'.repeat(64), sandbox_image_digest: 'registry.example/runner@sha256:' + 'd'.repeat(64), generated_tests: [{ path: 'tests/orders.regression.test.js' }], limitations: [] } })]
   );
   await workerQuery(
     `INSERT INTO verification_runs (job_id,installation_id,repository_id,candidate_digest,original_tree_sha,candidate_tree_sha,base_sha,verifier_identity,policy_version,outcome,evidence_digest,coverage_gaps,limitations)
@@ -656,6 +684,13 @@ test('one automatic job is queued per head after analysis, it is claimable witho
   assert.equal(payload.sections[0].hunk.start_line, 3);
   const recorded = await workerQuery('SELECT inline_fixes_head_sha FROM remediation_jobs WHERE id=$1', [first.job_id]);
   assert.equal(recorded.rows[0].inline_fixes_head_sha, f.head);
+  const publicationAudit = await workerQuery(
+    "SELECT action, resource_type, resource_id, details FROM audit_logs WHERE action='remediation.inline_fix.published' AND resource_id=$1",
+    [first.job_id]
+  );
+  assert.equal(publicationAudit.rowCount, 1);
+  assert.equal(publicationAudit.rows[0].resource_type, 'remediation_job');
+  assert.equal(publicationAudit.rows[0].details.head_sha, f.head);
 
   // A redelivery of the ready event is the same request again, which the adapter
   // applies in place by candidate marker.
@@ -686,7 +721,7 @@ test('a second completed analysis on the same head reuses the ready job and repu
     [queued.job_id, f.installation, f.repo, [open], 'a'.repeat(64), 'c'.repeat(64),
       JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64'), base_sha256: sha256(original), new_sha256: sha256(fixed) }] }),
       JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, base_sha256: sha256(original), new_sha256: sha256(fixed), unified_diff: '@@ -3 +3 @@\n-old\n+new' }],
-        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), limitations: [] } })]
+        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), repair_model: 'test-reviewed-model', repair_service_image: 'registry.example/remediation@sha256:' + 'e'.repeat(64), sandbox_image_digest: 'registry.example/runner@sha256:' + 'd'.repeat(64), limitations: [] } })]
   );
   await workerQuery(
     `INSERT INTO verification_runs (job_id,installation_id,repository_id,candidate_digest,original_tree_sha,candidate_tree_sha,base_sha,verifier_identity,policy_version,outcome,evidence_digest,coverage_gaps,limitations)
@@ -816,4 +851,69 @@ test('repair evidence outlives the execution record: it is persisted with the co
   assert.equal((await request(app).get(`/api/remediations/${jobId}/preview`).auth(f.token, { type: 'bearer' })).status, 200);
   assert.equal((await request(app).get(`/api/remediations/${jobId}/evidence`)).status, 401);
   assert.equal((await request(app).get(`/api/remediations/${randomUUID()}/evidence`).auth(f.token, { type: 'bearer' })).status, 404);
+});
+
+// "Commit suggestion" on a published fix lands as a push whose commit GitHub co-authors
+// to the app. The whole path runs here against the real schema and the runtime role:
+// the observed_apply action for an automatic job (which has no human creator), the
+// applied_on_github outcome, and the supersede of the job for the new head, all in the
+// webhook's one transaction.
+test('a push of a Commit suggestion commit records the observed apply, the outcome and the supersede', async () => {
+  const autoGenerate = require('../../src/services/remediationAutoGenerate');
+  const f = await fixture();
+  const open = await insertOpenFinding(f, f.run, { severity: 'high', path: 'src/app.js', title: 'SQL injection' });
+  const queued = await autoGenerate.enqueueForCompletedAnalysis({ pullRequestId: f.pr, analysisRunId: f.run });
+  assert.equal(queued.enqueued, true);
+  const ready = await makeReady(f, queued.job_id);
+  assert.equal(ready.job.created_by, null, 'an automatic job has no human creator');
+  const fingerprint = (await pool.query('SELECT fingerprint FROM findings WHERE id=$1', [open])).rows[0].fingerprint;
+  await pool.query(
+    `INSERT INTO finding_outcomes (installation_id,repository_id,pull_request_id,finding_id,fingerprint,outcome,source,job_id)
+     VALUES ($1,$2,$3,$4,$5,'fix_published','remediation',$6)`,
+    [f.installation, f.repo, f.pr, open, fingerprint, queued.job_id]);
+
+  const applied = crypto.randomBytes(20).toString('hex');
+  const response = await signedWebhook(createApp(), 'push', {
+    ref: 'refs/heads/feature', before: f.head, after: applied,
+    repository: { id: f.n, full_name: f.fullName },
+    installation: { id: f.installation },
+    sender: { login: 'reviewer' }, pusher: { name: 'reviewer' },
+    commits: [{
+      id: applied,
+      message: 'Apply suggestions from code review\n\nCo-authored-by: mitig8it[bot] <1+mitig8it[bot]@users.noreply.github.com>',
+      author: { username: 'reviewer' }, modified: ['src/app.js'], added: [],
+    }],
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+
+  const actions = await workerQuery(
+    `SELECT action_type, actor_id, actor_login, state, observed_commit_sha, candidate_ids
+       FROM remediation_actions WHERE job_id=$1`, [queued.job_id]);
+  assert.equal(actions.rowCount, 1);
+  assert.equal(actions.rows[0].action_type, 'observed_apply');
+  assert.equal(actions.rows[0].actor_id, null);
+  assert.equal(actions.rows[0].actor_login, 'reviewer');
+  assert.equal(actions.rows[0].state, 'applied');
+  assert.equal(actions.rows[0].observed_commit_sha, applied);
+  assert.deepEqual(actions.rows[0].candidate_ids, [ready.candidate]);
+
+  const outcomes = await pool.query(
+    "SELECT commit_sha FROM finding_outcomes WHERE finding_id=$1 AND outcome='applied_on_github'", [open]);
+  assert.equal(outcomes.rowCount, 1);
+  assert.equal(outcomes.rows[0].commit_sha, applied);
+
+  const job = (await workerQuery('SELECT state, cancellation_reason FROM remediation_jobs WHERE id=$1', [queued.job_id])).rows[0];
+  assert.equal(job.state, 'superseded');
+  assert.equal(job.cancellation_reason, 'head_changed');
+
+  // A redelivery of the same push records nothing new.
+  const again = await signedWebhook(createApp(), 'push', {
+    ref: 'refs/heads/feature', before: f.head, after: applied,
+    repository: { id: f.n, full_name: f.fullName }, installation: { id: f.installation },
+    sender: { login: 'reviewer' },
+    commits: [{ id: applied, message: 'x\n\nCo-authored-by: mitig8it[bot] <bot@example.invalid>', author: { username: 'reviewer' }, modified: ['src/app.js'] }],
+  });
+  assert.equal(again.status, 200);
+  const count = await workerQuery("SELECT COUNT(*)::int n FROM remediation_actions WHERE pull_request_id=$1 AND action_type='observed_apply'", [f.pr]);
+  assert.equal(count.rows[0].n, 1);
 });

@@ -291,6 +291,19 @@ test('assert.argv accepts an argv call carrying the payload and rejects any shel
   assert.ok(shelled);
 });
 
+test('assert.argvEmbedded accepts the payload inside one argument and rejects a shell in any form', () => {
+  const cp = require('child_process');
+  h.reset();
+  cp.execFile('tar', ['czf', '/srv/x; id.tgz'], () => {});
+  h.assert.argvEmbedded(h.child_process.calls[0], 'x; id');
+  assert.throws(() => h.assert.argvEmbedded(h.child_process.calls[0], 'other'), /inside one args element of tar/);
+  cp.execFile('/bin/sh', ['-c', 'tar czf /srv/x; id.tgz'], () => {});
+  assert.throws(() => h.assert.argvEmbedded(h.child_process.calls[1], 'x; id'), /a shell was started as the program: \/bin\/sh/);
+  cp.exec('tar czf /srv/x; id.tgz', () => {});
+  assert.throws(() => h.assert.argvEmbedded(h.child_process.calls[2], 'x; id'), /ran through a shell/);
+  assert.throws(() => h.assert.argvEmbedded(undefined, 'x'), /no child process call/);
+});
+
 test('a family test fails on the vulnerable module and passes on the repaired one under plain node', () => {
   const body = (target) => `const h = require('../harness');
 h.run(async () => {

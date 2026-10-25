@@ -217,21 +217,56 @@ jobs:
           DEPLOY_SHA=$(git rev-parse HEAD)
           SHORT="${DEPLOY_SHA:0:12}"
           REGISTRY="us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}"
+          if [ "$ENVIRONMENT" = 'production' ]; then
+            SERVICE_IMAGE=$(python -c 'import json; print(json.load(open("services/api-service/src/quality-release.json"))["service"]["image_digest"])')
+          else
+            SERVICE_IMAGE="${REGISTRY}/remediation:remediation-${SHORT}"
+          fi
           {
             echo "DEPLOY_SHA=${DEPLOY_SHA}"
-            echo "IMAGE=${REGISTRY}/remediation:remediation-${SHORT}"
+            echo "IMAGE=$SERVICE_IMAGE"
             echo "JOB_IMAGE=${REGISTRY}/remediation-job:remediation-job-${SHORT}"
           } >> "$GITHUB_ENV"
 
       - name: Build repair image
+        if: env.ENVIRONMENT != 'production'
         run: |
           docker build -f ./services/remediation-service/Dockerfile -t "$IMAGE" ./services/remediation-service
+
+      - name: Resolve the authenticated production sandbox digest before any push
+        if: env.ENVIRONMENT == 'production'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APPROVED=$(python -c 'import json; print(json.load(open("services/api-service/src/quality-release.json"))["sandbox"]["image_digest"])')
+          python -m benchmarks.production_readiness --component remediation \
+            --release-evidence "$REMEDIATION_RELEASE_EVIDENCE_PATH" --assert-sandbox-image "$APPROVED" --assert-service-image "$IMAGE"
+          LEVEL=$(python -c 'import json; print(json.load(open("services/api-service/src/quality-release.json"))["sandbox"]["verification_level"])')
+          case "$SANDBOX_DRIVER" in
+            cloud_run_job) PROVIDED_LEVEL='isolated_job' ;;
+            local) PROVIDED_LEVEL='development_unverified' ;;
+            *) echo "Unsupported isolation environment for production" >&2; exit 1 ;;
+          esac
+          if [ "$LEVEL" != "$PROVIDED_LEVEL" ]; then
+            echo "$SANDBOX_DRIVER provides $PROVIDED_LEVEL, not the independently reviewed $LEVEL environment. Production requires the reviewed isolation driver, not just its image digest." >&2
+            exit 1
+          fi
+          # Production promotes an already evaluated digest. A fresh rebuild is a
+          # different image and needs a new isolated evaluation and external review.
+          EXISTING=$(gcloud artifacts docker images describe "$APPROVED" \
+            --project '${{ vars.GCP_PROJECT_ID }}' --format='value(image_summary.digest)')
+          [ "$EXISTING" = "${APPROVED##*@}" ]
+          SERVICE_EXISTING=$(gcloud artifacts docker images describe "$IMAGE" \
+            --project '${{ vars.GCP_PROJECT_ID }}' --format='value(image_summary.digest)')
+          [ "$SERVICE_EXISTING" = "${IMAGE##*@}" ]
+          echo "JOB_IMAGE=$APPROVED" >> "$GITHUB_ENV"
 
       - name: Assert the pinned Node runtime is in the release image
         run: |
           docker run --rm --entrypoint node "$IMAGE" --version
 
       - name: Push repair image
+        if: env.ENVIRONMENT != 'production'
         run: |
           docker push "$IMAGE"
 
@@ -241,7 +276,7 @@ jobs:
       # user, so the difference lives in the image. The job's own command
       # (`python3 -m src.sandbox.job_entrypoint`) is set by Terraform and is not changed here.
       - name: Build and push the sandbox job image
-        if: env.SANDBOX_DRIVER == 'cloud_run_job'
+        if: env.SANDBOX_DRIVER == 'cloud_run_job' && env.ENVIRONMENT != 'production'
         run: |
           docker build --build-arg RUNTIME_UID=0 \
             -f ./services/remediation-service/Dockerfile -t "$JOB_IMAGE" ./services/remediation-service
@@ -264,9 +299,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          DIGEST=$(gcloud artifacts docker images describe "$JOB_IMAGE" \
-            --project '${{ vars.GCP_PROJECT_ID }}' --format='value(image_summary.digest)')
-          PINNED="${JOB_IMAGE%:*}@${DIGEST}"
+          if [ "$ENVIRONMENT" = 'production' ]; then
+            PINNED="$JOB_IMAGE"
+            python -m benchmarks.production_readiness --component remediation \
+              --release-evidence "$REMEDIATION_RELEASE_EVIDENCE_PATH" --assert-sandbox-image "$PINNED"
+          else
+            DIGEST=$(gcloud artifacts docker images describe "$JOB_IMAGE" \
+              --project '${{ vars.GCP_PROJECT_ID }}' --format='value(image_summary.digest)')
+            PINNED="${JOB_IMAGE%:*}@${DIGEST}"
+          fi
           python services/remediation-service/scripts/cloud_run_sandbox_release.py check-image "$PINNED"
           PREVIOUS=$(python services/remediation-service/scripts/cloud_run_sandbox_release.py job-image \
             --job '${{ vars.SANDBOX_JOB_NAME }}' \
@@ -308,6 +349,9 @@ jobs:
         run: |
           set -euo pipefail
           VARS="REMEDIATION_EXECUTION_BACKEND=local"
+          if [ "$ENVIRONMENT" = 'production' ]; then
+            VARS="${VARS},REMEDIATION_SERVICE_IMAGE_DIGEST=${IMAGE}"
+          fi
           VARS="${VARS},REMEDIATION_LOCAL_STATE_DIR=/tmp/remediation"
           VARS="${VARS},REMEDIATION_WORKER_INPROCESS=true"
           VARS="${VARS},REMEDIATION_WORKER_POLL_SECONDS=2"
@@ -396,6 +440,11 @@ jobs:
           # first deployments have no prior revision and therefore cannot be staged.
           if [ "$FIRST_DEPLOY" != "true" ]; then
             STAGE+=(--no-traffic --tag candidate)
+          fi
+          if [ "$ENVIRONMENT" = 'production' ]; then
+            python -m benchmarks.production_readiness --component remediation \
+              --release-evidence "$REMEDIATION_RELEASE_EVIDENCE_PATH" \
+              --assert-service-image "$IMAGE" --assert-sandbox-image "$SANDBOX_IMAGE_DIGEST"
           fi
           gcloud run deploy "$SERVICE" \
             --image "$IMAGE" \

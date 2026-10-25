@@ -55,13 +55,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: analysis-service
+          - name: analysis-runtime
             directory: services/analysis-service/src
             requirements: requirements.txt
+            audit_args: ""
+          - name: analysis-and-action-scanner
+            directory: services/analysis-service/src
+            requirements: requirements-scanner.txt
             audit_args: >-
-              --ignore-vuln PYSEC-2026-3481
-              --ignore-vuln PYSEC-2026-3482
-              --ignore-vuln PYSEC-2026-3483
+              --ignore-vuln CVE-2026-59951
+              --ignore-vuln CVE-2026-114603
+          - name: remediation-service
+            directory: services/remediation-service
+            requirements: requirements.txt
+            audit_args: ""
+          - name: action-runtime
+            directory: action
+            requirements: requirements.txt
+            audit_args: ""
           - name: proto-py
             directory: proto
             requirements: requirements.txt
@@ -72,9 +83,10 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install pip-audit
-      # Semgrep 1.173.0 pins mcp 1.23.3. Keep these ignored until Semgrep
-      # ships a compatible release with mcp >=1.28.1.
-      # Review the three PYSEC ignores again on 2026-12-01, or sooner if the
-      # semgrep pin in services/analysis-service/src/requirements.txt moves.
+      # Semgrep 1.182.1 pins mcp==1.29.0 and opentelemetry-api~=1.37.0. Their current
+      # advisories affect stateful MCP HTTP servers and inbound W3C tracestate parsing. Mitig8it
+      # invokes only the offline Semgrep CLI, starts no MCP server, disables Semgrep telemetry,
+      # and installs the scanner in dedicated virtualenvs in both production images. Keep the
+      # VEX exceptions limited to these two IDs and review them whenever the Semgrep pin moves.
       - run: pip-audit -r "${{ matrix.requirements }}" ${{ matrix.audit_args }}
         working-directory: ${{ matrix.directory }}

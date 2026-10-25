@@ -65,6 +65,7 @@ function totalsOf(request) {
     blocking: (counts.critical || 0) + (counts.high || 0),
     inline,
     unanchored,
+    preexisting: 0,
   };
 }
 
@@ -132,6 +133,14 @@ function permalink(request, path, line) {
 const UNANCHORED_HEADING = 'Findings on lines this pull request did not change';
 const UNANCHORED_ROW_CAP = 50;
 
+// A finding on a line the pull request did not add, in a file whose patch is known, is code
+// the author did not write. It is listed so they still see it and left out of `fail-on`.
+const PRE_EXISTING_LABEL = 'pre-existing in a touched file, not counted';
+
+function countedLabel(finding) {
+  return finding.reason === 'pre_existing' ? PRE_EXISTING_LABEL : 'yes';
+}
+
 function unanchoredSection(request, totals) {
   const findings = request.unanchored_findings || [];
   if (!findings.length) return [];
@@ -142,15 +151,19 @@ function unanchoredSection(request, totals) {
     '',
     'GitHub accepts an inline comment only on a line the pull request touches, and a comment on '
     + 'the nearest line that it does touch would point at the wrong code. These are listed here '
-    + 'instead, against the commit that was reviewed.',
+    + 'instead, against the commit that was reviewed.'
+    + (Number(totals.preexisting || 0) > 0
+      ? ` ${plural(Number(totals.preexisting), 'finding')} here ${Number(totals.preexisting) === 1 ? 'is' : 'are'} `
+        + `${PRE_EXISTING_LABEL}: on a line this pull request did not add, so not counted towards \`fail-on\`.`
+      : ''),
     '',
-    '| Severity | Rule | Location |',
-    '| --- | --- | --- |',
+    '| Severity | Rule | Location | Counted |',
+    '| --- | --- | --- | --- |',
   ];
   for (const finding of shown) {
     const rule = finding.rule ? `\`${String(finding.rule).replace(/[`|]/g, '')}\`` : '-';
     const location = `[${String(finding.path).replace(/[|]/g, '')}:${finding.line}](${permalink(request, finding.path, finding.line)})`;
-    lines.push(`| ${finding.severity || 'unknown'} | ${rule} | ${location} |`);
+    lines.push(`| ${finding.severity || 'unknown'} | ${rule} | ${location} | ${countedLabel(finding)} |`);
   }
   if (findings.length > shown.length) {
     lines.push('');
@@ -159,13 +172,53 @@ function unanchoredSection(request, totals) {
   return lines;
 }
 
+// What the review could not read in full: a file the scanner parsed in part or gave up on, a
+// tier 1 budget that ran out, the changed-file cap. The analysis service has always reported
+// these and the action used to drop them, so a partly analysed pull request read exactly like a
+// complete, clean one. They are listed on both surfaces, and a review with any of them never
+// claims to have found nothing without saying where it did not look.
+const LIMITATIONS_HEADING = 'Not fully analysed';
+const LIMITATION_ROW_CAP = 20;
+
+function limitationsOf(request) {
+  return (request.limitations || []).filter((item) => item && typeof item === 'object');
+}
+
+function limitationText(item) {
+  const message = String(item.message || item.kind || 'not analysed');
+  return item.path ? `${item.path}: ${message}` : message;
+}
+
+function limitationsSection(request) {
+  const limitations = limitationsOf(request);
+  if (!limitations.length) return [];
+  const shown = limitations.slice(0, LIMITATION_ROW_CAP);
+  const lines = [
+    '',
+    `#### ${LIMITATIONS_HEADING} (${limitations.length})`,
+    '',
+    'The review could not read everything in this pull request. A finding could be missing from '
+    + 'these, so the result above covers only what was analysed.',
+    '',
+  ];
+  for (const item of shown) {
+    const path = item.path ? `\`${String(item.path).replace(/`/g, '')}\`: ` : '';
+    lines.push(`- ${path}${String(item.message || item.kind || 'not analysed')}`);
+  }
+  if (limitations.length > shown.length) {
+    lines.push(`- and ${limitations.length - shown.length} more`);
+  }
+  return lines;
+}
+
 function buildReviewBody(request) {
   const totals = totalsOf(request);
   const { fixes } = request;
+  const partial = limitationsOf(request).length > 0;
   const lines = ['<!-- mitig8it-review -->'];
   lines.push(totals.runtime > 0
     ? `### Mitig8it - ${plural(totals.runtime, 'finding')} detected`
-    : '### Mitig8it - no security issues found');
+    : `### Mitig8it - no security issues found${partial ? ' in what was analysed' : ''}`);
   lines.push(severityTable(totals));
 
   if (totals.runtime > 0) {
@@ -194,6 +247,7 @@ function buildReviewBody(request) {
   }
 
   lines.push(...unanchoredSection(request, totals));
+  lines.push(...limitationsSection(request));
 
   lines.push('');
   // The version goes in the footer rather than at the top, because it is the line a reader looks
@@ -218,6 +272,10 @@ function checkRunSummary(request) {
         + 'this pull request did not change, listed in the review body.'
       : 'All of them are annotated on the diff.');
   }
+  const preexisting = Number(totals.preexisting || 0);
+  if (preexisting > 0) {
+    parts.push(`${plural(preexisting, 'finding')} ${preexisting === 1 ? 'is' : 'are'} ${PRE_EXISTING_LABEL} towards fail-on.`);
+  }
   if (totals.informational > 0) {
     parts.push(`${plural(totals.informational, 'informational finding')} in test code, not posted.`);
   }
@@ -233,15 +291,22 @@ function checkRunSummary(request) {
     const excluded = Number(request.excludedFiles || 0);
     if (excluded > 0) parts.push(`${plural(excluded, 'file')} excluded by .mitig8it.yml.`);
   }
+  const limitations = limitationsOf(request);
+  if (limitations.length) {
+    const shown = limitations.slice(0, LIMITATION_ROW_CAP).map(limitationText);
+    const more = limitations.length > shown.length ? `; and ${limitations.length - shown.length} more` : '';
+    parts.push(`${LIMITATIONS_HEADING} (${limitations.length}): ${shown.join('; ')}${more}.`);
+  }
   return {
     // `fail-on: none` keeps a neutral conclusion so a security review never blocks a merge that
     // the repository did not ask it to block.
     conclusion: request.failConclusion,
     // The same total the summary and the review body state, with the blocking share beside it
     // rather than in place of it.
-    title: totals.runtime > 0
+    title: (totals.runtime > 0
       ? `${plural(totals.runtime, 'finding')}, ${totals.blocking} critical or high`
-      : 'No security findings',
+        + (Number(totals.preexisting || 0) > 0 ? `, ${totals.preexisting} pre-existing not counted` : '')
+      : 'No security findings') + (limitations.length ? ' (partial review)' : ''),
     summary: parts.join(' '),
   };
 }
@@ -499,6 +564,98 @@ async function reconcileReviewThreads(survey, { graphql, operations, base, headS
 
 // --- publishing ------------------------------------------------------------------------
 
+// github-service wraps a refused GitHub write as a 502 whose `detail` is GitHub's own response
+// body, so the status a caller needs to act on lives there, as a string, rather than on the
+// error. An axios error that reached here unwrapped carries it on `response`.
+function githubStatusOf(error) {
+  const direct = Number(error?.response?.status || 0);
+  if (direct) return direct;
+  const detail = error?.detail;
+  return Number((detail && typeof detail === 'object' && detail.status) || 0) || 0;
+}
+
+function githubMessageOf(error) {
+  const detail = error?.detail;
+  if (detail && typeof detail === 'object') return String(detail.message || '');
+  return typeof detail === 'string' ? detail : '';
+}
+
+function describeError(error) {
+  const status = githubStatusOf(error);
+  const message = githubMessageOf(error);
+  const base = String(error?.message || error);
+  if (!status && !message) return base;
+  return `${base} (GitHub${status ? ` ${status}` : ''}${message ? `: ${message}` : ''})`;
+}
+
+// The run could not finish, so the check says so in place of a result. Neutral, because a
+// review that did not happen is neither a pass nor a block, and the summary says it is not a
+// clean review so nobody reads the grey check as one.
+async function publishErrorCheck(request) {
+  const { githubIdentity, operations } = service();
+  githubIdentity.useProvider(createWorkflowTokenProvider({
+    token: request.token,
+    repositoryFullName: request.repository_full_name,
+    botLogin: request.bot_login,
+  }));
+  const [owner, repo] = request.repository_full_name.split('/');
+  const results = { check: null, errors: [], warnings: [] };
+  const errorClass = String(request.error_class || 'Error');
+  const detail = String(request.error_message || '').slice(0, 1000);
+  try {
+    results.check = await operations.createCheckRun({
+      owner,
+      repo,
+      installation_id: request.installation_id,
+      head_sha: request.head_sha,
+      conclusion: 'neutral',
+      title: 'Review did not complete',
+      summary: `Mitig8it ${versionLabel(request)} did not finish reviewing this commit (${errorClass}). `
+        + 'No result is reported for it, and this is not a clean review.'
+        + (detail ? ` ${detail}` : ''),
+    });
+  } catch (error) {
+    results.errors.push(`check run: ${describeError(error)}`);
+  }
+  return results;
+}
+
+// GitHub gives a workflow run from a fork, and a Dependabot pull request, a read-only token.
+// Its writes come back 403 "Resource not accessible by integration". That is not a fault to
+// report as a failed publish: it is a run that can only report into its own job summary.
+function isReadOnlyRefusal(error) {
+  if (githubStatusOf(error) === 403) return true;
+  return /resource not accessible by integration/i.test(githubMessageOf(error));
+}
+
+function readOnlyReason(error) {
+  return `GitHub refused the write with a read-only token: ${describeError(error)}`;
+}
+
+// The request as it is once GitHub has refused a review's new comments: those comments listed
+// as findings that could not be anchored, and every total moved to match.
+function withRejectedComments(request, rejected) {
+  const totals = { ...totalsOf(request) };
+  totals.inline = Math.max(0, Number(totals.inline || 0) - rejected.length);
+  totals.unanchored = Number(totals.unanchored || 0) + rejected.length;
+  const rejectedFindings = rejected.map((comment) => ({
+    path: comment.path,
+    line: comment.line,
+    severity: comment.severity || 'unknown',
+    rule: comment.rule || '',
+    reason: 'rejected_by_github',
+  }));
+  const rejectedPaths = new Set(rejected.map((comment) => `${comment.path}:${comment.line}`));
+  return {
+    ...request,
+    totals,
+    inline_comments: (request.inline_comments || []).filter(
+      (comment) => !rejectedPaths.has(`${comment.path}:${comment.line}`),
+    ),
+    unanchored_findings: [...(request.unanchored_findings || []), ...rejectedFindings],
+  };
+}
+
 async function publish(request, { fetchImpl, graphql } = {}) {
   const { githubIdentity, operations } = service();
   githubIdentity.useProvider(createWorkflowTokenProvider({
@@ -515,9 +672,13 @@ async function publish(request, { fetchImpl, graphql } = {}) {
     installation_id: request.installation_id,
     commit_sha: request.head_sha,
   };
+  // `errors` is what failed the publish: the review or the check run, the two things a reader
+  // relies on. `warnings` is everything else that went wrong, one inline edit or the fix
+  // sections, which costs the reader one comment rather than the review and must not turn the
+  // job red on its own.
   const results = {
     review: null, inline: [], fixes: null, check: null, threads: null,
-    posted: 0, edited: 0, unchanged: 0, errors: [],
+    posted: 0, edited: 0, unchanged: 0, errors: [], warnings: [],
   };
 
   // 1. What the pull request already carries, in one walk of its review threads. This is the
@@ -574,18 +735,54 @@ async function publish(request, { fetchImpl, graphql } = {}) {
   // the job: 39 of its 209 seconds. REQUEST_CHANGES would demand a dismissal from a human
   // before merge, which an action installed by five lines of YAML has not earned, so the event
   // stays COMMENT and `fail-on` carries the blocking decision.
-  try {
-    results.review = await operations.submitPullRequestReview({
-      ...base,
-      body: buildReviewBody(request),
-      event: 'COMMENT',
-      comments: fresh.map((comment) => ({ path: comment.path, line: comment.line, body: comment.body })),
-    });
-    results.posted = fresh.length;
-    for (const comment of fresh) results.inline.push({ path: comment.path, line: comment.line, comment_id: 0 });
-  } catch (error) {
-    results.errors.push(`review: ${error.message}`);
+  //
+  // GitHub validates every comment in the review and answers 422 for the whole review when one
+  // of them is not on the diff, without saying which. One bad anchor used to lose the summary
+  // and every comment with it. So a 422 is retried once, without the new comments, and those are
+  // listed in the body as findings that could not be anchored. Their thread markers are absent
+  // this run, and the next run that can anchor them posts them.
+  let reviewRequest = request;
+  let reviewComments = fresh;
+  results.rejected = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      results.review = await operations.submitPullRequestReview({
+        ...base,
+        body: buildReviewBody(reviewRequest),
+        event: 'COMMENT',
+        comments: reviewComments.map((comment) => ({ path: comment.path, line: comment.line, body: comment.body })),
+      });
+      results.posted = reviewComments.length;
+      for (const comment of reviewComments) results.inline.push({ path: comment.path, line: comment.line, comment_id: 0 });
+      break;
+    } catch (error) {
+      const status = githubStatusOf(error);
+      if (status === 422 && attempt === 1 && reviewComments.length > 0) {
+        results.rejected = reviewComments.map((comment) => ({ path: comment.path, line: comment.line }));
+        results.warnings.push(
+          `review: GitHub rejected ${plural(reviewComments.length, 'inline comment')} `
+          + `(${describeError(error)}); posted the review without them and listed them in its body`,
+        );
+        reviewRequest = withRejectedComments(request, reviewComments);
+        reviewComments = [];
+        continue;
+      }
+      if (isReadOnlyRefusal(error)) {
+        results.read_only = readOnlyReason(error);
+      } else {
+        results.errors.push(`review: ${describeError(error)}`);
+      }
+      break;
+    }
   }
+  if (results.read_only) {
+    // A token that may not review may not check, edit or resolve either, and a check run that
+    // described a review nobody can see would be worse than none. The orchestrator reports the
+    // findings in the job summary instead.
+    return results;
+  }
+  // Every later surface describes what was actually posted.
+  request = reviewRequest;
 
   // 4. The comments that already exist and have changed, edited in place by their marker. This
   // is a PATCH and creates no review, so the timeline stays at one entry per run.
@@ -600,7 +797,7 @@ async function publish(request, { fetchImpl, graphql } = {}) {
       results.edited += 1;
       results.inline.push({ path: comment.path, line: comment.line, comment_id: posted.comment_id });
     } catch (error) {
-      results.errors.push(`inline ${comment.path}:${comment.line}: ${error.message}`);
+      results.warnings.push(`inline ${comment.path}:${comment.line}: ${describeError(error)}`);
     }
   }
 
@@ -640,7 +837,7 @@ async function publish(request, { fetchImpl, graphql } = {}) {
         sections: request.fix_sections,
       });
     } catch (error) {
-      results.errors.push(`fixes: ${error.message}`);
+      results.warnings.push(`fixes: ${describeError(error)}`);
     }
   }
 
@@ -657,7 +854,11 @@ async function publish(request, { fetchImpl, graphql } = {}) {
       summary: summary.summary,
     });
   } catch (error) {
-    results.errors.push(`check run: ${error.message}`);
+    if (isReadOnlyRefusal(error)) {
+      results.check_read_only = readOnlyReason(error);
+    } else {
+      results.errors.push(`check run: ${describeError(error)}`);
+    }
   }
 
   return results;
@@ -670,8 +871,9 @@ async function main() {
     process.exit(2);
   }
   const request = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
-  const results = await publish(request);
+  const results = request.mode === 'error_check' ? await publishErrorCheck(request) : await publish(request);
   process.stdout.write(`${JSON.stringify(results, null, 2)}\n`);
+  for (const warning of results.warnings || []) process.stderr.write(`publish warning: ${warning}\n`);
   if (results.errors.length > 0) {
     for (const error of results.errors) process.stderr.write(`publish error: ${error}\n`);
     process.exit(1);
@@ -687,6 +889,10 @@ if (require.main === module) {
 
 module.exports = {
   publish,
+  isReadOnlyRefusal,
+  withRejectedComments,
+  publishErrorCheck,
+  githubStatusOf,
   buildReviewBody,
   checkRunSummary,
   createGraphQLClient,
@@ -696,5 +902,6 @@ module.exports = {
   surveyReviewThreads,
   threadFingerprint,
   UNANCHORED_HEADING,
+  LIMITATIONS_HEADING,
   CHECK_RUN_NAME,
 };

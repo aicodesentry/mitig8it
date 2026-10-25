@@ -4,18 +4,32 @@ import { installationAPI } from '../services/api'
 export default function SettingsPage() {
   const [installations, setInstallations] = useState([])
   const [syncResult, setSyncResult] = useState(null)
+  const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState('')
 
   const load = async () => {
-    const data = await installationAPI.list()
-    setInstallations(data.installations || [])
+    try {
+      const data = await installationAPI.list()
+      setInstallations(data.installations || [])
+      setLoaded(true)
+    } catch (_failure) {
+      setError('Could not load installations. Refresh to try again.')
+    }
   }
 
   useEffect(() => {
-    load().catch((err) => console.error(err))
+    load()
   }, [])
 
   const sync = async () => {
-    const result = await installationAPI.sync()
+    setError('')
+    let result
+    try {
+      result = await installationAPI.sync()
+    } catch (_failure) {
+      setError('Could not sync installations from GitHub. Try again in a moment.')
+      return
+    }
     setSyncResult(result)
     await load()
   }
@@ -33,12 +47,15 @@ export default function SettingsPage() {
           <button onClick={sync} className="rounded-lg bg-neutral-900 px-4 py-2 text-sm font-semibold text-white">Sync now</button>
         </div>
 
+        {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
+
         {syncResult && (
           <p className="mt-3 text-sm text-neutral-600">Synced installations: {syncResult.synced_installations}</p>
         )}
 
         <div className="mt-4 space-y-2">
-          {installations.length === 0 && <p className="text-sm text-neutral-500">No installations found.</p>}
+          {!loaded && !error && <p role="status" className="text-sm text-neutral-500">Loading installations...</p>}
+          {loaded && !error && installations.length === 0 && <p className="text-sm text-neutral-500">No installations found.</p>}
           {installations.map((installation) => (
             <div key={installation.id} className="rounded-lg border border-neutral-200 px-4 py-3">
               <p className="font-medium text-neutral-900">{installation.account_login}</p>

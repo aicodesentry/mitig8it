@@ -14,6 +14,7 @@ from starlette.responses import Response
 import request_context
 from rule_publication import postable_rule_ids
 from finding_quality import (
+    ScanDeadlineExceeded,
     cluster_findings,
     extract_match_context,
     has_path_containment_guard,
@@ -110,6 +111,15 @@ QUARANTINED_FINDING_COUNT = Counter(
 DEFAULT_TIER1_BUDGET_SECONDS = 20.0
 DEFAULT_TIER1_FILE_BUDGET_SECONDS = 2.0
 LIMITATION_BUDGET = "budget"
+
+# A Python regex cannot be interrupted, and the budgets above are only checked between rules
+# and files, so one long line has to be bounded before it reaches a pattern. Minified bundles
+# and generated data are where such lines come from, and no rule's evidence needs 4 kB of one
+# line. A skipped line is reported, once per file, as a `partial_parse` limitation.
+TIER1_MAX_LINE_CHARS = 4096
+TIER1_MAX_PATCH_CHARS = 200_000
+LIMITATION_PARTIAL_PARSE = "partial_parse"
+LIMITATION_NOT_ANALYZED = "not_analyzed"
 
 # The substring-search credential rule the secrets detector supersedes. It still runs on the
 # files the detector found nothing in; see `pattern_findings`.
@@ -371,6 +381,42 @@ def dependency_findings(path: str, patch: str) -> List[Dict[str, Any]]:
     return findings
 
 
+def cap_long_patch_lines(patch: str, max_chars: int = TIER1_MAX_LINE_CHARS) -> tuple[str, int, int]:
+    """`patch` with every added or context line over `max_chars` emptied, and what was emptied.
+
+    A skipped line keeps its diff marker, so every later line keeps its own line number.
+    Returns the capped patch, the number of reviewable lines skipped and the new-side line
+    number of the first one (0 when none was). Removed lines are emptied without being
+    counted, because tier 1 never scans them.
+    """
+    lines = patch.split("\n")
+    if all(len(line) <= max_chars + 1 for line in lines):
+        return patch, 0, 0
+
+    skipped = 0
+    first_line = 0
+    new_line = 0
+    capped: List[str] = []
+    for raw_line in lines:
+        if raw_line.startswith("@@"):
+            match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", raw_line)
+            if match:
+                new_line = int(match.group(1))
+            capped.append(raw_line)
+            continue
+        is_reviewable = not raw_line.startswith(("-", "\\"))
+        if len(raw_line) > max_chars + 1 and not raw_line.startswith(("+++ ", "--- ")):
+            capped.append(raw_line[:1] if raw_line[:1] in ("+", "-", " ") else " ")
+            if is_reviewable:
+                skipped += 1
+                first_line = first_line or new_line
+        else:
+            capped.append(raw_line)
+        if is_reviewable and not raw_line.startswith(("+++ ", "--- ")):
+            new_line += 1
+    return "\n".join(capped), skipped, first_line
+
+
 def pattern_findings(
     scannable_files: List[ChangedFile],
     limitations: List[Dict[str, Any]] | None = None,
@@ -412,8 +458,37 @@ def pattern_findings(
         # back to scanning each hunk on its own.
         content = changed_file.content or ""
 
-        if len(patch) > 200_000:
+        if len(patch) > TIER1_MAX_PATCH_CHARS:
+            _record_limitation(
+                limitations,
+                {
+                    "kind": LIMITATION_NOT_ANALYZED,
+                    "type": "Patch over 200 kB not scanned by tier 1",
+                    "path": path,
+                    "message": "Tier 1 skipped this file: its patch is over 200 kB",
+                },
+            )
             continue
+
+        patch, long_lines, first_long_line = cap_long_patch_lines(patch)
+        if content and any(len(line) > TIER1_MAX_LINE_CHARS for line in content.split("\n")):
+            # The head revision only tells the comment stripper where a hunk began. Stripping a
+            # file with a 200 kB line once per rule costs more than the per-file budget, so such
+            # a file is read from its hunks alone, the same fallback a truncated fetch takes.
+            content = ""
+        if long_lines:
+            _record_limitation(
+                limitations,
+                {
+                    "kind": LIMITATION_PARTIAL_PARSE,
+                    "type": "Lines over 4 kB not scanned by tier 1",
+                    "path": path,
+                    "line": first_long_line,
+                    "message": (
+                        f"Tier 1 skipped {long_lines} line{'' if long_lines == 1 else 's'} over 4 kB"
+                    ),
+                },
+            )
 
         non_code_text = is_non_code_text_path(path)
         file_started = time.monotonic()
@@ -428,20 +503,24 @@ def pattern_findings(
         # `partition_by_posting_policy` like any other quarantined rule's output.
         findings.extend(dependency_diff_findings(path, patch, content))
 
+        def record_file_budget_stop(rules_completed: int) -> None:
+            _record_limitation(
+                limitations,
+                {
+                    "kind": LIMITATION_BUDGET,
+                    "path": path,
+                    "message": (
+                        f"Tier 1 stopped after {rules_completed} of {len(SECURITY_RULES)} rules "
+                        f"on this file ({file_budget:g} s per-file cap)"
+                    ),
+                },
+            )
+
+        file_deadline = file_started + file_budget
         rules_run = 0
         for rule in SECURITY_RULES:
-            if time.monotonic() - file_started >= file_budget:
-                _record_limitation(
-                    limitations,
-                    {
-                        "kind": LIMITATION_BUDGET,
-                        "path": path,
-                        "message": (
-                            f"Tier 1 stopped after {rules_run} of {len(SECURITY_RULES)} rules "
-                            f"on this file ({file_budget:g} s per-file cap)"
-                        ),
-                    },
-                )
+            if time.monotonic() >= file_deadline:
+                record_file_budget_stop(rules_run)
                 break
             rules_run += 1
             # A changelog quoting an example route is not a route, and neither is a
@@ -459,7 +538,15 @@ def pattern_findings(
             if rule.category == "unsafe LLM/prompt injection patterns" and not repo_has_llm_flow:
                 continue
             options = rule_scan_options(rule, path, content)
-            if not pattern_matches_reviewable_content(patch, rule.pattern, **options):
+            try:
+                matched = pattern_matches_reviewable_content(
+                    patch, rule.pattern, deadline=file_deadline, **options
+                )
+            except ScanDeadlineExceeded:
+                # The budget ran out between two lines of this rule, so it did not complete.
+                record_file_budget_stop(rules_run - 1)
+                break
+            if not matched:
                 continue
             if rule.category == "path traversal" and has_path_containment_guard(
                 patch, rule.pattern, **options

@@ -1,16 +1,17 @@
 import { useEffect } from 'react'
-import { useNavigate } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 
 const AuthCallbackPage = () => {
   const navigate = useNavigate()
+  const { search } = useLocation()
 
   useEffect(() => {
     const finishCallback = async () => {
-      const params = new URLSearchParams(window.location.search)
+      const params = new URLSearchParams(search)
       const error = params.get('error')
 
       if (error) {
-        navigate(`/?error=${error}`)
+        navigate(`/?error=${encodeURIComponent(error)}`, { replace: true })
         return
       }
 
@@ -22,7 +23,7 @@ const AuthCallbackPage = () => {
     }
 
     finishCallback()
-  }, [navigate])
+  }, [navigate, search])
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-neutral-950">

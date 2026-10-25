@@ -149,8 +149,11 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             services/analysis-service/src/requirements.txt
+            services/analysis-service/src/requirements-scanner.txt
             services/analysis-service/src/requirements-test.txt
+            benchmarks/requirements-quality.txt
       - run: pip install -r requirements-test.txt
+      - run: pip install -r ../../../benchmarks/requirements-quality.txt
       - run: pip install bandit
       # B608 skipped: Bandit flags LLM prompt strings as "SQL injection".
       - name: bandit
@@ -158,13 +161,27 @@ jobs:
           bandit -r . -ll -q
           -x ./tests -x ./grpc_generated -x ./grpc_server/generated
           -s B608
+      - name: Bandit over production quality admission code
+        working-directory: ${{ github.workspace }}
+        run: >-
+          bandit -q -ll benchmarks/analysis_attestation.py
+          benchmarks/analysis_evidence.py
+          benchmarks/production_readiness.py
+          benchmarks/remediation/corpus_intake.py
+          benchmarks/remediation/release_evidence.py
       - run: pytest tests -q
+        env:
+          MITIG8IT_REQUIRE_SCANNER: '1'
 
       - name: Rule publication precision gate
         working-directory: ${{ github.workspace }}
         run: |
           python -m pytest benchmarks/test_detection_evaluation.py benchmarks/test_eval.py \
-            benchmarks/test_quality_gate.py benchmarks/test_production_readiness.py -q
+            benchmarks/test_analysis_attestation.py benchmarks/test_analysis_evidence.py benchmarks/test_quality_gate.py \
+            benchmarks/test_production_readiness.py \
+            benchmarks/remediation/tests/test_release_evidence.py \
+            benchmarks/remediation/tests/test_corpus_intake.py \
+            benchmarks/remediation/tests/test_production_intake.py -q
           python -m benchmarks.rule_quality_gate
           python -m benchmarks.production_readiness --report-only
 
@@ -283,6 +300,72 @@ jobs:
       # Fixture-driven flows; no API, repair service, or GitHub backend runs.
       - run: npm run test:remediation-browser
 
+  # The repair service and the action suites also run in remediation.yml and action-build.yml,
+  # but those are path-filtered, and a skipped workflow cannot be a required check. These two
+  # jobs make both suites part of Required CI on every pull request. The setup matches the
+  # path-filtered jobs so the two places test the same thing.
+  remediation-service-tests:
+    name: Repair service unit and broker contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          # Python 3.12 matches services/remediation-service/Dockerfile.
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/remediation-service/requirements-test.txt
+      - run: pip install -r services/remediation-service/requirements-test.txt
+      # The static assertion tests drive the real rule oracle, which shells out to the analysis
+      # service's scanner. It goes in its own virtualenv for the reason remediation.yml gives:
+      # the scanner and this service pin conflicting opentelemetry versions.
+      - name: Install the scanner the rule oracle runs, beside the test environment
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^semgrep==\(.*\)$/\1/p' services/analysis-service/src/requirements.txt | head -n 1)"
+          if [ -z "${version}" ]; then
+            echo "services/analysis-service/src/requirements.txt no longer pins semgrep" >&2
+            exit 1
+          fi
+          python -m venv /tmp/rule-scanner
+          /tmp/rule-scanner/bin/pip install --disable-pip-version-check "semgrep==${version}"
+          mkdir -p /tmp/rule-scanner-bin
+          ln -sf /tmp/rule-scanner/bin/semgrep /tmp/rule-scanner-bin/semgrep
+          echo "/tmp/rule-scanner-bin" >> "$GITHUB_PATH"
+      - name: The rule oracle must be available here, so its tests run rather than skip
+        run: |
+          set -euo pipefail
+          semgrep --version
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "services/remediation-service")
+          from src.verification.static_assertion import InProcessRuleOracle
+          reason = InProcessRuleOracle.unavailable_reason()
+          if reason is not None:
+              sys.exit(f"the static assertion tests would skip in this job: {reason}")
+          PY
+      - run: pytest services/remediation-service/tests -q
+
+  action-tests:
+    name: Action orchestrator unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      # The parity tests run the Node implementation, on the major the action image pins.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '22'
+      - name: Install the test dependencies
+        run: pip install pytest httpx pyyaml
+      - name: Run the tests
+        run: pytest tests -q
+        working-directory: action
+
   ci-required:
     name: Required CI
     runs-on: ubuntu-latest
@@ -298,22 +381,20 @@ jobs:
       - remediation-integration-tests
       - remediation-github-tests
       - remediation-browser-tests
+      - remediation-service-tests
+      - action-tests
     if: ${{ always() }}
     steps:
       - name: Report required job results
         run: |
           echo '${{ toJSON(needs) }}'
-      # A job this run never finished is not a job that failed. Cancellation means a newer push
-      # superseded this run, and the newer run is the one that reports; a skip means a job's own
-      # condition said it had nothing to do, and a job that skipped because something it needed
-      # failed is preceded by that failure, which is caught below. Treating either as a failure
-      # turned a healthy pull request red for a reason its author could not act on, which is a
-      # bad first impression for a contributor and an untrue one for everybody.
-      - name: Say why this run has no verdict
-        if: ${{ !contains(needs.*.result, 'failure') && contains(needs.*.result, 'cancelled') }}
+      # Required CI passes only when every needed job succeeded. A job that hits its
+      # timeout-minutes is reported as cancelled, and a job skipped by a failed dependency or a
+      # condition did not run its checks, so treating either as a pass would let a hung or
+      # unrun suite turn this check green. A run cancelled because a newer push superseded it
+      # reports on the old commit; the newer run reports on the new one.
+      - name: Fail unless every required job succeeded
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
         run: |
-          echo "::notice::This run was cancelled, most likely superseded by a newer push."
-          echo "::notice::The newest run on this commit is the one that reports."
-      - name: Fail when any required job failed
-        if: ${{ contains(needs.*.result, 'failure') }}
-        run: exit 1
+          echo "::error::At least one required job did not succeed (failure, cancelled or skipped). See the results above."
+          exit 1

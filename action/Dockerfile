@@ -70,7 +70,11 @@ RUN set -eux; \
 WORKDIR /opt/mitig8it
 
 COPY action/requirements.txt action/requirements.txt
-RUN pip install --no-cache-dir -r action/requirements.txt
+COPY services/analysis-service/src/requirements-scanner.txt action/requirements-scanner.txt
+RUN python -m venv /opt/mitig8it/scanner \
+    && /opt/mitig8it/scanner/bin/pip install --no-cache-dir -r action/requirements-scanner.txt \
+    && ln -s /opt/mitig8it/scanner/bin/semgrep /usr/local/bin/semgrep \
+    && pip install --no-cache-dir -r action/requirements.txt
 
 # The publisher needs the github-service's runtime dependencies, but none of its devDependencies
 # and none of the services it never starts here. `--omit=dev` keeps jest and eslint out of a
@@ -90,6 +94,9 @@ COPY action action
 # Prove at build time that the scanner is present and both services import. A missing semgrep
 # would otherwise surface as a failed scan in someone else's pull request.
 RUN semgrep --version \
+    && test "$(command -v python)" != /opt/mitig8it/scanner/bin/python \
+    && test "$(readlink -f "$(command -v semgrep)")" = /opt/mitig8it/scanner/bin/semgrep \
+    && python -c "import importlib.util; assert importlib.util.find_spec('semgrep') is None" \
     && python -c "import sys; sys.path.insert(0, '/opt/mitig8it/services/analysis-service/src'); import main" \
     && python -c "import sys; sys.path.insert(0, '/opt/mitig8it/services/remediation-service'); import src.engine" \
     && node -e "require('/opt/mitig8it/services/github-service/src/services/githubInternalOperations')"
