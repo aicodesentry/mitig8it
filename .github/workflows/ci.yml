@@ -323,9 +323,9 @@ jobs:
       - name: Install the scanner the rule oracle runs, beside the test environment
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^semgrep==\(.*\)$/\1/p' services/analysis-service/src/requirements.txt | head -n 1)"
+          version="$(sed -n 's/^semgrep==\(.*\)$/\1/p' services/analysis-service/src/requirements-scanner.txt | head -n 1)"
           if [ -z "${version}" ]; then
-            echo "services/analysis-service/src/requirements.txt no longer pins semgrep" >&2
+            echo "services/analysis-service/src/requirements-scanner.txt no longer pins semgrep" >&2
             exit 1
           fi
           python -m venv /tmp/rule-scanner
