@@ -26,8 +26,8 @@
   "dependencies": {
     "@grpc/grpc-js": "^1.14.4",
     "@opentelemetry/api": "1.9.1",
-    "@opentelemetry/exporter-trace-otlp-proto": "0.222.0",
-    "@opentelemetry/sdk-node": "0.222.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.223.0",
+    "@opentelemetry/sdk-node": "0.223.0",
     "axios": "^1.17.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
