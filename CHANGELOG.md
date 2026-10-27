@@ -14,7 +14,7 @@ Every number in this file links to the run that measured it. None of them is an 
 
 Nothing yet.
 
-## [1.0.0] - unreleased
+## [1.0.0] - 2026-10-27
 
 The first release. `.github/workflows/release.yml` refuses to run until the date above is a real
 one, so this heading is not a placeholder anybody can forget: setting it is step one of

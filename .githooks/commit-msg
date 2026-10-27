@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Two house rules that are cheap to break and annoying to discover later.
+#
+# The sign-off is the one CI already enforces: the DCO check fails the pull request, but only
+# after a push and a run, by which point the fix is a rebase across every commit on the branch
+# rather than one amend. Catching it here turns a branch-wide rewrite into a one-line retry.
+#
+# The em-dash rule has no CI check at all, so without this it is enforced by whoever notices.
+
+set -euo pipefail
+
+msg_file="${1:?usage: commit-msg <file>}"
+msg="$(cat "$msg_file")"
+
+# Strip comments and the diff git appends under --verbose before judging anything.
+body="$(printf '%s\n' "$msg" | sed '/^#/d' | sed '/^diff --git /,$d')"
+
+fail=0
+
+# --- sign-off ------------------------------------------------------------------------------------
+# A merge commit git wrote itself, and a fixup, are exempt: neither is authored prose and the DCO
+# check exempts the bot that creates them.
+subject="$(printf '%s\n' "$body" | sed '/^[[:space:]]*$/d' | head -n 1)"
+case "$subject" in
+  "Merge branch "*|"Merge remote-tracking branch "*|"Merge pull request "*|fixup!*|squash!*) ;;
+  *)
+    author_email="$(git config user.email || true)"
+    if ! printf '%s\n' "$body" | grep -qiE '^[[:space:]]*Signed-off-by:[[:space:]]*.+<.+>'; then
+      echo "commit-msg: no Signed-off-by line."
+      echo "  The DCO check fails the pull request without one, and fixing it later means"
+      echo "  rewriting every commit on the branch. Use: git commit -s"
+      fail=1
+    elif [ -n "$author_email" ] && ! printf '%s\n' "$body" | grep -qiF "<${author_email}>"; then
+      echo "commit-msg: the Signed-off-by email does not match the commit author."
+      echo "  author: <${author_email}>"
+      printf '  %s\n' "$(printf '%s\n' "$body" | grep -iE '^[[:space:]]*Signed-off-by:' || true)"
+      echo "  The DCO check compares them, so this fails in CI exactly as it does here."
+      fail=1
+    fi
+    ;;
+esac
+
+# --- attribution trailers ------------------------------------------------------------------------
+if printf '%s\n' "$body" | grep -qiE '^[[:space:]]*(Co-Authored-By|Claude-Session):'; then
+  echo "commit-msg: assistant attribution trailer found."
+  echo "  This repository keeps plain commit messages: subject and body, no attribution trailers."
+  fail=1
+fi
+
+# --- em-dashes -----------------------------------------------------------------------------------
+if printf '%s\n' "$body" | grep -q '—'; then
+  echo "commit-msg: em-dash found."
+  printf '  %s\n' "$(printf '%s\n' "$body" | grep -n '—' | head -n 3)"
+  echo "  House style has no em-dashes anywhere. A comma, a colon or a full stop will do."
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "Nothing was committed. The message is kept at ${msg_file}, so:"
+  echo "  git commit -s --edit --file \"${msg_file}\""
+  exit 1
+fi
+
+exit 0
