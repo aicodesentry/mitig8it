@@ -222,7 +222,7 @@ jobs:
       - name: The action's own suites
         run: |
           set -euo pipefail
-          pip install --quiet pytest httpx pyyaml
+          pip install --quiet pytest httpx pyyaml -r ../benchmarks/requirements-quality.txt
           pytest tests -q
         working-directory: action
 
@@ -237,13 +237,24 @@ jobs:
           set -euo pipefail
           pytest benchmarks/test_quality_gate.py benchmarks/test_production_readiness.py -q
           python3 -m benchmarks.rule_quality_gate
-          python3 -m benchmarks.production_readiness
+
+      - name: Authenticate release evidence and generate exact packaged admission
+        uses: ./.github/actions/quality-readiness
+        with:
+          environment: production
+          component: all
 
       - name: actionlint over every workflow
+        # Verified against the release's published actionlint_1.7.7_checksums.txt, the same way
+        # the deploy workflows verify grpcurl. A version bump changes both values together.
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+          ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
         run: |
           set -euo pipefail
-          curl -fsSL -o actionlint.tar.gz \
-            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          curl -fsSL --connect-timeout 15 --max-time 120 -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
           tar -xzf actionlint.tar.gz actionlint
           ./actionlint -color
 

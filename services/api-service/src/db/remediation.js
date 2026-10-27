@@ -226,10 +226,17 @@ async function readyJobsWithPublishedInlineFixes({ pullRequestId, headSha }) {
 }
 
 async function recordInlineFixesPublished(job, { headSha }) {
-  await scopedTransaction({ tenantId: job.installation_id, worker: true }, (client) => client.query(
-    `UPDATE remediation_jobs SET inline_fixes_published_at=NOW(), inline_fixes_head_sha=$2, updated_at=NOW() WHERE id=$1`,
-    [job.id, headSha]
-  ));
+  await scopedTransaction({ tenantId: job.installation_id, worker: true }, async (client) => {
+    const updated = await client.query(
+      `UPDATE remediation_jobs SET inline_fixes_published_at=NOW(), inline_fixes_head_sha=$2, updated_at=NOW()
+       WHERE id=$1 RETURNING id`,
+      [job.id, headSha]
+    );
+    if (updated.rowCount) {
+      await audit(client, null, job.repository_id, 'remediation.inline_fix.published', 'remediation_job', job.id,
+        { head_sha: headSha });
+    }
+  });
 }
 
 async function appendEvent(client, job, eventType, payload, sequenceOverride) {
@@ -751,14 +758,19 @@ async function recordObservedApply({ client, repositoryGithubId, branch, commitS
       if (!applicable.length) continue;
       const digest = manifestDigestFor(row, applicable);
       const idempotencyKey = `observed:${commitSha}`;
+      // actor_id is NULL by design: the commit was made on GitHub by whoever pressed
+      // "Commit suggestion", who need not have a Mitig8it account, and the job's creator
+      // (NULL for an automatic job) did not apply anything. actor_login carries the
+      // GitHub identity. Migration 0031 allows NULL for observed_apply only.
+      // $11 is cast in both places so Postgres deduces one type for it.
       const inserted = await db.query(
         `INSERT INTO remediation_actions (job_id,installation_id,repository_id,pull_request_id,actor_id,actor_login,
            action_type,head_sha,base_sha,batch_manifest_digest,candidate_ids,idempotency_key,payload_hash,state,observed_commit_sha)
-         SELECT $1,$2,$3,$4,$5,$6,'observed_apply',$7,$8,$9,$10,$11,$12,'applied',$13
+         SELECT $1,$2,$3,$4,$5::uuid,$6,'observed_apply',$7,$8,$9,$10,$11::text,$12,'applied',$13
           WHERE NOT EXISTS (
-            SELECT 1 FROM remediation_actions WHERE pull_request_id = $4 AND idempotency_key = $11)
+            SELECT 1 FROM remediation_actions WHERE pull_request_id = $4 AND idempotency_key = $11::text)
          RETURNING *`,
-        [row.id, pr.installation_id, pr.repository_id, pr.pull_request_id, row.requested_by || null,
+        [row.id, pr.installation_id, pr.repository_id, pr.pull_request_id, null,
           actorLogin || 'unknown', row.head_sha, row.base_sha, digest,
           applicable.map((candidate) => candidate.id), idempotencyKey, hash({ commit_sha: commitSha }), commitSha]
       );

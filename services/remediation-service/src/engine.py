@@ -13,9 +13,10 @@ from .batch import BatchPolicyError, ImmutableBatch, build_immutable_batch
 from .digests import digest_json
 from .families import declares_static_assertion, family_supported, language_of_path, rule_family
 from .gates import UNSUPPORTED_LANGUAGE_MESSAGE, static_gate
-from .git_tree import GitTreeError, compute_tree_oid, validate_snapshot_tree
+from .git_tree import GitTreeError, compute_tree_oid, snapshot_blob_mismatches, validate_snapshot_tree
 from .grouping import group_findings_by_language
 from .models import Candidate, FindingSnapshot, RepairPolicy, RepairRequest, RepairResponse, VerificationSummary
+from .release_identity import service_image_matches
 from .patches import (
     PatchBundle,
     PatchPolicyError,
@@ -24,7 +25,7 @@ from .patches import (
     combine_patch_bundles,
     path_forbidden,
 )
-from .proofs import GeneratedProof, generate_proof
+from .proofs import GeneratedProof, generate_proof, proof_refusal_message
 from .retrieval import Snapshot, SnapshotError
 from .sandbox import BrokerConfigurationError, create_sandbox_broker
 from .splitting import DEPENDENT_HUNK_UNPROVEN, split_hunks
@@ -57,6 +58,22 @@ RETRY_SOURCE = "retry"
 # executed pass failed to prove, and only where the reason execution could not prove them is
 # recorded. It is never tried before the executed passes and never instead of one.
 STATIC_ASSERTION_SOURCE = "static_assertion"
+
+# The abstention a provider gives when no model is configured at all (the Action's keyless
+# provider). Such a pass never attempted a repair, so it does not supply the group's reason.
+MODEL_NOT_CONFIGURED = "model_not_configured"
+
+# A finding whose file arrived with content that differs from the file's head Git blob.
+SNAPSHOT_CONTENT_MISMATCH = "snapshot_content_mismatch"
+
+
+def snapshot_mismatch_message(path: str) -> str:
+    return (
+        f"The content received for {path} differs from its blob in the head Git tree (a file that "
+        "is not UTF-8, or too large to read, arrives altered), so no repair is built for it."
+    )
+
+
 STATIC_ASSERTION_NOT_COMBINABLE = (
     "This job also produced a candidate verified by execution, and a batch carries one kind of "
     "evidence: the statically asserted candidate is not shipped beside it."
@@ -411,6 +428,11 @@ def _build_candidate(
                 "summary": evidence_summary(bundle, verification, limitations),
                 # Which path wrote the hunks: a deterministic template or the model.
                 "candidate_source": source,
+                # Runtime publishers compare these request-bound identities with
+                # the authenticated release lease before exposing a suggestion.
+                "repair_model": request.versions.get("repair_model"),
+                "repair_service_image": request.versions.get("repair_service_image"),
+                "sandbox_image_digest": request.policy.sandbox_image_digest,
             },
         },
     )
@@ -927,14 +949,27 @@ class RepairEngine:
             elif finding_id in failures:
                 failure = failures[finding_id]
                 unproven.append({"finding_id": finding_id, "code": str(failure.get("code") or "not_repaired"), "message": str(failure.get("message") or "No candidate proved this finding.")})
+            elif str(proof_report.get(finding_id) or "").startswith("model:"):
+                # The service could not write a test for this shape and nothing else proved it:
+                # the shape is the reason, so the line names it.
+                refusal = str(proof_report[finding_id])[len("model:"):]
+                unproven.append({"finding_id": finding_id, "code": f"proof_not_generated:{refusal}"[:120], "message": proof_refusal_message(refusal)})
             else:
                 unproven.append({"finding_id": finding_id, "code": "not_repaired", "message": "No regression test reproduced this finding, so no candidate claims it."})
 
         trace = [entry for item in passes for entry in item.trace]
         usage = _aggregate_usage([GroupOutcome(index, finding_ids, item.state, None, None, [], None, None, item.trace, item.usage, True) for item in passes])
         # The group's reason is the group pass's own: a focused retry that stopped is recorded
-        # under `retries`, and the verification-based reason of the pass before it stands.
-        last = model_pass if model_pass is not None else (passes[-1] if passes else None)
+        # under `retries`, and the verification-based reason of the pass before it stands. A
+        # model pass that only abstained because no model is configured never tried anything,
+        # so when the template pass ran, its reason is the one that explains the group.
+        unconfigured = (
+            model_pass is not None
+            and not model_pass.ready
+            and model_pass.reason_code == MODEL_NOT_CONFIGURED
+        )
+        reason_pass = template if unconfigured and template is not None else model_pass
+        last = reason_pass if reason_pass is not None else (passes[-1] if passes else None)
         evidence: dict[str, Any] = {
             "proofs": proof_report,
             "templates": template_report,
@@ -970,6 +1005,9 @@ class RepairEngine:
 
     async def repair(self, request: RepairRequest, checkpoints: AgentCheckpointStore | None = None) -> RepairResponse:
         request_digest = digest_json(request.model_dump(mode="json"))
+        if not service_image_matches(request):
+            return _reason_response(request, "unsupported", "service_image_identity_mismatch",
+                "Requested remediation service image does not match the mounted release identity.", request_digest)
         with telemetry.stage_span("snapshot_bind", **telemetry.request_attributes(request)):
             try:
                 snapshot = Snapshot(request)
@@ -979,6 +1017,20 @@ class RepairEngine:
                 return _reason_response(request, "unsupported", "complete_git_tree_required", "A complete, non-truncated head Git tree is required for an applicable repair.", request_digest, snapshot.manifest_digest)
             if request.policy.input_usd_per_million_tokens <= 0 or request.policy.output_usd_per_million_tokens <= 0:
                 return _reason_response(request, "unsupported", "provider_pricing_missing", "Versioned provider pricing is required for spend enforcement.", request_digest, snapshot.manifest_digest)
+            # One file whose content differs from its head blob (a file the caller could not read
+            # as UTF-8, or one too large to fetch) is dropped and its findings refused below, by
+            # name; it does not refuse the repairs of every other file in the request.
+            mismatched = set(
+                snapshot_blob_mismatches(
+                    request.tree_entries,
+                    {path: snapshot.full_content(path) for path in snapshot.paths},
+                )
+            )
+            if mismatched:
+                request = request.model_copy(
+                    update={"files": [item for item in request.files if item.path not in mismatched]}
+                )
+                snapshot = Snapshot(request)
             try:
                 validate_snapshot_tree(
                     request.tree_entries,
@@ -1004,6 +1056,8 @@ class RepairEngine:
                     skipped.append({"finding_id": finding_id, "code": "unsupported_rule_family", "message": "This finding is outside the enabled repair families."})
                 elif family not in allowed:
                     skipped.append({"finding_id": finding_id, "code": "rule_family_disabled", "message": "The repair family is disabled by policy."})
+                elif finding.affected_path in mismatched:
+                    skipped.append({"finding_id": finding_id, "code": SNAPSHOT_CONTENT_MISMATCH, "message": snapshot_mismatch_message(finding.affected_path)})
                 elif not finding.affected_path or finding.affected_path not in snapshot.paths:
                     skipped.append({"finding_id": finding_id, "code": "affected_source_missing", "message": "The exact affected source file is absent from the snapshot."})
                 elif path_forbidden(finding.affected_path, request):
@@ -1075,13 +1129,29 @@ class RepairEngine:
             remaining_tool_calls, remaining_tokens, remaining_usd = budget.tool_calls, budget.tokens, budget.usd
             outcomes.append(outcome)
             accepted.extend(entries)
-            if outcome.evidence.get("candidate_sources") or outcome.reason_code == DEPENDENT_HUNK_UNPROVEN:
-                # A finding the group could not prove beside one it did is reported, never
-                # carried silently; a group that proved nothing carries its reason instead.
-                skipped.extend(
-                    {"finding_id": str(item["finding_id"]), "code": str(item["code"]), "message": str(item["message"])}
-                    for item in unproven
-                )
+            # A finding the group could not prove is reported, never carried silently, whether
+            # or not the group proved anything else: `skipped` is the only list the App and the
+            # Action read a finding's `No automatic fix` line from, so a reason kept in the group
+            # report alone is a finding published with no fix and no reason.
+            skipped.extend(
+                {"finding_id": str(item["finding_id"]), "code": str(item["code"]), "message": str(item["message"])}
+                for item in unproven
+            )
+
+        # A group that never ran (the budget floor) or ended before attributing a reason per
+        # finding still owes each of its findings one line, which is the group's own reason.
+        reported = {str(item["finding_id"]) for item in skipped}
+        claimed_ids = {finding_id for candidate, _, _ in accepted for finding_id in candidate.finding_ids}
+        for outcome in outcomes:
+            for finding_id in outcome.finding_ids:
+                if finding_id in reported or finding_id in claimed_ids:
+                    continue
+                reported.add(finding_id)
+                skipped.append({
+                    "finding_id": finding_id,
+                    "code": str(outcome.reason_code or "no_verified_candidate"),
+                    "message": str(outcome.message or "No verified repair was produced."),
+                })
 
         # A batch carries one kind of evidence. A statically asserted candidate says nothing ran;
         # an executed one says a test failed before the change and passed after it. Shipping both
@@ -1116,6 +1186,7 @@ class RepairEngine:
                     request_digest,
                     snapshot.manifest_digest,
                     {"groups": group_report},
+                    skipped=skipped,
                 )
             return RepairResponse(
                 skipped=skipped,

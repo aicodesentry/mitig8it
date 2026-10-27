@@ -12,9 +12,9 @@ test('the packaged release cannot publish remediation before independent evidenc
   expect(() => quality.assertRemediationPublicationReady()).toThrow(/release evidence/);
 });
 
-test('the Action and App fix-publication seam refuses before any GitHub call', async () => {
+test('the Action and App fix-publication seam rejects malformed input before any GitHub call', async () => {
   await expect(operations.publishFindingFixSections({ sections: [] }))
-    .rejects.toMatchObject({ code: 'REMEDIATION_RELEASE_EVIDENCE_MISSING', statusCode: 422 });
+    .rejects.toMatchObject({ statusCode: 400 });
   expect(axios).not.toHaveBeenCalled();
 });
 

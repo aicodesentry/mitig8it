@@ -60,10 +60,14 @@ outputs:
     description: 'Total findings reported, including the informational ones in test code.'
     value: ${{ steps.review.outputs.findings }}
   critical:
-    description: 'Critical findings.'
+    description: >-
+      Critical findings on lines this pull request added, the ones fail-on counts. Pre-existing
+      findings in a touched file are reported but not counted here.
     value: ${{ steps.review.outputs.critical }}
   high:
-    description: 'High findings.'
+    description: >-
+      High findings on lines this pull request added, the ones fail-on counts. Pre-existing
+      findings in a touched file are reported but not counted here.
     value: ${{ steps.review.outputs.high }}
   fixes:
     description: 'Fix suggestions attached.'

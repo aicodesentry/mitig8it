@@ -248,6 +248,10 @@ message FindingFixSection {
   // on its own line, or a change away from the finding's line. Each becomes a suggestion in a
   // second inline comment when its lines are in the diff.
   repeated FindingFixHunk extra_hunks = 17;
+  // Request-bound identities from the independently verified release lease.
+  string repair_model = 18;
+  string sandbox_image_digest = 19;
+  string repair_service_image = 20;
 }
 
 message FindingFixSectionsRequest {

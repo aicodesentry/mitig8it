@@ -255,6 +255,10 @@ def extract_reviewable_line_spans(patch: str) -> List[Dict[str, int]]:
             continue
         if raw_line.startswith("+++ ") or raw_line.startswith("--- "):
             continue
+        if raw_line.startswith("\\"):
+            # `\ No newline at end of file` annotates the line before it. It is in neither
+            # file, so it neither advances the counter nor breaks a run of added lines.
+            continue
         if raw_line.startswith("+"):
             line_number = new_line or 1
             if span_start is None:

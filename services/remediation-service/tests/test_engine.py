@@ -478,3 +478,49 @@ async def test_request_with_no_supported_finding_is_unsupported_and_lists_every_
     assert response.state == "unsupported"
     assert response.reason["code"] == "unsupported_rule_family"
     assert [entry["code"] for entry in response.skipped] == ["unsupported_rule_family"]
+
+
+@pytest.mark.asyncio
+async def test_a_finding_in_a_group_that_proved_nothing_is_still_reported_in_skipped(request_payload):
+    """Every finding that ends without a candidate is in `skipped`, whichever group it was in.
+
+    The App and the Action print a finding's `No automatic fix` line from `skipped` alone. A group
+    that proved nothing used to keep its findings' reasons in the group report only, so on a job
+    where another group did produce a candidate those findings got no line at all (the
+    nebullii/test-only#140 run: three findings in web/pricing.js, no fix and no reason).
+    """
+    payload = _two_file_payload(request_payload)
+    scripts = {
+        "src/db.ts": [_propose("src/db.ts", SQL_SOURCE, SQL_REPAIRED, "Untrusted id is interpolated into SQL."), ProviderAction("request_verification", {})],
+        "src/cmd.ts": [ProviderAction("abstain", {"reason_code": "cannot_repair", "explanation": "No repair."})],
+    }
+    response = await RepairEngine(_per_path_agent_factory(scripts)).repair(RepairRequest.model_validate(payload))
+    assert response.state == "ready"
+    assert [candidate.finding_ids for candidate in response.candidates] == [["finding-sql"]]
+    assert [entry["finding_id"] for entry in response.skipped] == ["finding-cmd"]
+    assert response.skipped[0]["code"] and response.skipped[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_proved_nothing_lists_every_finding_in_skipped(request_payload):
+    payload = _two_file_payload(request_payload)
+    scripts = {
+        "src/db.ts": [ProviderAction("abstain", {"reason_code": "cannot_repair", "explanation": "No repair."})],
+        "src/cmd.ts": [ProviderAction("abstain", {"reason_code": "cannot_repair", "explanation": "No repair."})],
+    }
+    response = await RepairEngine(_per_path_agent_factory(scripts)).repair(RepairRequest.model_validate(payload))
+    assert response.candidates == []
+    assert sorted(entry["finding_id"] for entry in response.skipped) == ["finding-cmd", "finding-sql"]
+    assert all(entry["code"] and entry["message"] for entry in response.skipped)
+
+
+@pytest.mark.asyncio
+async def test_a_group_not_launched_still_reports_its_findings_in_skipped(request_payload):
+    payload = _two_file_payload(request_payload)
+    payload["policy"]["max_tool_calls"] = 5
+    scripts = {
+        "src/db.ts": [_propose("src/db.ts", SQL_SOURCE, SQL_REPAIRED, "Untrusted id is interpolated into SQL."), ProviderAction("request_verification", {})],
+    }
+    response = await RepairEngine(_per_path_agent_factory(scripts)).repair(RepairRequest.model_validate(payload))
+    assert [candidate.finding_ids for candidate in response.candidates] == [["finding-sql"]]
+    assert [(entry["finding_id"], entry["code"]) for entry in response.skipped] == [("finding-cmd", "budget_exhausted")]

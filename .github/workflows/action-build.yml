@@ -75,7 +75,8 @@ jobs:
           path: ${{ runner.temp }}/mitig8it-buildx-cache
           key: >-
             mitig8it-action-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('action/Dockerfile',
-            'action/requirements.txt', 'services/github-service/package-lock.json') }}
+            'action/requirements.txt', 'services/analysis-service/src/requirements-scanner.txt',
+            'services/github-service/package-lock.json') }}
           restore-keys: |
             mitig8it-action-${{ runner.os }}-${{ runner.arch }}-
 
@@ -126,8 +127,15 @@ jobs:
       # A workflow file that does not parse fails the whole run before any job starts, with a
       # message that does not say which file or line. This job says both.
       - name: Run actionlint
+        # Verified against the release's published actionlint_1.7.7_checksums.txt, the same way
+        # the deploy workflows verify grpcurl. A version bump changes both values together.
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+          ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
         run: |
-          curl -fsSL -o actionlint.tar.gz \
-            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          set -euo pipefail
+          curl -fsSL --connect-timeout 15 --max-time 120 -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
           tar -xzf actionlint.tar.gz actionlint
           ./actionlint -color

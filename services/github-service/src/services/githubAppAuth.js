@@ -36,9 +36,41 @@ function buildAppJWT(appId, privateKey) {
   return `${signingInput}.${signature}`;
 }
 
+// An installation token lives for an hour. It is cached per App and installation and
+// reused until REFRESH_MARGIN_MS before its expiry, so a run that makes forty GitHub calls
+// mints one token instead of forty, and no operation starts with a token about to lapse.
+// Concurrent callers for the same installation share one in-flight mint. A failed mint
+// is never cached.
+const REFRESH_MARGIN_MS = 5 * 60 * 1000;
+const tokenCache = new Map();
+const inFlightMints = new Map();
+
+function clearInstallationTokenCache() {
+  tokenCache.clear();
+  inFlightMints.clear();
+}
+
 async function getInstallationToken(installationIdOverride) {
   const appId = process.env.GITHUB_APP_ID;
   const installationId = installationIdOverride || process.env.GITHUB_APP_INSTALLATION_ID;
+  const key = `${appId}:${installationId}`;
+  const cached = tokenCache.get(key);
+  if (cached && cached.expiresAtMs - REFRESH_MARGIN_MS > Date.now()) return cached.token;
+  if (inFlightMints.has(key)) return inFlightMints.get(key);
+  const mint = mintInstallationToken(appId, installationId)
+    .then(({ token, expiresAt }) => {
+      const expiresAtMs = Date.parse(expiresAt || '');
+      // A response without a readable expiry is used once and not cached.
+      if (Number.isFinite(expiresAtMs)) tokenCache.set(key, { token, expiresAtMs });
+      else tokenCache.delete(key);
+      return token;
+    })
+    .finally(() => inFlightMints.delete(key));
+  inFlightMints.set(key, mint);
+  return mint;
+}
+
+async function mintInstallationToken(appId, installationId) {
   const rawKey = process.env.GITHUB_APP_PRIVATE_KEY;
 
   const privateKey = normalizePrivateKey(rawKey);
@@ -66,7 +98,7 @@ async function getInstallationToken(installationIdOverride) {
         }
       );
 
-      return response.data.token;
+      return { token: response.data.token, expiresAt: response.data.expires_at };
     } catch (err) {
       const status = err.response?.status;
       const retryable = !status || [429, 500, 502, 503, 504].includes(status);
@@ -113,6 +145,7 @@ async function getAppBotLogin() {
 
 module.exports = {
   getInstallationToken,
+  clearInstallationTokenCache,
   getAppBotLogin,
   isConfigured,
   healthCheck,

@@ -1,3 +1,6 @@
+// Render-contract tests with the API surface mocked. They prove what a user sees and which
+// request the component sends, not a live repair lifecycle. The browser-backed workflow is
+// covered by frontend/tests/remediation-browser/remediation.spec.js.
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
 import RemediationPanel, { RepairSession, coverageSentence } from '../RemediationPanel'

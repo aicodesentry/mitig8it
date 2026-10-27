@@ -225,6 +225,12 @@ def test_every_third_party_action_is_pinned_by_digest(workflow):
             uses = step.get("uses")
             if not uses:
                 continue
+            if uses.startswith("./"):
+                # Local composites are part of the exact checked-out source SHA,
+                # not third-party dependencies with a separate ref to pin.
+                assert "@" not in uses and ".." not in Path(uses).parts
+                assert (REPO_ROOT / uses / "action.yml").is_file()
+                continue
             name, _, ref = uses.partition("@")
             assert len(ref) == 40 and all(c in "0123456789abcdef" for c in ref), (
                 f"{uses} is not pinned to a full commit sha"

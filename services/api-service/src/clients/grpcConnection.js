@@ -81,6 +81,10 @@ const retryPolicy = {
 
 const inFlightFetches = new Map();
 
+// Question: should fetching this Cloud Run identity token be attempted again before
+// the application RPC starts? fetchMetadataIdentityToken is the only caller. A false
+// negative loses a recoverable internal call; a false positive only repeats a metadata
+// read, but delays the caller until the bounded attempt budget is spent.
 function isRetryableMetadataError(error) {
   if (!error) return false;
   if (Number.isInteger(error.statusCode)) {

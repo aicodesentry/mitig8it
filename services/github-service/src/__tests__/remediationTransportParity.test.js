@@ -231,6 +231,7 @@ const cases = [
           extra_hunks: [{ start_line: 1, end_line: 1, original_lines: ['const a = 1;'], replacement_lines: ['const a = 1;', "const { execFile } = require('child_process');"] }],
           unified_diff: '@@ -12 +12,2 @@\n-old\n+new\n+more', not_suggestable_reason: '', stated_intent: 'Same result.',
           evidence: ['test failed on original, passed on fix'], limitations: ['no build'], skipped_reason: '', verification_level: 'independent_sandbox',
+          repair_model: 'test-reviewed-model', repair_service_image: 'registry/remediation@sha256:' + 'e'.repeat(64), sandbox_image_digest: 'registry/runner@sha256:' + 'd'.repeat(64),
           finding_body: '**HIGH** — SQL injection\n\n> raw query', finding_ids: ['f-1', 'f-3'], covered_by: '',
           proof: 'regression test t.js asserts that the SQL injection is no longer reproducible; it failed on the original code and passed on the fix.',
         },
@@ -238,12 +239,14 @@ const cases = [
           candidate_id: '', finding_fingerprint: 'fp-2', path: 'src/app.js', finding_line: 30, hunk: null, extra_hunks: [],
           unified_diff: '', not_suggestable_reason: '', stated_intent: '', evidence: [], limitations: [],
           skipped_reason: 'outside the enabled repair families', verification_level: '',
+          repair_model: '', repair_service_image: '', sandbox_image_digest: '',
           finding_body: '', finding_ids: [], covered_by: '', proof: '',
         },
         {
           candidate_id: 'candidate-0001', finding_fingerprint: 'fp-3', path: 'src/app.js', finding_line: 12, hunk: null, extra_hunks: [],
           unified_diff: '', not_suggestable_reason: '', stated_intent: '', evidence: [], limitations: [],
           skipped_reason: '', verification_level: '', finding_body: '', finding_ids: ['f-1', 'f-3'], covered_by: 'js/path-traversal', proof: '',
+          repair_model: '', repair_service_image: '', sandbox_image_digest: '',
         },
       ],
     },
@@ -261,6 +264,7 @@ const cases = [
       first.setExtraHunksList([extra]);
       first.setUnifiedDiff('@@ -12 +12,2 @@\n-old\n+new\n+more'); first.setStatedIntent('Same result.');
       first.setEvidenceList(['test failed on original, passed on fix']); first.setLimitationsList(['no build']); first.setVerificationLevel('independent_sandbox');
+      first.setRepairModel('test-reviewed-model'); first.setRepairServiceImage('registry/remediation@sha256:' + 'e'.repeat(64)); first.setSandboxImageDigest('registry/runner@sha256:' + 'd'.repeat(64));
       first.setFindingBody('**HIGH** — SQL injection\n\n> raw query'); first.setFindingIdsList(['f-1', 'f-3']);
       first.setProof('regression test t.js asserts that the SQL injection is no longer reproducible; it failed on the original code and passed on the fix.');
       const second = new githubPb.FindingFixSection();

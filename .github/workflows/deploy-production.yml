@@ -43,8 +43,25 @@ jobs:
             exit 1
           fi
 
-  api-service:
+  preflight:
     needs: verify-ci
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+      - name: Read-only topology and signed identity preflight before API or cloud mutation
+        uses: ./.github/actions/quality-readiness
+        with:
+          environment: production
+          component: all
+          deployment-driver: cloud_run_job
+
+  api-service:
+    needs: preflight
     uses: ./.github/workflows/deploy-api-cloudrun.yml
     with:
       environment: production

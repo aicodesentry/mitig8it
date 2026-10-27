@@ -1,3 +1,6 @@
+// Mocked HTTP contract tests: database, worker, and GitHub effects are fakes. These tests
+// prove request validation and response shaping. Durable lifecycle, transaction, and RLS
+// behaviour run against PostgreSQL in tests/integration/remediation.integration.js.
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
 

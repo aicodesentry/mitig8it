@@ -96,6 +96,7 @@ Assertions (each raises `HarnessAssertion` with the message on failure):
 - `h.assert_true(condition, message)`, `h.assert_equal(actual, expected, message)`
 - `h.assert_includes(text, needle, message)`, `h.assert_not_includes(text, needle, message)`
 - `h.assert_param(query, payload, message)`: the recorded query's `sql` does not contain the payload and its `params` (tuple, list, or dict, flattened) does.
+- `h.assert_argv_embedded(call, payload, message)`: the recorded call has no shell, `args[0]` is not a shell (`sh`, `bash`, `cmd`, `powershell` and the like), and the payload is intact inside one later element. The service proof uses it instead of `assert_argv` when the original command joins the untrusted value to literal text in one argument (`"tar czf /srv/" + name + ".tgz"`), which the argv repair keeps as one element (`f"/srv/{name}.tgz"`).
 - `h.assert_argv(call, payload, message)`: the recorded process call has no shell (`shell` false and `args` a list) and the payload is its own `args` element.
 - `h.assert_inside(reads, base, payload=None, message=None)`: `reads` is an `h.fs.reads` entry, a path, or the whole `h.fs.reads` list; every resolved path stays strictly under `base`. With `payload`, an input that escapes the base (a `..` segment or an absolute path, as sent or once percent-decoded) additionally requires that no read was recorded at all, so the view must have rejected it before touching the filesystem.
 - `h.assert_env_read(name, message)`: the module read environment variable `name`.

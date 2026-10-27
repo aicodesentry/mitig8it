@@ -608,13 +608,23 @@ def js_value_origin(lines: list[str], function: JsFunction, line: int, name: str
 JS_EVAL_ARGUMENT_RE = re.compile(r"(?<![\w$.])eval\s*\(\s*(?P<arg>[A-Za-z_$][\w$]*)\s*\)")
 
 
-def js_eval_site(source: str, line: int) -> tuple[JsFunction, str, tuple[str, ...]]:
-    """`(function, untrusted parameter, member path)` for an `eval` of one identifier at `line`.
+def js_eval_site(source: str, line: int) -> tuple[JsFunction | JsRoute, str, tuple[str, ...]]:
+    """`(function or route, untrusted parameter, member path)` for an `eval` of one identifier.
 
     The proof and the template both go through here, so both accept and refuse the same shapes
-    for the same recorded reason.
+    for the same recorded reason. A named function comes first; an `eval` in an Express route's
+    anonymous callback (`router.get('/rule', (req, res) => { ... eval(formula) ... })`) is the
+    route, and its member path then starts at the request (`req`, `('query', 'formula')`).
     """
-    function = js_function_for_line(source, line)
+    try:
+        function: JsFunction | JsRoute = js_function_for_line(source, line)
+    except SiteError as exc:
+        if exc.code != "enclosing_function_not_found":
+            raise
+        try:
+            function = js_route_for_line(source, line)
+        except SiteError:
+            raise exc from None
     lines = source.splitlines()
     found = JS_EVAL_ARGUMENT_RE.search(lines[line - 1])
     if not found:

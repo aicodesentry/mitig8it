@@ -1,4 +1,4 @@
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import {
   ArrowRight,
   Braces,
@@ -78,12 +78,22 @@ const sectionHeading = 'text-2xl font-semibold tracking-tight text-white sm:text
 
 const HomePage = () => {
   const { loginWithGitHub, user } = useAuth()
+  const [searchParams] = useSearchParams()
+  const signInError = searchParams.get('error')
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
       <Header />
 
       <main>
+        {signInError && (
+          <div className="mx-auto max-w-6xl px-4 pt-6 sm:px-6 lg:px-8">
+            <div role="alert" className="rounded-lg border border-red-900 bg-red-950/60 px-4 py-3 text-sm text-red-200">
+              Sign-in failed. GitHub returned: {signInError}. Try signing in again.
+            </div>
+          </div>
+        )}
+
         {/* Hero */}
         <section className="relative overflow-hidden">
           <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-[radial-gradient(ellipse_60%_100%_at_50%_0%,rgba(16,185,129,0.10),transparent_70%)]" />

@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 
 from benchmarks.quality_gate import precision_gate
+from benchmarks.analysis_attestation import TRUST_STORE, read_json, verify_attestation
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +28,8 @@ finally:
     sys.path.remove(str(SOURCE))
 
 
-def evaluate_evidence(evidence: Any, rule_digest: str) -> dict[str, Any]:
+def evaluate_precision_evidence(evidence: Any, rule_digest: str) -> dict[str, Any]:
+    """Structural/statistical diagnostic only; cannot authorize publication."""
     if not isinstance(evidence, dict) or evidence.get("rule_digest") != rule_digest:
         raise ValueError("evidence_missing_or_for_different_rule_revision")
     for field in ("corpus", "sampling_plan"):
@@ -62,6 +64,16 @@ def evaluate_evidence(evidence: Any, rule_digest: str) -> dict[str, Any]:
     return precision_gate(successes, successes + failures, unresolved=unresolved)
 
 
+def evaluate_evidence(evidence: Any, rule_digest: str, *, rule_id: str | None = None,
+                      trust_store_path: Path | None = None) -> dict[str, Any]:
+    statistics = evaluate_precision_evidence(evidence, rule_digest)
+    # Neither caller-supplied true flags nor a reviewer string establish trust.
+    # Authenticate the entire candidate against the local purpose-specific store.
+    authentication = verify_attestation(evidence, rule_id or evidence.get("rule_id"), rule_digest,
+                                        trust_store_path=trust_store_path or TRUST_STORE)
+    return {**statistics, "authentication": authentication}
+
+
 def evaluate_rules(rules: dict, legacy: dict, evidence: dict) -> dict[str, Any]:
     if not isinstance(legacy, dict) or legacy.get("schema_version") != "v1" or not isinstance(legacy.get("rules"), dict):
         raise ValueError("invalid_legacy_inventory")
@@ -83,7 +95,7 @@ def evaluate_rules(rules: dict, legacy: dict, evidence: dict) -> dict[str, Any]:
             results[rule_id] = {"status": "legacy_unvalidated", "passed": True}
         else:
             try:
-                result = evaluate_evidence(evidence["rules"].get(rule_id), rule["rule_digest"])
+                result = evaluate_evidence(evidence["rules"].get(rule_id), rule["rule_digest"], rule_id=rule_id)
                 results[rule_id] = {"status": "validated" if result["passed"] else "blocked", **result}
             except ValueError as error:
                 results[rule_id] = {"status": "blocked", "passed": False, "reasons": [str(error)]}
@@ -104,8 +116,7 @@ def runtime_policy(rules: dict, report: dict) -> dict:
 
 def run_gate(*, check_runtime_policy: bool = True) -> dict:
     rules = load_rules()
-    report = evaluate_rules(rules, json.loads((POLICY / "legacy-posting.json").read_text()),
-                            json.loads((POLICY / "evidence.json").read_text()))
+    report = evaluate_rules(rules, read_json(POLICY / "legacy-posting.json"), read_json(POLICY / "evidence.json"))
     if check_runtime_policy:
         try:
             matches = json.loads(RUNTIME_POLICY.read_text()) == runtime_policy(rules, report)

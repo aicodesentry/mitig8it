@@ -5,12 +5,21 @@ WORKDIR /app
 # Install system dependencies for OpenGrep
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-COPY src/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Keep Semgrep's dependency graph out of the network-facing application interpreter. Only its
+# executable is exposed; the runner invokes it as an offline subprocess.
+COPY src/requirements.txt src/requirements-scanner.txt ./
+RUN python -m venv /opt/mitig8it/scanner \
+    && /opt/mitig8it/scanner/bin/pip install --no-cache-dir -r requirements-scanner.txt \
+    && ln -s /opt/mitig8it/scanner/bin/semgrep /usr/local/bin/semgrep \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
 COPY . .
+
+RUN semgrep --version \
+    && test "$(command -v python)" != /opt/mitig8it/scanner/bin/python \
+    && test "$(readlink -f "$(command -v semgrep)")" = /opt/mitig8it/scanner/bin/semgrep \
+    && python -c "import importlib.util; assert importlib.util.find_spec('semgrep') is None"
 
 # Expose default local port
 EXPOSE 8001

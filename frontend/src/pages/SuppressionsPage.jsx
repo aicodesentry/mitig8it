@@ -3,26 +3,41 @@ import { suppressionAPI } from '../services/api'
 
 export default function SuppressionsPage() {
   const [suppressions, setSuppressions] = useState([])
+  const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState('')
 
   const load = async () => {
-    const data = await suppressionAPI.list()
-    setSuppressions(data.suppressions || [])
+    try {
+      const data = await suppressionAPI.list()
+      setSuppressions(data.suppressions || [])
+      setLoaded(true)
+    } catch (_failure) {
+      setError('Could not load suppressions. Refresh to try again.')
+    }
   }
 
   useEffect(() => {
-    load().catch((err) => console.error(err))
+    load()
   }, [])
 
   const remove = async (id) => {
-    await suppressionAPI.remove(id)
+    setError('')
+    try {
+      await suppressionAPI.remove(id)
+    } catch (_failure) {
+      setError('Could not remove this suppression. Refresh and check your access before retrying.')
+      return
+    }
     await load()
   }
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold text-neutral-900">Suppressions</h1>
+      {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+      {!loaded && !error && <p role="status" className="text-sm text-neutral-600">Loading suppressions...</p>}
       <div className="space-y-3">
-        {suppressions.length === 0 && (
+        {loaded && !error && suppressions.length === 0 && (
           <div className="rounded-xl border border-neutral-200 bg-white p-5 text-sm text-neutral-500">No suppressions configured.</div>
         )}
         {suppressions.map((suppression) => (

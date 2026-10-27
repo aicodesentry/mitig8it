@@ -165,15 +165,53 @@ def test_the_payload_is_accepted_by_the_analysis_service_model(api):
     assert reports.reviewable_line_spans == [{"start": 3, "end": 4}]
 
 
-def test_an_unreadable_file_fails_the_run_closed(api, event, monkeypatch):
-    """A file skipped for size must not become a clean review."""
+def test_an_oversized_file_is_absent_and_says_why(api):
+    """A file skipped for size must not become a clean review, nor end the run.
+
+    Between the 500 kB cap and GitHub's 1 MB contents limit the file used to be dropped here and
+    the run then failed outright, so a pull request touching one generated file got no review.
+    """
     api.reroute(
         r"/repos/acme/widgets/contents/src/reports\.py",
         fake_github.contents_payload("x" * (pr_scope.MAX_FILE_CONTENT_BYTES + 1)),
     )
     reader = reader_for(api)
-    contents = reader.file_contents(["src/reports.py"], HEAD_SHA)
+    contents, limitations = reader.file_contents_with_limitations(["src/reports.py"], HEAD_SHA)
     assert contents == {}, "an oversized file is absent rather than truncated"
+    assert reader.file_contents(["src/reports.py"], HEAD_SHA) == {}
+    assert len(limitations) == 1
+    assert limitations[0]["kind"] == "not_analyzed"
+    assert limitations[0]["reason"] == "size"
+    assert limitations[0]["path"] == "src/reports.py"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # Over 1 MB the contents API answers with no content and says so.
+        {"type": "file", "encoding": "none", "content": "", "size": 2_400_000},
+        # The same answer from an API that leaves the encoding out.
+        {"type": "file", "content": "", "size": 2_400_000},
+    ],
+)
+def test_a_file_github_will_not_inline_is_missing_not_empty(api, payload):
+    """A 2 MB file used to be read as an empty file and reviewed as one, silently."""
+    api.reroute(r"/repos/acme/widgets/contents/src/reports\.py", payload)
+    reader = reader_for(api)
+    contents, limitations = reader.file_contents_with_limitations(["src/reports.py"], HEAD_SHA)
+    assert "src/reports.py" not in contents
+    assert [(item["path"], item["reason"]) for item in limitations] == [("src/reports.py", "size")]
+    assert "2400000 bytes" in limitations[0]["message"]
+
+
+def test_an_empty_file_is_still_an_empty_file(api):
+    api.reroute(
+        r"/repos/acme/widgets/contents/src/reports\.py",
+        {"type": "file", "encoding": "base64", "content": "", "size": 0},
+    )
+    contents, limitations = reader_for(api).file_contents_with_limitations(["src/reports.py"], HEAD_SHA)
+    assert contents == {"src/reports.py": ""}
+    assert limitations == []
 
 
 # --- the permission refusal ---------------------------------------------------------------
@@ -305,7 +343,8 @@ def test_a_finding_outside_the_diff_is_reported_rather_than_dropped():
             "line": 99,
             "severity": "high",
             "rule": "sql.injection.raw_query",
-            "reason": "line_outside_diff",
+            # The patch is known and line 99 is not one it added: code the author did not write.
+            "reason": "pre_existing",
         }
     ]
 
@@ -719,3 +758,57 @@ def test_too_many_files_is_reviewed_to_the_cap_and_says_so():
 def test_a_pull_request_within_the_cap_reports_no_limitation():
     files = [{"filename": "src/a.py", "status": "modified", "patch": "+x"}]
     assert pr_scope.changed_file_limitation(files) is None
+
+
+# --- patch parsing ---------------------------------------------------------------------------
+
+def test_a_no_newline_marker_does_not_advance_the_new_file_line():
+    """`\\ No newline at end of file` is a marker, not a line in either file.
+
+    Counting it as context put `+c` on line 4 of a three-line file. An inline comment there is
+    one GitHub rejects, and it rejected the whole review with it.
+    """
+    patch = (
+        "@@ -1,2 +1,3 @@\n"
+        " a\n"
+        "-b\n"
+        "\\ No newline at end of file\n"
+        "+b\n"
+        "+c\n"
+    )
+    assert sorted(pr_scope.reviewable_lines(patch)) == [2, 3]
+    assert pr_scope.extract_reviewable_line_spans(patch) == [{"start": 2, "end": 3}]
+
+
+# --- pre-existing findings -------------------------------------------------------------------
+
+def test_a_finding_off_the_added_lines_of_a_known_patch_is_pre_existing():
+    findings = [
+        {"fingerprint": "old", "file_path": "src/reports.py", "line_start": 1, "severity": "critical"},
+        {"fingerprint": "new", "file_path": "src/reports.py", "line_start": 4, "severity": "high"},
+    ]
+    patches = {"src/reports.py": PATCH}
+    plan = run.plan_comments(findings, patches)
+    assert [item["reason"] for item in plan["unanchored"]] == ["pre_existing"]
+    counted = run.counted_findings(findings, patches)
+    assert [item["fingerprint"] for item in counted] == ["new"]
+
+
+def test_a_finding_in_a_file_without_a_patch_is_still_counted():
+    """GitHub omits the patch of a very large diff. Without it the action cannot tell what was
+    added, so it counts the finding rather than let a new file slip past fail-on."""
+    findings = [{"fingerprint": "x", "file_path": "gen/big.py", "line_start": 9000, "severity": "critical"}]
+    assert run.counted_findings(findings, {"gen/big.py": ""}) == findings
+    plan = run.plan_comments(findings, {"gen/big.py": ""})
+    assert plan["unanchored"][0]["reason"] == "line_outside_diff"
+
+
+def test_review_totals_separate_pre_existing_from_blocking():
+    counts = {"critical": 2, "high": 1, "medium": 0, "low": 0, "info": 0}
+    unanchored = [
+        {"path": "a.py", "line": 1, "severity": "critical", "rule": "r", "reason": "pre_existing"},
+    ]
+    totals = run.review_totals(counts, [{}, {}], unanchored)
+    assert totals["runtime"] == 3
+    assert totals["preexisting"] == 1
+    assert totals["blocking"] == 2

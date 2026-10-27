@@ -99,11 +99,13 @@ async function getById(findingId, userId) {
 async function updateStatus(findingId, userId, { status, dismissalReason }) {
   return transaction(async (client) => {
     const finding = await client.query(
-      `SELECT f.id, f.repository_id, u.github_username AS actor_login
+      `SELECT f.id, f.repository_id, u.github_username AS actor_login,
+              r.full_name AS repository_full_name, pr.pr_number
        FROM findings f
        JOIN repositories r ON r.id = f.repository_id
        JOIN repository_access ra ON ra.repository_id = r.id
        LEFT JOIN users u ON u.id = ra.user_id
+       LEFT JOIN pull_requests pr ON pr.id = f.pull_request_id
        WHERE f.id = $1 AND ra.user_id = $2`,
       [findingId, userId]
     );
@@ -138,7 +140,14 @@ async function updateStatus(findingId, userId, { status, dismissalReason }) {
       });
     }
 
-    return updated;
+    // Return the same joined shape as getById so a client can replace its copy of the
+    // finding with this one without losing the repository name and PR number.
+    if (!updated) return updated;
+    return {
+      ...updated,
+      repository_full_name: finding.rows[0].repository_full_name,
+      pr_number: finding.rows[0].pr_number ?? null,
+    };
   });
 }
 
@@ -231,6 +240,21 @@ async function dismiss(findingId, reason) {
     `UPDATE findings SET status = 'dismissed', suppression_applied = TRUE, dismissal_reason = $1, updated_at = NOW() WHERE id = $2`,
     [reason, findingId]
   );
+}
+
+async function dismissMany(findings) {
+  const rows = (findings || []).map(({ id, reason }) => ({ id, reason: reason || null }));
+  if (!rows.length) return [];
+  const result = await pool.query(
+    `UPDATE findings f
+        SET status = 'dismissed', suppression_applied = TRUE,
+            dismissal_reason = suppressed.reason, updated_at = NOW()
+       FROM jsonb_to_recordset($1::jsonb) AS suppressed(id uuid, reason text)
+      WHERE f.id = suppressed.id
+      RETURNING f.id`,
+    [JSON.stringify(rows)]
+  );
+  return result.rows;
 }
 
 // A finding the fresh analysis no longer reports is fixed. The status change and the
@@ -384,7 +408,7 @@ module.exports = {
   getPullRequestForUser,
   restoreExpiredSuppressions, snapshotRun,
   listByPullRequest, listAll, getById, updateStatus, listByAnalysisRun,
-  findByFingerprint, upsert, dismiss, markFixed, mergeEvidenceDetails, getActiveSuppressions,
+  findByFingerprint, upsert, dismiss, dismissMany, markFixed, mergeEvidenceDetails, getActiveSuppressions,
   listByIds, listByPullRequestPaths, findByPullRequestFingerprint,
   rememberInlineComment, findByInlineCommentId,
 };

@@ -1,6 +1,6 @@
 # Known engineering debt
 
-Items an engineering review raised that were deliberately not fixed. Eight items from the same review were fixed in [PR 421](https://github.com/aicodesentry/mitig8it/pull/421): the blocking analysis handlers moved off the event loop, the repair lease stays alive while candidates combine, GitHub writes are sent once and only reads retry, the policy timeout became the one verification deadline, the auth-bypass rule's exclusion was anchored, OpenGrep scan paths were contained, the analysis internal secret is compared in constant time, and webhook unregister requires it. Nothing on this page is fixed.
+Items an engineering review raised that remain deliberately open. Eight items from the same review were fixed in [PR 421](https://github.com/aicodesentry/mitig8it/pull/421): the blocking analysis handlers moved off the event loop, the repair lease stays alive while candidates combine, GitHub writes are sent once and only reads retry, the policy timeout became the one verification deadline, the auth-bypass rule's exclusion was anchored, OpenGrep scan paths were contained, the analysis internal secret is compared in constant time, and webhook unregister requires it. Completed follow-up items are removed from this register rather than left looking current.
 
 Each entry states what the issue is, where it is, and why it was left. None of these is a correctness defect under the loads this system has seen; they are cost, clarity, and drift risks that were not worth taking alongside the hot-path fixes.
 
@@ -14,27 +14,27 @@ Each entry states what the issue is, where it is, and why it was left. None of t
 
 ## N+1 persistence
 
-**What.** Findings are persisted one at a time. `persistAndFilter` loops over findings calling `upsertFinding`, and each call issues a select then an update or insert, so a 200-finding pull request is more than 200 sequential round trips. The same shape appears when applying suppressions, one `UPDATE findings` per suppressed row, and when persisting remediation evidence, one insert per record.
+**What.** Findings are persisted one at a time. `persistAndFilter` loops over findings calling `upsertFinding`, and each call issues a select then an update or insert, so a 200-finding pull request is more than 200 sequential round trips. The same shape remains when persisting remediation evidence, one insert per record. Suppression updates no longer share this debt: they are sent as one `UPDATE ... FROM jsonb_to_recordset` batch.
 
-**Where.** `services/api-service/src/services/prAnalysisOrchestrator.js` (`persistAndFilter`, `applySuppressions`), `services/api-service/src/db/findings.js` (`upsert`), `services/api-service/src/db/remediation.js` (`persistEvidence`).
+**Where.** `services/api-service/src/services/prAnalysisOrchestrator.js` (`persistAndFilter`), `services/api-service/src/db/findings.js` (`upsert`), and `services/api-service/src/db/remediation.js` (`persistEvidence`).
 
-**Why deferred.** Finding counts per pull request are small in practice and each round trip is on a pooled local connection. The batched form already exists in the same file, `snapshotRun` inserts a whole run with one `jsonb_array_elements` statement, so the pattern is understood and the change is mechanical when finding volume justifies it. It touches the dedup and fingerprint path, which is the part of the system with the most behavioural tests.
+**Why deferred.** Finding counts per pull request are small in practice and each round trip is on a pooled local connection. The suppression path demonstrated the batched form without touching identity semantics. Batching `persistAndFilter` still changes the dedup and fingerprint path, which is the part of the system with the most behavioural tests; evidence persistence has a separate transactional ordering constraint.
 
-## Shared failure classifier
+## Failure classifiers remain separate
 
-**What.** Four independent mappings from an error to "retryable" or "fail closed", with no shared module. Two of them are in the same file and disagree: `ECONNREFUSED`, `ETIMEDOUT`, `EAI_AGAIN`, `ENOTFOUND`, and any 5xx are transient to one and not to the other.
+**What.** Five mappings still classify failures independently. This is intentional: they decide whether to retry one GitHub read, reconcile one ambiguous GitHub write, retry one metadata-token fetch, return one remediation job to its durable queue, or restart an entire analysis run. Their accepted failure sets differ because the cost of a false positive differs.
 
-**Where.** `services/api-service/src/services/prAnalysisOrchestrator.js` (`isTransientServiceError`, `isTransientInfrastructureError`), `services/api-service/src/services/remediationWorkflow.js` (an inline chain deciding `queued` against `inconclusive`), `services/api-service/src/clients/grpcConnection.js` (`isRetryableMetadataError`). The GitHub adapter has its own split in `services/github-service/src/services/githubInternalOperations.js`.
+**Where.** `services/api-service/src/services/prAnalysisOrchestrator.js` (`isTransientServiceError`, `isTransientInfrastructureError`), `services/api-service/src/services/remediationWorkflow.js` (`isTransientRepairFailure`), `services/api-service/src/clients/grpcConnection.js` (`isRetryableMetadataError`), and the read/write split in `services/github-service/src/services/githubInternalOperations.js`.
 
-**Why deferred.** The two that disagree are answering different questions. One decides whether to retry a call, the other whether a required tier may be treated as absent, and fail-closed analysis deliberately treats fewer things as transient than a retry loop does. Unifying them means first writing down which question each caller is asking, which is a design task rather than a refactor. The divergence is currently documented only here.
+**Why deferred.** Each function now documents its caller, the question it answers, and the consequence of a wrong answer in either direction. A shared module would hide those different semantics behind one name. The remaining debt is duplication: adding a new transport status still requires checking five explicitly different policies.
 
 ## Contracts package
 
-**What.** The repair request and policy shape is declared twice: as Pydantic models in the repair service and again as `DEFAULT_POLICY` plus a hand-built wire payload in the control plane. The only thing keeping them aligned is a test that reaches across the service boundary with a relative path to the exported JSON Schema.
+**What.** The repair request and policy shape is declared twice: as Pydantic models in the repair service and again as `DEFAULT_POLICY` plus a hand-built wire payload in the control plane. Tests reach across the service boundary to the exported JSON Schema and now assert both schema validity and that every shared control-plane limit is no looser than the repair service's limit.
 
 **Where.** `services/remediation-service/src/models.py` and `contracts/repair-request.schema.json` on the Python side; `services/api-service/src/services/remediationPolicy.js` and `src/services/remediationWorkflow.js` on the Node side; `services/api-service/tests/repairRequestContract.test.js` is the sync mechanism.
 
-**Why deferred.** Drift is already real, and it is bounded drift rather than breakage. The two copies disagree on `max_snapshot_files` (120 in `DEFAULT_POLICY`, 500 in `RepairPolicy`), `max_file_bytes` (500000 against 512000), `max_snapshot_bytes` (500000 against 10000000), and `max_output_chars` (64000 against 2000000), and `max_context_tokens` sits on the Node policy but on the Python `RepairLimits` rather than on `RepairPolicy`. In every case the control plane's value is the tighter one, so the request it sends is always inside what the service accepts and the schema test passes. A shared package means a published artifact and a release process for two languages, which is not worth it while one repository holds both. The risk is that the next divergence goes the other way, and nothing would catch it except that test.
+**Why deferred.** Drift is already real, and it is bounded drift rather than breakage. The two copies disagree on `max_snapshot_files` (120 in `DEFAULT_POLICY`, 500 in `RepairPolicy`), `max_file_bytes` (500000 against 512000), `max_snapshot_bytes` (500000 against 10000000), and `max_output_chars` (64000 against 2000000), and `max_context_tokens` sits on the Node policy but on the Python `RepairLimits` rather than on `RepairPolicy`. In every case the control plane's value is the tighter one. A shared package means a published artifact and a release process for two languages, which is not worth it while one repository holds both; the directional contract test now catches unsafe drift.
 
 ## Module splits
 
@@ -51,22 +51,6 @@ Each entry states what the issue is, where it is, and why it was left. None of t
 **Where.** `services/api-service/migrations/0013_remediation_control_plane.sql` (the ten tenant-scoped tables), `0014_remediation_control_plane_hardening.sql` (writer leases), `0022_remediation_job_evidence.sql`, and `services/remediation-service/migrations/0001_remediation_executions.sql`.
 
 **Why deferred.** Silently matching nothing is the safe direction for a security predicate, and the row counts are small enough that the lost index has not shown up. Changing it means rewriting policies across four migrations, which must be a new migration rather than an edit, and it changes the failure mode from "returns nothing" to "raises", which needs a deliberate decision about what a malformed tenant setting should do.
-
-## Frontend memoization
-
-**What.** `RemediationPanel` recomputes a full O(n times m) longest-common-subsequence diff for every changed file on every render, with no `useMemo`. The component re-renders on each poll tick and on each `setFeedback`, `setNotice`, or `setBusy` call. The same render body also rebuilds several filters, a `Map`, and the file grouping each time.
-
-**Where.** `frontend/src/components/RemediationPanel.jsx`, the `.map` over changes and the filter and grouping block above it; the diff itself is `longestCommonRows` in `frontend/src/lib/lineDiff.js`.
-
-**Why deferred.** Diffs are small, the panel is one route, and no slowness has been reported. It is worth noting that the rest of the frontend does this correctly, so this is an inconsistency rather than a house style: `DashboardPage`, `PullRequestFindingsPage`, `RepositoriesPage`, and `OnboardingContext` all memoize equivalent work, and `RemediationPanel` imports `useCallback` but never `useMemo`.
-
-## Test honesty
-
-**What.** Part of the unit layer asserts against mocks rather than behaviour. The clearest case mocks the database module entirely and dispatches on SQL substrings, so tests named for session leases and skip-locked claims assert only that a string containing `pg_try_advisory_lock` was passed to a fake client. They pass whether or not the lock is session-scoped, whether the lock key is right, and whether `SKIP LOCKED` does anything. The frontend remediation panel tests mock the whole API surface.
-
-**Where.** `services/api-service/tests/analysisRunsQueue.test.js` is the clearest example. Mock-assertion density is also high in `tests/remediation.test.js` and `tests/analysisTransientRetry.test.js`. `frontend/src/components/__tests__/RemediationPanel.test.jsx` mocks `services/api`.
-
-**Why deferred.** Real-Postgres integration suites cover the same paths (`services/api-service/tests/integration/access.integration.js` and `remediation.integration.js`), so this is duplicated confidence rather than a coverage hole, and the mock layer is what keeps CI fast without a database for most jobs. The honest statement of what is not covered already exists in `HARDENING-TRACKER.md` ("Remote writes simulated", "Real process crash not injected", "live GitHub/Firebase OAuth not exercised") and `HARDENING-HANDOFF.md`. What is missing is the same honesty at the point of the test, so a reader of `analysisRunsQueue.test.js` knows its assertions are structural.
 
 ## Quadratic work
 
@@ -106,33 +90,46 @@ Each entry states what the issue is, where it is, and why it was left. None of t
 
 **Related gap, now closed.** Tier 1 used to read prose files (changelogs, READMEs, licence text) as code, and `auth.bypass.missing_check` fired on the express changelog line `app.get('/user/:id').remove();`. Prose-path scoping landed with the real-repository replay work, and the rule was separately re-anchored, so the case in `benchmarks/tier1-precision/cases.json` is now a suppressed false positive (`suppressed_by: prose_path_scope`) rather than a recorded gap.
 
-## Detection gaps the vulnerable corpus measured
+## Detection gaps measured on 2026-10-25
 
-The September 2026 vulnerable-corpus run (`docs/validation/vulnerable-corpus-2026-09.md`)
-put 171 labelled vulnerabilities in 23 repositories through both tiers. These are the gaps
-it found and did not close, with the reason each was left.
+The current vulnerable-corpus run
+([full score](../validation/vulnerable-corpus-2026-10-25.md)) put the same 171 labelled
+vulnerabilities in 23 pinned repositories through both tiers. It found 105 on the labelled
+line (0.61 recall), including 90 by rules that post. Another 12 had the expected class elsewhere
+in the file and 7 had a different class on the labelled line. The report records the command,
+commit, class tables, missed labels, and the manual XSS/command-injection adjudication.
 
-**Cross-site scripting: 1 of 32 labelled vulnerabilities found.** Two separate causes, and
-neither is a pattern that can be narrowed or widened.
+**Cross-site scripting: 26 of 32 on the labelled line (0.81).** Template scanning and the
+string-interpolation coverage are now live. Current hits come from
+`opengrep.cwe-79.js-angular-bypass-security-trust`,
+`opengrep.cwe-79.tpl-ejs-unescaped-output`,
+`opengrep.cwe-79.tpl-unescaping-filter`,
+`opengrep.cwe-79.js-html-string-interpolated`,
+`opengrep.cwe-79.tpl-inline-script-inner-html`,
+`opengrep.cwe-79.py-html-percent-format`,
+`opengrep.cwe-79.js-template-autoescape-disabled`, and `xss.unsafe_html_render`. The surviving
+gaps are context-dependent template sinks under a separately disabled global autoescape setting,
+a multiline `setup_jinja(autoescape=False)` call, HTML/script content built with concatenation
+rather than interpolation, and nested percent formatting. One of those files reports XSS away
+from the labelled line; broadening every interpolation/format operation would repeat the old
+precision failure.
 
-*Template files are not analysed at all.* `TIER2_SUPPORTED_EXTENSIONS` in
-`scripts/replay/prodfilters.py` and its production counterpart
-`shouldFetchFullFileContent` list no template language, so `.html`, `.ejs`, `.pug`, `.dust`
-and `.jinja2` files are never fetched or scanned. Eleven of the missed XSS labels are in
-those files, including every reflected and stored XSS in NodeGoat and dvna. Adding a
-template language is a scanner decision with its own precision question, not a rule edit.
+**Command injection: 6 of 11 on the labelled line (0.55), with one more in-file.** Current hits
+come from `opengrep.cwe-78.child-process-exec`, `cmd.injection.shell_true`,
+`opengrep.cwe-78.py-subprocess-shell-interpolated`, and
+`opengrep.cwe-78.js-exec-interpolated`. The three electerm misses build a command and hand the
+variable to `run`/`runWinCmd` in the next statement; the pygoat miss passes a previously built
+variable to multiline `Popen(..., shell=True)`. Reaching those without matching every
+`exec($VAR)` still needs bounded one-hop data flow.
 
-*HTML built by string interpolation has no rule.* The remaining misses are
-`` return `<img src="${src}" alt="${alt}">` `` in TypeScript and `'<br/>%s' % comic.text` in
-Python, which is what CVE-2026-61824, CVE-2026-68921 and GHSA-75mw-h36v-2jv7 all are. No
-rule in either tier looks for it. This is a new rule, not a narrowing.
-
-**Command injection through one variable.** `cwe-78.js-exec-interpolated` requires the
-template literal to be inside the `exec` call. Four labelled vulnerabilities
-(`sebhildebrandt/systeminformation` CVE-2026-50289 and all three `electerm/electerm`
-CVE-2026-49255 sites) build the command on one line and run it on the next. Matching
-`exec($VAR)` for any variable is how a rule reaches a precision of 0.02, so this needs one
-hop of data flow, which the AST pattern engine does not provide.
+**The remaining labelled gaps are distributed, not dominated by template coverage.** Path
+traversal is now 13/14 with the last label found elsewhere in its file. The largest open groups
+are hardcoded secrets (7/18 line hits, 4 more in-file), error-detail exposure (0/6), weak password
+hashing (3/11), cookie flags (2/7), open redirect (3/6), and XML external entities (1/4). Smaller
+zero-hit families are permissive CORS, prototype pollution, disabled security headers, and JWT
+verification/algorithm configuration. Several secret and weak-hash misses are also consequences
+of the one-finding-per-rule-per-file ceiling below; the others need new source/sink or framework
+configuration rules, each with corpus precision evidence before posting.
 
 **A tier 1 rule reports one finding per file.** `pattern_findings` in
 `services/analysis-service/src/main.py` emits at most one finding per rule per file, at the
@@ -141,6 +138,12 @@ reports the first one and the CVE is at the eighth. Nine of the 18 labels that w
 the file but not on the line are this. It keeps a file with fifty weak hashes from producing
 fifty comments, which is why it is there, and it caps recall on any file with more than one
 instance of the same defect.
+
+## Repair-proof gaps measured in September 2026
+
+The entries below come from the separate repair-pair runs linked in each entry. They describe
+proof generation and sandbox reach, not scanner recall, and were not remeasured by the 2026-10-25
+scanner replay above.
 
 **Repair templates still need a sink they can name.** The route requirement and the enclosing
 function requirement this entry used to describe are both gone: `sites.js_site_for_line` falls
@@ -209,16 +212,18 @@ TypeScript source but does not answer for the entry module, so a `.ts` subject l
 ES module loader raises `ERR_MODULE_NOT_FOUND` on itself; and an installed `@angular` puts files
 in the closure that Node's strip-only mode cannot parse.
 
-**Three rules the corpus could not decide.** `xss.unsafe_html_render` (16 findings, 2
-adjudicated, 0.50), `auth.bypass.missing_check` (8 findings, 1 adjudicated, 0.00) and
-`opengrep.cwe-798.hardcoded-secret-js` (5 findings, 2 adjudicated, 0.50) are all below the
-three adjudicated findings the posting policy requires before it will act. A larger hand-read
-sample than 40 of 1687 is the cheapest way to close this.
+## Precision-admission gaps measured on 2026-10-25
 
-**`opengrep.cwe-489.py-debug-constant-true` is one reading short of re-enabling.** It has two
-measured hits, both `DEBUG = True` in a real Django settings module, which is exactly the
-shape its quarantine reason doubted. The quarantine reason is now known to be wrong and the
-rule still cannot come back, because the policy asks for three.
+**Three rules the corpus still cannot decide.** `xss.unsafe_html_render` (16 findings, 2
+adjudicated, 0.50), `auth.bypass.missing_check` (8 findings, 1 adjudicated, 0.00) and
+`opengrep.cwe-798.hardcoded-secret-js` (6 findings, 2 adjudicated, 0.50) are all below the
+three adjudicated findings the posting policy requires before it will act. Reading one more
+representative finding from each rule is the cheapest way to close this.
+
+**`opengrep.cwe-489.py-debug-constant-true` remains short of re-enabling.** It has two current
+findings; one overlaps a labelled `DEBUG = True` vulnerability and one remains unread. The shape
+looks like the real Django settings case its quarantine reason doubted, but the rule still cannot
+come back because the policy asks for three adjudicated findings.
 
 **Pre-existing tier 2 rules pass their check id as `internal_type`.** The rules in
 `javascript.yml` and `python.yml` declare no `internal_type`, so `opengrep_runner` sets it to
@@ -230,15 +235,12 @@ class from the CWE.
 
 ## Provenance
 
-There is no issue tracker entry or written review document behind this list. It was reconstructed from the code, from PR 421, and from the residual-risk notes in `HARDENING-TRACKER.md` and `HARDENING-HANDOFF.md`. Every location above was confirmed in the source at the time of writing.
+This list was reconstructed from the code, from PR 421, from the residual-risk notes in `HARDENING-TRACKER.md` and `HARDENING-HANDOFF.md`, and from the linked validation runs. Completed tracked work is removed as it lands. Every remaining location above was confirmed in the source at the time of writing.
 
 ## From the database audit of 2026-09-22
 
 - Budget reservations are a flat 0.05 USD for the snapshotting stage only; settled jobs have cost up to 0.28 USD, so the budget gate cannot refuse an over-budget job. Reserve per stage from the policy estimate (`services/api-service/src/db/remediation.js`, `reserveUsage`; `remediationPolicy.js`, `stageEstimate`).
-- Two old jobs carry numeric gRPC status codes in `failure_reason.code` (3 and 9) from before the error mapper normalised codes; consumers that compare strings miss them. Normalise at the boundary and backfill the two rows.
 - One candidate row from 2026-09-20 has the legacy bare-array `file_manifest` shape; its job is still `ready`. Make the reader tolerant or supersede the job.
-- Sandbox check output tails are persisted in `remediation_job_evidence` without redaction; on a customer repository a harness assertion could echo repository values. Redact or hash values in tails before persisting (`services/api-service/src/services/remediationWorkflow.js`, `buildEvidenceRecords`).
-- Inline fix publication and feedback are not audited in `audit_logs`; apply and merge are. Emit audit rows on both.
 - `evidence_details` is empty on findings persisted before migration 0007; expected, but reports that read it should treat empty as unknown.
 - Autovacuum has not run on the small remediation tables; harmless at the current size, revisit when `remediation_jobs` grows.
 - Live runtime-role cutover still requires an operator: the API now refuses elevated database roles at production startup, and the deployment provisions/verifies a separate non-owning `NOBYPASSRLS` login. The old migration credential is no longer mounted into the API or GitHub gRPC service. Create the runtime credential secret and validate the deployed role before onboarding a second tenant; see [Runtime Database Role](../runbooks/runtime-database-role.md). This is locally tested enforcement, not evidence that the live cutover has happened.

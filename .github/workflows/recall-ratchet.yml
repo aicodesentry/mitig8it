@@ -22,8 +22,16 @@ on:
       - 'services/analysis-service/src/comment_stripper.py'
       - 'services/analysis-service/src/taxonomy.py'
       - 'services/analysis-service/src/test_code_scope.py'
+      - 'services/analysis-service/src/dependency_diff.py'
+      - 'services/analysis-service/src/llm_triage.py'
+      - 'services/analysis-service/src/static_assertion.py'
+      # What decides which rules may post: main.py drops findings from rules the publication
+      # policy has not admitted, and ratchet.py reports a label now hit only by such a rule.
+      - 'services/analysis-service/src/rule_publication.py'
+      - 'services/analysis-service/src/publication-policy.json'
       # The scanner version is pinned here, and a scanner upgrade can change what a pattern matches.
       - 'services/analysis-service/src/requirements.txt'
+      - 'services/analysis-service/src/requirements-scanner.txt'
       - 'scripts/replay/**'
       - 'benchmarks/vulnerable-corpus/**'
       - '.github/workflows/recall-ratchet.yml'
@@ -46,11 +54,15 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-          cache-dependency-path: services/analysis-service/src/requirements.txt
+          cache-dependency-path: |
+            services/analysis-service/src/requirements.txt
+            services/analysis-service/src/requirements-scanner.txt
       # The analysis service's own requirements pin the scanner, so installing them installs the
       # version the service runs and nothing here restates it. Unlike the remediation job, this
       # one has no second set of pins to keep the scanner apart from.
-      - run: pip install -r services/analysis-service/src/requirements.txt
+      - run: >-
+          pip install -r services/analysis-service/src/requirements.txt
+          -r services/analysis-service/src/requirements-scanner.txt
       # A guard rather than a courtesy. Without the scanner tier 2 fails in every batch and the
       # ratchet reports the run unusable; this says why before 23 trees are downloaded.
       - name: The scanner must be available here

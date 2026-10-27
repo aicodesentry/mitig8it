@@ -239,3 +239,106 @@ describe('limitation rendering', () => {
     expect(body).toContain('1 file partially analysed: cwe-vul.py (lexical error at line 127)');
   });
 });
+
+// A changed file over the adapter's content limit (500 KB) used to fail the whole run
+// closed: the adapter dropped it from the content response and the orchestrator read
+// the gap as an incomplete response. The diff of that file is still scanned by tier 1;
+// only its full content is not, and the run says so instead of reviewing nothing.
+describe('an oversized changed file', () => {
+  function mockOversized() {
+    const filePaths = Object.keys(FILES);
+    axios.post.mockImplementation(async (url, body) => {
+      if (url.includes('/pulls/files')) {
+        return { data: { files: filePaths.map((path) => ({ path, patch: FILES[path], additions: 1 })) } };
+      }
+      if (url.includes('/files/content')) {
+        // The adapter returns every requested path except the oversized one.
+        const wanted = (body?.paths || []).filter((path) => path !== 'services/cwe-vul.py' && FILES[path]);
+        return { data: { files: wanted.map((path) => ({ path, content: FILES[path].split('\n')[1].slice(1) })) } };
+      }
+      if (url.includes('/tier1')) return { data: { findings: [], analysis_limitations: [] } };
+      if (url.includes('/tier2')) return { data: { findings: [], analysis_limitations: [] } };
+      if (url.includes('/tier3')) return { data: { findings: [] } };
+      return { data: { review_id: 1, check_run_id: 1 } };
+    });
+  }
+
+  test('the run completes, the check says which file was not analysed, and tier 2 skips it', async () => {
+    mockOversized();
+    triggerAnalysisJob(payload);
+    await drain();
+
+    expect(runs.markFailed).not.toHaveBeenCalled();
+    const checkRuns = calls('/check-runs');
+    expect(checkRuns).toHaveLength(1);
+    expect(checkRuns[0][1].conclusion).toBe('success');
+    expect(checkRuns[0][1].summary).toContain('1 file not fully analysed: cwe-vul.py (file too large)');
+
+    // Tier 1 still scans the diff of every file; tier 2 never receives the empty content.
+    expect(calls('/tier1')[0][1].files.map((file) => file.path)).toContain('services/cwe-vul.py');
+    expect(calls('/tier2')[0][1].files.map((file) => file.path)).toEqual(['services/orders.js']);
+
+    expect(runs.markCompleted).toHaveBeenCalledWith('run-limitation-1', expect.objectContaining({
+      limitations: [expect.objectContaining({ path: 'services/cwe-vul.py', kind: 'not_analyzed', type: 'File too large' })],
+    }));
+  });
+});
+
+// The 200-file cap is a limit on what the run reviews. Files `.mitig8it.yml` excludes are
+// never reviewed, so they must not take places under it: a pull request with 300
+// vendored files sorting first and 50 real ones reviews the 50.
+describe('the file cap applies after repository exclusions', () => {
+  test('excluded files do not consume the cap', async () => {
+    const vendored = Array.from({ length: 300 }, (_, i) => `a-vendor/lib-${String(i).padStart(4, '0')}.js`);
+    const real = Array.from({ length: 50 }, (_, i) => `src/mod-${String(i).padStart(3, '0')}.js`);
+    axios.post.mockImplementation(async (url, body) => {
+      if (url.includes('/pulls/files')) {
+        return { data: { files: [...vendored, ...real].map((path) => ({ path, patch: '@@ -0,0 +1 @@\n+x = 1', additions: 1 })) } };
+      }
+      if (url.includes('/files/content')) {
+        if ((body?.paths || []).includes('.mitig8it.yml')) {
+          return { data: { files: [{ path: '.mitig8it.yml', content: 'exclude:\n  - "a-vendor/**"\n' }] } };
+        }
+        return { data: { files: (body?.paths || []).map((path) => ({ path, content: 'x = 1' })) } };
+      }
+      if (url.includes('/tier1')) return { data: { findings: [], analysis_limitations: [] } };
+      if (url.includes('/tier2')) return { data: { findings: [], analysis_limitations: [] } };
+      if (url.includes('/tier3')) return { data: { findings: [] } };
+      return { data: { review_id: 1, check_run_id: 1 } };
+    });
+
+    triggerAnalysisJob(payload);
+    await drain();
+
+    expect(calls('/tier1')[0][1].files.map((file) => file.path)).toEqual(real);
+    const summary = calls('/check-runs')[0][1].summary;
+    expect(summary).toContain('300 files excluded by .mitig8it.yml');
+    expect(summary).not.toContain('Reviewed 200');
+  });
+
+  test('over the cap after exclusions, the first 200 paths are reviewed and the check says how many of how many', async () => {
+    const real = Array.from({ length: 250 }, (_, i) => `src/mod-${String(250 - i).padStart(4, '0')}.js`);
+    axios.post.mockImplementation(async (url, body) => {
+      if (url.includes('/pulls/files')) {
+        return { data: { files: real.map((path) => ({ path, patch: '@@ -0,0 +1 @@\n+x = 1', additions: 1 })) } };
+      }
+      if (url.includes('/files/content')) {
+        if ((body?.paths || []).includes('.mitig8it.yml')) throw new Error('404');
+        return { data: { files: (body?.paths || []).map((path) => ({ path, content: 'x = 1' })) } };
+      }
+      if (url.includes('/tier1')) return { data: { findings: [], analysis_limitations: [] } };
+      if (url.includes('/tier2')) return { data: { findings: [], analysis_limitations: [] } };
+      if (url.includes('/tier3')) return { data: { findings: [] } };
+      return { data: { review_id: 1, check_run_id: 1 } };
+    });
+
+    triggerAnalysisJob(payload);
+    await drain();
+
+    const reviewed = calls('/tier1')[0][1].files.map((file) => file.path);
+    expect(reviewed).toHaveLength(200);
+    expect(reviewed[0]).toBe('src/mod-0001.js');
+    expect(reviewed[199]).toBe('src/mod-0200.js');
+    expect(calls('/check-runs')[0][1].summary).toContain('Reviewed 200 of 250 changed files');
+  });
+});

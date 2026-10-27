@@ -5,7 +5,7 @@ import hashlib
 import pytest
 from pydantic import ValidationError
 
-from src.git_tree import GitTreeError, compute_tree_oid, validate_snapshot_tree
+from src.git_tree import GitTreeError, compute_tree_oid, snapshot_blob_mismatches, validate_snapshot_tree
 from src.models import GitTreeEntry, RepairRequest
 from src.retrieval import Snapshot, SnapshotError
 
@@ -41,6 +41,20 @@ def test_validate_tree_binds_snapshot_bytes(request_payload):
         validate_snapshot_tree(request.tree_entries, request.head_tree_oid, {"src/db.ts": "tampered"})
     validate_snapshot_tree(request.tree_entries, request.head_tree_oid, {path: snapshot.full_content(path) for path in snapshot.paths})
 
+
+
+def test_blob_mismatches_name_only_the_altered_file(request_payload):
+    """A file read as replacement-decoded text is one file's problem, not the request's."""
+    request = RepairRequest.model_validate(request_payload)
+    snapshot = Snapshot(request)
+    files = {path: snapshot.full_content(path) for path in snapshot.paths}
+    assert snapshot_blob_mismatches(request.tree_entries, files) == []
+    files["package.json"] = files["package.json"].replace("pg", "p\ufffd")
+    assert snapshot_blob_mismatches(request.tree_entries, files) == ["package.json"]
+    # A path the tree does not carry at all is still the whole request's refusal.
+    assert snapshot_blob_mismatches(request.tree_entries, {"src/absent.ts": "x"}) == []
+    with pytest.raises(GitTreeError, match="not bound"):
+        validate_snapshot_tree(request.tree_entries, request.head_tree_oid, {"src/absent.ts": "x"})
 
 def test_candidate_tree_preserves_executable_mode():
     original = "console.log('old')\n"

@@ -11,7 +11,7 @@ jest.mock('../src/db/findings', () => ({ listByAnalysisRun: jest.fn(async () => 
 jest.mock('../src/services/githubRemediationClient', () => ({ GitHubRemediationClient: jest.fn(() => ({})) }));
 jest.mock('../src/services/remediationVerificationCheck', () => ({ publishVerificationCheck: jest.fn() }));
 jest.mock('../src/utils/logger', () => ({ warn: jest.fn(), error: jest.fn(), info: jest.fn() }));
-jest.mock('../src/quality-release.json', () => ({ schema_version: 'v1', remediation_release_verified: true }));
+jest.mock('../src/quality-release.json', () => require('../../../tests/fixtures/verified-quality-release.json'));
 
 const remediationDb = require('../src/db/remediation');
 const findingsDb = require('../src/db/findings');
@@ -24,7 +24,8 @@ const FLAGS = {
   REMEDIATION_ENABLED: 'true', REMEDIATION_GENERATE_ENABLED: 'true', REMEDIATION_PUBLISH_ENABLED: 'true',
   REMEDIATION_SERVICE_URL: 'http://repair', REMEDIATION_SERVICE_INTERNAL_SECRET: 'secret',
   GITHUB_SERVICE_URL: 'http://github', GITHUB_SERVICE_INTERNAL_SECRET: 'secret',
-  REMEDIATION_SANDBOX_IMAGE_DIGEST: 'sha256:abc', REMEDIATION_VERIFICATION_CHECKS_JSON: '["unit"]',
+  REMEDIATION_SANDBOX_IMAGE_DIGEST: 'registry.example/runner@sha256:' + 'd'.repeat(64), REMEDIATION_VERIFICATION_CHECKS_JSON: '["unit"]',
+  REMEDIATION_SERVICE_IMAGE_DIGEST: 'registry.example/remediation@sha256:' + 'e'.repeat(64),
   REMEDIATION_ALLOWED_RULE_FAMILIES_JSON: '["sql_parameterization"]',
   REMEDIATION_INPUT_USD_PER_MILLION_TOKENS: '1', REMEDIATION_OUTPUT_USD_PER_MILLION_TOKENS: '2',
   FRONTEND_URL: 'https://app.example.test/',
@@ -36,13 +37,15 @@ const FIXED = ORIGINAL.replace('db.query(`SELECT * FROM orders WHERE id = ${id}`
 function candidate(overrides = {}) {
   const value = {
     id: '77777777-7777-4777-8777-777777777777', finding_snapshot_ids: ['f1'], artifact_digest: 'a'.repeat(64), rejection_reason: null,
-    verification_level: 'isolated_job',
+    verification_level: 'independent_sandbox',
     preview: {
       changes: [{ path: 'services/orders.js', original: ORIGINAL, replacement: FIXED, unified_diff: '--- a/services/orders.js\n+++ b/services/orders.js\n@@ -3 +3 @@\n-  old\n+  new' }],
       rationale: 'Parameterize the query.',
       reasoning: { intended_behavior: 'The order lookup returns the same row for the same id.' },
-      evidence: { status: 'passed', evidence_digest: 'c'.repeat(64), verification_level: 'isolated_job', verified_tree_oid: 'e'.repeat(40),
+      evidence: { status: 'passed', evidence_digest: 'c'.repeat(64), verification_level: 'independent_sandbox', verified_tree_oid: 'e'.repeat(40),
+        repair_model: 'test-reviewed-model', sandbox_image_digest: 'registry.example/runner@sha256:' + 'd'.repeat(64),
         generated_tests: [{ path: 'tests/orders.regression.test.js' }],
+        repair_service_image: 'registry.example/remediation@sha256:' + 'e'.repeat(64),
         limitations: ['verification ran in the development local sandbox without network, kernel, or filesystem isolation'] },
     },
     ...overrides,
@@ -116,7 +119,7 @@ test('sections carry a suggestion hunk, the stated intent, the proof, evidence, 
   expect(sections).toHaveLength(2);
   expect(sections[0]).toMatchObject({
     candidate_id: '77777777-7777-4777-8777-777777777777', finding_fingerprint: 'fp-sql', path: 'services/orders.js', finding_line: 3,
-    hunk: { start_line: 3, end_line: 3 }, not_suggestable_reason: '', verification_level: 'isolated_job',
+    hunk: { start_line: 3, end_line: 3 }, not_suggestable_reason: '', verification_level: 'independent_sandbox',
     stated_intent: 'The order lookup returns the same row for the same id.',
     proof: 'regression test tests/orders.regression.test.js asserts that the SQL injection at services/orders.js:3 is no longer reproducible; it failed on the original code and passed on the fix.',
     evidence: ['Regression test tests/orders.regression.test.js: failed on the original code, passed on the fix.', 'Syntax check: passed on the fixed file.', 'Evidence digest: cccccccccccc.'],
@@ -135,8 +138,31 @@ test('the proof line quotes a test that states its own assertion and picks the t
   ] } } });
   expect(inline.proofLine(stated, context().findings[0]))
     .toBe('regression test tests/orders.regression.test.js asserts that a quoted id cannot change the WHERE clause; it failed on the original code and passed on the fix.');
+  // A candidate whose evidence names no generated test claims no test result.
   expect(inline.proofLine(candidate({ preview: { ...candidate().preview, evidence: {} } }), context().findings[0]))
-    .toBe('the generated regression test failed on the original code and passed on the fix.');
+    .toBe('no generated regression test is recorded for this fix, so no test ran and no test result is claimed.');
+});
+
+// Nothing executes at the static assertion level, so neither the proof nor the evidence may
+// say a regression test failed on the original code and passed on the fix.
+test('a static assertion candidate never claims a regression test ran', () => {
+  const finding = context().findings[0];
+  const withTest = candidate({ verification_level: 'static_assertion', preview: { ...candidate().preview, evidence: {
+    ...candidate().preview.evidence, verification_level: 'static_assertion', summary: [],
+  } } });
+  const noTests = candidate({ verification_level: 'static_assertion', preview: { ...candidate().preview, evidence: {
+    verification_level: 'static_assertion', limitations: ['No code was executed.'],
+  } } });
+  for (const item of [withTest, noTests]) {
+    const proof = inline.proofLine(item, finding);
+    const evidence = inline.evidenceLines(item).join(' ');
+    expect(proof.toLowerCase()).not.toContain('regression test failed');
+    expect(`${proof} ${evidence}`).not.toContain('failed on the original code');
+    expect(proof).toContain('no longer matches the patched file');
+    expect(proof).toContain('no test ran');
+  }
+  const noLevel = candidate({ preview: { ...candidate().preview, evidence: {} } });
+  expect(inline.evidenceLines(noLevel).join(' ')).not.toContain('failed on the original code');
 });
 
 // Two findings on the same lines of the same file (two rules for one traversal): the
@@ -164,6 +190,23 @@ test('a finding on the same lines as a proven finding is covered by that candida
   expect(inline.sameLines(findings[0], findings[3])).toBe(false);
   expect(inline.sameLines({ file_path: 'a.js', line_start: 10, line_end: 12 }, { file_path: 'a.js', line_start: 12 })).toBe(true);
   expect(inline.sameLines({ file_path: 'a.js', line_start: 10, line_end: 12 }, { file_path: 'a.js', line_start: 13 })).toBe(false);
+});
+
+// nebullii/test-only#140: three selected findings in web/pricing.js ended without a
+// candidate and without a skip entry, and the comment said nothing about them. A selected
+// finding the job neither fixed nor skipped still gets one line, with the job's reason.
+test('a selected finding with no candidate and no skip entry still gets a No automatic fix line', () => {
+  const findings = [
+    ...context().findings,
+    { id: 'f3', title: 'Command injection', file_path: 'web/pricing.js', line_start: 24, line_end: 24, fingerprint: 'fp-exec' },
+  ];
+  const job = { ...context().job, finding_snapshot_ids: ['f1', 'f3'] };
+  const sections = inline.buildSections(context({ job, findings }));
+  expect(sections.map((section) => [section.finding_fingerprint, section.candidate_id ? 'fix' : section.skipped_reason])).toEqual([
+    ['fp-sql', 'fix'],
+    ['fp-redirect', 'This finding is outside the enabled repair families.'],
+    ['fp-exec', 'No verified repair was produced for this finding.'],
+  ]);
 });
 
 // The finding comment text travels with every section that carries or is covered by a
@@ -220,8 +263,10 @@ function perFindingCandidate(id, findingId, replacement, unifiedDiff) {
       rationale: 'One finding, one candidate.',
       reasoning: { intended_behavior: 'Legitimate input behaves as before.' },
       evidence: {
-        status: 'passed', evidence_digest: 'c'.repeat(64), verification_level: 'isolated_job', verified_tree_oid: 'e'.repeat(40),
+        status: 'passed', evidence_digest: 'c'.repeat(64), verification_level: 'independent_sandbox', verified_tree_oid: 'e'.repeat(40),
+        repair_model: 'test-reviewed-model', sandbox_image_digest: 'registry.example/runner@sha256:' + 'd'.repeat(64),
         generated_tests: [{ path: `.mitig8it/regression/${findingId}.test.py`, finding_id: findingId }],
+        repair_service_image: 'registry.example/remediation@sha256:' + 'e'.repeat(64),
         limitations: ["the repository's original test suite was not run"],
         summary: [
           `Regression test .mitig8it/regression/${findingId}.test.py failed on the original code and passed on the fix.`,
@@ -519,8 +564,9 @@ test('the candidate that keeps the suggestion does not depend on the order the c
   const wide = provenCandidate(CANDIDATE_B, 'f5', WIDE_FIXED);
   const wideFindings = [SQL_FINDINGS[0], { ...SQL_FINDINGS[1], line_start: 3, line_end: 4 }];
   expect(carrying(inline.buildSections(sameLineContext([a, wide], wideFindings)))).toMatchObject({ candidate_id: CANDIDATE_B });
+  const developmentOnly = provenCandidate(CANDIDATE_A, 'f1', FIXED, { verification_level: 'development_unverified' });
   const verified = provenCandidate(CANDIDATE_B, 'f5', ALT_FIXED, { verification_level: 'independent_sandbox' });
-  expect(carrying(inline.buildSections(sameLineContext([a, verified])))).toMatchObject({ candidate_id: CANDIDATE_B });
+  expect(carrying(inline.buildSections(sameLineContext([developmentOnly, verified])))).toMatchObject({ candidate_id: CANDIDATE_B });
 });
 
 // Two candidates on the same lines, one verified by execution and one only asserted. The
@@ -529,7 +575,7 @@ test('the candidate that keeps the suggestion does not depend on the order the c
 // derived, a level missing from the local table ranked 0 and lost to everything by omission.
 test('an executed fix keeps the suggestion over a statically asserted one on the same lines', () => {
   const asserted = provenCandidate(CANDIDATE_A, 'f1', FIXED, { verification_level: 'static_assertion' });
-  const executed = provenCandidate(CANDIDATE_B, 'f5', ALT_FIXED, { verification_level: 'isolated_job' });
+  const executed = provenCandidate(CANDIDATE_B, 'f5', ALT_FIXED, { verification_level: 'independent_sandbox' });
   const carrying = (sections) => sections.find((section) => section.hunk);
   expect(carrying(inline.buildSections(sameLineContext([asserted, executed])))).toMatchObject({ candidate_id: CANDIDATE_B });
   // And the reverse arrival order gives the same answer.
@@ -542,3 +588,13 @@ test('groupByOverlap puts transitively overlapping hunks in one group and leaves
   expect(shape(inline.groupByOverlap([entry(10, 10), entry(3, 4), entry(4, 9)]))).toEqual([[3, 9, 2], [10, 10, 1]]);
   expect(shape(inline.groupByOverlap([entry(3, 3), entry(5, 5)]))).toEqual([[3, 3, 1], [5, 5, 1]]);
 });
+
+test.each([undefined, 'registry.example/other@sha256:' + 'f'.repeat(64)])(
+  'missing or changed remediation binary evidence cannot become an API inline section: %s', (serviceImage) => {
+    const repair = candidate();
+    repair.preview.evidence.repair_service_image = serviceImage;
+    const sections = inline.buildSections(context({ candidates: [repair] }));
+    expect(sections.some((section) => section.candidate_id === repair.id)).toBe(false);
+    expect(sections.some((section) => section.skipped_reason.includes('independently executed sandbox'))).toBe(true);
+  }
+);

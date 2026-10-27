@@ -1,3 +1,7 @@
+// Structural SQL-contract tests: the database is a substring-dispatching mock, so these
+// assertions prove which statements and parameters are issued, not PostgreSQL locking,
+// session lifetime, or SKIP LOCKED behaviour. Those behaviours run against PostgreSQL in
+// tests/integration/access.integration.js and remediation.integration.js.
 jest.mock('../src/config/database', () => ({
   pool: {
     query: jest.fn(),
@@ -27,7 +31,7 @@ describe('analysis run queue', () => {
     pool.connect.mockResolvedValue(client);
   };
 
-  test('holds a per-PR session lease after committing the claim until explicitly released', async () => {
+  test('structurally retains the client and emits session-lock SQL until release', async () => {
     prepare();
     const result = await analysisRuns.claimNextQueuedRun(10);
     expect(result).toEqual(queuedRun);
@@ -41,7 +45,7 @@ describe('analysis run queue', () => {
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
-  test('skips a candidate whose PR is still leased, including stale live runs', async () => {
+  test('structurally emits skip-locked claim SQL when the mocked PR lease is unavailable', async () => {
     prepare([{ ...queuedRun, analysis_run_id: 'busy' }, queuedRun], [false, true]);
     const result = await analysisRuns.claimNextQueuedRun();
     expect(client.query).toHaveBeenCalledWith(expect.stringContaining('FOR UPDATE OF candidate SKIP LOCKED'), [20, ['busy']]);
