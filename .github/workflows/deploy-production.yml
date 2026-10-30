@@ -48,7 +48,13 @@ jobs:
     uses: ./.github/workflows/deploy-api-cloudrun.yml
     with:
       environment: production
-      api_min_instances: '1'
+      # Cold by default. A warm instance is the only line item on this service that bills
+      # whether or not anybody uses it, and the latency target it buys, under 20 seconds to a
+      # first review, has never been demonstrated (ROADMAP.md, "First review latency"). The
+      # Action runs in the caller's own runner and never touches this service, so the cold
+      # start reaches hosted App users only. Set this to '1' on the dispatch, or here, when
+      # there are hosted users whose first review is worth paying for.
+      api_min_instances: '0'
       ref: ${{ github.sha }}
     secrets: inherit
 
