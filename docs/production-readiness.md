@@ -66,7 +66,7 @@ Do not weaken the production gate to make a deployment green.
 
 | Item | Bar | State | Evidence |
 | --- | --- | --- | --- |
-| First review latency | Under 20 seconds after a pull request opens during working hours. | in progress | PR 444: min-instances 1 on the API behind a workflow input, start-up warm-up. |
+| First review latency | Under 20 seconds after a pull request opens during working hours. | open | Deliberately deferred. Production now deploys cold (`api_min_instances: '0'`), because the target was never demonstrated and a warm instance bills whether or not anybody uses it. The start-up warm-up from PR 444 remains. Re-open this when there are hosted users: the mechanism is one value in `deploy-production.yml`, and the number still has to be measured rather than assumed. |
 | Metrics reach a dashboard | Request, queue, analysis, and remediation metrics visible in Grafana. | in progress | PR 444: Managed Prometheus sidecar scraping a loopback listener; ten product metrics. |
 | One alert that matters | Page when reviews fail or stall for 15 minutes. | in progress | PR 444: reviews failing and reviews stalled, as Grafana rules and Cloud Monitoring policies; eleven unfirable rules deleted. |
 | Structured logs with correlation | Every log line carries the delivery id or analysis run id across the three services. | in progress | PR 444: delivery, run, and job ids over headers, gRPC metadata, and the queue in all three services. |

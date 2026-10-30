@@ -122,9 +122,16 @@ sidecar needs and what it costs to skip it.
 
 ### Keeping the API warm
 
-The API deploys with `--min-instances 1` by default, controlled by the
-`api_min_instances` workflow input. Set it to `0` on a `workflow_dispatch` run to go
-back to scale-to-zero.
+**Production deploys cold.** `deploy-production.yml` passes `api_min_instances: '0'`, so the
+API scales to zero and the first request after an idle period pays a cold start. The input
+default in `deploy-api-cloudrun.yml` is still `1`, so a direct `workflow_dispatch` of that
+workflow gets a warm instance unless it says otherwise.
+
+It is cold because a warm instance is the only line item here that bills whether or not anybody
+uses it, and the target it buys, under 20 seconds to a first review, has never been demonstrated.
+The Action runs in the caller's own runner and never reaches this service, so the cold start is
+paid only by hosted App users. Set `api_min_instances: '1'` in `deploy-production.yml` when there
+are hosted users whose first review is worth fifty dollars a month.
 
 The API also warms itself at start-up: it opens the database pool with a real query and,
 in parallel, pings the github and analysis services and pre-mints their Cloud Run
@@ -144,8 +151,9 @@ minimum instance is billed for CPU and memory continuously, about 730 hours a mo
 | | | **~$50/month** |
 
 Call it fifty dollars a month, and treat anything between forty and sixty as the same
-answer. Two minimum instances double it. Staging deploys with `api_min_instances: 0`,
-so an idle staging environment adds nothing.
+answer, and it is what production stops paying by deploying cold. Two minimum instances double
+it. Staging also deploys with `api_min_instances: 0`, so an idle staging environment adds
+nothing either.
 
 Check the current rates before budgeting: Cloud Run pricing changes, the free tier
 covers part of this, and committed-use discounts apply.
