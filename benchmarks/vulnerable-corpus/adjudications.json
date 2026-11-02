@@ -35,6 +35,7 @@
     {
       "fingerprint": "9c5ef68abbc04972f5f11576d8761c609cfecf7d406cedd540f3023afeddfc58",
       "verdict": "false",
+      "source": "hand",
       "note": "optional chaining on getAttribute('alt'); there is no dereference of a value that can be null",
       "rule_id": "null.pointer.deref",
       "where": "kepano/defuddle src/extractors/x-article.ts:112",
@@ -43,6 +44,7 @@
     {
       "fingerprint": "bdaf857f227ce2edd0829c53c7ed74d66313c6aa44cb32979f9a8363d3bbfab5",
       "verdict": "false",
+      "source": "hand",
       "note": "a chained decode on a value the library returns non-null; nothing here can be null",
       "rule_id": "null.pointer.deref",
       "where": "scitokens/scitokens src/scitokens/utils/keycache.py:100",
@@ -51,6 +53,7 @@
     {
       "fingerprint": "c693ee9a159c85fc7d308652fbe62b3eab86c4c2feffb3eb6e6f611abac657df",
       "verdict": "true",
+      "source": "hand",
       "note": "pickle.load on a file whose name comes from a request argument is arbitrary deserialisation",
       "rule_id": "opengrep.cwe-502.py-pickle-load-file",
       "where": "benbusby/whoogle-search app/routes.py:430",
@@ -59,6 +62,7 @@
     {
       "fingerprint": "82a27cb20b6a6b7ae02d4625bd993015e350899781aa809655148c6720818ae6",
       "verdict": "true",
+      "source": "hand",
       "note": "open(params['include']) is the remote-file-inclusion sink; the label names the exec that follows it",
       "rule_id": "path.traversal.user_path",
       "where": "stamparm/DSVW dsvw.py:48",
@@ -67,6 +71,7 @@
     {
       "fingerprint": "8b866a575ac3723444fcba5f5ff9f471805883a2986f8eaa02033a4b3de87b40",
       "verdict": "true",
+      "source": "hand",
       "note": "the lxml resolver fetches an attacker-supplied URL, which is the XXE-to-SSRF primitive",
       "rule_id": "ssrf.untrusted_url_fetch",
       "where": "stamparm/DSVW dsvw.py:3",
@@ -75,6 +80,7 @@
     {
       "fingerprint": "61c29f7999ae5f5cc648a490510eb165ffa5822fef675b5cb87566913b63466b",
       "verdict": "false",
+      "source": "hand",
       "note": "a print of an installation hint; there is no arithmetic",
       "rule_id": "integer.overflow",
       "where": "stamparm/DSVW dsvw.py:4",
@@ -83,6 +89,7 @@
     {
       "fingerprint": "bea99a96fe263fd979fdd7bed564bd9691ad96842e7663f7671239d9258fa979",
       "verdict": "false",
+      "source": "hand",
       "note": "the CASES table of vulnerability descriptions, not a route",
       "rule_id": "rate_limit.missing",
       "where": "stamparm/DSVW dsvw.py:10",
@@ -91,6 +98,7 @@
     {
       "fingerprint": "fab7ad24480cc832e89c555e7764f83de18c719c5a6c557cf9aa166b2a3ecdff",
       "verdict": "false",
+      "source": "hand",
       "note": "an import and a resolver class definition; nothing is dereferenced",
       "rule_id": "null.pointer.deref",
       "where": "stamparm/DSVW dsvw.py:3",
@@ -99,6 +107,7 @@
     {
       "fingerprint": "d1255eb1f135550473b8753501df2d2cafb5e00a282b97377326a18eed54dd95",
       "verdict": "true",
+      "source": "hand",
       "note": "FETCH is urlopen over a caller-supplied URL and is what every DSVW SSRF case goes through",
       "rule_id": "opengrep.cwe-918.py-urlopen-request-url",
       "where": "stamparm/DSVW dsvw.py:7",
@@ -107,6 +116,7 @@
     {
       "fingerprint": "885d2620342df6b97bf322674722a315450690205ed0591feed92ce4ded024bc",
       "verdict": "true",
+      "source": "hand",
       "note": "md5(req.query.login) is the password-reset token; a weak hash on a security token",
       "rule_id": "crypto.weak.hash",
       "where": "appsecco/dvna core/authHandler.js:49",
@@ -115,6 +125,7 @@
     {
       "fingerprint": "ee07e0ee83c71d997fef032ae372d67fc69db561bec1ddaecc1b9550777a6859",
       "verdict": "false",
+      "source": "hand",
       "note": "a promise chain on a model instance that was just constructed",
       "rule_id": "null.pointer.deref",
       "where": "appsecco/dvna core/authHandler.js:80",
@@ -123,6 +134,7 @@
     {
       "fingerprint": "b28dfa13cecb6fdae2fac258139fe83fe8668aa55899a00be94ec6079433d8dd",
       "verdict": "true",
+      "source": "hand",
       "note": "md5 of a password for comparison against a stored hash",
       "rule_id": "crypto.weak.hash",
       "where": "anxolerd/dvpwa sqli/dao/user.py:41",
@@ -131,6 +143,7 @@
     {
       "fingerprint": "d760c7ed56e63ddb98775b8af621465ec28f323d3ba3de2f8a0b23a1ee187bd8",
       "verdict": "false",
+      "source": "hand",
       "note": "the same md5 comparison; nothing is dereferenced",
       "rule_id": "null.pointer.deref",
       "where": "anxolerd/dvpwa sqli/dao/user.py:41",
@@ -139,6 +152,7 @@
     {
       "fingerprint": "6e2f78150afa0ab8c987dbb6674e97e35535fb71b3f747fee5687be848c9df46",
       "verdict": "false",
+      "source": "hand",
       "note": "an rxjs subscribe on a service the component injects",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop frontend/src/app/administration/administration.component.ts:69",
@@ -147,6 +161,7 @@
     {
       "fingerprint": "e90aa1c904d491174393bbe095bd14d14620ec519050b664e24f70ad3d9a8df1",
       "verdict": "false",
+      "source": "hand",
       "note": "an rxjs subscribe on a service the component injects",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop frontend/src/app/track-result/track-result.component.ts:47",
@@ -155,6 +170,7 @@
     {
       "fingerprint": "c029dcc32707768865d6ef2b596cb43c6911fc6bc1f8c802fa86520ff4ba6914",
       "verdict": "false",
+      "source": "hand",
       "note": "res.json of an object literal; there is no arithmetic",
       "rule_id": "integer.overflow",
       "where": "juice-shop/juice-shop routes/b2bOrder.ts:24",
@@ -163,6 +179,7 @@
     {
       "fingerprint": "3e2a5541c9557e8ace381910ead193c4d01d7db5b0cf7a57b6c94e324528fbca",
       "verdict": "false",
+      "source": "hand",
       "note": "crypto.createHash('md5') is a weak hash, not a null dereference",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop lib/insecurity.ts:41",
@@ -171,6 +188,7 @@
     {
       "fingerprint": "fac8e23fc5e73f51bc9914b0cd86c4bcad2245acd60a83ed43626bc7eb03dea3",
       "verdict": "false",
+      "source": "hand",
       "note": "crypto.createHmac is not a null dereference",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop lib/utils.ts:80",
@@ -179,6 +197,7 @@
     {
       "fingerprint": "248087f1554fe4528160f7b449f2c787b92c75d99f5c2c60c251db2b33a1751c",
       "verdict": "false",
+      "source": "hand",
       "note": "path.resolve(req.body.layout) is path traversal, not a null dereference",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop routes/dataErasure.ts:104",
@@ -187,6 +206,7 @@
     {
       "fingerprint": "02a43b5c77a8d87b5ce26f48087bcd582667dd7faface797c576b43aa8f4c633",
       "verdict": "true",
+      "source": "hand",
       "note": "js-yaml is ^3.14 here, where load() uses the full schema and will construct arbitrary types",
       "rule_id": "deserialize.untrusted_data",
       "where": "juice-shop/juice-shop routes/vulnCodeSnippet.ts:90",
@@ -195,6 +215,7 @@
     {
       "fingerprint": "ffe49279557b84b0c8201fb71d6c58567d91cc0a9444352f46bca0067203de3e",
       "verdict": "false",
+      "source": "hand",
       "note": "utils.trunc of a request parameter; there is no arithmetic that can overflow",
       "rule_id": "integer.overflow",
       "where": "juice-shop/juice-shop routes/showProductReviews.ts:31",
@@ -203,6 +224,7 @@
     {
       "fingerprint": "46eb0cd2fd42dd9a2dc0cecd3c1dec201a1d415ad89a827620458641e64dae7a",
       "verdict": "false",
+      "source": "hand",
       "note": "a $where filter built from a request value is NoSQL injection, not a null dereference",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop routes/showProductReviews.ts:36",
@@ -211,6 +233,7 @@
     {
       "fingerprint": "f4279c3885caca0e58ff98429e5b7d1ed0eb02fc09fe6dd437f588944f8a5a67",
       "verdict": "false",
+      "source": "hand",
       "note": "a string replace on a request parameter",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop routes/trackOrder.ts:15",
@@ -219,6 +242,7 @@
     {
       "fingerprint": "23564e8bcae958335a643ac3f4fb1423ff4e9ab5eeeaa5693e68b7fb385cb5c0",
       "verdict": "true",
+      "source": "hand",
       "note": "console.log('token: ' + token) writes a session token to the log",
       "rule_id": "logging.sensitive_data",
       "where": "snyk-labs/nodejs-goof app.js:84",
@@ -227,6 +251,7 @@
     {
       "fingerprint": "b48a871e7f85defece2268a710dcac054a62dc1bda4466380b0cf1c42384b9b5",
       "verdict": "true",
+      "source": "hand",
       "note": "password=\"65079b00\u2026\" is a credential literal in a model construction",
       "rule_id": "secret.hardcoded.credential",
       "where": "adeyosemanputra/pygoat introduction/views.py:866",
@@ -235,6 +260,7 @@
     {
       "fingerprint": "7e0ef011d76bcc966ef5e64ecd18f6b1b7a765a70e6c749400c81daeaca6e69b",
       "verdict": "true",
+      "source": "hand",
       "note": "md5(password.encode()) is the password hash",
       "rule_id": "crypto.weak.hash",
       "where": "adeyosemanputra/pygoat introduction/mitre.py:161",
@@ -243,6 +269,7 @@
     {
       "fingerprint": "fc7a8a6d2f04ef81e13ac54cdff3baf066ef25f0e39f40cd778508e79195e2ed",
       "verdict": "true",
+      "source": "hand",
       "note": "md5(password.encode()) is the password hash",
       "rule_id": "crypto.weak.hash",
       "where": "adeyosemanputra/pygoat introduction/views.py:1026",
@@ -251,6 +278,7 @@
     {
       "fingerprint": "f51666c8452fe593d1fa90a1c780e6a302310bb51f0c19660ff3cea6dee8212f",
       "verdict": "false",
+      "source": "hand",
       "note": "a print of the query string; there is no arithmetic",
       "rule_id": "integer.overflow",
       "where": "adeyosemanputra/pygoat introduction/views.py:159",
@@ -259,6 +287,7 @@
     {
       "fingerprint": "4f30ae507b780707b5112d8f731e83e733240494748ab16e14b8dba315422071",
       "verdict": "false",
+      "source": "hand",
       "note": "a redirect to a constant path",
       "rule_id": "rate_limit.missing",
       "where": "adeyosemanputra/pygoat introduction/mitre.py:174",
@@ -267,6 +296,7 @@
     {
       "fingerprint": "acfdb78cb895c61b6ac5db48285e19c2b63468c2ce0d2a9edaf83d9f83512da5",
       "verdict": "false",
+      "source": "hand",
       "note": "the md5 line again; nothing is dereferenced",
       "rule_id": "null.pointer.deref",
       "where": "adeyosemanputra/pygoat introduction/mitre.py:161",
@@ -275,6 +305,7 @@
     {
       "fingerprint": "fb56365a9a9b8a80f6f70e1d2309f379718dd266381f4b7bd3e6a9368125b19b",
       "verdict": "true",
+      "source": "hand",
       "note": "password=\"65079b00\u2026\" as a keyword argument is a credential literal",
       "rule_id": "opengrep.cwe-798.py-credential-keyword-argument",
       "where": "adeyosemanputra/pygoat introduction/views.py:866",
@@ -283,6 +314,7 @@
     {
       "fingerprint": "0043592e5a043fe87413f62522a6ecc2073d25f1637aaed539a71c9fe692253c",
       "verdict": "false",
+      "source": "hand",
       "note": "sibling.remove() on a DOM node the loop just found",
       "rule_id": "authz.missing_function_level",
       "where": "kepano/defuddle src/removals/metadata-block.ts:28",
@@ -291,6 +323,7 @@
     {
       "fingerprint": "ca886c2418b000019035795f6bef6159ebe4b458a30d20891e066461b4461703",
       "verdict": "false",
+      "source": "hand",
       "note": "res.status(404).send('404') on the express response",
       "rule_id": "null.pointer.deref",
       "where": "appsecco/dvna routes/main.js:25",
@@ -299,6 +332,7 @@
     {
       "fingerprint": "f9c7a0723fb116aeed255ea594e9f19a89075b455d0e67be171f7d919ae5a441",
       "verdict": "false",
+      "source": "hand",
       "note": "a stylesheet import",
       "rule_id": "rate_limit.missing",
       "where": "electerm/electerm src/client/components/auth/login.jsx:14",
@@ -307,6 +341,7 @@
     {
       "fingerprint": "68b73acd1de46f6b94b03c1234b2328b1bc67e4d550aaf82336dbc31e44646d7",
       "verdict": "false",
+      "source": "hand",
       "note": "a vitest mock definition in a spec file",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop frontend/src/app/chatbot/chat-welcome-screen/chat-welcome-screen.component.spec.ts:21",
@@ -315,6 +350,7 @@
     {
       "fingerprint": "6696e27cf63dacbd7a1689d8af00ba717cb4553a6c292bbaf45868e111a097e0",
       "verdict": "false",
+      "source": "hand",
       "note": "fs.readFile of a constant template path",
       "rule_id": "path.traversal.user_path",
       "where": "juice-shop/juice-shop routes/userProfile.ts:28",
@@ -323,6 +359,7 @@
     {
       "fingerprint": "5654f78cbefae11ef91b2a2b34e2c0304a9457bf7c027e8992669d6fcdee5cfc",
       "verdict": "false",
+      "source": "hand",
       "note": "a test helper import",
       "rule_id": "rate_limit.missing",
       "where": "juice-shop/juice-shop test/api/basket.test.ts:12",
@@ -331,6 +368,7 @@
     {
       "fingerprint": "1b394599e9ae734267a6f6452f35166f8173ba6ca4655677d839361f0ad88fc7",
       "verdict": "false",
+      "source": "hand",
       "note": "a test assertion",
       "rule_id": "null.pointer.deref",
       "where": "kepano/defuddle tests/x-article-surrogates.test.ts:32",
@@ -339,6 +377,7 @@
     {
       "fingerprint": "b9afef2f6a13a5ae92e0f22ce2bc4ec980d4d603631bc819c7d2bffd1e6e22e0",
       "verdict": "true",
+      "source": "hand",
       "note": "urlsplit(url).hostname returns None for a URL with no host, and .split is called on it",
       "rule_id": "null.pointer.deref",
       "where": "webcomics/dosage scripts/keenspot.py:60",
@@ -347,6 +386,7 @@
     {
       "fingerprint": "707ef3e032f1c862e678e0c887c5bb863f86fcd7548431c27336105fa6998c99",
       "verdict": "false",
+      "source": "hand",
       "note": "a test fixture reader over names the test supplies",
       "rule_id": "path.traversal.user_path",
       "where": "webcomics/dosage tests/httpmocks.py:17",
@@ -355,6 +395,7 @@
     {
       "fingerprint": "936a2eaac03887356900132c26860acf9e7568ba72ba80f2fb61d2f92e32f214",
       "verdict": "false",
+      "source": "hand",
       "note": "a BigQuery client chained on a client the exporter constructed",
       "rule_id": "null.pointer.deref",
       "where": "google/slo-generator slo_generator/exporters/bigquery.py:60",
@@ -363,6 +404,7 @@
     {
       "fingerprint": "7e32b8f5d35024dcd0853760ce516fef10b47e023c241a0f2237c4bfbad998fb",
       "verdict": "false",
+      "source": "hand",
       "note": "readFileSync of a path the test built from its own fixture directory",
       "rule_id": "path.traversal.user_path",
       "where": "dicebear/dicebear packages/@dicebear/bottts/tests/create.test.js:50",
@@ -371,6 +413,7 @@
     {
       "fingerprint": "930351004e16c66ce63d4803a4586c7cd2b2082a4de5efd160eff150f3f38b25",
       "verdict": "false",
+      "source": "hand",
       "note": "Object.entries over a value the line above parsed",
       "rule_id": "null.pointer.deref",
       "where": "electerm/electerm src/client/store/tab.js:380",
@@ -379,6 +422,7 @@
     {
       "fingerprint": "483cd79f402e8b62ce40a32cbf0ffa172902d67bcdaf9a177a3ea76b2aa3c2ca",
       "verdict": "false",
+      "source": "hand",
       "note": "a promise chain on the library's own call",
       "rule_id": "null.pointer.deref",
       "where": "sebhildebrandt/systeminformation lib/cli.js:50",
@@ -387,6 +431,7 @@
     {
       "fingerprint": "fcb0558958be01711e0d97938437642dcac8ad1682d0f697eb35eea457db3504",
       "verdict": "false",
+      "source": "hand",
       "note": "element.remove() on a node the instructor script just queried",
       "rule_id": "authz.missing_function_level",
       "where": "juice-shop/juice-shop frontend/src/hacking-instructor/index.ts:220",
@@ -395,6 +440,7 @@
     {
       "fingerprint": "1569abf72fd6bcfa0cee5c59515ee86abdc32cc51edadef6ee7d30c12b03d9a1",
       "verdict": "false",
+      "source": "hand",
       "note": "a modal cancel handler",
       "rule_id": "authz.missing_function_level",
       "where": "electerm/electerm src/client/store/system-menu.js:78",
@@ -403,6 +449,7 @@
     {
       "fingerprint": "7d644cac4cde8b42f385dee67f515b4472c1ab7583700b60a31a3bdfc2396467",
       "verdict": "true",
+      "source": "hand",
       "note": "@csrf_exempt removes Django's CSRF protection from the view below it",
       "rule_id": "opengrep.cwe-352.py-csrf-exempt",
       "where": "adeyosemanputra/pygoat introduction/apis.py:22",
@@ -411,6 +458,7 @@
     {
       "fingerprint": "e263c6c224ba87a47e9c0c11e94e5c942c8df3b5c5b93b9315cb7295e26d8ec5",
       "verdict": "false",
+      "source": "hand",
       "note": "Fernet decrypt chained on a key the session holds",
       "rule_id": "null.pointer.deref",
       "where": "benbusby/whoogle-search app/utils/search.py:101",
@@ -419,6 +467,7 @@
     {
       "fingerprint": "d19b935200db419d099bf79af483b96a9725082640eba40e9f3ca2cc3fa2a814",
       "verdict": "false",
+      "source": "hand",
       "note": "an rxjs subscribe on an injected service",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop frontend/src/app/two-factor-auth-enter/two-factor-auth-enter.component.ts:52",
@@ -427,6 +476,7 @@
     {
       "fingerprint": "357ecdff12935004836438da1bb6cb6924c1060f4ff41c07f44e8cb0792ce48d",
       "verdict": "false",
+      "source": "hand",
       "note": "a string replace on a field the parser just set",
       "rule_id": "null.pointer.deref",
       "where": "sebhildebrandt/systeminformation lib/cpu.js:843",
@@ -435,6 +485,7 @@
     {
       "fingerprint": "68c250f1a9cce1c42f1b1bb54413d48275a5a713f95c8de71923a19332609c8d",
       "verdict": "false",
+      "source": "hand",
       "note": "res.status(401).send on the express response",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop routes/resetPassword.ts:27",
@@ -443,6 +494,7 @@
     {
       "fingerprint": "cff8e3cf2ebb3b23fe0cf664071c97b703b0bdcfdb3a0c6d67317c94d7aacda8",
       "verdict": "false",
+      "source": "hand",
       "note": "a test that encodes a constant",
       "rule_id": "null.pointer.deref",
       "where": "kepano/defuddle tests/fetch.test.ts:7",
@@ -451,6 +503,7 @@
     {
       "fingerprint": "30cf02ae1005daf3362644db32dd0c85e925aa6fd417fb2982467a055573d792",
       "verdict": "false",
+      "source": "hand",
       "note": "parseInt of an id, guarded by a ternary",
       "rule_id": "integer.overflow",
       "where": "sebhildebrandt/systeminformation lib/printer.js:53",
@@ -459,6 +512,7 @@
     {
       "fingerprint": "2de42376c815bc20a59cda5bfb543fdbce421daffcc96a887e17ea7d48155e16",
       "verdict": "false",
+      "source": "hand",
       "note": "a test helper writing numbers to a file; nothing is rendered as HTML",
       "rule_id": "xss.unsafe_html_render",
       "where": "juice-shop/juice-shop test/files/encrypt.py:14",
@@ -467,6 +521,7 @@
     {
       "fingerprint": "5547800ec1ae3631909615b1f4e8f83adb2b6f6d604a5a53ea11fb5fc6a6ed5c",
       "verdict": "false",
+      "source": "hand",
       "note": "fs.remove over the service's own temporary directory",
       "rule_id": "authz.missing_function_level",
       "where": "juice-shop/juice-shop lib/startup/cleanupFtpFolder.ts:15",
@@ -475,6 +530,7 @@
     {
       "fingerprint": "3dcab568e7e25ba21ccd9778609c16f98d9cd5184f918dc3ffa41925606bb60c",
       "verdict": "false",
+      "source": "hand",
       "note": "a split index, which would raise IndexError rather than dereference null",
       "rule_id": "null.pointer.deref",
       "where": "Morgan-Phoenix/EnroCrypt enrocrypt/hashing.py:17",
@@ -483,6 +539,7 @@
     {
       "fingerprint": "c1911180f3c5dd7fbf9f485e285843c2a49d6fb3fa1affdc4479b4ca93179a43",
       "verdict": "false",
+      "source": "hand",
       "note": "replaceAll on a row the query returned",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop data/static/codefixes/restfulXssChallenge_2.ts:46",
@@ -491,6 +548,7 @@
     {
       "fingerprint": "1dbe86a6d6f91612a2a154667b9247e9b1f155a45c78feb421d1225c7ca8c7fa",
       "verdict": "false",
+      "source": "hand",
       "note": "let password = '' is an empty initialiser, not a secret",
       "rule_id": "opengrep.cwe-798.hardcoded-secret-js",
       "where": "electerm/electerm src/client/common/parse-quick-connect.js:189",
@@ -499,6 +557,7 @@
     {
       "fingerprint": "b10151aa4600a6783a485d9453a4b6922466e86be26411e49e4a4912d44a45cb",
       "verdict": "false",
+      "source": "hand",
       "note": "chained .get() calls with default values, which is the guarded form",
       "rule_id": "null.pointer.deref",
       "where": "google/slo-generator slo_generator/backends/cloud_service_monitoring.py:377",
@@ -507,6 +566,7 @@
     {
       "fingerprint": "a717ee74f5cef8b1b1aed21f35f3ab3696807cb1b743185fdf8f765fc74dd17b",
       "verdict": "false",
+      "source": "hand",
       "note": "a test http response handler",
       "rule_id": "null.pointer.deref",
       "where": "electerm/electerm test/unit/npm-install.spec.js:28",
@@ -515,6 +575,7 @@
     {
       "fingerprint": "983862f6728b565f3f2dd2b5206e590ddb97e44751def3e568c69335f30a5134",
       "verdict": "false",
+      "source": "hand",
       "note": "obfuscated path construction in a challenge fixture; nothing is dereferenced",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop data/static/codefixes/adminSectionChallenge_3.ts:3",
@@ -523,6 +584,7 @@
     {
       "fingerprint": "df878c65f2bf905afb3b4fd6a84e071bae83ea22ee2000d03e14f9a62a368ff7",
       "verdict": "false",
+      "source": "hand",
       "note": "a string replace and split on a value the caller passed",
       "rule_id": "null.pointer.deref",
       "where": "sebhildebrandt/systeminformation lib/processes.js:74",
@@ -531,6 +593,7 @@
     {
       "fingerprint": "7c88d049b09dece2613699b48eef96d4b0c0c7d91866a6ab1d9546eef6c7b58f",
       "verdict": "false",
+      "source": "hand",
       "note": "a cypress test typing into a field",
       "rule_id": "null.pointer.deref",
       "where": "juice-shop/juice-shop test/cypress/e2e/totpSetup.spec.ts:31",
@@ -539,6 +602,7 @@
     {
       "fingerprint": "117d73a9d3ba4fa1e456be96bf62099e1fdf72d1f0a0f1edf798ca806c9e5487",
       "verdict": "false",
+      "source": "hand",
       "note": "refs.remove(this.id) on the component's own registry",
       "rule_id": "authz.missing_function_level",
       "where": "electerm/electerm src/client/components/sftp/sftp-entry.jsx:105",
@@ -547,6 +611,7 @@
     {
       "fingerprint": "5107b855f9333b78392f7c36e25d6072f48e7d8fd2a7af09f166c1698161357b",
       "verdict": "false",
+      "source": "hand",
       "note": "globalState.get('win') is set during startup before any menu action can run",
       "rule_id": "null.pointer.deref",
       "where": "electerm/electerm src/app/lib/menu.js:22",
@@ -555,6 +620,7 @@
     {
       "fingerprint": "5330f8319f0d7c6ae64f33a24af22aa8f2630e18fb85348e6bed64bcb69de48c",
       "verdict": "false",
+      "source": "hand",
       "note": "a filter over an array the caller passed",
       "rule_id": "null.pointer.deref",
       "where": "electerm/electerm src/client/components/footer/cmd-history.jsx:50",
@@ -563,6 +629,7 @@
     {
       "fingerprint": "16358c77aa8b1204479ef5673e989ca668d132bda35aeff10aeed65f01052868",
       "verdict": "false",
+      "source": "hand",
       "note": "this is the corrected code fix: security.isAdmin() is present on the route",
       "rule_id": "auth.bypass.missing_check",
       "where": "juice-shop/juice-shop data/static/codefixes/exposedMetricsChallenge_3_correct.ts:4",
@@ -571,6 +638,7 @@
     {
       "fingerprint": "16cb2d9007931c3754c12b14a5880ce17a88d88b0d94b323d0d211e161d9ea9f",
       "verdict": "false",
+      "source": "hand",
       "note": "a test helper import",
       "rule_id": "rate_limit.missing",
       "where": "juice-shop/juice-shop test/api/product-review.test.ts:12",
@@ -579,6 +647,7 @@
     {
       "fingerprint": "de28a09026fc4a6de2d4e4642c557a1f5ca0e7b71f5edb94ea99a386916438c9",
       "verdict": "false",
+      "source": "hand",
       "note": "a snackbar message, not a file path",
       "rule_id": "path.traversal.user_path",
       "where": "juice-shop/juice-shop frontend/src/app/navbar/navbar.component.ts:261",
@@ -587,6 +656,7 @@
     {
       "fingerprint": "827001798f8d5b07b0074351a139b52c0c59759863d67281532f0ba1c3a5c853",
       "verdict": "false",
+      "source": "hand",
       "note": "inst.destroy() on an instance the dispatcher holds",
       "rule_id": "authz.missing_function_level",
       "where": "electerm/electerm src/app/server/dispatch-center.js:44",
@@ -595,6 +665,7 @@
     {
       "fingerprint": "9bfb73c20397bb9f9facf2bb21196891c52d8bb2c8b2b47eff1e6594741b1bb7",
       "verdict": "false",
+      "source": "hand",
       "note": "a cypress assertion",
       "rule_id": "null.pointer.deref",
       "where": "OWASP/NodeGoat test/e2e/integration/tutorial_spec.js:8",
@@ -603,6 +674,7 @@
     {
       "fingerprint": "c13ff4c9f0395155bb7a6daa9d129a839c1cc08cd38815d86c8116e3e19e669f",
       "verdict": "false",
+      "source": "hand",
       "note": "static SVG path data in an avatar component; the interpolations are palette colours the library itself produces",
       "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
       "where": "dicebear/dicebear packages/@dicebear/avataaars/src/components/accessories.ts:22",
@@ -611,6 +683,7 @@
     {
       "fingerprint": "87448eee78b955ed45caa6778b1d534f6cfc8df50c5ca09285ac272653406b26",
       "verdict": "false",
+      "source": "hand",
       "note": "every interpolation is wrapped in escape.xml(); the value is escaped and the rule cannot see it",
       "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
       "where": "dicebear/dicebear packages/@dicebear/big-ears/src/components/face.ts:30",
@@ -619,6 +692,7 @@
     {
       "fingerprint": "718ae972a15361be1785a1d0913a937d326ea3f7049075350389e4e98a6df3b0",
       "verdict": "false",
+      "source": "hand",
       "note": "escape.xml() on the interpolated colour; already escaped",
       "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
       "where": "dicebear/dicebear packages/@dicebear/croodles/src/components/top.ts:105",
@@ -627,6 +701,7 @@
     {
       "fingerprint": "121d8e0d202c2f13e32e9e66f34c204dd645254bd403995b136ef67dc626d585",
       "verdict": "false",
+      "source": "hand",
       "note": "static path geometry; nothing untrusted reaches the markup",
       "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
       "where": "dicebear/dicebear packages/@dicebear/lorelei/src/components/glasses.ts:35",
@@ -635,6 +710,7 @@
     {
       "fingerprint": "6d0c66bf5f00f8bd49d7f4b6c65d53b5e862e738af7b119a46b51677ea4c53d0",
       "verdict": "false",
+      "source": "hand",
       "note": "escape.xml() on the interpolated colour; already escaped",
       "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
       "where": "dicebear/dicebear packages/@dicebear/pixel-art-neutral/src/components/eyes.ts:65",
@@ -643,6 +719,7 @@
     {
       "fingerprint": "ffd3d6406c8843131f5205e7e791b60b3c74471e1b23c6bd328b54b988302a8e",
       "verdict": "false",
+      "source": "hand",
       "note": "escape.xml() on the interpolated colour; already escaped",
       "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
       "where": "dicebear/dicebear packages/@dicebear/thumbs/src/components/shape.ts:17",
@@ -651,6 +728,7 @@
     {
       "fingerprint": "d6654a00b26957139b25c63be99bd042e7c8342be3e7da6dbb7b041d5a89cf78",
       "verdict": "false",
+      "source": "hand",
       "note": "all three interpolations are wrapped in escapeHtml(); the line is the escaped form, not the defect",
       "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
       "where": "kepano/defuddle src/extractors/bluesky.ts:293",
@@ -659,6 +737,7 @@
     {
       "fingerprint": "c080330f680d73a58e262958cf4849cc6b8e2cd3e63414b3a0e0f8362d3553c0",
       "verdict": "false",
+      "source": "hand",
       "note": "composition: ${parts.join()} is already-built markup, not data being injected",
       "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
       "where": "kepano/defuddle src/extractors/x-oembed.ts:458",
@@ -667,6 +746,7 @@
     {
       "fingerprint": "183c2f5265e1aaf718ab3ba83249ddd32fc67f48364ca8352e0f90b67a4201fe",
       "verdict": "false",
+      "source": "hand",
       "note": "a static marketing page; the interpolations are build-time constants",
       "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
       "where": "kepano/defuddle website/src/success.ts:6",
@@ -675,6 +755,7 @@
     {
       "fingerprint": "6322c7cd511c4e5d0eab20f3ded15dfd177675a726b15a47d181438d8df9f1ae",
       "verdict": "true",
+      "source": "hand",
       "note": "parsed transcript timestamps interpolated into markup with no escaping on either value",
       "rule_id": "opengrep.cwe-79.js-html-string-interpolated",
       "where": "kepano/defuddle src/utils/transcript.ts:77",
@@ -683,6 +764,7 @@
     {
       "fingerprint": "1daee38086d0231cfe6713b75db6082d6c2bf81d6423207c6ee9725af0bb7f48",
       "verdict": "false",
+      "source": "hand",
       "note": "<%- include(...) %> is EJS's own partial-composition idiom, not unescaped user output",
       "rule_id": "opengrep.cwe-79.tpl-ejs-unescaped-output",
       "where": "appsecco/dvna views/vulnerabilities/layout.ejs:35",
@@ -691,6 +773,7 @@
     {
       "fingerprint": "ba4ce7cc6c7bfef9e4baa9f9c0385036d8884715bba8f146bd36ebc1141bc90e",
       "verdict": "false",
+      "source": "hand",
       "note": "<%- include(...) %>, the same partial-composition idiom",
       "rule_id": "opengrep.cwe-79.tpl-ejs-unescaped-output",
       "where": "appsecco/dvna views/vulnerabilities/layout.ejs:38",
@@ -699,6 +782,7 @@
     {
       "fingerprint": "6c3ff4f59b9e1fb919e4ea1daacd9d89da08599be712f1c5f93d8dfd89918a98",
       "verdict": "false",
+      "source": "hand",
       "note": "<%- include(...) %>, the same partial-composition idiom",
       "rule_id": "opengrep.cwe-79.tpl-ejs-unescaped-output",
       "where": "appsecco/dvna views/vulnerabilities/layout.ejs:41",
@@ -707,6 +791,7 @@
     {
       "fingerprint": "e8dc0d0b00d3732f33873c18c3f791e1c9e45ce5c9bee57da312b0c6f9b765e1",
       "verdict": "false",
+      "source": "hand",
       "note": "<%- body %> is how express-ejs-layouts renders the child view; already-rendered output",
       "rule_id": "opengrep.cwe-79.tpl-ejs-unescaped-output",
       "where": "snyk-labs/nodejs-goof views/layout.ejs:12",
@@ -715,6 +800,7 @@
     {
       "fingerprint": "3dbf7b658585cfd5144577236be7ff7e62a6dd8d92118f0d18878c60f278daa9",
       "verdict": "false",
+      "source": "hand",
       "note": "an Angular @if control-flow block: `{ {{ x }} }` matched as `{{{ }}}` because generic mode ignores whitespace. Not a triple-brace at all",
       "rule_id": "opengrep.cwe-79.tpl-mustache-triple-brace",
       "where": "juice-shop/juice-shop frontend/src/app/score-board/components/challenges-unavailable-warning/challenges-unavailable-warning.component.html:16",
@@ -723,6 +809,7 @@
     {
       "fingerprint": "bd906cfc17b4b8e088ddad5aeaa89f93239a92eb17e01d0941b35776f9799529",
       "verdict": "false",
+      "source": "hand",
       "note": "the same Angular @if block matched through whitespace-insensitive tokenisation",
       "rule_id": "opengrep.cwe-79.tpl-mustache-triple-brace",
       "where": "juice-shop/juice-shop frontend/src/app/score-board/components/filter-settings/filter-settings.component.html:14",
@@ -731,6 +818,7 @@
     {
       "fingerprint": "7dbcf3a088576f6a7e50ca0938bb10158b4eaf7f7e48daacf3981e8594255e54",
       "verdict": "true",
+      "source": "hand",
       "note": "{{{body}}} renders the child view unescaped in a Handlebars layout",
       "rule_id": "opengrep.cwe-79.tpl-mustache-triple-brace",
       "where": "snyk-labs/nodejs-goof views/layout.hbs:12",
@@ -739,6 +827,7 @@
     {
       "fingerprint": "1eb1d72733f42f51007630caf5271998cbc1f7f24b4bd1a02372910f5125dcc3",
       "verdict": "true",
+      "source": "hand",
       "note": "|safe on a Django form field renders submitted data as HTML",
       "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
       "where": "adeyosemanputra/pygoat dockerized_labs/sensitive_data_exposure/templates/login.html:59",
@@ -747,6 +836,7 @@
     {
       "fingerprint": "1c5b17526889982fb434682223fcab6f5f160ba349b2406641a495dc65c0227a",
       "verdict": "true",
+      "source": "hand",
       "note": "|safe on a fetched remote response rendered straight into the page",
       "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
       "where": "adeyosemanputra/pygoat introduction/templates/Lab/ssrf/ssrf_lab2.html:23",
@@ -755,6 +845,7 @@
     {
       "fingerprint": "a7b6837c536043277c61f7dcdac4a16a458a6faf343578de22d012bebdba35e1",
       "verdict": "true",
+      "source": "hand",
       "note": "|safe on a username",
       "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
       "where": "adeyosemanputra/pygoat introduction/templates/Lab_2021/A8_software_and_data_integrity_failure/lab2.html:11",
@@ -763,6 +854,7 @@
     {
       "fingerprint": "8d1cf205a6e83da06fa9695958594e4ee69223ae850f7784235146010b8b3a33",
       "verdict": "true",
+      "source": "hand",
       "note": "|safe on a search header built from the query",
       "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
       "where": "benbusby/whoogle-search app/templates/display.html:32",
@@ -771,6 +863,7 @@
     {
       "fingerprint": "ef71f6822c6146d685807df89a5e7dd059790e872129ae75a2e56df46d71f580",
       "verdict": "true",
+      "source": "hand",
       "note": "|safe on the proxied upstream search response, which is the app's main XSS surface",
       "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
       "where": "benbusby/whoogle-search app/templates/display.html:39",
@@ -779,6 +872,7 @@
     {
       "fingerprint": "1763160afbc30341b133e9af60d5c89839e368daa09fa64fda936e517635f901",
       "verdict": "false",
+      "source": "hand",
       "note": "|safe on the application's own logo SVG constant; nothing untrusted reaches it",
       "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
       "where": "benbusby/whoogle-search app/templates/header.html:9",
@@ -787,6 +881,7 @@
     {
       "fingerprint": "54e08d3f742d27d7d02b799098a01ab4feedcfc0e782635290d5a911c6b669d4",
       "verdict": "false",
+      "source": "hand",
       "note": "|safe on the same logo constant",
       "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
       "where": "benbusby/whoogle-search app/templates/header.html:65",
@@ -795,6 +890,7 @@
     {
       "fingerprint": "4e680c812095a4ac4f3fe5a02cceb8e0ce0ad036c1de342cc1a60b9f684266bb",
       "verdict": "false",
+      "source": "hand",
       "note": "|safe on the same logo constant",
       "rule_id": "opengrep.cwe-79.tpl-unescaping-filter",
       "where": "benbusby/whoogle-search app/templates/index.html:64",
@@ -803,6 +899,7 @@
     {
       "fingerprint": "40c1e3082a567d01f26f9e74346443ce83fc6ea2e79cbf633af179a13b549f6e",
       "verdict": "true",
+      "source": "hand",
       "note": "bypassSecurityTrustScript on a query parameter",
       "rule_id": "opengrep.cwe-79.js-angular-bypass-security-trust",
       "where": "juice-shop/juice-shop data/static/codefixes/localXssChallenge_3.ts:6",
@@ -811,6 +908,7 @@
     {
       "fingerprint": "400e979edd71b48414248061efd123671ed3cc549cde8d933fd540d73b79bf7d",
       "verdict": "true",
+      "source": "hand",
       "note": "bypassSecurityTrustScript on a server-supplied product description",
       "rule_id": "opengrep.cwe-79.js-angular-bypass-security-trust",
       "where": "juice-shop/juice-shop data/static/codefixes/restfulXssChallenge_4.ts:46",
@@ -819,6 +917,7 @@
     {
       "fingerprint": "4b6b7e56e3a71cf6bf6cd009358c570bdcde6089e5722423cfdee3d9b3a55a0e",
       "verdict": "true",
+      "source": "hand",
       "note": "bypassSecurityTrustResourceUrl on a query parameter",
       "rule_id": "opengrep.cwe-79.js-angular-bypass-security-trust",
       "where": "juice-shop/juice-shop data/static/codefixes/xssBonusChallenge_2.ts:6",
@@ -827,6 +926,7 @@
     {
       "fingerprint": "520f9f51749f29debc734bbcd73542438724f016d902ab2349e145a3ac277a4f",
       "verdict": "true",
+      "source": "hand",
       "note": "bypassSecurityTrustHtml on a captcha image the server supplies",
       "rule_id": "opengrep.cwe-79.js-angular-bypass-security-trust",
       "where": "juice-shop/juice-shop frontend/src/app/data-export/data-export.component.ts:58",
@@ -835,6 +935,7 @@
     {
       "fingerprint": "47c1ac284c77a29290b1c959f4cadeca58dcd7488e2e8c3063efc61ef252ac9d",
       "verdict": "true",
+      "source": "hand",
       "note": "bypassSecurityTrustHtml on a challenge description that comes from the API",
       "rule_id": "opengrep.cwe-79.js-angular-bypass-security-trust",
       "where": "juice-shop/juice-shop frontend/src/app/score-board/component.ts:83",
@@ -843,6 +944,7 @@
     {
       "fingerprint": "bf481810388ba445fa3e33fcbe4659cacd9cfd1099d6dfee1ea5740cdec9243d",
       "verdict": "true",
+      "source": "hand",
       "note": "query results formatted straight into a table with no escaping",
       "rule_id": "opengrep.cwe-79.py-html-percent-format",
       "where": "stamparm/DSVW dsvw.py:23",
@@ -851,6 +953,7 @@
     {
       "fingerprint": "d1a1df03a04c1618cfc630513d08c98ac3ee7281b832c6d01a796d33d753d0be",
       "verdict": "true",
+      "source": "hand",
       "note": "a surname read from XML formatted into markup unescaped",
       "rule_id": "opengrep.cwe-79.py-html-percent-format",
       "where": "stamparm/DSVW dsvw.py:36",
@@ -859,6 +962,7 @@
     {
       "fingerprint": "f178f80450bf4c8730ee29ac82b095e07726b359dd888d422483b126c2d5d293",
       "verdict": "false",
+      "source": "hand",
       "note": "the substituted values are ints and a float through %d and %.6f; nothing here can carry markup",
       "rule_id": "opengrep.cwe-79.py-html-percent-format",
       "where": "stamparm/DSVW dsvw.py:39",
@@ -867,6 +971,7 @@
     {
       "fingerprint": "73f218e0feb5af14498230ce44162731269d5813789944d82ce8aab750fb23c3",
       "verdict": "true",
+      "source": "hand",
       "note": "a request-supplied template string rendered into the page",
       "rule_id": "opengrep.cwe-79.py-html-percent-format",
       "where": "stamparm/DSVW dsvw.py:55",
@@ -875,6 +980,7 @@
     {
       "fingerprint": "55bdc12f9b98c491c4133cd476e8a335c52a0ae3113a71e35f3fc3217e4e2fac",
       "verdict": "true",
+      "source": "hand",
       "note": "a scraped image URL formatted into an src attribute with no escaping",
       "rule_id": "opengrep.cwe-79.py-html-percent-format",
       "where": "webcomics/dosage dosagelib/events.py:111",
@@ -883,6 +989,7 @@
     {
       "fingerprint": "0cdda8e273500605c0fb1a9fd152527358940ea805fbad644a50f1a0f9f39f1f",
       "verdict": "true",
+      "source": "hand",
       "note": "a URL formatted into an href with no escaping",
       "rule_id": "opengrep.cwe-79.py-html-percent-format",
       "where": "webcomics/dosage dosagelib/events.py:176",
@@ -891,6 +998,7 @@
     {
       "fingerprint": "a823563c1813d65dec710d8d48dcc16286799b96ea4ec986474cd01fef30c8d9",
       "verdict": "true",
+      "source": "hand",
       "note": "a scraped image URL formatted into an src attribute",
       "rule_id": "opengrep.cwe-79.py-html-percent-format",
       "where": "webcomics/dosage dosagelib/events.py:235",
@@ -899,6 +1007,7 @@
     {
       "fingerprint": "5730dc9f7eb311be764705a6e0f33ea6f039639a77ed818ef07dfca28173fa40",
       "verdict": "true",
+      "source": "hand",
       "note": "a scraper name formatted into a list item with no escaping",
       "rule_id": "opengrep.cwe-79.py-html-percent-format",
       "where": "webcomics/dosage dosagelib/events.py:250",
@@ -907,6 +1016,7 @@
     {
       "fingerprint": "d77942462e9c4aad0b173376b2ec6f58a20c99f941ca51f5b6f3d7d02c41e0a1",
       "verdict": "true",
+      "source": "hand",
       "note": "v-html on an i18n string with interpolated style metadata; translations rendered as HTML",
       "rule_id": "opengrep.cwe-79.tpl-vue-v-html",
       "where": "dicebear/dicebear apps/editor/src/components/Header.vue:66",
@@ -915,6 +1025,7 @@
     {
       "fingerprint": "36cbb91c9002186579c32ae51dba70a7dcb990441479e9a04c6f5cf7b1d94eba",
       "verdict": "true",
+      "source": "hand",
       "note": "!{JSON.stringify(_global)} writes a serialized object into a script tag unescaped",
       "rule_id": "opengrep.cwe-79.tpl-pug-unescaped-interpolation",
       "where": "electerm/electerm src/client/views/index.pug:48",
@@ -923,6 +1034,7 @@
     {
       "fingerprint": "d8e4abcbc01fbcee4ba5face9ffef4ccb7aa0d8337ad69e6ffc0b8efbd204526",
       "verdict": "true",
+      "source": "hand",
       "note": "an npm downloads count fetched from a remote API is written with innerHTML rather than textContent",
       "rule_id": "opengrep.cwe-79.tpl-inline-script-inner-html",
       "where": "sebhildebrandt/systeminformation docs/index.html:57",
@@ -931,6 +1043,7 @@
     {
       "fingerprint": "1b4750c960b0d715c928d3b3c7882b48549940f56df828aa83b913e6bcf83f6d",
       "verdict": "true",
+      "source": "hand",
       "note": "a version string fetched from a remote API written with innerHTML",
       "rule_id": "opengrep.cwe-79.tpl-inline-script-inner-html",
       "where": "sebhildebrandt/systeminformation docs/index.html:68",
@@ -939,6 +1052,7 @@
     {
       "fingerprint": "990f43a85f12987833bfcdeb35702dca7242775d970550da6e875e9acb61dabb",
       "verdict": "true",
+      "source": "hand",
       "note": "the same remote downloads count written with innerHTML",
       "rule_id": "opengrep.cwe-79.tpl-inline-script-inner-html",
       "where": "sebhildebrandt/systeminformation docs/v4/index.html:56",
@@ -947,6 +1061,7 @@
     {
       "fingerprint": "8c67fba0576afc9e00486248c92f16c1264778b1d019c69dfb8e96e2984666fa",
       "verdict": "true",
+      "source": "hand",
       "note": "the same remote version string written with innerHTML",
       "rule_id": "opengrep.cwe-79.tpl-inline-script-inner-html",
       "where": "sebhildebrandt/systeminformation docs/v4/index.html:67",
@@ -955,6 +1070,7 @@
     {
       "fingerprint": "dba35f53b2b5a5530144849e466d427e4e939ea525037a9c6c072d13b0bc46b1",
       "verdict": "true",
+      "source": "hand",
       "note": "a scanner API key committed as an object property of a configuration module, outside test code; the value is redacted and recorded only as repository, path and format",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "OWASP/NodeGoat config/env/development.js:6",
@@ -963,6 +1079,7 @@
     {
       "fingerprint": "b061da3262267ba4c03fd9787e6ebd0221d3f9a0d3b27719b906d1f9ae846383",
       "verdict": "true",
+      "source": "hand",
       "note": "the same scanner API key in the second environment config; `config/env/test.js` is a configuration file named test.js, not test code, so this one posts",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "OWASP/NodeGoat config/env/test.js:6",
@@ -971,6 +1088,7 @@
     {
       "fingerprint": "22deff710091457f209f2e9364d952524f3c30ba9fbeb1e17b123a587a6f641d",
       "verdict": "true",
+      "source": "hand",
       "note": "an HS256-signed session token for user id 1, commented out in shipped frontend JavaScript; a commented-out credential is still a committed credential, which is why this module does not read the comment-blanked text",
       "rule_id": "secret.format.known_key",
       "where": "adeyosemanputra/pygoat introduction/static/js/a7.js:4",
@@ -979,6 +1097,7 @@
     {
       "fingerprint": "e60da8204de09ae88b19edf366b3452bdab387391da4bb57cabcd14a8b478e3c",
       "verdict": "true",
+      "source": "hand",
       "note": "the same session token, live rather than commented, eighteen lines into the sibling file; the value is redacted and recorded only as repository, path and format",
       "rule_id": "secret.format.known_key",
       "where": "adeyosemanputra/pygoat introduction/static/js/a9.js:18",
@@ -987,6 +1106,7 @@
     {
       "fingerprint": "02ada44d471ca45df80f2d2ed1a5e25cb627b780df4dcfb1696f8fca858ef746",
       "verdict": "true",
+      "source": "hand",
       "note": "an account password literal written into the database from application code; the identifier is `password` and the value is a 32-character digest, which is credential material for that account whether or not it was hashed first",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "adeyosemanputra/pygoat introduction/views.py:866",
@@ -995,6 +1115,7 @@
     {
       "fingerprint": "14e754a73650c9c5b4a63e11b82c80c8ff910a41398b864528ad45f84f9d8f8e",
       "verdict": "true",
+      "source": "hand",
       "note": "the same shape for a second seeded account, three lines down",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "adeyosemanputra/pygoat introduction/views.py:870",
@@ -1003,6 +1124,7 @@
     {
       "fingerprint": "12878b91fa769b42c7bc5d979396bc4344f71da2358fd7df062e086d7a4889bb",
       "verdict": "true",
+      "source": "hand",
       "note": "the same shape for a third seeded account",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "adeyosemanputra/pygoat introduction/views.py:872",
@@ -1011,6 +1133,7 @@
     {
       "fingerprint": "24dfa49699e145eeee59b2599a9431f2f4c00d0b2fd0117e80c072d405d8626f",
       "verdict": "false",
+      "source": "hand",
       "note": "a token minted by the test to carry a `lastLoginIp` claim through the component under test; it authenticates against nothing",
       "rule_id": "secret.format.known_key",
       "where": "juice-shop/juice-shop frontend/src/app/last-login-ip/last-login-ip.component.spec.ts:72",
@@ -1019,6 +1142,7 @@
     {
       "fingerprint": "8278f340f293cdc4e6cc44e78dcc70cfe6c6988bb2d37113bb12be7dba4a5abc",
       "verdict": "false",
+      "source": "hand",
       "note": "the empty-claims variant of the same minted token, two tests down",
       "rule_id": "secret.format.known_key",
       "where": "juice-shop/juice-shop frontend/src/app/last-login-ip/last-login-ip.component.spec.ts:78",
@@ -1027,6 +1151,7 @@
     {
       "fingerprint": "7e80abacee8ff9dd6c212d556f7a31d074d3ad779d8f2b432b2442e8e33409be",
       "verdict": "true",
+      "source": "hand",
       "note": "a complete RSA private key inlined into a single-line JavaScript string in production source, not test code; the most consequential finding of the measurement, and the value is redacted and recorded only as repository, path, line and format",
       "rule_id": "secret.format.known_key",
       "where": "juice-shop/juice-shop lib/insecurity.ts:21",
@@ -1035,6 +1160,7 @@
     {
       "fingerprint": "f117160506eb3e913910e8f88f3862aeb445d97ada194387e464b0bfb966e183",
       "verdict": "false",
+      "source": "hand",
       "note": "a TOTP seed for a demo account the application itself ships in its seed data, in test code; it authenticates nothing outside a local run, so rotating it is not advice",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/2fa.test.ts:42",
@@ -1043,6 +1169,7 @@
     {
       "fingerprint": "1fb42d5e87f383fdf40fdb6967f7971ba326bd59e063368265b9be41742cdfdd",
       "verdict": "false",
+      "source": "hand",
       "note": "a second TOTP seed in the same test file, same reasoning",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/2fa.test.ts:66",
@@ -1051,6 +1178,7 @@
     {
       "fingerprint": "08c2143fd73958d5c07d1ba8f695c22abbf7485111595a33131508bca4c224b6",
       "verdict": "false",
+      "source": "hand",
       "note": "the seeded account's TOTP secret passed to a login helper in a test",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/2fa.test.ts:142",
@@ -1059,6 +1187,7 @@
     {
       "fingerprint": "a274aea0f02fb9deffbb9c9cb15a2322cfed00bc9732ae8da4761e6025cc4517",
       "verdict": "false",
+      "source": "hand",
       "note": "a TOTP seed the test generates a registration with; it is a fixture the test invents, not a credential that exists anywhere",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/2fa.test.ts:182",
@@ -1067,6 +1196,7 @@
     {
       "fingerprint": "9170a6eed46facff58cbf76e18dca8da59321c1613be8bb4fa1ab720dac7035b",
       "verdict": "false",
+      "source": "hand",
       "note": "the same invented seed in the disable-2fa test",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/2fa.test.ts:352",
@@ -1075,6 +1205,7 @@
     {
       "fingerprint": "a3936d0fe28f7dab457655201ddda4023523290b2e0463eb5d027fb8f27735f8",
       "verdict": "false",
+      "source": "hand",
       "note": "a token the test supplies precisely because it expired in 2019, to assert that an expired token returns no user",
       "rule_id": "secret.format.known_key",
       "where": "juice-shop/juice-shop test/api/user.test.ts:280",
@@ -1083,6 +1214,7 @@
     {
       "fingerprint": "6c3d41f5b063c258100ffb50d9691c28255edbcde807cac3cc992f2e2db95bf1",
       "verdict": "false",
+      "source": "hand",
       "note": "a forged token fixture for the signed-JWT challenge, minted by the test author",
       "rule_id": "secret.format.known_key",
       "where": "juice-shop/juice-shop test/cypress/e2e/forgedJwt.spec.ts:22",
@@ -1091,6 +1223,7 @@
     {
       "fingerprint": "fb4b64f54a4ce3e36845e9d7b3f2a5dbbac91dc5e3659ec77f18dbe4b84033ff",
       "verdict": "false",
+      "source": "hand",
       "note": "the RS256 forgery fixture for the leaked-key challenge; the credential in that story is the private key in `lib/insecurity.ts`, which is the true positive above",
       "rule_id": "secret.format.known_key",
       "where": "juice-shop/juice-shop test/cypress/e2e/forgedJwt.spec.ts:38",
@@ -1099,6 +1232,7 @@
     {
       "fingerprint": "24fa66fc7db946f7209e90f49abb06dde0f705c94c2e27b3113fdd5b4cbab961",
       "verdict": "false",
+      "source": "hand",
       "note": "a token the unit test puts in a cookie and then registers in its own in-memory map",
       "rule_id": "secret.format.known_key",
       "where": "juice-shop/juice-shop test/server/currentUser.unit.test.ts:31",
@@ -1107,6 +1241,7 @@
     {
       "fingerprint": "fd1efc29fc9231ed8beaaa261d5dd67538ca21f3a83f2adc636efb9d769ff616",
       "verdict": "false",
+      "source": "hand",
       "note": "the seeded demo user's password, base64 of their reversed email address, in test code; the application ships the same value in its own seed data",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/basket.test.ts:114",
@@ -1115,6 +1250,7 @@
     {
       "fingerprint": "59af70e7841d81b51acc49f94d28fd6787add3ebdf5d883024a3414ce18a8890",
       "verdict": "false",
+      "source": "hand",
       "note": "the same seeded demo password, one of eight test files carrying it",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/chat.test.ts:261",
@@ -1123,6 +1259,7 @@
     {
       "fingerprint": "dfd7ec01fac3eafdffe79459384e7adf15cd0f6d8238ce440dfc87d5396fe849",
       "verdict": "false",
+      "source": "hand",
       "note": "the same seeded demo password",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/data-export.test.ts:53",
@@ -1131,6 +1268,7 @@
     {
       "fingerprint": "bbe85a624a872eb7c25012f088772d230f50e1c2806e4bb38ded2fd7a21aed81",
       "verdict": "false",
+      "source": "hand",
       "note": "the same seeded demo password",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/erasure-request.test.ts:36",
@@ -1139,6 +1277,7 @@
     {
       "fingerprint": "89ccf3b27ba7c99bc3261176d59a88de897dcf7ce4cfe2f5612e4e2bf315ea8f",
       "verdict": "false",
+      "source": "hand",
       "note": "the same seeded demo password",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/feedback.test.ts:117",
@@ -1147,6 +1286,7 @@
     {
       "fingerprint": "751b95cce8fc8b71d69db49b86f47c3fc797de21b0b0e5ae12f834550862dc79",
       "verdict": "false",
+      "source": "hand",
       "note": "the same seeded demo password",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/login.test.ts:147",
@@ -1155,6 +1295,7 @@
     {
       "fingerprint": "09b2498c3664d9ac7fe100cca2014f69bd1ae05766b9106e96587ee36a9e689e",
       "verdict": "false",
+      "source": "hand",
       "note": "the same seeded demo password",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/product-review.test.ts:101",
@@ -1163,6 +1304,7 @@
     {
       "fingerprint": "f8ae0c6b2595639ec5394b58370355567e2a5f93b932cd7486cb597e2574c055",
       "verdict": "false",
+      "source": "hand",
       "note": "the same seeded demo password",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/api/user.test.ts:240",
@@ -1171,6 +1313,7 @@
     {
       "fingerprint": "9d37494beaaa683d4c84bde8969f1e226f841f19966a22a71523cada6bb4bb68",
       "verdict": "false",
+      "source": "hand",
       "note": "the seeded account's TOTP secret in a Cypress login helper",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/cypress/e2e/totpSetup.spec.ts:7",
@@ -1179,6 +1322,7 @@
     {
       "fingerprint": "e46780fa989363fe34e63c66fa7cb63da04205bbb82164545d7d9cb8a1281761",
       "verdict": "false",
+      "source": "hand",
       "note": "a forged HMAC-signed token fixture for the challenge verifier",
       "rule_id": "secret.format.known_key",
       "where": "juice-shop/juice-shop test/server/verify.unit.test.ts:308",
@@ -1187,6 +1331,7 @@
     {
       "fingerprint": "56bba1605fb1b7b034577cf4af5e1656bd5a1453db022d8e7b0791c6bb4321db",
       "verdict": "false",
+      "source": "hand",
       "note": "the second forged token fixture in the same test",
       "rule_id": "secret.format.known_key",
       "where": "juice-shop/juice-shop test/server/verify.unit.test.ts:316",
@@ -1195,6 +1340,7 @@
     {
       "fingerprint": "cb00668264a23b72a6d4e50df62ffbebe923014269e1408590026b207623d36f",
       "verdict": "false",
+      "source": "hand",
       "note": "a generated Stripe-shaped fixture in this branch's own test for the rotation copy",
       "rule_id": "secret.format.known_key",
       "where": "aicodesentry/mitig8it action/tests/test_secret_rotation_copy.py:32",
@@ -1203,6 +1349,7 @@
     {
       "fingerprint": "9f818af59f258e9003fa510f41ae049bee513753a5e373a0cfef5850dfcaa38d",
       "verdict": "false",
+      "source": "hand",
       "note": "a bare PEM armour marker as a fixture in the same test",
       "rule_id": "secret.format.known_key",
       "where": "aicodesentry/mitig8it action/tests/test_secret_rotation_copy.py:35",
@@ -1211,6 +1358,7 @@
     {
       "fingerprint": "a97c3247248d11b7d4ac3f59203591b2377e19553f8397a08d57d548a355746d",
       "verdict": "false",
+      "source": "hand",
       "note": "a generated Stripe-shaped fixture inside a prose line, in the test that asserts the format signal reads prose",
       "rule_id": "secret.format.known_key",
       "where": "aicodesentry/mitig8it services/analysis-service/src/tests/test_prose_path_scope.py:27",
@@ -1219,6 +1367,7 @@
     {
       "fingerprint": "d5e2671fdff16a392a6e963fcf2b6b8d4df111c8444296e38dd000fbf427aaaa",
       "verdict": "false",
+      "source": "hand",
       "note": "a base64 fragment inside a JSON string in a test payload; a fixture, not a credential",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "aicodesentry/mitig8it services/analysis-service/src/tests/test_prose_path_scope.py:184",
@@ -1227,6 +1376,7 @@
     {
       "fingerprint": "0d386cb200c7288e4e7f10a0a364f924c90ae98de45dfe52a4b31a7a4791cfe8",
       "verdict": "false",
+      "source": "hand",
       "note": "the PEM armour marker in this detector's own format table test",
       "rule_id": "secret.format.known_key",
       "where": "aicodesentry/mitig8it services/analysis-service/src/tests/test_secret_detection.py:95",
@@ -1235,6 +1385,7 @@
     {
       "fingerprint": "cd6d9947ccfdb6177752520b2207a3cde35667b92ea35d08ff6ecf61086def86",
       "verdict": "false",
+      "source": "hand",
       "note": "the OpenSSH armour marker in the same table",
       "rule_id": "secret.format.known_key",
       "where": "aicodesentry/mitig8it services/analysis-service/src/tests/test_secret_detection.py:96",
@@ -1243,6 +1394,7 @@
     {
       "fingerprint": "98a7a3e3225cc5cf960bb7480ee0906449c5e2fde1fc4cce92f0d090e61450ce",
       "verdict": "false",
+      "source": "hand",
       "note": "a generated connection-string fixture in the same table",
       "rule_id": "secret.format.known_key",
       "where": "aicodesentry/mitig8it services/analysis-service/src/tests/test_secret_detection.py:100",
@@ -1251,6 +1403,7 @@
     {
       "fingerprint": "da49689a808f60121d915eca863d801579daa16482adecebf97e34118a48e542",
       "verdict": "false",
+      "source": "hand",
       "note": "the same generated Stripe-shaped fixture, in the App's copy test",
       "rule_id": "secret.format.known_key",
       "where": "aicodesentry/mitig8it services/api-service/tests/secretRotationCopy.test.js:35",
@@ -1259,6 +1412,7 @@
     {
       "fingerprint": "7ea206943cfcaaed4c02b7dab9c7e45e248dbfb4f165078189355924614fd13e",
       "verdict": "false",
+      "source": "hand",
       "note": "the same PEM marker fixture, in the App's copy test",
       "rule_id": "secret.format.known_key",
       "where": "aicodesentry/mitig8it services/api-service/tests/secretRotationCopy.test.js:56",
@@ -1267,6 +1421,7 @@
     {
       "fingerprint": "",
       "verdict": "false",
+      "source": "hand",
       "note": "the example token from jwt.io's front page, whose signing key is printed beside it there; it passes the JWT format's structural verification in full, so only a published-example refusal can stop it",
       "rule_id": "secret.format.known_key",
       "where": "juice-shop/juice-shop frontend/src/app/app.guard.spec.ts:46",
@@ -1277,6 +1432,7 @@
     {
       "fingerprint": "",
       "verdict": "false",
+      "source": "hand",
       "note": "an `alg:none` JWT with an empty signature, in a fixture for the unsigned-token challenge; anyone can mint one, so it grants nothing, and the JWT format had already refused it when the entropy signal reported it under the identifier `authorization`",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/server/verify.unit.test.ts:283",
@@ -1287,6 +1443,7 @@
     {
       "fingerprint": "",
       "verdict": "false",
+      "source": "hand",
       "note": "the second unsigned forgery fixture in the same file",
       "rule_id": "secret.entropy.credential_assignment",
       "where": "juice-shop/juice-shop test/server/verify.unit.test.ts:291",
@@ -1297,6 +1454,7 @@
     {
       "fingerprint": "aea0489e4f9fdd8c285c2a6544a46096550c2634e3ca23484276fce2e3f0f0c5",
       "verdict": "true",
+      "source": "hand",
       "note": "docker/login-action@v1 is a third-party action on a mutable major tag, and the same step is handed DOCKER_USERNAME and DOCKER_PASSWORD; moving v1 would hand those to whatever the new commit does",
       "rule_id": "opengrep.cwe-1357.gha-third-party-action-unpinned",
       "where": "benbusby/whoogle-search .github/workflows/buildx.yml:28",
@@ -1305,6 +1463,7 @@
     {
       "fingerprint": "220b364d4656b078711233f2a7b8ff3f516fbc65dc57cf40e9f66bb2b15acb78",
       "verdict": "true",
+      "source": "hand",
       "note": "pypa/gh-action-pypi-publish@master is a branch, not even a tag, in the step that receives TEST_PYPI_API_TOKEN",
       "rule_id": "opengrep.cwe-1357.gha-third-party-action-unpinned",
       "where": "benbusby/whoogle-search .github/workflows/pypi.yml:36",
@@ -1313,6 +1472,7 @@
     {
       "fingerprint": "fb61470fa253e534151a62e3c54cc7d1b7ef39411fcaa1ab60f2def61f107eb7",
       "verdict": "true",
+      "source": "hand",
       "note": "the same action on the same branch in the step that receives the real PYPI_API_TOKEN",
       "rule_id": "opengrep.cwe-1357.gha-third-party-action-unpinned",
       "where": "benbusby/whoogle-search .github/workflows/pypi.yml:65",
@@ -1321,6 +1481,7 @@
     {
       "fingerprint": "973ab68f64c3c78994645e8f8f09dfb93d8b9e2253b74ba97d6d93c0184e5552",
       "verdict": "true",
+      "source": "hand",
       "note": "GabrielBB/xvfb-action@v1 is one person's action on a mutable tag, running in a job that has the repository's build secrets",
       "rule_id": "opengrep.cwe-1357.gha-third-party-action-unpinned",
       "where": "electerm/electerm .github/workflows/mac-test-3.yml:40",
@@ -1329,6 +1490,7 @@
     {
       "fingerprint": "3011d8982af4a2e738feebe5c165b5e532cb3968464774917faad0d4cd2673e1",
       "verdict": "true",
+      "source": "hand",
       "note": "codecov/codecov-action@v7.1.0 is third-party and the tag is movable; the action is exactly the kind that has been compromised before",
       "rule_id": "opengrep.cwe-1357.gha-third-party-action-unpinned",
       "where": "encode/django-rest-framework .github/workflows/main.yml:76",
@@ -1337,6 +1499,7 @@
     {
       "fingerprint": "012364cc21c7b55e40a1a856baa17d41f06ead6038528eca8b1e41a25aa5118a",
       "verdict": "true",
+      "source": "hand",
       "note": "pypa/gh-action-pypi-publish@release/v1.14 is a branch reference in the job that publishes the package",
       "rule_id": "opengrep.cwe-1357.gha-third-party-action-unpinned",
       "where": "encode/django-rest-framework .github/workflows/release.yml:84",
@@ -1345,6 +1508,7 @@
     {
       "fingerprint": "262abae5bac2b888106766c17be81ae2e2c005de5b6b09f30190d4a22250bd5c",
       "verdict": "true",
+      "source": "hand",
       "note": "google-github-actions/setup-gcloud@master is a branch, and the step is given GOOGLE_APPLICATION_CREDENTIALS",
       "rule_id": "opengrep.cwe-1357.gha-third-party-action-unpinned",
       "where": "google/slo-generator .github/workflows/build.yml:28",
@@ -1353,6 +1517,7 @@
     {
       "fingerprint": "e7eb0e0a871f6997e19df4744a31e4cc08b60eb3dac0a98e76969aec61708f54",
       "verdict": "true",
+      "source": "hand",
       "note": "calibreapp/image-actions@main is a branch reference in a step handed a GITHUB_TOKEN that can push",
       "rule_id": "opengrep.cwe-1357.gha-third-party-action-unpinned",
       "where": "juice-shop/juice-shop .github/workflows/image_actions.yml:33",
@@ -1361,6 +1526,7 @@
     {
       "fingerprint": "1fd985738b19c5e38fd19f3106f6ca3d802833e589099c87bae715a348b647d8",
       "verdict": "true",
+      "source": "hand",
       "note": "qltysh/qlty-action/coverage@v2 is a third-party action on a movable major tag",
       "rule_id": "opengrep.cwe-1357.gha-third-party-action-unpinned",
       "where": "webcomics/dosage .github/workflows/ci.yaml:44",
@@ -1369,6 +1535,7 @@
     {
       "fingerprint": "40e9d93573c64b79d0a4411774cb1c907306a04bc682e1633a27c631ffb37c88",
       "verdict": "true",
+      "source": "hand",
       "note": "pypa/gh-action-pypi-publish@release/v1 is a branch reference in the publish job",
       "rule_id": "opengrep.cwe-1357.gha-third-party-action-unpinned",
       "where": "webcomics/dosage .github/workflows/publish.yaml:67",
@@ -1377,6 +1544,7 @@
     {
       "fingerprint": "8a969dd7738494d5a740672c494bd5fd01d1569ffa011717df7a8b7b0c5fc9cb",
       "verdict": "false",
+      "source": "hand",
       "note": "the job's whole purpose is to update open pull request branches, so contents: write and pull-requests: write are the scopes it uses; nothing here is wider than needed",
       "rule_id": "opengrep.cwe-732.gha-write-permission-under-privileged-trigger",
       "where": "aicodesentry/mitig8it .github/workflows/auto-update-pr-branches.yml:13",
@@ -1385,6 +1553,7 @@
     {
       "fingerprint": "ff769d9369a58fabfb7494374013023b24ec4574931c64f58280bdc93e4ba8b8",
       "verdict": "false",
+      "source": "hand",
       "note": "id-token: write is what mints the OIDC token for Google Workload Identity Federation; contents is already read",
       "rule_id": "opengrep.cwe-732.gha-write-permission-under-privileged-trigger",
       "where": "aicodesentry/mitig8it .github/workflows/deploy-analysis-cloudrun.yml:68",
@@ -1393,6 +1562,7 @@
     {
       "fingerprint": "47033593569051a233891beeaaaa2469054098942dda558cebe0ac3c8164a944",
       "verdict": "false",
+      "source": "hand",
       "note": "the same OIDC token exchange in the api deploy job, with contents: read beside it",
       "rule_id": "opengrep.cwe-732.gha-write-permission-under-privileged-trigger",
       "where": "aicodesentry/mitig8it .github/workflows/deploy-api-cloudrun.yml:77",
@@ -1401,6 +1571,7 @@
     {
       "fingerprint": "db5ac1499fdb2f1205fb732997199ee6ad69ecdfae9eb49f312f22410b840884",
       "verdict": "false",
+      "source": "hand",
       "note": "the same OIDC token exchange in the github-service deploy job",
       "rule_id": "opengrep.cwe-732.gha-write-permission-under-privileged-trigger",
       "where": "aicodesentry/mitig8it .github/workflows/deploy-github-cloudrun.yml:68",
@@ -1409,6 +1580,7 @@
     {
       "fingerprint": "698645c46815fc9e954dff98b9e8e3292abfcc42052c47ac9056899340980e48",
       "verdict": "false",
+      "source": "hand",
       "note": "a backport job has to push a branch and open a pull request, so contents: write and pull-requests: write are the minimum it can run with",
       "rule_id": "opengrep.cwe-732.gha-write-permission-under-privileged-trigger",
       "where": "fastify/fastify .github/workflows/backport.yml:15",
@@ -1417,6 +1589,7 @@
     {
       "fingerprint": "6c6d29510bf4f1fc8b1d6ca4f5116280315baff83bfa5e34b4399d5527b74236",
       "verdict": "false",
+      "source": "hand",
       "note": "id-token: write mints an OIDC token; contents and pull-requests are both read, which is the narrow block the rule's own message asks for",
       "rule_id": "opengrep.cwe-732.gha-write-permission-under-privileged-trigger",
       "where": "vercel/next.js .github/workflows/automated_code_review.yml:27",
@@ -1425,6 +1598,7 @@
     {
       "fingerprint": "05441471d2de2d593dc9658d709e0b99d978283cce490cce293cd33a251af013",
       "verdict": "false",
+      "source": "hand",
       "note": "actions: write is the only scope that can re-run a failed workflow, which is all this workflow does",
       "rule_id": "opengrep.cwe-732.gha-write-permission-under-privileged-trigger",
       "where": "vercel/next.js .github/workflows/retry_deploy_test.yml:13",
@@ -1433,6 +1607,7 @@
     {
       "fingerprint": "f8217e66796fbb6e4452fd6392241e783475c547c145c01868c0df626e032172",
       "verdict": "false",
+      "source": "hand",
       "note": "the same single actions: write scope for the same re-run job",
       "rule_id": "opengrep.cwe-732.gha-write-permission-under-privileged-trigger",
       "where": "vercel/next.js .github/workflows/retry_test.yml:16",
@@ -1441,6 +1616,7 @@
     {
       "fingerprint": "77d186ba5d20fb679439cca563bbffeacd75f2913287447d2d6e74b0fc0d9d5d",
       "verdict": "false",
+      "source": "hand",
       "note": "actions: write is what dispatches the sync workflow; it is the job's one capability",
       "rule_id": "opengrep.cwe-732.gha-write-permission-under-privileged-trigger",
       "where": "vercel/next.js .github/workflows/sync_backport_canary_release.yml:125",
@@ -1449,6 +1625,7 @@
     {
       "fingerprint": "2e198f628efd1f5b58754166a50c2277d23fdd5aacb8b962a77d787603b13672",
       "verdict": "false",
+      "source": "hand",
       "note": "id-token: write with a comment beside it saying why, and the workflow's header explains that workflow_run is used precisely so the trusted revision runs",
       "rule_id": "opengrep.cwe-732.gha-write-permission-under-privileged-trigger",
       "where": "vercel/next.js .github/workflows/upload_preview_tarballs.yml:17",
@@ -1457,6 +1634,7 @@
     {
       "fingerprint": "cc17563ef6a15503aaa512499d24ef5efdeb743183fc8e0b0dd2b8c069e74a58",
       "verdict": "false",
+      "source": "hand",
       "note": "the interpolation is in an if: condition, not a shell script; pattern-inside run: ... had run past the end of the previous step",
       "rule_id": "opengrep.cwe-78.gha-run-untrusted-interpolation",
       "where": "electerm/electerm .github/workflows/linux-deb-tar.yml:37",
@@ -1465,6 +1643,7 @@
     {
       "fingerprint": "f56359bcfcee0da2d26343a77ec83de8065dd6bfa4c76ccd76465eca149a8e3a",
       "verdict": "false",
+      "source": "hand",
       "note": "the same if: condition in the rpm build workflow; an expression context is evaluated by Actions, never by a shell",
       "rule_id": "opengrep.cwe-78.gha-run-untrusted-interpolation",
       "where": "electerm/electerm .github/workflows/linux-rpm-snap.yml:45",
@@ -1473,6 +1652,7 @@
     {
       "fingerprint": "93cc34d5add5dfea7c67125d49afa5e45736bbc3b23de3825c8a56306c50bb10",
       "verdict": "false",
+      "source": "hand",
       "note": "the same if: condition, mac-10 build",
       "rule_id": "opengrep.cwe-78.gha-run-untrusted-interpolation",
       "where": "electerm/electerm .github/workflows/mac-10.yml:47",
@@ -1481,6 +1661,7 @@
     {
       "fingerprint": "2376f9d5cbb8fe025a16e7c043f16a9653582a107935e0a3f53a938a819ca417",
       "verdict": "false",
+      "source": "hand",
       "note": "the same if: condition, mac-arm build",
       "rule_id": "opengrep.cwe-78.gha-run-untrusted-interpolation",
       "where": "electerm/electerm .github/workflows/mac-arm.yml:33",
@@ -1489,6 +1670,7 @@
     {
       "fingerprint": "b626aafa341de4d9d4a39dc1b8b2514584a00c375d57be640bbde882550ed053",
       "verdict": "false",
+      "source": "hand",
       "note": "the same if: condition, mac build",
       "rule_id": "opengrep.cwe-78.gha-run-untrusted-interpolation",
       "where": "electerm/electerm .github/workflows/mac.yml:32",
@@ -1497,6 +1679,7 @@
     {
       "fingerprint": "076b96c11c6af7527ab32b8185b410a687e089a408c8000e592b37033abde407",
       "verdict": "false",
+      "source": "hand",
       "note": "the same if: condition, win-loose build",
       "rule_id": "opengrep.cwe-78.gha-run-untrusted-interpolation",
       "where": "electerm/electerm .github/workflows/win-loose.yml:40",
@@ -1505,6 +1688,7 @@
     {
       "fingerprint": "9939798d307d39b77c301ae534adbb88d31b682341eb3cccfb0b44b32f3b5a06",
       "verdict": "false",
+      "source": "hand",
       "note": "the same if: condition, win-nsis-arm build",
       "rule_id": "opengrep.cwe-78.gha-run-untrusted-interpolation",
       "where": "electerm/electerm .github/workflows/win-nsis-arm.yml:39",
@@ -1513,6 +1697,7 @@
     {
       "fingerprint": "65333f5b72fb38e969439ccfcb34f4b232811071bec4ebf0d2223a402df9efba",
       "verdict": "false",
+      "source": "hand",
       "note": "the same if: condition, win-nsis build",
       "rule_id": "opengrep.cwe-78.gha-run-untrusted-interpolation",
       "where": "electerm/electerm .github/workflows/win-nsis.yml:40",
@@ -1521,6 +1706,7 @@
     {
       "fingerprint": "e741bc69973cfa855ea387e39c0e8ff16b4745002b83ad7861413619557cb980",
       "verdict": "false",
+      "source": "hand",
       "note": "the same if: condition, win-portable build",
       "rule_id": "opengrep.cwe-78.gha-run-untrusted-interpolation",
       "where": "electerm/electerm .github/workflows/win-portable.yml:40",
@@ -1529,6 +1715,7 @@
     {
       "fingerprint": "bce14ca2984ccb5035ce1793130b2dfda8636de2c98416fd831ef10438e87696",
       "verdict": "false",
+      "source": "hand",
       "note": "the same if: condition, win7-tar build",
       "rule_id": "opengrep.cwe-78.gha-run-untrusted-interpolation",
       "where": "electerm/electerm .github/workflows/win7-tar.yml:53",
@@ -1537,6 +1724,7 @@
     {
       "fingerprint": "c5de1eb42dce09803b08adfaff5cf8861aa27e05824bad823dcaf4654cdcf960",
       "verdict": "false",
+      "source": "hand",
       "note": "the ref: the rule read as an untrusted checkout is an input to tomchv/wait-my-workflow, not a checkout, and the workflow is triggered by push to master, so no contributor revision is present",
       "rule_id": "opengrep.cwe-200.gha-secret-in-untrusted-checkout-job",
       "where": "google/slo-generator .github/workflows/deploy.yml:58",
@@ -1545,6 +1733,7 @@
     {
       "fingerprint": "d044018cd991da801d4eb5fa902384b05f7a5bce4405d351f4ceebf428452c28",
       "verdict": "true",
+      "source": "hand",
       "note": "res.render('dataErasureResult', { ...req.body, ...themeVars }): the request body is spread into the view locals, so the request sets `layout`, which is the documented local file read challenge; the label for it is three lines above, on the blocklist check",
       "rule_id": "opengrep.cwe-22.js-render-request-object-locals",
       "where": "juice-shop/juice-shop routes/dataErasure.ts:107",
@@ -1553,6 +1742,7 @@
     {
       "fingerprint": "fbce2fbc9b567e9aa16dd3f4313bfabbba083127f77477a4fbd07546ec8a08a5",
       "verdict": "true",
+      "source": "hand",
       "note": "the else branch of the same handler renders with the same spread of req.body and without the blocklist check, so the request-chosen layout is read with nothing in front of it",
       "rule_id": "opengrep.cwe-22.js-render-request-object-locals",
       "where": "juice-shop/juice-shop routes/dataErasure.ts:123",
@@ -1561,6 +1751,7 @@
     {
       "fingerprint": "522ad723f8f1d67aed6f7610ae13a272535737de5a60d2b31f7d0ef646e5c2b2",
       "verdict": "true",
+      "source": "hand",
       "note": "the grype installer is fetched from the main branch of anchore/grype and piped into sh; nothing pins what runs, and the job then runs the binary it produced",
       "rule_id": "opengrep.cwe-494.gha-remote-script-piped-to-shell",
       "where": "benbusby/whoogle-search .github/workflows/scan.yml:17",
@@ -1569,6 +1760,7 @@
     {
       "fingerprint": "7e7921dc114de3af21a84e896d245e6b64e276d6a3ba92dddf18798bf3c48528",
       "verdict": "true",
+      "source": "hand",
       "note": "yarnpkg.com/install.sh piped into bash on a push to main; the script is whatever the server returns that day",
       "rule_id": "opengrep.cwe-494.gha-remote-script-piped-to-shell",
       "where": "fastify/fastify .github/workflows/package-manager-ci.yml:72",
@@ -1577,6 +1769,7 @@
     {
       "fingerprint": "57bb62b57df1ff0f5fb9bcffe1c2f31b7087964a71367d3c30c900a243082613",
       "verdict": "true",
+      "source": "hand",
       "note": "the Heroku CLI installer piped into sh in the deploy job that later receives the Heroku credentials",
       "rule_id": "opengrep.cwe-494.gha-remote-script-piped-to-shell",
       "where": "juice-shop/juice-shop .github/workflows/ci.yml:359",
@@ -1585,6 +1778,7 @@
     {
       "fingerprint": "f19952e50e17cf6c8bb2d56a0cd001e51ebb2643f235e3690f2a723d8168674f",
       "verdict": "true",
+      "source": "hand",
       "note": "the wasm-pack installer piped into sh in the release build; nothing pins the script or the binary it downloads",
       "rule_id": "opengrep.cwe-494.gha-remote-script-piped-to-shell",
       "where": "vercel/next.js .github/workflows/build_and_deploy.yml:530",
@@ -1593,6 +1787,7 @@
     {
       "fingerprint": "fcd1a56cfe065cbd807d86f20cf1c8f9d5170050332083789ac48fc9135c4541",
       "verdict": "false",
+      "source": "hand",
       "note": "contents: write on the backport job, which only runs for a merged pull request and whose whole purpose is pushing a backport branch; the workflow default is contents: read",
       "rule_id": "opengrep.cwe-732.gha-write-grant-on-pull-request-target",
       "where": "fastify/fastify .github/workflows/backport.yml:15",
@@ -1601,6 +1796,7 @@
     {
       "fingerprint": "4643f975a99e1f44eba9e4211a298d9211b307352301bccb73bf8f75c232178e",
       "verdict": "false",
+      "source": "hand",
       "note": "id-token: write is used to mint a scoped comment token through gh-sts-action; the job checks out github.sha, not the pull request, and is gated on MEMBER authors",
       "rule_id": "opengrep.cwe-732.gha-write-grant-on-pull-request-target",
       "where": "vercel/next.js .github/workflows/automated_code_review.yml:27",

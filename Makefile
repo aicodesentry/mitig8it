@@ -91,7 +91,9 @@ test-quality:
 	@echo "== offline quality gates =="
 	$(PY_ANALYSIS) -m pytest benchmarks/test_detection_evaluation.py benchmarks/test_eval.py \
 	  benchmarks/test_quality_gate.py \
-	  benchmarks/test_production_readiness.py -q
+	  benchmarks/test_production_readiness.py \
+	  benchmarks/test_replay_score.py benchmarks/test_replay_selection.py \
+	  benchmarks/test_replay_worker.py -q
 
 # --- benchmarks --------------------------------------------------------------------------------
 

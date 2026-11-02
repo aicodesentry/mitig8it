@@ -33,9 +33,14 @@ why `we45/Vulnerable-Flask-App` was considered and dropped in favour of `anxoler
 | File | What it is |
 | --- | --- |
 | `labels.json` | The corpus: the repositories with their pinned refs and licences, and every label. |
-| `adjudications.json` | Hand-read verdicts on findings no label covers, keyed by finding fingerprint. |
+| `adjudications.json` | Verdicts on findings no label covers, keyed by finding fingerprint. Every entry carries a `source`, and `hand` is the only one precision counts. |
 | `harvest_cve_labels.py` | Proposes candidate labels from advisories that name their fixing commit. |
 | `recall-baseline.json` | Per label, whether it is detected and whether a posting rule detects it. Generated; see below. |
+
+`source` exists because a model may suggest a verdict and only a human may license a rule
+to post: `load_adjudications` refuses a file where any entry omits it, and `score.py` keeps a
+verdict whose source is anything but `hand` out of the precision numerator and denominator,
+reporting it as model-suggested and putting it on the reading list for a human instead.
 
 A label is one vulnerability:
 
@@ -86,8 +91,12 @@ $PY scripts/replay/replay.py --snapshot --include-quarantined \
     --repo OWASP/NodeGoat --ref c5cb68a7084e4ae7dcc60e6a98768720a81841e8 \
     --out results/nodegoat.json
 
-# the reading list: every finding at a labelled line under an unexpected class, plus a
-# seeded random sample of the findings no label covers
+# the reading list: every finding at a labelled line under an unexpected class, every
+# model-suggested verdict awaiting a human, and a sample of the findings no label covers,
+# ranked by what reading them would unblock. The posting bar is three adjudicated findings
+# at 0.8 or better (docs/services/analysis-service.md), so quarantined rules short of that
+# bar come first, then rules that post today on fewer verdicts than the bar asks for.
+# `--seed` still reproduces a given list: it is the tie-break within a rank.
 $PY scripts/replay/score.py results/*.json --labels benchmarks/vulnerable-corpus/labels.json \
     --emit-queue /tmp/queue.json
 

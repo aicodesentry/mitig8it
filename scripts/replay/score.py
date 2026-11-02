@@ -14,6 +14,10 @@ vulnerabilities than anybody has labelled, so an unlabelled finding is unknown r
 wrong. Precision is therefore computed over the *adjudicated* findings only: the ones a
 label confirms, plus the ones someone read by hand. `--emit-queue` writes the reading list
 and `--adjudications` reads the verdicts back.
+
+Every adjudication must name its `source`, and only `hand` counts. A model may suggest a
+verdict; only a human may license a rule to post. A suggestion is loaded, reported and put
+on the reading list, and it reaches no precision number.
 """
 from __future__ import annotations
 
@@ -35,6 +39,18 @@ from taxonomy import CANONICAL_INTERNAL_TYPES, canonicalize_internal_type  # noq
 
 DEFAULT_SAMPLE = 40
 DEFAULT_SEED = 20260924
+# A verdict counts toward precision only when a human licensed it. A model may suggest one,
+# and the suggestion is carried through the report and into the reading list, but it is never
+# evidence that a rule may post. `HAND_SOURCE` is the only `source` the precision numbers see.
+HAND_SOURCE = "hand"
+COUNTED_VERDICT_SOURCES = frozenset({"label", "hand-read"})
+MODEL_VERDICT_SOURCE = "model-suggested"
+# The posting bar is written down: "Three adjudicated findings at 0.8 or better is the bar"
+# (docs/services/analysis-service.md, and README.md states the same number). The reading list
+# ranks against that recorded bar rather than inventing one of its own.
+BAR_ADJUDICATED_FINDINGS = 3
+BAR_PRECISION = 0.8
+BAR_RECORDED_IN = "docs/services/analysis-service.md and README.md"
 # A label is a hand-written line range and a finding is a scanner's line range; they agree
 # about the statement without agreeing about its first line. Two lines of slack is the
 # width of a wrapped call, and no two labels in this corpus are that close together.
@@ -123,13 +139,28 @@ def load_labels(path: str) -> list[dict[str, Any]]:
 
 
 def load_adjudications(path: str | None) -> dict[str, dict[str, Any]]:
+    """Every verdict, keyed by fingerprint, with its provenance required.
+
+    `source` is not optional. A file that omits it anywhere is refused rather than read with
+    the missing field guessed at, because the guess that would be convenient is also the one
+    that turns an unattributed verdict into published precision.
+    """
     if not path or not Path(path).exists():
         return {}
     document = json.loads(Path(path).read_text(encoding="utf-8"))
     entries = document["adjudications"] if isinstance(document, dict) else document
     if isinstance(entries, list):
-        return {str(item["fingerprint"]): item for item in entries}
-    return {str(key): value for key, value in entries.items()}
+        by_fingerprint = {str(item["fingerprint"]): item for item in entries}
+    else:
+        by_fingerprint = {str(key): value for key, value in entries.items()}
+    for fingerprint, entry in by_fingerprint.items():
+        source = str(entry.get("source") or "").strip() if isinstance(entry, dict) else ""
+        if not source:
+            raise SystemExit(
+                f"{path}: adjudication {fingerprint} has no 'source'. Every verdict must name "
+                f"its provenance; only {HAND_SOURCE!r} counts toward precision."
+            )
+    return by_fingerprint
 
 
 # --- joining ----------------------------------------------------------------------------------
@@ -205,9 +236,19 @@ def join(
             entry["verdict_source"] = "label"
             label_state[matched_class["id"]]["hits"].append(entry)
         elif adjudication is not None:
-            entry["verdict"] = str(adjudication.get("verdict", "")).lower()
-            entry["verdict_source"] = "hand-read"
+            adjudicated_by = str(adjudication.get("source", "")).strip().lower()
+            entry["adjudication_source"] = adjudicated_by
             entry["note"] = str(adjudication.get("note", ""))
+            if adjudicated_by == HAND_SOURCE:
+                entry["verdict"] = str(adjudication.get("verdict", "")).lower()
+                entry["verdict_source"] = "hand-read"
+            else:
+                # The suggestion is kept and shown, but it never lands in `verdict`, so no
+                # counter that reads verdicts can accumulate it into a precision number.
+                entry["verdict"] = "suggested"
+                entry["verdict_source"] = MODEL_VERDICT_SOURCE
+                entry["suggested_verdict"] = str(adjudication.get("verdict", "")).lower()
+                entry["unread_kind"] = "class_mismatch" if matched_location else "unlabelled"
         else:
             entry["verdict"] = "unread"
             entry["verdict_source"] = "class_mismatch" if matched_location else "unlabelled"
@@ -222,10 +263,38 @@ def join(
 
 
 def _precision(rows: list[dict[str, Any]]) -> tuple[int, int, float | None]:
-    true_count = sum(1 for row in rows if row["verdict"] == "true")
-    false_count = sum(1 for row in rows if row["verdict"] == "false")
+    """Precision over licensed verdicts only.
+
+    The filter is on `verdict_source`, not on `verdict`, and that is the whole point: a row
+    whose verdict nobody human licensed cannot enter the numerator or the denominator even if
+    it arrives carrying a verdict, so there is no route from a suggestion to a number here.
+    """
+    counted = [row for row in rows if row.get("verdict_source") in COUNTED_VERDICT_SOURCES]
+    true_count = sum(1 for row in counted if row["verdict"] == "true")
+    false_count = sum(1 for row in counted if row["verdict"] == "false")
     total = true_count + false_count
     return true_count, false_count, (true_count / total if total else None)
+
+
+def _hand_true(rows: list[dict[str, Any]]) -> int:
+    return sum(1 for row in rows if row["verdict"] == "true" and row["verdict_source"] == "hand-read")
+
+
+def _hand_false(rows: list[dict[str, Any]]) -> int:
+    return sum(1 for row in rows if row["verdict"] == "false" and row["verdict_source"] == "hand-read")
+
+
+def _suggested(rows: list[dict[str, Any]]) -> int:
+    return sum(1 for row in rows if row["verdict_source"] == MODEL_VERDICT_SOURCE)
+
+
+def adjudicated_counts(scored: list[dict[str, Any]]) -> dict[str, int]:
+    """Per rule, how many of its findings carry a verdict that counts toward its precision."""
+    counts: dict[str, int] = defaultdict(int)
+    for row in scored:
+        if row.get("verdict_source") in COUNTED_VERDICT_SOURCES:
+            counts[str(row["rule_id"])] += 1
+    return counts
 
 
 def _fmt(value: float | None) -> str:
@@ -236,17 +305,17 @@ def group_table(title: str, scored: list[dict[str, Any]], key: str, header: str)
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in scored:
         groups[str(row[key])].append(row)
-    lines = [f"### {title}", "", f"| {header} | Findings | Labelled true | Hand true | Hand false | Unread | Precision |",
-             "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    lines = [f"### {title}", "",
+             f"| {header} | Findings | Labelled true | Hand true | Hand false | Suggested | Unread | Precision |",
+             "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
     for name in sorted(groups, key=lambda item: (-len(groups[item]), item)):
         rows = groups[name]
         labelled = sum(1 for row in rows if row["verdict_source"] == "label")
-        hand_true = sum(1 for row in rows if row["verdict"] == "true" and row["verdict_source"] == "hand-read")
-        hand_false = sum(1 for row in rows if row["verdict"] == "false")
         unread = sum(1 for row in rows if row["verdict"] == "unread")
         _, _, precision = _precision(rows)
         lines.append(
-            f"| `{name}` | {len(rows)} | {labelled} | {hand_true} | {hand_false} | {unread} | {_fmt(precision)} |"
+            f"| `{name}` | {len(rows)} | {labelled} | {_hand_true(rows)} | {_hand_false(rows)} | "
+            f"{_suggested(rows)} | {unread} | {_fmt(precision)} |"
         )
     lines.append("")
     return lines
@@ -294,16 +363,21 @@ def render(
         "# Vulnerable corpus score", "",
         f"{len(labels)} labels, {len(scored)} findings.", "",
         "## Headline", "",
-        "| | Findings | Labelled true | Hand true | Hand false | Precision |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "| | Findings | Labelled true | Hand true | Hand false | Suggested | Precision |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for name, rows in (("What posts today", posting), ("Quarantined rules", quarantined), ("Everything", scored)):
         labelled = sum(1 for row in rows if row["verdict_source"] == "label")
-        hand_true = sum(1 for row in rows if row["verdict"] == "true" and row["verdict_source"] == "hand-read")
-        hand_false = sum(1 for row in rows if row["verdict"] == "false")
         _, _, precision = _precision(rows)
-        lines.append(f"| {name} | {len(rows)} | {labelled} | {hand_true} | {hand_false} | {_fmt(precision)} |")
+        lines.append(
+            f"| {name} | {len(rows)} | {labelled} | {_hand_true(rows)} | {_hand_false(rows)} | "
+            f"{_suggested(rows)} | {_fmt(precision)} |"
+        )
     lines += [
+        "",
+        f"{_suggested(scored)} model-suggested verdicts are carried here and not counted: "
+        "precision is over label-confirmed and hand-read findings only. A model may suggest a "
+        "verdict, only a human may license a rule to post.",
         "",
         f"Recall: {hit}/{len(labels)} labelled vulnerabilities produced a finding of the expected class "
         f"on the labelled lines ({hit / len(labels):.2f}). A further {in_file} had the expected class "
@@ -339,20 +413,79 @@ def render(
     return "\n".join(lines)
 
 
+def _rank_band(row: dict[str, Any], adjudicated: int) -> tuple[int, str]:
+    """Which of the three reading bands a finding falls in, and why.
+
+    Scarcity is measured against the recorded bar of three adjudicated findings, so the top
+    band is the set of rules a single reading could actually release: quarantined, and short
+    of the evidence that would let them out. The second band is the mirror image, rules that
+    reach a reviewer today on fewer verdicts than the policy asks for.
+    """
+    short = adjudicated < BAR_ADJUDICATED_FINDINGS
+    if row["posting"] == "quarantine" and short:
+        return 0, (f"quarantined with {adjudicated} of {BAR_ADJUDICATED_FINDINGS} adjudicated "
+                   "findings; a verdict here could release the rule")
+    if row["posting"] == "post" and short:
+        return 1, (f"posts today on {adjudicated} of {BAR_ADJUDICATED_FINDINGS} adjudicated "
+                   "findings; it reaches reviewers on less evidence than the bar asks for")
+    return 2, f"{adjudicated} adjudicated findings, at or past the recorded bar"
+
+
 def emit_queue(scored: list[dict[str, Any]], path: str, sample: int, seed: int) -> int:
-    """The reading list: every class mismatch, plus a seeded random sample of the unlabelled."""
+    """The reading list: every class mismatch and every model suggestion, then a ranked sample.
+
+    The sample used to be seeded random over the unlabelled findings, which ordered the list
+    by nothing a reader cares about. It is now ranked by what a verdict would unblock, with
+    the seeded order kept as the tie-break so `--seed` still reproduces a given list.
+    """
+    counts = adjudicated_counts(scored)
     mismatches = [row for row in scored if row["verdict"] == "unread" and row["verdict_source"] == "class_mismatch"]
     unlabelled = [row for row in scored if row["verdict"] == "unread" and row["verdict_source"] == "unlabelled"]
+    # A suggestion nobody reads is dead weight, so it is always on the list rather than
+    # sampled: the only thing that can turn it into evidence is a human reading it.
+    suggested = [row for row in scored if row["verdict_source"] == MODEL_VERDICT_SOURCE]
+
     rng = random.Random(seed)
     chosen = sorted(unlabelled, key=lambda row: row["fingerprint"])
     rng.shuffle(chosen)
-    queue = mismatches + chosen[:sample]
+
+    def rank(row: dict[str, Any]) -> tuple[int, int]:
+        adjudicated = counts.get(str(row["rule_id"]), 0)
+        return _rank_band(row, adjudicated)[0], adjudicated
+
+    chosen.sort(key=rank)
+
+    queue: list[dict[str, Any]] = []
+    for row in mismatches + suggested + chosen[:sample]:
+        adjudicated = counts.get(str(row["rule_id"]), 0)
+        _, reason = _rank_band(row, adjudicated)
+        queue.append(dict(row, adjudicated_now=adjudicated, rank_reason=reason))
+
+    rules: dict[str, dict[str, Any]] = {}
+    for row in queue:
+        rule_id = str(row["rule_id"])
+        rules[rule_id] = {
+            "adjudicated": counts.get(rule_id, 0),
+            "posting": row["posting"],
+            "short_of_bar": counts.get(rule_id, 0) < BAR_ADJUDICATED_FINDINGS,
+        }
+
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps({
         "seed": seed,
         "sample": sample,
         "unlabelled_total": len(unlabelled),
         "class_mismatch_total": len(mismatches),
+        "model_suggested_total": len(suggested),
+        "bar": {
+            "adjudicated_findings": BAR_ADJUDICATED_FINDINGS,
+            "precision": BAR_PRECISION,
+            "recorded_in": BAR_RECORDED_IN,
+            "note": "The queue is ordered by scarcity of adjudicated findings against this "
+                    "recorded bar. Only label-confirmed and hand-read verdicts are counted; a "
+                    "model-suggested verdict is listed for reading and counts toward nothing.",
+        },
+        "rules": rules,
         "queue": queue,
     }, indent=2), encoding="utf-8")
     return len(queue)
@@ -376,8 +509,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("results", nargs="+", help="snapshot result JSON files")
     parser.add_argument("--labels", required=True, help="benchmarks/vulnerable-corpus/labels.json")
-    parser.add_argument("--adjudications", help="hand-read verdicts, keyed by fingerprint")
-    parser.add_argument("--emit-queue", help="write the hand-reading list here and stop")
+    parser.add_argument("--adjudications",
+                        help="verdicts keyed by fingerprint; each needs a 'source', and only 'hand' counts")
+    parser.add_argument("--emit-queue",
+                        help="write the hand-reading list here, ranked by what it unblocks, and stop")
     parser.add_argument("--sample", type=int, default=DEFAULT_SAMPLE, help="unlabelled findings to sample")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="sampling seed, so the sample is repeatable")
     parser.add_argument("--json-out", help="also write the scored findings as JSON")
