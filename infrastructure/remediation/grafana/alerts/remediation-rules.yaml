@@ -59,8 +59,17 @@ groups:
       # the absence of starts, and the service derives it into one gauge rather than
       # leaving the join to be reconstructed here, where nobody could check it.
       #
-      # No data here means the API is not being scraped at all, which is itself the
-      # outage: a dead service reports neither a backlog nor a start.
+      # This rule reports a stall and nothing else. It used to carry
+      # `noDataState: Alerting` on the reasoning that absent metrics are themselves the
+      # outage, which is true but cannot distinguish a dead API from a scrape that was
+      # never configured. The metrics sidecar is opt-in through METRICS_SIDECAR_ENABLED,
+      # so for every deployment that has not enabled it this rule fired on no data,
+      # every evaluation, forever. A page that is always firing is a page nobody reads.
+      #
+      # The absence is now asserted by Mitig8itAnalysisMetricsAbsent below, which is how
+      # infrastructure/monitoring/main.tf has always done it: the stall gauge and a
+      # separate absence condition, combined with OR. These two files are supposed to be
+      # in step and had drifted.
       - alert: Mitig8itReviewsStalled
         expr: max(mitig8it_analysis_runs_stalled) > 0
         for: 5m
@@ -75,6 +84,40 @@ groups:
             the claim query is the first thing a database outage stops.
           runbook_url: "docs/runbooks/observability.md#reviews-are-stalled"
         isPaused: false
+        # OK, because absence is a different incident with its own rule. The gauge is
+        # set to 0 on every queue observation, so a scraped and healthy API reports 0
+        # here rather than nothing.
+        noDataState: OK
+        execErrState: Alerting
+
+      # The scrape itself stopping. A PromQL condition cannot fire on a series that is
+      # not there, so the absence is asserted directly. Fifteen minutes and the started
+      # counter, matching the condition_absent block in
+      # infrastructure/monitoring/main.tf so the two systems page for the same thing.
+      #
+      # Paused, and it has to stay paused until the sidecar is on. METRICS_SIDECAR_ENABLED
+      # is opt-in, and while it is off this rule is true by construction and says nothing
+      # an operator can act on. docs/runbooks/observability.md has the enablement steps and
+      # names unpausing this rule as part of them, because a paged rule left paused after
+      # the scrape starts is a silent outage.
+      #
+      # Deliberately split from Mitig8itReviewsStalled rather than folded into it: pausing
+      # the absence check costs visibility of a missing scrape, while pausing the stall
+      # check would hide a real backlog. Only one of those is safe to switch off.
+      - alert: Mitig8itAnalysisMetricsAbsent
+        expr: absent(mitig8it_analysis_runs_started_total)
+        for: 15m
+        labels:
+          severity: page
+        annotations:
+          summary: "codesentry-api stopped reporting analysis metrics"
+          description: >-
+            The analysis started counter has not arrived for fifteen minutes. Either the
+            API is not serving, or the managed Prometheus sidecar is not scraping it.
+            Check that a revision is serving and that the sidecar container is present in
+            it: the API deploy asserts this when METRICS_SIDECAR_ENABLED is true.
+          runbook_url: "docs/runbooks/observability.md#reviews-are-stalled"
+        isPaused: true
         noDataState: Alerting
         execErrState: Alerting
 
