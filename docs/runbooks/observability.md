@@ -225,4 +225,19 @@ min-instance change and the sidecar are live, and record the numbers here.
   actually is on a normal day. If it sits near 0.3, the threshold is wrong for this
   service and should move, rather than being silenced.
 
-The sidecar is opt-in. After the `codesentry-gmp-config` secret exists and the service account can read it, set the repository variable `METRICS_SIDECAR_ENABLED` to `true` and re-run the API deploy. Without the variable the API deploys as a single container and the loopback metrics listener stays off, so a missing secret can never block a production deploy.
+## Turning the scrape on
+
+The sidecar is opt-in. After the `codesentry-gmp-config` secret exists and the service account can
+read it, set the repository variable `METRICS_SIDECAR_ENABLED` to `true` and re-run the API deploy.
+Without the variable the API deploys as a single container and the loopback metrics listener stays
+off, so a missing secret can never block a production deploy.
+
+**Then unpause `Mitig8itAnalysisMetricsAbsent`.** It ships paused in
+`infrastructure/remediation/grafana/alerts/remediation-rules.yaml`, because while nothing is
+scraping it is true by construction and pages on every evaluation. Once the sidecar is running it
+becomes the rule that notices the API has gone quiet, and a dead service reports neither a backlog
+nor a start, so nothing else will tell you.
+
+These two steps are one procedure. Enabling the scrape without arming the rule leaves a silent
+outage: metrics flowing, the only watcher switched off. `benchmarks/test_alert_parity.py` fails if
+this section stops saying so.
