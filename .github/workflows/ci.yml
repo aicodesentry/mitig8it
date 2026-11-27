@@ -46,7 +46,7 @@ jobs:
         run: echo "Dependency review only runs on pull requests, and private repositories must opt in with ENABLE_DEPENDENCY_REVIEW=true."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: ${{ github.event_name == 'pull_request' && (!github.event.repository.private || vars.ENABLE_DEPENDENCY_REVIEW == 'true') }}
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec
         if: ${{ github.event_name == 'pull_request' && (!github.event.repository.private || vars.ENABLE_DEPENDENCY_REVIEW == 'true') }}
         with:
           # Change to critical if moderate/high noise is too high.
